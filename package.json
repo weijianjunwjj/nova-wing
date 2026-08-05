@@ -1,6 +1,7 @@
 {
   "name": "nova-wing",
   "version": "0.1.0",
+  "description": "NovaWing standalone approved-mainline kernel and snapshot contracts",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -42,6 +43,9 @@
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "pack:check": "node scripts/pack-check.mjs",
     "consumer:selftest": "node scripts/consumer-selftest.mjs",
+    "release:prepare": "node scripts/release-prepare.mjs",
+    "release:inspect": "node scripts/release-inspect.mjs",
+    "release:selftest": "node scripts/release-selftest.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {

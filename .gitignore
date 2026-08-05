@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-tests/
+release-package/
 coverage/
 *.tgz
 *.sqlite

@@ -2,17 +2,18 @@
 
 ## 可安装包与 Host Snapshot V3
 
-当前包名/版本为 `nova-wing@0.1.0`，要求 Node.js 24 或更高版本。仓库继续保留
-`"private": true` 和 `UNLICENSED`，用于阻止未经授权的真实发布；本地构建和 tarball
-验收不受影响。
+仓库根包为 `nova-wing@0.1.0`，正式私有发布包为
+`@weijianjunwjj/nova-wing@0.1.0`，要求 Node.js 24 或更高版本。仓库根继续保留
+`"private": true` 和 `UNLICENSED`，用于阻止未经授权的真实发布；正式 manifest 仅在被
+Git 忽略的 `release-package/` 内生成。本地构建和 tarball 验收不受影响。
 
 安装者只能从以下四个公共入口导入，类型声明和运行时代码都来自 `dist/`：
 
 ```text
-nova-wing/core
-nova-wing/sqlite
-nova-wing/testing
-nova-wing/host-snapshot
+@weijianjunwjj/nova-wing/core
+@weijianjunwjj/nova-wing/sqlite
+@weijianjunwjj/nova-wing/testing
+@weijianjunwjj/nova-wing/host-snapshot
 ```
 
 `package.json#exports` 拒绝源码、migration、registry 等深层路径。可分发包只包含构建后的
@@ -24,6 +25,9 @@ npm run build
 npm run check
 npm run pack:check
 npm run consumer:selftest
+npm run release:prepare
+npm run release:inspect
+npm run release:selftest
 npm audit
 ```
 
@@ -33,7 +37,7 @@ npm audit
 批准、Context 读取以及深层导入拒绝。两个命令都不发布包。
 
 `novawing.snapshot.v3` 是 SQLite adapter 已有的 NovaWing 子系统 manifest；
-`host.snapshot.v3` 是本切片新增的宿主组合 manifest。`nova-wing/host-snapshot` 只提供类型、
+`host.snapshot.v3` 是本切片新增的宿主组合 manifest。`@weijianjunwjj/nova-wing/host-snapshot` 只提供类型、
 manifest 构造与验证、显式 registry、NovaWing 组件 adapter 和生命周期协议，不提供任何具体
 宿主的导出、恢复或文件替换实现。
 
@@ -46,8 +50,10 @@ manifest 构造与验证、显式 registry、NovaWing 组件 adapter 和生命�
 成功、重新打开运行时连接。运行中的生产文件禁止原地部分恢复，任一组件失败都不得产生
 半成功状态。
 
-依赖来源和发布策略见
-[`docs/adr/0002-distribution-source-and-host-snapshot-v3.md`](docs/adr/0002-distribution-source-and-host-snapshot-v3.md)。
+Host Snapshot V3 技术决策见
+[`docs/adr/0002-distribution-source-and-host-snapshot-v3.md`](docs/adr/0002-distribution-source-and-host-snapshot-v3.md)；
+GitHub Packages 发布与不可变消费策略见
+[`docs/adr/0003-private-github-packages-and-immutable-consumption.md`](docs/adr/0003-private-github-packages-and-immutable-consumption.md)。
 
 本仓库当前实现 NovaWing 的独立、离线、可测试领域内核。它只保存经过人工批准的跨应用长期主线，不保存或推导任何宿主领域的当前状态。
 
@@ -78,9 +84,9 @@ manifest 构造与验证、显式 registry、NovaWing 组件 adapter 和生命�
 调用方只能使用以下 package subpath：
 
 ```text
-nova-wing/core
-nova-wing/sqlite
-nova-wing/testing
+@weijianjunwjj/nova-wing/core
+@weijianjunwjj/nova-wing/sqlite
+@weijianjunwjj/nova-wing/testing
 ```
 
 `package.json#exports` 会拒绝 `packages/*/src`、domain、migration 等深层路径。`npm run check:exports` 同时校验公开运行时键和深层导入拒绝行为。

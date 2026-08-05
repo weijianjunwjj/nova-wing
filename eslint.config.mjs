@@ -8,7 +8,7 @@ const typedConfigs = [
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'dist-tests/**', 'node_modules/**'],
+    ignores: ['dist/**', 'dist-tests/**', 'release-package/**', 'node_modules/**'],
   },
   eslint.configs.recommended,
   ...typedConfigs,
