@@ -3,9 +3,10 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": ".",
-    "sourceMap": true,
+    "sourceMap": false,
     "declaration": true,
-    "declarationMap": true
-  }
+    "declarationMap": false
+  },
+  "include": ["packages/**/*.ts"],
+  "exclude": ["tests/**"]
 }
-

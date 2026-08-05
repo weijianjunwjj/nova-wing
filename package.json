@@ -2,34 +2,46 @@
   "name": "nova-wing",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
+  "files": [
+    "dist/packages/**",
+    "README.md"
+  ],
   "exports": {
     "./core": {
-      "types": "./packages/core/src/index.ts",
+      "types": "./dist/packages/core/src/index.d.ts",
       "import": "./dist/packages/core/src/index.js"
     },
     "./sqlite": {
-      "types": "./packages/sqlite/src/index.ts",
+      "types": "./dist/packages/sqlite/src/index.d.ts",
       "import": "./dist/packages/sqlite/src/index.js"
     },
     "./testing": {
-      "types": "./packages/testing/src/index.ts",
+      "types": "./dist/packages/testing/src/index.d.ts",
       "import": "./dist/packages/testing/src/index.js"
+    },
+    "./host-snapshot": {
+      "types": "./dist/packages/host-snapshot/src/index.d.ts",
+      "import": "./dist/packages/host-snapshot/src/index.js"
     }
   },
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
+    "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "test": "npm run build && node --test --test-concurrency=1 \"dist/tests/*.test.js\"",
-    "test:domain": "npm run build && node --test --test-concurrency=1 dist/tests/domain.test.js",
+    "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
+    "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
     "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
     "check:migration": "npm run build && node scripts/verify-migration.mjs",
     "check:exports": "npm run build && node scripts/check-package-exports.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "pack:check": "node scripts/pack-check.mjs",
+    "consumer:selftest": "node scripts/consumer-selftest.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {

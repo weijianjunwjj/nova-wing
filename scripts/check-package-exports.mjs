@@ -6,9 +6,19 @@ const repositoryRoot = resolve(import.meta.dirname, '..')
 const packageJson = JSON.parse(
   readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'),
 )
-const expectedSubpaths = ['./core', './sqlite', './testing']
+const expectedSubpaths = ['./core', './host-snapshot', './sqlite', './testing']
 if (JSON.stringify(Object.keys(packageJson.exports).sort()) !== JSON.stringify(expectedSubpaths)) {
-  throw new Error('package exports must contain only core, sqlite, and testing subpaths')
+  throw new Error('package exports must contain only the four documented subpaths')
+}
+for (const [subpath, conditions] of Object.entries(packageJson.exports)) {
+  if (
+    typeof conditions !== 'object' ||
+    conditions === null ||
+    !conditions.types.startsWith('./dist/') ||
+    !conditions.import.startsWith('./dist/')
+  ) {
+    throw new Error(`${subpath} must resolve runtime and declarations from dist`)
+  }
 }
 
 const expectedRuntimeExports = {
@@ -29,6 +39,23 @@ const expectedRuntimeExports = {
     'verifyNovaWingBeforeSnapshotExport',
   ],
   'nova-wing/testing': ['FakeOfferFlowHost'],
+  'nova-wing/host-snapshot': [
+    'HOST_SNAPSHOT_LIFECYCLE_GUARANTEES',
+    'HOST_SNAPSHOT_LIFECYCLE_PHASES',
+    'HOST_SNAPSHOT_V3_FORMAT',
+    'HOST_SNAPSHOT_V3_VERSION',
+    'HostSnapshotError',
+    'HostSnapshotRegistry',
+    'createComponentSnapshotManifest',
+    'createHostSnapshotV3Manifest',
+    'createNovaWingSnapshotComponent',
+    'createRegisteredHostSnapshotManifest',
+    'digestSnapshotValue',
+    'validateComponentSnapshotManifest',
+    'validateHostSnapshotV3Manifest',
+    'validateRegisteredHostSnapshotManifest',
+    'verifyRegisteredComponentsAfterRestore',
+  ],
 }
 
 for (const [specifier, expected] of Object.entries(expectedRuntimeExports)) {
@@ -44,6 +71,7 @@ for (const forbidden of [
   'nova-wing/core/domain/errors',
   'nova-wing/packages/sqlite/src/sqlite-nova-wing-store.js',
   'nova-wing/sqlite/migrations/index',
+  'nova-wing/host-snapshot/registry',
 ]) {
   try {
     await import(forbidden)
@@ -58,8 +86,7 @@ for (const forbidden of [
 console.log(
   JSON.stringify({
     publicSubpaths: expectedSubpaths,
-    rejectedDeepImports: 4,
+    rejectedDeepImports: 5,
     status: 'ok',
   }),
 )
-

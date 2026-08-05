@@ -1,8 +1,9 @@
 node_modules/
 dist/
+dist-tests/
 coverage/
+*.tgz
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite-journal
-

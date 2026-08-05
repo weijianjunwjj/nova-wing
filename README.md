@@ -1,5 +1,54 @@
 # NovaWing v0.1 独立内核切片
 
+## 可安装包与 Host Snapshot V3
+
+当前包名/版本为 `nova-wing@0.1.0`，要求 Node.js 24 或更高版本。仓库继续保留
+`"private": true` 和 `UNLICENSED`，用于阻止未经授权的真实发布；本地构建和 tarball
+验收不受影响。
+
+安装者只能从以下四个公共入口导入，类型声明和运行时代码都来自 `dist/`：
+
+```text
+nova-wing/core
+nova-wing/sqlite
+nova-wing/testing
+nova-wing/host-snapshot
+```
+
+`package.json#exports` 拒绝源码、migration、registry 等深层路径。可分发包只包含构建后的
+`.js`、`.d.ts`、本 README 和 package metadata，不包含源码、测试、脚本、设计文档、
+source map 或临时 SQLite 文件。
+
+```bash
+npm run build
+npm run check
+npm run pack:check
+npm run consumer:selftest
+npm audit
+```
+
+`pack:check` 连续构建两次，比较 `dist/packages` 文件清单及逐文件 SHA-256，并审计
+`npm pack --dry-run --json` 的白名单。`consumer:selftest` 真实生成 tarball，在系统临时目录
+创建全新项目，以 `--ignore-scripts` 安装，然后验证四个公共入口、migration、提案创建与
+批准、Context 读取以及深层导入拒绝。两个命令都不发布包。
+
+`novawing.snapshot.v3` 是 SQLite adapter 已有的 NovaWing 子系统 manifest；
+`host.snapshot.v3` 是本切片新增的宿主组合 manifest。`nova-wing/host-snapshot` 只提供类型、
+manifest 构造与验证、显式 registry、NovaWing 组件 adapter 和生命周期协议，不提供任何具体
+宿主的导出、恢复或文件替换实现。
+
+组件必须显式注册。同一权威表只能属于一个组件；宿主组件不能声明 `nw_*`，NovaWing
+组件必须且只能声明冻结的三张权威表。表与组件顺序不影响摘要；未知组件、格式、版本、
+缺失组件、摘要篡改或任一组件恢复后校验失败都会拒绝整个组合快照。
+
+生命周期顺序为：停止新请求、排空活动操作、关闭全部写连接、打开专用连接、导出或恢复到
+隔离候选库、校验组件 manifest、校验组合 manifest、执行全部恢复后校验、原子替换或宣布
+成功、重新打开运行时连接。运行中的生产文件禁止原地部分恢复，任一组件失败都不得产生
+半成功状态。
+
+依赖来源和发布策略见
+[`docs/adr/0002-distribution-source-and-host-snapshot-v3.md`](docs/adr/0002-distribution-source-and-host-snapshot-v3.md)。
+
 本仓库当前实现 NovaWing 的独立、离线、可测试领域内核。它只保存经过人工批准的跨应用长期主线，不保存或推导任何宿主领域的当前状态。
 
 本切片使用临时独立 SQLite 文件验证闭环；没有连接、修改或引用真实 OfferFlow 源码与数据库。冻结 PRD 保持原样。

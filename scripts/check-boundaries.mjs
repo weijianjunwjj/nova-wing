@@ -1,5 +1,5 @@
 /* global console */
-import { lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
@@ -7,10 +7,12 @@ const sourceRoots = ['packages', 'tests', 'scripts'].map((path) => resolve(repos
 const coreRoot = resolve(repositoryRoot, 'packages/core/src')
 const sqliteRoot = resolve(repositoryRoot, 'packages/sqlite/src')
 const testingRoot = resolve(repositoryRoot, 'packages/testing/src')
+const hostSnapshotRoot = resolve(repositoryRoot, 'packages/host-snapshot/src')
 const publicPackageImports = new Set([
   'nova-wing/core',
   'nova-wing/sqlite',
   'nova-wing/testing',
+  'nova-wing/host-snapshot',
 ])
 
 function fail(message) {
@@ -66,9 +68,11 @@ for (const file of sourceFiles) {
       !isInside(coreRoot, file) &&
       !isInside(sqliteRoot, file) &&
       !isInside(testingRoot, file) &&
+      !isInside(hostSnapshotRoot, file) &&
       (isInside(coreRoot, resolvedImport) ||
         isInside(sqliteRoot, resolvedImport) ||
-        isInside(testingRoot, resolvedImport))
+        isInside(testingRoot, resolvedImport) ||
+        isInside(hostSnapshotRoot, resolvedImport))
     ) {
       fail(`caller bypasses a public package export: ${relative(repositoryRoot, file)}`)
     }
@@ -77,6 +81,9 @@ for (const file of sourceFiles) {
     }
     if (isInside(sqliteRoot, file) && isInside(testingRoot, resolvedImport)) {
       fail(`SQLite adapter cannot depend on testing: ${relative(repositoryRoot, file)}`)
+    }
+    if (isInside(hostSnapshotRoot, file) && isInside(testingRoot, resolvedImport)) {
+      fail(`host snapshot contract cannot depend on testing: ${relative(repositoryRoot, file)}`)
     }
   }
 }
@@ -132,10 +139,51 @@ if (JSON.stringify([...createdTables].sort()) !== JSON.stringify(expectedTables)
   fail(`unexpected migration table set: ${createdTables.join(', ')}`)
 }
 
+const hostSnapshotSource = walk(hostSnapshotRoot)
+  .filter((path) => path.endsWith('.ts'))
+  .map((path) => readFileSync(path, 'utf8'))
+  .join('\n')
+if (hostSnapshotSource.toLowerCase().includes('offerflow')) {
+  fail('host snapshot contract must remain independent of a concrete host')
+}
+if (/[A-Za-z]:[\\/]/u.test(hostSnapshotSource)) {
+  fail('host snapshot contract contains an absolute Windows path')
+}
+
+const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
+const dependencyGroups = ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']
+for (const group of dependencyGroups) {
+  for (const [name, value] of Object.entries(packageJson[group] ?? {})) {
+    if (
+      typeof value !== 'string' ||
+      /^(?:file:|link:|workspace:)/u.test(value) ||
+      value.startsWith('../') ||
+      isAbsolute(value)
+    ) {
+      fail(`local or invalid dependency is forbidden: ${group}.${name}`)
+    }
+  }
+}
+for (const hook of ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish', 'prepublishOnly']) {
+  if (packageJson.scripts?.[hook] !== undefined) {
+    fail(`package lifecycle side effect is forbidden: ${hook}`)
+  }
+}
+for (const [name, command] of Object.entries(packageJson.scripts ?? {})) {
+  if (typeof command === 'string' && /(?:npm\s+publish|npm\.cmd\s+publish)/iu.test(command)) {
+    fail(`automatic publication is forbidden: ${name}`)
+  }
+}
+if (existsSync(resolve(repositoryRoot, '.gitmodules'))) {
+  fail('Git submodules are forbidden')
+}
+
 console.log(
   JSON.stringify({
     checkedSourceFiles: sourceFiles.length,
     authoritativeTables: expectedTables,
+    dependencySource: 'registry-only',
+    hostSnapshotConcreteHostReferences: 0,
     repositoryBoundary: repositoryRoot,
     status: 'ok',
   }),

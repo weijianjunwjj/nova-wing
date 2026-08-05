@@ -3,6 +3,13 @@
     "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "nova-wing/core": ["packages/core/src/index.ts"],
+      "nova-wing/host-snapshot": ["packages/host-snapshot/src/index.ts"],
+      "nova-wing/sqlite": ["packages/sqlite/src/index.ts"],
+      "nova-wing/testing": ["packages/testing/src/index.ts"]
+    },
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -15,4 +22,3 @@
   },
   "include": ["packages/**/*.ts", "tests/**/*.ts"]
 }
-
