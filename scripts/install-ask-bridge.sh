@@ -29,7 +29,18 @@ if ! command -v unzip >/dev/null 2>&1; then
 fi
 
 echo "Downloading ask-bridge v${VERSION}..."
-curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 "${URL}" -o "${ZIP_PATH}"
+# GitHub release assets may transiently reset TLS connections on Windows/Git Bash.
+# Retry all transport errors and force HTTP/1.1 to avoid failing the whole Guardian setup on one reset.
+curl \
+  -fL \
+  --http1.1 \
+  --retry 8 \
+  --retry-all-errors \
+  --retry-delay 3 \
+  --connect-timeout 20 \
+  --max-time 300 \
+  "${URL}" \
+  -o "${ZIP_PATH}"
 
 mkdir -p "${INSTALL_DIR}"
 unzip -q "${ZIP_PATH}" -d "${TMP_DIR}/extract"
