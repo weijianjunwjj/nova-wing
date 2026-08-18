@@ -1,8 +1,7 @@
 /* global console, process */
 import { spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import {
   AskBridgeBrain,
@@ -10,8 +9,11 @@ import {
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
+const repositoryRoot = resolve(import.meta.dirname, '..')
+const workspaceRoot = join(repositoryRoot, '.guardian-workspaces')
+
 function run(command, args, cwd, timeoutMs = 60_000) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveRun, reject) => {
     const child = spawn('bash', ['-lc', 'exec "$@"', '--', command, ...args], {
       cwd,
       env: process.env,
@@ -35,7 +37,7 @@ function run(command, args, cwd, timeoutMs = 60_000) {
       if (settled) return
       settled = true
       child.kill()
-      resolve({ exitCode: null, stdout, stderr: `${stderr}\nTimed out`.trim() })
+      resolveRun({ exitCode: null, stdout, stderr: `${stderr}\nTimed out`.trim() })
     }, timeoutMs)
 
     child.once('error', (error) => {
@@ -48,7 +50,7 @@ function run(command, args, cwd, timeoutMs = 60_000) {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve({ exitCode, stdout, stderr })
+      resolveRun({ exitCode, stdout, stderr })
     })
   })
 }
@@ -64,7 +66,8 @@ async function mustRun(command, args, cwd) {
 }
 
 async function createCanaryRepo() {
-  const root = await mkdtemp(join(tmpdir(), 'novawing-guardian-canary-'))
+  await mkdir(workspaceRoot, { recursive: true })
+  const root = await mkdtemp(join(workspaceRoot, 'canary-'))
   await mkdir(join(root, 'src'), { recursive: true })
   await mkdir(join(root, 'test'), { recursive: true })
 
