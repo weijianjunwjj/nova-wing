@@ -57,6 +57,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
     child.stdout.on('data', (chunk: string) => {
       stdout = `${stdout}${chunk}`.slice(-1_000_000)
     })
+    child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
       stderr = `${stderr}${chunk}`.slice(-100_000)
     })
@@ -98,6 +99,11 @@ function failureDetails(result: AskBridgeCommandResult): string {
   return (result.stderr.trim() || result.stdout.trim() || `exit=${String(result.exitCode)}`).slice(-4_000)
 }
 
+function extractThreadLink(stdout: string): string | undefined {
+  const match = /^Thread Link:\s+(https:\/\/chatgpt\.com\/c\/[^\s]+)\s*$/mu.exec(stdout)
+  return match?.[1]
+}
+
 async function readBridgeOutput(outputPath: string, fallbackStdout: string): Promise<string> {
   try {
     const output = await readFile(outputPath, 'utf8')
@@ -114,6 +120,8 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly runner: AskBridgeCommandRunner
   private readonly timeoutMs: number
   private readonly command: string
+  private readonly taskConversationUrls = new Map<string, string>()
+  private readonly reviewedTaskIds = new Set<string>()
 
   constructor(private readonly options: AskBridgeBrainOptions = {}) {
     this.runner = options.commandRunner ?? defaultCommandRunner
@@ -121,11 +129,16 @@ export class AskBridgeBrain implements GuardianBrain {
     this.command = options.command ?? defaultAskBridgeCommand()
   }
 
-  private buildArgs(prompt: string, outputPath: string): string[] {
-    const args = ['--provider', 'chatgpt']
+  private conversationUrlForTask(taskId: string): string | undefined {
+    return this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
+  }
 
-    if (this.options.conversationUrl !== undefined) {
-      args.push('--session-url', this.options.conversationUrl)
+  private buildArgs(taskId: string, prompt: string, outputPath: string): string[] {
+    const args = ['--provider', 'chatgpt']
+    const conversationUrl = this.conversationUrlForTask(taskId)
+
+    if (conversationUrl !== undefined) {
+      args.push('--session-url', conversationUrl)
     }
     if (this.options.model !== undefined) {
       args.push('--model', this.options.model)
@@ -138,17 +151,39 @@ export class AskBridgeBrain implements GuardianBrain {
     return args
   }
 
+  private rememberConversation(taskId: string, stdout: string): void {
+    const expectedUrl = this.conversationUrlForTask(taskId)
+    const returnedUrl = extractThreadLink(stdout)
+
+    if (expectedUrl !== undefined && returnedUrl !== undefined && returnedUrl !== expectedUrl) {
+      throw new Error(
+        `ask-bridge switched ChatGPT conversation unexpectedly: expected ${expectedUrl}, got ${returnedUrl}`,
+      )
+    }
+
+    if (this.options.conversationUrl === undefined && expectedUrl === undefined && returnedUrl !== undefined) {
+      this.taskConversationUrls.set(taskId, returnedUrl)
+    }
+  }
+
   async review(input: {
     task: GuardianTask
     report?: ExecutionReport
   }): Promise<DelegationPacket> {
+    const taskId = input.task.id
+    if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
+      throw new Error(
+        `cannot continue Guardian task ${taskId}: first ChatGPT review did not expose a Thread Link`,
+      )
+    }
+
     const prompt = buildGuardianBrainPrompt(input)
     const outputPath = join(tmpdir(), `novawing-ask-bridge-${randomUUID()}.md`)
 
     try {
       const result = await this.runner({
         executable: this.command,
-        args: this.buildArgs(prompt, outputPath),
+        args: this.buildArgs(taskId, prompt, outputPath),
         timeoutMs: this.timeoutMs + 15_000,
       })
 
@@ -156,12 +191,16 @@ export class AskBridgeBrain implements GuardianBrain {
         throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
       }
 
+      this.rememberConversation(taskId, result.stdout)
+
       const response = await readBridgeOutput(outputPath, result.stdout)
       if (response.length === 0) {
         throw new Error(`ask-bridge returned empty response: ${failureDetails(result)}`)
       }
 
-      return parseDelegationPacket(response)
+      const packet = parseDelegationPacket(response)
+      this.reviewedTaskIds.add(taskId)
+      return packet
     } finally {
       await unlink(outputPath).catch(() => {})
     }
