@@ -41,6 +41,7 @@
     "lint": "eslint . --max-warnings=0",
     "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
     "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
+    "guardian:mvp": "npm run build && node dist/packages/dev-guardian/src/cli.js",
     "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
     "check:migration": "npm run build && node scripts/verify-migration.mjs",
     "check:exports": "npm run build && node scripts/check-package-exports.mjs",
