@@ -209,11 +209,12 @@ const brain = new AskBridgeBrain({
   verbose: diagnosticsEnabled,
   onDiagnostic: diagnosticsEnabled ? recordBridgeDiagnostic : undefined,
   onTiming(event) {
-    completedBridgeReviews += 1
-    recordTiming('chatgpt-web', event.phase, event.durationMs, {
-      iteration: event.iteration,
-      review: completedBridgeReviews,
-    })
+    const details = { iteration: event.iteration }
+    if (event.phase === 'bridge-command') {
+      completedBridgeReviews += 1
+      details.review = completedBridgeReviews
+    }
+    recordTiming('chatgpt-web', event.phase, event.durationMs, details)
   },
 })
 const executor = new ClaudeCodeExecutor({
