@@ -10,13 +10,14 @@ import {
   type GuardianTask,
 } from 'nova-wing/development-guardian'
 
-function task(iteration = 0): GuardianTask {
+function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
   return {
     id: 'task-1',
     goal: '完成最小修改',
     state: 'EXECUTING',
     iteration,
     maxIterations: 4,
+    ...overrides,
   }
 }
 
@@ -76,6 +77,7 @@ test('executor runs Claude Code then deterministic verification', async () => {
     result(''),
     result(claudeJson()),
     result(' M src/a.ts\n'),
+    result('diff clean'),
     result('tests passed'),
   ])
   const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
@@ -83,11 +85,15 @@ test('executor runs Claude Code then deterministic verification', async () => {
   const report = await executor.execute({ task: task(), packet: packet() })
 
   assert.deepEqual(report.changedFiles, ['src/a.ts'])
-  assert.deepEqual(report.verificationResults, [{ name: 'npm test', status: 'passed' }])
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    { name: 'npm test', status: 'passed' },
+  ])
   assert.deepEqual(report.blockers, [])
   assert.equal(runner.requests[0]?.args.join(' '), '-lc git status --porcelain')
   assert.match(runner.requests[1]?.args.join(' ') ?? '', /claude/)
-  assert.equal(runner.requests[3]?.args.join(' '), '-lc npm test')
+  assert.equal(runner.requests[3]?.args.join(' '), '-lc git diff --check')
+  assert.equal(runner.requests[4]?.args.join(' '), '-lc npm test')
 })
 
 test('executor refuses autonomous start on dirty worktree', async () => {
@@ -106,6 +112,7 @@ test('executor blocks verification command outside MVP allowlist', async () => {
     result(''),
     result(claudeJson()),
     result(' M src/a.ts\n'),
+    result('diff clean'),
   ])
   const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
 
@@ -114,8 +121,52 @@ test('executor blocks verification command outside MVP allowlist', async () => {
     packet: packet(['rm -rf dist']),
   })
 
-  assert.equal(report.verificationResults[0]?.status, 'skipped')
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    {
+      name: 'rm -rf dist',
+      status: 'skipped',
+      details: 'verification command is not in the MVP allowlist',
+    },
+  ])
   assert.match(report.blockers[0] ?? '', /human approval/)
+  assert.equal(runner.requests.length, 4)
+})
+
+test('executor stops before verification when changed files leave allowed scope', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M src/a.ts\n M package.json\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['src/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(report.changedFiles, ['src/a.ts', 'package.json'])
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /outside allowed scope: package.json/)
+  assert.equal(runner.requests.length, 3)
+})
+
+test('executor stops when changed files enter forbidden scope', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M src/a.ts\n M migrations/001.sql\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { forbiddenPaths: ['migrations/**'] }),
+    packet: packet(),
+  })
+
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /inside forbidden scope: migrations\/001.sql/)
   assert.equal(runner.requests.length, 3)
 })
 
@@ -124,9 +175,11 @@ test('executor resumes same Claude Code session on revise round', async () => {
     result(''),
     result(claudeJson()),
     result(' M src/a.ts\n'),
+    result('diff clean'),
     result('tests passed'),
     result(claudeJson({ result: '已修复。' })),
     result(' M src/a.ts\n'),
+    result('diff clean'),
     result('tests passed'),
   ])
   const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
