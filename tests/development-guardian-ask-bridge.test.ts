@@ -74,11 +74,51 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
     '--timeout',
     '120',
   ])
+  assert.equal(requests[0]?.args.includes('--new'), false)
   assert.ok(requests[0]?.args.includes('--output'))
   assert.match(requests[0]?.args.at(-1) ?? '', /唯一 Brain/)
 })
 
-test('ask-bridge brain captures first Thread Link and reuses it for the same task', async () => {
+test('ask-bridge brain creates a new task conversation then reuses the isolated tab', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const sessionUrl = 'https://chatgpt.com/c/task-session'
+  let isolationCalls = 0
+  const runner: AskBridgeCommandRunner = async (request) => {
+    requests.push(request)
+    await writePacket(request)
+    return {
+      exitCode: 0,
+      stdout: `${packet}\nThread Link: ${sessionUrl}`,
+      stderr: '',
+    }
+  }
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    reasoning: 'high',
+    commandRunner: runner,
+    tabIsolator: async ({ conversationUrl }) => {
+      isolationCalls += 1
+      assert.equal(conversationUrl, sessionUrl)
+      return true
+    },
+  })
+
+  await brain.review({ task })
+  await brain.review({
+    task: { ...task, state: 'REVIEWING', iteration: 1 },
+  })
+
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  assert.equal(requests[0]?.args.includes('--session-url'), false)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[1]?.args.includes('--new'), false)
+  assert.equal(requests[1]?.args.includes('--session-url'), false)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+  assert.equal(isolationCalls, 3)
+})
+
+test('ask-bridge brain falls back to session-url when exact tab isolation is unavailable', async () => {
   const requests: AskBridgeCommandRequest[] = []
   const sessionUrl = 'https://chatgpt.com/c/task-session'
   const runner: AskBridgeCommandRunner = async (request) => {
@@ -92,19 +132,19 @@ test('ask-bridge brain captures first Thread Link and reuses it for the same tas
   }
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
+    reasoning: 'high',
     commandRunner: runner,
+    tabIsolator: () => Promise.resolve(false),
   })
 
   await brain.review({ task })
-  await brain.review({
-    task: { ...task, state: 'REVIEWING', iteration: 1 },
-  })
+  await brain.review({ task: { ...task, state: 'REVIEWING', iteration: 1 } })
 
-  assert.equal(requests.length, 2)
-  assert.equal(requests[0]?.args.includes('--session-url'), false)
+  assert.equal(requests[0]?.args.includes('--new'), true)
   const secondSessionIndex = requests[1]?.args.indexOf('--session-url') ?? -1
   assert.ok(secondSessionIndex >= 0)
   assert.equal(requests[1]?.args[secondSessionIndex + 1], sessionUrl)
+  assert.equal(requests[1]?.args.includes('--reasoning'), true)
 })
 
 test('ask-bridge brain refuses to silently switch conversation inside one task', async () => {
@@ -121,7 +161,11 @@ test('ask-bridge brain refuses to silently switch conversation inside one task',
       stderr: '',
     }
   }
-  const brain = new AskBridgeBrain({ command: 'ask-bridge.exe', commandRunner: runner })
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: runner,
+    tabIsolator: () => Promise.resolve(true),
+  })
 
   await brain.review({ task })
   await assert.rejects(
