@@ -82,6 +82,44 @@ test('guardian supports review revise loop', async () => {
   assert.equal(result.task.iteration, 2)
 })
 
+test('guardian preserves user task goal and hard constraints for executor', async () => {
+  const brainPackets = [
+    {
+      ...packet('proceed'),
+      goal: 'Brain 改写后的目标',
+      constraints: ['Brain 约束'],
+      doNotDo: [],
+    },
+    packet('done'),
+  ]
+  const brain: GuardianBrain = {
+    async review() {
+      return brainPackets.shift() ?? packet('done')
+    },
+  }
+  let executedPacket: DelegationPacket | undefined
+  const executor: GuardianExecutor = {
+    async execute(input) {
+      executedPacket = input.packet
+      return report('passed')
+    },
+  }
+
+  await runGuardianTask({
+    task: baseTask({
+      goal: '用户原始目标',
+      constraints: ['用户硬约束'],
+      doNotDo: ['禁止改 schema'],
+    }),
+    brain,
+    executor,
+  })
+
+  assert.equal(executedPacket?.goal, '用户原始目标')
+  assert.deepEqual(executedPacket?.constraints, ['用户硬约束', 'Brain 约束'])
+  assert.deepEqual(executedPacket?.doNotDo, ['禁止改 schema'])
+})
+
 test('failed deterministic verification prevents completion', async () => {
   const brainPackets = [packet('proceed'), packet('done')]
   const brain: GuardianBrain = {
