@@ -41,6 +41,37 @@ function recordBridgeDiagnostic(event) {
   }
 }
 
+function buildClaudeBreakdown() {
+  const event = timings.find(
+    (timing) => timing.component === 'claude-executor' && timing.phase === 'claude-code',
+  )
+  if (event === undefined) {
+    return null
+  }
+
+  const reportedDurationMs =
+    typeof event.reportedDurationMs === 'number' ? event.reportedDurationMs : null
+  const apiDurationMs = typeof event.apiDurationMs === 'number' ? event.apiDurationMs : null
+
+  return {
+    wallClockMs: event.durationMs,
+    reportedDurationMs,
+    apiDurationMs,
+    reportedNonApiMs:
+      reportedDurationMs === null || apiDurationMs === null
+        ? null
+        : roundMs(reportedDurationMs - apiDurationMs),
+    wallMinusReportedMs:
+      reportedDurationMs === null ? null : roundMs(event.durationMs - reportedDurationMs),
+    apiSharePctOfReported:
+      reportedDurationMs === null || apiDurationMs === null || reportedDurationMs <= 0
+        ? null
+        : roundMs((apiDurationMs / reportedDurationMs) * 100),
+    numTurns: typeof event.numTurns === 'number' ? event.numTurns : null,
+    totalCostUsd: typeof event.totalCostUsd === 'number' ? event.totalCostUsd : null,
+  }
+}
+
 function run(command, args, cwd, timeoutMs = 60_000) {
   return new Promise((resolveRun, reject) => {
     const child = spawn('bash', ['-lc', 'exec "$@"', '--', command, ...args], {
@@ -196,6 +227,10 @@ const executor = new ClaudeCodeExecutor({
       ...(event.command === undefined ? {} : { command: event.command }),
       ...(event.numTurns === undefined ? {} : { numTurns: event.numTurns }),
       ...(event.totalCostUsd === undefined ? {} : { totalCostUsd: event.totalCostUsd }),
+      ...(event.reportedDurationMs === undefined
+        ? {}
+        : { reportedDurationMs: event.reportedDurationMs }),
+      ...(event.apiDurationMs === undefined ? {} : { apiDurationMs: event.apiDurationMs }),
     })
   },
 })
@@ -264,6 +299,7 @@ try {
         stopReason: result.task.stopReason ?? null,
         iterations: result.task.iteration,
         timings,
+        claudeBreakdown: buildClaudeBreakdown(),
         bridgeDiagnostics,
         reports: result.reports,
         finalSource,
@@ -287,6 +323,7 @@ try {
         phase: 'canary-failed-to-start',
         targetRepo,
         timings,
+        claudeBreakdown: buildClaudeBreakdown(),
         bridgeDiagnostics,
         error: error instanceof Error ? error.message : String(error),
       },
