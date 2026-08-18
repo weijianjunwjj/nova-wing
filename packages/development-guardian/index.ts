@@ -18,6 +18,13 @@ export {
   parseDelegationPacket,
 } from './tenx-chat-brain.js'
 export type { TenXChatBrainOptions } from './tenx-chat-brain.js'
+export { ClaudeCodeExecutor } from './claude-code-executor.js'
+export type {
+  ClaudeCodeExecutorOptions,
+  GuardianCommandRequest,
+  GuardianCommandResult,
+  GuardianCommandRunner,
+} from './claude-code-executor.js'
 export type {
   DelegationPacket,
   DelegationVerdict,
