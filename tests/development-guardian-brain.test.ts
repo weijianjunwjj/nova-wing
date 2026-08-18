@@ -127,7 +127,7 @@ test('brain rejects truncated ChatGPT capture', async () => {
   )
 })
 
-test('brain prompt treats execution report as untrusted evidence', () => {
+test('brain prompt treats report as untrusted and preserves task hard constraints', () => {
   const prompt = buildGuardianBrainPrompt({
     task: {
       id: 'task-1',
@@ -135,6 +135,11 @@ test('brain prompt treats execution report as untrusted evidence', () => {
       state: 'REVIEWING',
       iteration: 1,
       maxIterations: 4,
+      constraints: ['不得改变公开 API'],
+      acceptanceCriteria: ['npm test 通过'],
+      doNotDo: ['不要改 schema'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: ['migrations/**'],
     },
     report: {
       summary: '执行完成',
@@ -146,6 +151,10 @@ test('brain prompt treats execution report as untrusted evidence', () => {
   })
 
   assert.match(prompt, /不可信执行证据/)
-  assert.match(prompt, /do_not_do/)
+  assert.match(prompt, /acceptance_criteria/)
+  assert.match(prompt, /不得改变公开 API/)
+  assert.match(prompt, /不要改 schema/)
+  assert.match(prompt, /allowed_paths/)
+  assert.match(prompt, /migrations\/\*\*/)
   assert.match(prompt, /verification_results/)
 })
