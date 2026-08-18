@@ -31,6 +31,7 @@ export interface AskBridgeBrainOptions {
   conversationUrl?: string
   model?: string
   reasoning?: AskBridgeReasoning
+  headless?: boolean
   timeoutMs?: number
   commandRunner?: AskBridgeCommandRunner
 }
@@ -46,7 +47,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
     const child = spawn(request.executable, [...request.args], {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: false,
+      windowsHide: true,
     })
     let stdout = ''
     let stderr = ''
@@ -57,7 +58,6 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
     child.stdout.on('data', (chunk: string) => {
       stdout = `${stdout}${chunk}`.slice(-1_000_000)
     })
-    child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
       stderr = `${stderr}${chunk}`.slice(-100_000)
     })
@@ -120,6 +120,7 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly runner: AskBridgeCommandRunner
   private readonly timeoutMs: number
   private readonly command: string
+  private readonly headless: boolean
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
 
@@ -127,6 +128,7 @@ export class AskBridgeBrain implements GuardianBrain {
     this.runner = options.commandRunner ?? defaultCommandRunner
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000
     this.command = options.command ?? defaultAskBridgeCommand()
+    this.headless = options.headless ?? process.platform !== 'win32'
   }
 
   private conversationUrlForTask(taskId: string): string | undefined {
@@ -134,7 +136,7 @@ export class AskBridgeBrain implements GuardianBrain {
   }
 
   private buildArgs(taskId: string, prompt: string, outputPath: string): string[] {
-    const args = ['--provider', 'chatgpt']
+    const args = ['--provider', 'chatgpt', `--headless=${String(this.headless)}`]
     const conversationUrl = this.conversationUrlForTask(taskId)
 
     if (conversationUrl !== undefined) {
