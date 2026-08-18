@@ -11,6 +11,35 @@ import {
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
 const workspaceRoot = join(repositoryRoot, '.guardian-workspaces')
+const scriptStartedAt = performance.now()
+const timings = []
+const bridgeDiagnostics = []
+let completedBridgeReviews = 0
+
+function roundMs(value) {
+  return Math.round(value * 10) / 10
+}
+
+function recordTiming(component, phase, durationMs, details = {}) {
+  timings.push({
+    component,
+    phase,
+    durationMs: roundMs(durationMs),
+    ...details,
+  })
+}
+
+function recordBridgeDiagnostic(event) {
+  bridgeDiagnostics.push({
+    review: completedBridgeReviews + 1,
+    elapsedMs: roundMs(event.elapsedMs),
+    stream: event.stream,
+    line: event.line.slice(0, 800),
+  })
+  if (bridgeDiagnostics.length > 120) {
+    bridgeDiagnostics.shift()
+  }
+}
 
 function run(command, args, cwd, timeoutMs = 60_000) {
   return new Promise((resolveRun, reject) => {
@@ -132,22 +161,43 @@ async function createCanaryRepo() {
   return root
 }
 
+const setupStartedAt = performance.now()
 const targetRepo = await createCanaryRepo()
+recordTiming('canary', 'setup', performance.now() - setupStartedAt)
+
 const timeoutMs = Number(process.env.NOVAWING_GUARDIAN_TIMEOUT_MS ?? 20 * 60 * 1000)
 const chatgptModel = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
 const claudeModel = process.env.NOVAWING_CLAUDE_MODEL?.trim() || 'sonnet'
 const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
+const diagnosticsEnabled = process.env.NOVAWING_GUARDIAN_DIAGNOSTICS?.trim() !== '0'
 
 const brain = new AskBridgeBrain({
   ...(chatgptModel === undefined ? {} : { model: chatgptModel }),
   reasoning: chatgptReasoning,
   timeoutMs,
+  verbose: diagnosticsEnabled,
+  onDiagnostic: diagnosticsEnabled ? recordBridgeDiagnostic : undefined,
+  onTiming(event) {
+    completedBridgeReviews += 1
+    recordTiming('chatgpt-web', event.phase, event.durationMs, {
+      iteration: event.iteration,
+      review: completedBridgeReviews,
+    })
+  },
 })
 const executor = new ClaudeCodeExecutor({
   cwd: targetRepo,
   model: claudeModel,
   maxTurns: 10,
   timeoutMs,
+  onTiming(event) {
+    recordTiming('claude-executor', event.phase, event.durationMs, {
+      iteration: event.iteration,
+      ...(event.command === undefined ? {} : { command: event.command }),
+      ...(event.numTurns === undefined ? {} : { numTurns: event.numTurns }),
+      ...(event.totalCostUsd === undefined ? {} : { totalCostUsd: event.totalCostUsd }),
+    })
+  },
 })
 
 const task = {
@@ -176,10 +226,34 @@ const task = {
 }
 
 try {
-  console.log(JSON.stringify({ phase: 'canary-start', targetRepo, taskId: task.id }, null, 2))
+  console.log(
+    JSON.stringify(
+      {
+        phase: 'canary-start',
+        targetRepo,
+        taskId: task.id,
+        diagnostics: {
+          enabled: diagnosticsEnabled,
+          chatgptReasoning,
+          claudeModel,
+        },
+      },
+      null,
+      2,
+    ),
+  )
+
+  const guardianStartedAt = performance.now()
   const result = await runGuardianTask({ task, brain, executor })
+  recordTiming('guardian', 'run-total', performance.now() - guardianStartedAt)
+
   const finalSource = await readFile(join(targetRepo, 'src', 'normalize-name.mjs'), 'utf8')
+  const finalTestStartedAt = performance.now()
   const finalTest = await run('npm', ['test'], targetRepo)
+  recordTiming('canary', 'independent-final-test', performance.now() - finalTestStartedAt, {
+    command: 'npm test',
+  })
+  recordTiming('canary', 'script-total', performance.now() - scriptStartedAt)
 
   console.log(
     JSON.stringify(
@@ -189,6 +263,8 @@ try {
         finalState: result.task.state,
         stopReason: result.task.stopReason ?? null,
         iterations: result.task.iteration,
+        timings,
+        bridgeDiagnostics,
         reports: result.reports,
         finalSource,
         independentFinalTest: {
@@ -204,11 +280,14 @@ try {
 
   process.exitCode = result.task.state === 'COMPLETED' && finalTest.exitCode === 0 ? 0 : 1
 } catch (error) {
+  recordTiming('canary', 'script-total', performance.now() - scriptStartedAt)
   console.error(
     JSON.stringify(
       {
         phase: 'canary-failed-to-start',
         targetRepo,
+        timings,
+        bridgeDiagnostics,
         error: error instanceof Error ? error.message : String(error),
       },
       null,
