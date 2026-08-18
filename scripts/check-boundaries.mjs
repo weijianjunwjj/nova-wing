@@ -10,6 +10,7 @@ const testingRoot = resolve(repositoryRoot, 'packages/testing/src')
 const hostSnapshotRoot = resolve(repositoryRoot, 'packages/host-snapshot/src')
 const publicPackageImports = new Set([
   'nova-wing/core',
+  'nova-wing/development-guardian',
   'nova-wing/sqlite',
   'nova-wing/testing',
   'nova-wing/host-snapshot',
@@ -83,7 +84,7 @@ for (const file of sourceFiles) {
       fail(`SQLite adapter cannot depend on testing: ${relative(repositoryRoot, file)}`)
     }
     if (isInside(hostSnapshotRoot, file) && isInside(testingRoot, resolvedImport)) {
-      fail(`host snapshot contract cannot depend on testing: ${relative(repositoryRoot, file)}`)
+      fail('host snapshot contract cannot depend on testing')
     }
   }
 }
