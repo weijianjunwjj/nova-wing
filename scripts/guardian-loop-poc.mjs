@@ -1,4 +1,4 @@
-/* global console */
+/* global console, process */
 import { resolve } from 'node:path'
 
 import {
