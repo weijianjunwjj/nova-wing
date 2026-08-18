@@ -14,6 +14,10 @@
       "types": "./dist/packages/core/src/index.d.ts",
       "import": "./dist/packages/core/src/index.js"
     },
+    "./development-guardian": {
+      "types": "./dist/packages/development-guardian/index.d.ts",
+      "import": "./dist/packages/development-guardian/index.js"
+    },
     "./sqlite": {
       "types": "./dist/packages/sqlite/src/index.d.ts",
       "import": "./dist/packages/sqlite/src/index.js"
