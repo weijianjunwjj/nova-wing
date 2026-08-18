@@ -40,7 +40,17 @@ function optionalList(name) {
   return values.length > 0 ? values : undefined
 }
 
-const targetRepo = resolve(requiredEnv('NOVAWING_TARGET_REPO'))
+function resolveGitBashPath(value) {
+  if (process.platform === 'win32') {
+    const match = value.match(/^\/([a-zA-Z])\/(.*)$/u)
+    if (match !== null) {
+      return resolve(`${match[1]}:/${match[2]}`)
+    }
+  }
+  return resolve(value)
+}
+
+const targetRepo = resolveGitBashPath(requiredEnv('NOVAWING_TARGET_REPO'))
 const goalFromArgs = process.argv.slice(2).join(' ').trim()
 const goal = goalFromArgs || requiredEnv('NOVAWING_TASK_GOAL')
 const timeoutMs = optionalInt('NOVAWING_GUARDIAN_TIMEOUT_MS', 20 * 60 * 1000)
