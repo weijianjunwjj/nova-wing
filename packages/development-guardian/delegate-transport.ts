@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
 export const TEN_X_CHAT_PINNED_VERSION = '0.11.7'
@@ -101,8 +101,8 @@ export function createTenXChatProcessTransport(
   const defaults = createDefaultCommand(timeoutMs)
   const command = options.command ?? defaults.command
   const args = [...(options.args ?? defaults.args)]
-  const child: ChildProcessWithoutNullStreams = spawn(command, args, {
-    cwd: options.cwd,
+  const child = spawn(command, args, {
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: false,
@@ -197,7 +197,7 @@ export function createTenXChatProcessTransport(
     rejectAll(error)
   })
 
-  return {
+  const transport: TenXChatDelegateTransport = {
     async request(request) {
       if (closed) {
         throw new Error('10x-chat delegate is closed')
@@ -235,7 +235,7 @@ export function createTenXChatProcessTransport(
         return
       }
       try {
-        await this.request({ action: 'close', timeoutMs: 10_000 })
+        await transport.request({ action: 'close', timeoutMs: 10_000 })
       } catch {
         child.kill()
       } finally {
@@ -244,4 +244,6 @@ export function createTenXChatProcessTransport(
       }
     },
   }
+
+  return transport
 }
