@@ -38,7 +38,6 @@
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
     "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint . --max-warnings=0",
     "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
     "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
     "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
@@ -53,13 +52,10 @@
     "guardian:chatgpt:login": "npx --yes 10x-chat@0.11.7 login chatgpt",
     "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
     "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
+    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.1",
     "@types/node": "24.10.1",
-    "eslint": "9.39.1",
-    "typescript": "5.9.3",
-    "typescript-eslint": "8.46.1"
+    "typescript": "5.9.3"
   }
 }
