@@ -138,3 +138,21 @@ test('max iterations stops autonomous loop', async () => {
   assert.equal(result.task.iteration, 2)
   assert.match(result.task.stopReason ?? '', /max iterations reached/)
 })
+
+test('brain failure moves task to human required instead of crashing loop', async () => {
+  const brain: GuardianBrain = {
+    async review() {
+      throw new Error('ChatGPT Web bridge unavailable')
+    },
+  }
+  const executor: GuardianExecutor = {
+    async execute() {
+      return report('passed')
+    },
+  }
+
+  const result = await runGuardianTask({ task: baseTask(), brain, executor })
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.match(result.task.stopReason ?? '', /ChatGPT Web bridge unavailable/)
+  assert.equal(result.task.iteration, 0)
+})
