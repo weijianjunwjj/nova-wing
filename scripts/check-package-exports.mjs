@@ -29,7 +29,16 @@ for (const [subpath, conditions] of Object.entries(packageJson.exports)) {
 
 const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
-  'nova-wing/development-guardian': ['GuardianStopError', 'runGuardianTask'],
+  'nova-wing/development-guardian': [
+    'GuardianStopError',
+    'TEN_X_CHAT_PINNED_VERSION',
+    'TenXChatBrain',
+    'TenXChatBrainProtocolError',
+    'buildGuardianBrainPrompt',
+    'createTenXChatProcessTransport',
+    'parseDelegationPacket',
+    'runGuardianTask',
+  ],
   'nova-wing/sqlite': [
     'NOVAWING_AUTHORITATIVE_TABLE_NAMES',
     'NOVAWING_AUTHORITATIVE_TABLES',
