@@ -169,31 +169,17 @@ function parseClaudeResult(stdout: string): ClaudeCodeJsonResult {
   return parsed as ClaudeCodeJsonResult
 }
 
-function buildClaudePrompt(task: GuardianTask, packet: DelegationPacket): string {
-  return [
-    '你是 NovaWing Development Guardian 的 Executor。',
-    '只执行下面 Delegation Packet 中明确要求的开发工作，不扩大范围。',
-    '禁止 git commit、git push、发布、删除仓库、修改凭据或绕过权限。',
-    '不要为了“顺手优化”重构无关代码。',
-    '验证命令由 Guardian 在你结束后独立执行；你可以阅读和编辑代码，但不要伪造验证结果。',
-    '',
-    `task=${JSON.stringify({
-      id: task.id,
-      goal: task.goal,
-      iteration: task.iteration,
-      allowed_paths: task.allowedPaths ?? null,
-      forbidden_paths: task.forbiddenPaths ?? null,
-    })}`,
-    `delegation_packet=${JSON.stringify({
-      goal: packet.goal,
-      instructions: packet.instructions,
-      constraints: packet.constraints,
-      verification: packet.verification,
-      do_not_do: packet.doNotDo,
-    })}`,
-    '',
-    '完成后只需简要说明实际做了什么和仍存在的 blocker。',
-  ].join('\n')
+function buildClaudePrompt(packet: DelegationPacket): string {
+  const parts = ['你是 NovaWing Development Guardian 的 Executor。', '']
+  parts.push(`目标：${packet.goal}`, '')
+  if (packet.instructions.length > 0) {
+    parts.push('指令：', ...packet.instructions.map((instruction) => `- ${instruction}`), '')
+  }
+  if (packet.constraints.length > 0) {
+    parts.push('约束：', ...packet.constraints.map((constraint) => `- ${constraint}`), '')
+  }
+  parts.push('完成后简要说明实际做了什么和仍存在的 blocker。')
+  return parts.join('\n')
 }
 
 function parseChangedFiles(statusOutput: string): string[] {
@@ -322,10 +308,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return undefined
   }
 
-  private buildClaudeArgs(task: GuardianTask, packet: DelegationPacket): string[] {
+  private buildClaudeArgs(packet: DelegationPacket): string[] {
     const args = [
       '-p',
-      buildClaudePrompt(task, packet),
+      buildClaudePrompt(packet),
       '--output-format',
       'json',
       '--permission-mode',
@@ -409,7 +395,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         }
       }
 
-      const args = this.buildClaudeArgs(input.task, input.packet)
+      const args = this.buildClaudeArgs(input.packet)
       const spec = claudeCommand(args)
       const claudeStartedAt = performance.now()
       const claude = await this.runner({

@@ -63,7 +63,7 @@ const forbiddenPaths = optionalList('NOVAWING_FORBIDDEN_PATHS')
 const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() || undefined
 const claudeModel = process.env.NOVAWING_CLAUDE_MODEL?.trim() || undefined
 const chatgptModel = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
-const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
+const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'medium'
 
 const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),

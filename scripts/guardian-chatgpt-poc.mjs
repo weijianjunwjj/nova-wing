@@ -4,7 +4,7 @@ import { AskBridgeBrain } from 'nova-wing/development-guardian'
 const timeoutMs = Number(process.env.NOVAWING_GUARDIAN_TIMEOUT_MS ?? 300_000)
 const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() || undefined
 const model = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
-const reasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
+const reasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'medium'
 
 const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),

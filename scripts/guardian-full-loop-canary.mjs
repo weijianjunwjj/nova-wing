@@ -199,7 +199,7 @@ recordTiming('canary', 'setup', performance.now() - setupStartedAt)
 const timeoutMs = Number(process.env.NOVAWING_GUARDIAN_TIMEOUT_MS ?? 20 * 60 * 1000)
 const chatgptModel = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
 const claudeModel = process.env.NOVAWING_CLAUDE_MODEL?.trim() || 'sonnet'
-const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
+const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'medium'
 const diagnosticsEnabled = process.env.NOVAWING_GUARDIAN_DIAGNOSTICS?.trim() !== '0'
 
 const brain = new AskBridgeBrain({
