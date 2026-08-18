@@ -1,15 +1,15 @@
 /* global console, process */
-import {
-  TenXChatBrain,
-  createTenXChatProcessTransport,
-} from 'nova-wing/development-guardian'
+import { AskBridgeBrain } from 'nova-wing/development-guardian'
 
 const timeoutMs = Number(process.env.NOVAWING_GUARDIAN_TIMEOUT_MS ?? 300_000)
-const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL
-const transport = createTenXChatProcessTransport({ timeoutMs })
-const brain = new TenXChatBrain({
-  transport,
+const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() || undefined
+const model = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
+const reasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
+
+const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),
+  ...(model === undefined ? {} : { model }),
+  reasoning,
   timeoutMs,
 })
 
@@ -37,6 +37,4 @@ try {
     ),
   )
   process.exitCode = 1
-} finally {
-  await brain.close().catch(() => {})
 }
