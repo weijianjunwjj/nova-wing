@@ -46,6 +46,9 @@ const goal = goalFromArgs || requiredEnv('NOVAWING_TASK_GOAL')
 const timeoutMs = optionalInt('NOVAWING_GUARDIAN_TIMEOUT_MS', 20 * 60 * 1000)
 const maxIterations = optionalInt('NOVAWING_GUARDIAN_MAX_ITERATIONS', 3)
 const maxClaudeTurns = optionalInt('NOVAWING_CLAUDE_MAX_TURNS', 12)
+const constraints = optionalList('NOVAWING_TASK_CONSTRAINTS')
+const acceptanceCriteria = optionalList('NOVAWING_ACCEPTANCE_CRITERIA')
+const doNotDo = optionalList('NOVAWING_DO_NOT_DO')
 const allowedPaths = optionalList('NOVAWING_ALLOWED_PATHS')
 const forbiddenPaths = optionalList('NOVAWING_FORBIDDEN_PATHS')
 const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() || undefined
@@ -74,6 +77,9 @@ try {
       state: 'READY',
       iteration: 0,
       maxIterations,
+      ...(constraints === undefined ? {} : { constraints }),
+      ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }),
+      ...(doNotDo === undefined ? {} : { doNotDo }),
       ...(allowedPaths === undefined ? {} : { allowedPaths }),
       ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }),
     },
