@@ -41,6 +41,8 @@ export interface GuardianTask {
   state: GuardianTaskState
   iteration: number
   maxIterations: number
+  allowedPaths?: readonly string[]
+  forbiddenPaths?: readonly string[]
   lastPacket?: DelegationPacket
   lastReport?: ExecutionReport
   stopReason?: string
