@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { readFile, unlink } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
@@ -41,11 +42,7 @@ function defaultAskBridgeCommand(): string {
 
 function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBridgeCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(request.executable, [...request.args], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: false,
-    })
+    const child = spawnAskBridge(request)
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -92,8 +89,29 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
   })
 }
 
+function spawnAskBridge(request: AskBridgeCommandRequest) {
+  const { spawn } = require('node:child_process') as typeof import('node:child_process')
+  return spawn(request.executable, [...request.args], {
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: false,
+  })
+}
+
 function failureDetails(result: AskBridgeCommandResult): string {
   return (result.stderr.trim() || result.stdout.trim() || `exit=${String(result.exitCode)}`).slice(-4_000)
+}
+
+async function readBridgeOutput(outputPath: string, fallbackStdout: string): Promise<string> {
+  try {
+    const output = await readFile(outputPath, 'utf8')
+    if (output.trim().length > 0) {
+      return output.trim()
+    }
+  } catch {
+    // Test doubles or older bridge versions may not create --output files.
+  }
+  return fallbackStdout.trim()
 }
 
 export class AskBridgeBrain implements GuardianBrain {
@@ -107,7 +125,7 @@ export class AskBridgeBrain implements GuardianBrain {
     this.command = options.command ?? defaultAskBridgeCommand()
   }
 
-  private buildArgs(prompt: string): string[] {
+  private buildArgs(prompt: string, outputPath: string): string[] {
     const args = ['--provider', 'chatgpt']
 
     if (this.options.conversationUrl !== undefined) {
@@ -120,7 +138,7 @@ export class AskBridgeBrain implements GuardianBrain {
       args.push('--reasoning', this.options.reasoning)
     }
 
-    args.push('--timeout', String(Math.ceil(this.timeoutMs / 1000)), prompt)
+    args.push('--timeout', String(Math.ceil(this.timeoutMs / 1000)), '--output', outputPath, prompt)
     return args
   }
 
@@ -129,21 +147,27 @@ export class AskBridgeBrain implements GuardianBrain {
     report?: ExecutionReport
   }): Promise<DelegationPacket> {
     const prompt = buildGuardianBrainPrompt(input)
-    const result = await this.runner({
-      executable: this.command,
-      args: this.buildArgs(prompt),
-      timeoutMs: this.timeoutMs + 15_000,
-    })
+    const outputPath = join(tmpdir(), `novawing-ask-bridge-${randomUUID()}.md`)
 
-    if (result.exitCode !== 0) {
-      throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
+    try {
+      const result = await this.runner({
+        executable: this.command,
+        args: this.buildArgs(prompt, outputPath),
+        timeoutMs: this.timeoutMs + 15_000,
+      })
+
+      if (result.exitCode !== 0) {
+        throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
+      }
+
+      const response = await readBridgeOutput(outputPath, result.stdout)
+      if (response.length === 0) {
+        throw new Error(`ask-bridge returned empty response: ${failureDetails(result)}`)
+      }
+
+      return parseDelegationPacket(response)
+    } finally {
+      await unlink(outputPath).catch(() => {})
     }
-
-    const response = result.stdout.trim()
-    if (response.length === 0) {
-      throw new Error(`ask-bridge returned empty stdout: ${failureDetails(result)}`)
-    }
-
-    return parseDelegationPacket(response)
   }
 }
