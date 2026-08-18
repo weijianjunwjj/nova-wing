@@ -62,12 +62,18 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       stderr = `${stderr}${chunk}`.slice(-100_000)
     })
 
+    const closeCapturedStreams = (): void => {
+      child.stdout.destroy()
+      child.stderr.destroy()
+    }
+
     const timer = setTimeout(() => {
       if (settled) {
         return
       }
       settled = true
       child.kill()
+      closeCapturedStreams()
       resolve({
         exitCode: null,
         stdout,
@@ -81,6 +87,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       }
       settled = true
       clearTimeout(timer)
+      closeCapturedStreams()
       reject(error)
     })
 
@@ -90,7 +97,13 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       }
       settled = true
       clearTimeout(timer)
-      resolve({ exitCode, stdout, stderr })
+      // ask-bridge keeps a persistent Chrome process. On Windows that grandchild can inherit
+      // our stdout/stderr pipe handles and keep Node alive after ask-bridge itself exits.
+      // Give the final output chunk a brief chance to arrive, then detach our read handles.
+      setTimeout(() => {
+        closeCapturedStreams()
+        resolve({ exitCode, stdout, stderr })
+      }, 50)
     })
   })
 }
