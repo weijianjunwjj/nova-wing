@@ -17,7 +17,7 @@ export interface AskBridgeOutputEvent {
 }
 
 export interface AskBridgeTimingEvent {
-  phase: 'bridge-command' | 'tab-isolation'
+  phase: 'bridge-command'
   taskId: string
   iteration: number
   durationMs: number
@@ -40,14 +40,6 @@ export type AskBridgeCommandRunner = (
   request: AskBridgeCommandRequest,
 ) => Promise<AskBridgeCommandResult>
 
-export interface AskBridgeTabIsolationRequest {
-  conversationUrl: string
-}
-
-export type AskBridgeTabIsolator = (
-  request: AskBridgeTabIsolationRequest,
-) => Promise<boolean>
-
 export interface AskBridgeBrainOptions {
   command?: string
   conversationUrl?: string
@@ -57,24 +49,8 @@ export interface AskBridgeBrainOptions {
   verbose?: boolean
   timeoutMs?: number
   commandRunner?: AskBridgeCommandRunner
-  tabIsolator?: AskBridgeTabIsolator
   onTiming?: (event: AskBridgeTimingEvent) => void
   onDiagnostic?: (event: AskBridgeOutputEvent) => void
-}
-
-interface ChromeProcessRecord {
-  pid?: number
-  browser_id?: string
-}
-
-interface ChromeVersionResponse {
-  webSocketDebuggerUrl?: string
-}
-
-interface ChromeDebugTarget {
-  id?: string
-  type?: string
-  url?: string
 }
 
 function defaultAskBridgeCommand(): string {
@@ -212,153 +188,26 @@ async function readBridgeOutput(outputPath: string, fallbackStdout: string): Pro
   return fallbackStdout.trim()
 }
 
-function browserIdFromWebSocketUrl(url: string | undefined): string | undefined {
-  if (url === undefined) {
-    return undefined
-  }
-  const match = /^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):9223\/devtools\/browser\/([^/?#]+)$/u.exec(url)
-  return match?.[1]
-}
-
-function isChatGptProviderPage(value: string | undefined): boolean {
-  if (value === undefined) {
-    return false
-  }
-  try {
-    const url = new URL(value)
-    return (
-      url.protocol === 'https:' &&
-      ['chatgpt.com', 'www.chatgpt.com'].includes(url.hostname)
-    )
-  } catch {
-    return false
-  }
-}
-
-function chatGptConversationKey(value: string | undefined): string | undefined {
-  if (!isChatGptProviderPage(value) || value === undefined) {
-    return undefined
-  }
-  try {
-    const url = new URL(value)
-    const parts = url.pathname.split('/').filter(Boolean)
-    const marker = parts.indexOf('c')
-    const id = marker >= 0 ? parts[marker + 1] : undefined
-    return id === undefined || id.length === 0 ? undefined : id
-  } catch {
-    return undefined
-  }
-}
-
-async function readDebugJson<T>(path: string): Promise<T | undefined> {
-  try {
-    const response = await fetch(`http://127.0.0.1:9223${path}`, {
-      signal: AbortSignal.timeout(2_000),
-    })
-    if (!response.ok) {
-      return undefined
-    }
-    return (await response.json()) as T
-  } catch {
-    return undefined
-  }
-}
-
-async function askBridgeChromeOwned(): Promise<boolean> {
-  try {
-    const recordText = await readFile(join(homedir(), '.config', 'ask-bridge', 'chrome.pid'), 'utf8')
-    const parsed = JSON.parse(recordText) as ChromeProcessRecord
-    const expectedBrowserId = parsed.browser_id
-    if (expectedBrowserId === undefined || expectedBrowserId.length === 0) {
-      return false
-    }
-    const version = await readDebugJson<ChromeVersionResponse>('/json/version')
-    return browserIdFromWebSocketUrl(version?.webSocketDebuggerUrl) === expectedBrowserId
-  } catch {
-    return false
-  }
-}
-
-async function defaultTabIsolator(request: AskBridgeTabIsolationRequest): Promise<boolean> {
-  if (!(await askBridgeChromeOwned())) {
-    return false
-  }
-
-  const expectedKey = chatGptConversationKey(request.conversationUrl)
-  if (expectedKey === undefined) {
-    return false
-  }
-
-  const targets = await readDebugJson<ChromeDebugTarget[]>('/json/list')
-  if (targets === undefined) {
-    return false
-  }
-
-  const chatGptTargets = targets.filter(
-    (target) => target.type === 'page' && isChatGptProviderPage(target.url),
-  )
-  const matching = chatGptTargets.filter(
-    (target) => chatGptConversationKey(target.url) === expectedKey && target.id !== undefined,
-  )
-  const keeper = matching[0]
-  if (keeper?.id === undefined) {
-    return false
-  }
-
-  for (const target of chatGptTargets) {
-    if (target.id === undefined || target.id === keeper.id) {
-      continue
-    }
-    await fetch(`http://127.0.0.1:9223/json/close/${encodeURIComponent(target.id)}`, {
-      signal: AbortSignal.timeout(2_000),
-    }).catch(() => undefined)
-  }
-
-  await fetch(`http://127.0.0.1:9223/json/activate/${encodeURIComponent(keeper.id)}`, {
-    signal: AbortSignal.timeout(2_000),
-  }).catch(() => undefined)
-
-  const refreshed = await readDebugJson<ChromeDebugTarget[]>('/json/list')
-  if (refreshed === undefined) {
-    return false
-  }
-  const remainingChatGpt = refreshed.filter(
-    (target) => target.type === 'page' && isChatGptProviderPage(target.url),
-  )
-  return (
-    remainingChatGpt.length === 1 &&
-    chatGptConversationKey(remainingChatGpt[0]?.url) === expectedKey
-  )
-}
-
 export class AskBridgeBrain implements GuardianBrain {
   private readonly runner: AskBridgeCommandRunner
   private readonly timeoutMs: number
   private readonly command: string
   private readonly headless: boolean
-  private readonly tabIsolator: AskBridgeTabIsolator
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
-  private readonly isolatedTaskIds = new Set<string>()
 
   constructor(private readonly options: AskBridgeBrainOptions = {}) {
     this.runner = options.commandRunner ?? defaultCommandRunner
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000
     this.command = options.command ?? defaultAskBridgeCommand()
     this.headless = options.headless ?? process.platform !== 'win32'
-    this.tabIsolator = options.tabIsolator ?? defaultTabIsolator
   }
 
   private conversationUrlForTask(taskId: string): string | undefined {
     return this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
   }
 
-  private buildArgs(
-    taskId: string,
-    prompt: string,
-    outputPath: string,
-    reuseExistingTab: boolean,
-  ): string[] {
+  private buildArgs(taskId: string, prompt: string, outputPath: string): string[] {
     const args = ['--provider', 'chatgpt', `--headless=${String(this.headless)}`]
     const conversationUrl = this.conversationUrlForTask(taskId)
     const isFirstReview = !this.reviewedTaskIds.has(taskId)
@@ -368,13 +217,13 @@ export class AskBridgeBrain implements GuardianBrain {
     }
     if (isFirstReview && this.options.conversationUrl === undefined) {
       args.push('--new')
-    } else if (conversationUrl !== undefined && !reuseExistingTab) {
+    } else if (conversationUrl !== undefined) {
       args.push('--session-url', conversationUrl)
     }
-    if (this.options.model !== undefined && !reuseExistingTab) {
+    if (isFirstReview && this.options.model !== undefined) {
       args.push('--model', this.options.model)
     }
-    if (this.options.reasoning !== undefined && !reuseExistingTab) {
+    if (isFirstReview && this.options.reasoning !== undefined) {
       args.push('--reasoning', this.options.reasoning)
     }
 
@@ -397,30 +246,6 @@ export class AskBridgeBrain implements GuardianBrain {
     }
   }
 
-  private async isolateTaskTab(task: GuardianTask): Promise<boolean> {
-    if (this.options.conversationUrl !== undefined) {
-      return false
-    }
-    const conversationUrl = this.conversationUrlForTask(task.id)
-    if (conversationUrl === undefined) {
-      return false
-    }
-    const startedAt = performance.now()
-    const isolated = await this.tabIsolator({ conversationUrl }).catch(() => false)
-    this.options.onTiming?.({
-      phase: 'tab-isolation',
-      taskId: task.id,
-      iteration: task.iteration,
-      durationMs: performance.now() - startedAt,
-    })
-    if (isolated) {
-      this.isolatedTaskIds.add(task.id)
-    } else {
-      this.isolatedTaskIds.delete(task.id)
-    }
-    return isolated
-  }
-
   async review(input: {
     task: GuardianTask
     report?: ExecutionReport
@@ -432,11 +257,6 @@ export class AskBridgeBrain implements GuardianBrain {
       )
     }
 
-    let reuseExistingTab = false
-    if (this.reviewedTaskIds.has(taskId) && this.isolatedTaskIds.has(taskId)) {
-      reuseExistingTab = await this.isolateTaskTab(input.task)
-    }
-
     const prompt = buildGuardianBrainPrompt(input)
     const outputPath = join(tmpdir(), `novawing-ask-bridge-${randomUUID()}.md`)
     const startedAt = performance.now()
@@ -444,7 +264,7 @@ export class AskBridgeBrain implements GuardianBrain {
     try {
       const result = await this.runner({
         executable: this.command,
-        args: this.buildArgs(taskId, prompt, outputPath, reuseExistingTab),
+        args: this.buildArgs(taskId, prompt, outputPath),
         timeoutMs: this.timeoutMs + 15_000,
         ...(this.options.onDiagnostic === undefined ? {} : { onOutput: this.options.onDiagnostic }),
       })
@@ -469,7 +289,6 @@ export class AskBridgeBrain implements GuardianBrain {
 
       const packet = parseDelegationPacket(response)
       this.reviewedTaskIds.add(taskId)
-      await this.isolateTaskTab(input.task)
       return packet
     } finally {
       await unlink(outputPath).catch(() => {})
