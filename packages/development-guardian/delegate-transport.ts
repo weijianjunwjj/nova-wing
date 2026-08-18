@@ -147,13 +147,19 @@ export function createTenXChatProcessTransport(
       return
     }
 
-    if (response.action === 'ready' || (response.id === undefined && !readySettled)) {
+    if (response.action === 'ready' && !readySettled) {
       readySettled = true
       if (response.ok) {
         readyResolve()
       } else {
         readyReject(new Error(response.error ?? '10x-chat delegate failed to become ready'))
       }
+      return
+    }
+
+    if (response.id === undefined && !readySettled && !response.ok) {
+      readySettled = true
+      readyReject(new Error(response.error ?? '10x-chat delegate failed before ready'))
       return
     }
 
