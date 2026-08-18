@@ -7,6 +7,8 @@ export type {
   AskBridgeCommandRunner,
   AskBridgeOutputEvent,
   AskBridgeReasoning,
+  AskBridgeTabIsolationRequest,
+  AskBridgeTabIsolator,
   AskBridgeTimingEvent,
 } from './ask-bridge-brain.js'
 export {
