@@ -25,6 +25,10 @@
     "./host-snapshot": {
       "types": "./dist/packages/host-snapshot/src/index.d.ts",
       "import": "./dist/packages/host-snapshot/src/index.js"
+    },
+    "./dev-guardian": {
+      "types": "./dist/packages/dev-guardian/src/index.d.ts",
+      "import": "./dist/packages/dev-guardian/src/index.js"
     }
   },
   "engines": {
