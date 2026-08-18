@@ -26,6 +26,19 @@ function requireExecutablePacket(packet: DelegationPacket): void {
   }
 }
 
+function mergeUnique(...groups: readonly (readonly string[] | undefined)[]): string[] {
+  return [...new Set(groups.flatMap((group) => group ?? []))]
+}
+
+function enforceTaskConstraints(task: GuardianTask, packet: DelegationPacket): DelegationPacket {
+  return {
+    ...packet,
+    goal: task.goal,
+    constraints: mergeUnique(task.constraints, packet.constraints),
+    doNotDo: mergeUnique(task.doNotDo, packet.doNotDo),
+  }
+}
+
 export async function runGuardianTask(options: {
   task: GuardianTask
   brain: GuardianBrain
@@ -100,15 +113,17 @@ export async function runGuardianTask(options: {
       return { task, reports }
     }
 
+    const executionPacket = enforceTaskConstraints(task, packet)
     task = {
       ...task,
       state: 'EXECUTING',
       iteration: task.iteration + 1,
+      lastPacket: executionPacket,
     }
 
     let report: ExecutionReport
     try {
-      report = await options.executor.execute({ task, packet })
+      report = await options.executor.execute({ task, packet: executionPacket })
     } catch (error) {
       task = {
         ...task,
