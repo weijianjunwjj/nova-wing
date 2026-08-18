@@ -71,17 +71,6 @@ NovaWing
 → strict Delegation Packet
 ```
 
-成功应输出：
-
-```json
-{
-  "status": "ok",
-  "packet": {
-    "verdict": "proceed"
-  }
-}
-```
-
 ### 同一任务的 ChatGPT 会话连续性
 
 Guardian 不允许同一个 task 的每次 review 都新建 ChatGPT 会话。
@@ -103,13 +92,41 @@ export NOVAWING_CHATGPT_MODEL='GPT-5.6 Sol'
 export NOVAWING_CHATGPT_REASONING='high'
 ```
 
-ask-bridge 支持 `--session-url` 接续既有 ChatGPT 对话；ChatGPT reasoning 支持 `auto / instant / medium / high`。
-
 ## 4. 完整 GPT Web ↔ Claude Code PoC
 
-只有 ChatGPT-only PoC 成功后才运行。
+### 4.1 先跑隔离金丝雀
 
-目标仓库必须是干净 Git worktree。第一轮使用低风险、可随时丢弃的测试分支或测试仓库。
+在碰真实项目之前，先跑 NovaWing 自带的隔离金丝雀：
+
+```bash
+npm run guardian:poc:canary
+```
+
+这个命令会自动在系统临时目录创建一个独立 Git 仓库，里面只有一个故意写错的 `normalizeName` 实现和真实失败测试。它先提交干净 baseline，再启动：
+
+```text
+ChatGPT Web Brain
+→ Claude Code 修改唯一允许的 src 文件
+→ Guardian 独立 npm test + git diff --check
+→ 同一 ChatGPT conversation Review
+→ done / revise / blocked
+```
+
+安全边界：测试文件、`package.json` 与 `.git/**` 都 forbidden；Claude Code 不允许 commit/push；目标仓库是临时目录，不会修改 NovaWing 当前工作区或 OfferFlow。
+
+成功时必须同时满足：
+
+- `finalState = COMPLETED`；
+- `independentFinalTest.exitCode = 0`；
+- changed files 只包含 `src/normalize-name.mjs`；
+- ChatGPT 后续 review 仍在同一 task / conversation；
+- 若 Reviewer 给出 `revise`，Claude Code 必须复用同一 session 继续。
+
+默认 Claude Code 使用 `sonnet`，ChatGPT reasoning 使用 `high`。可用环境变量覆盖模型，但第一轮金丝雀不建议提高成本。
+
+### 4.2 再跑真实目标仓库
+
+只有金丝雀成功后，才运行真实项目任务。目标仓库必须是干净 Git worktree，并优先使用低风险、可丢弃分支。
 
 ```bash
 export NOVAWING_TARGET_REPO='/d/VSCode/your-target-repo'
@@ -166,8 +183,8 @@ User Goal
 → GPT Web: proceed (bind one ChatGPT conversation)
 → Claude Code: execute
 → deterministic verification
-→ same GPT Web conversation: revise
-→ Claude Code: execute again (same Claude session)
+→ same GPT Web conversation: revise / done
+→ if revise: Claude Code execute again (same Claude session)
 → deterministic verification
 → same GPT Web conversation: done
 → COMPLETED
