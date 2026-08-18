@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
-export const TEN_X_CHAT_PINNED_VERSION = '0.11.7'
+export const TEN_X_CHAT_PINNED_VERSION = 'latest'
 
 export type TenXChatDelegateAction =
   | 'status'
