@@ -20,6 +20,7 @@ MVP 只解决一个真实问题：
 - cc-auto 保持冻结，不复活、不依赖。
 - 第三方 ChatGPT Web bridge 只能作为可替换 Adapter，实现不能反向定义 NovaWing 核心数据结构。
 - 不修改 NovaWing 已冻结 v0.1 Mainline / Memory / Proposal 治理语义。
+- 邮件通知只能用于需要用户批准 / 明确决策的 `HUMAN_REQUIRED` 场景；CI 失败、普通异常、自动重试、完成通知等一律不得发邮件。
 
 ## 3. MVP Flow
 
@@ -112,6 +113,23 @@ Human Required 摘要必须包含：
 - NovaWing 推荐；
 - 不处理的影响。
 
+### Notification Policy
+
+邮件是审批通道，不是日志通道。
+
+只有当任务进入 `HUMAN_REQUIRED`，并且**确实需要用户批准、授权或在明确选项中做决定**时才允许发邮件。
+
+以下情况禁止发邮件：
+
+- CI / test / build / typecheck 失败；
+- 普通运行异常；
+- Bridge 临时失败；
+- 自动重试；
+- 任务完成；
+- 纯状态同步、进度播报或调试信息。
+
+这些非审批事件只记录到本地 trace / 日志，由 NovaWing 自主恢复或在用户主动查看时展示。
+
 ## 8. MVP DoD
 
 以下全部满足才算 MVP Done：
@@ -122,6 +140,7 @@ Human Required 摘要必须包含：
 4. deterministic verification 失败时不能宣布完成。
 5. BLOCKED / 高风险场景能安全进入 HUMAN_REQUIRED。
 6. 循环有硬上限，不允许无限自动运行。
+7. 邮件只在需要用户批准 / 明确决策的 `HUMAN_REQUIRED` 场景触发，非审批事件不得发邮件。
 
 ## 9. Explicit Non-Goals
 
