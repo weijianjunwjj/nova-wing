@@ -109,7 +109,8 @@ export async function runGuardianTask(options: {
         }
         return { task, reports }
       }
-      task = { ...task, state: 'COMPLETED', stopReason: undefined }
+      task = { ...task, state: 'COMPLETED' }
+      delete task.stopReason
       return { task, reports }
     }
 
