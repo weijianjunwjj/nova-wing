@@ -343,6 +343,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return { results, blockers, commandsRun }
   }
 
+  private reportSummary(parsed: ClaudeCodeJsonResult): string {
+    return typeof parsed.result === 'string' && parsed.result.trim().length > 0
+      ? parsed.result.trim()
+      : 'Claude Code 执行结束。'
+  }
+
   async execute(input: {
     task: GuardianTask
     packet: DelegationPacket
@@ -405,13 +411,21 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       blockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
     }
 
+    if (blockers.length > 0) {
+      return {
+        summary: this.reportSummary(parsed),
+        changedFiles: changed.changedFiles,
+        commandsRun: ['claude -p --output-format json'],
+        verificationResults: [],
+        blockers,
+      }
+    }
+
     const verification = await this.verify(input.packet.verification)
     blockers.push(...verification.blockers)
 
     return {
-      summary: typeof parsed.result === 'string' && parsed.result.trim().length > 0
-        ? parsed.result.trim()
-        : 'Claude Code 执行结束。',
+      summary: this.reportSummary(parsed),
       changedFiles: changed.changedFiles,
       commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
       verificationResults: verification.results,
