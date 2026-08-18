@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -42,7 +43,11 @@ function defaultAskBridgeCommand(): string {
 
 function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBridgeCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawnAskBridge(request)
+    const child = spawn(request.executable, [...request.args], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: false,
+    })
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -86,15 +91,6 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       clearTimeout(timer)
       resolve({ exitCode, stdout, stderr })
     })
-  })
-}
-
-function spawnAskBridge(request: AskBridgeCommandRequest) {
-  const { spawn } = require('node:child_process') as typeof import('node:child_process')
-  return spawn(request.executable, [...request.args], {
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: false,
   })
 }
 
