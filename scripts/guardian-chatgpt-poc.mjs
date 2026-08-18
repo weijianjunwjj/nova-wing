@@ -1,4 +1,4 @@
-/* global console */
+/* global console, process */
 import {
   TenXChatBrain,
   createTenXChatProcessTransport,
