@@ -130,7 +130,12 @@ export class DevelopmentGuardian {
 
     while (iterations < maxIterations) {
       if (packet.verdict === 'blocked') {
-        return { state: 'NEED_HUMAN', iterations, lastReview: packet, reason: packet.reason }
+        return {
+          state: 'NEED_HUMAN',
+          iterations,
+          lastReview: packet,
+          ...(packet.reason ? { reason: packet.reason } : {}),
+        }
       }
       if (packet.verdict === 'done') {
         return { state: 'COMPLETED', iterations, lastReview: packet }
