@@ -36,6 +36,8 @@ export interface ClaudeCodeTimingEvent {
   command?: string
   numTurns?: number
   totalCostUsd?: number
+  reportedDurationMs?: number
+  apiDurationMs?: number
 }
 
 export interface ClaudeCodeExecutorOptions {
@@ -55,6 +57,8 @@ interface ClaudeCodeJsonResult {
   session_id?: string
   num_turns?: number
   total_cost_usd?: number
+  duration_ms?: number
+  duration_api_ms?: number
 }
 
 const DEFAULT_ALLOWED_TOOLS = [
@@ -456,6 +460,8 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       this.emitTiming(input.task, 'claude-code', claudeDurationMs, {
         ...(typeof parsed.num_turns === 'number' ? { numTurns: parsed.num_turns } : {}),
         ...(typeof parsed.total_cost_usd === 'number' ? { totalCostUsd: parsed.total_cost_usd } : {}),
+        ...(typeof parsed.duration_ms === 'number' ? { reportedDurationMs: parsed.duration_ms } : {}),
+        ...(typeof parsed.duration_api_ms === 'number' ? { apiDurationMs: parsed.duration_api_ms } : {}),
       })
 
       if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
