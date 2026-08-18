@@ -16,8 +16,8 @@ export class GuardianStopError extends Error {
   }
 }
 
-function hasFailedVerification(report: ExecutionReport): boolean {
-  return report.verificationResults.some((result) => result.status === 'failed')
+function hasNonPassingVerification(report: ExecutionReport): boolean {
+  return report.verificationResults.some((result) => result.status !== 'passed')
 }
 
 function requireExecutablePacket(packet: DelegationPacket): void {
@@ -72,11 +72,27 @@ export async function runGuardianTask(options: {
     }
 
     if (packet.verdict === 'done') {
-      if (task.lastReport !== undefined && hasFailedVerification(task.lastReport)) {
+      if (task.lastReport === undefined) {
         task = {
           ...task,
           state: 'HUMAN_REQUIRED',
-          stopReason: 'brain attempted to complete with failed deterministic verification',
+          stopReason: 'brain attempted to complete before any execution evidence',
+        }
+        return { task, reports }
+      }
+      if (task.lastReport.verificationResults.length === 0) {
+        task = {
+          ...task,
+          state: 'HUMAN_REQUIRED',
+          stopReason: 'brain attempted to complete without deterministic verification evidence',
+        }
+        return { task, reports }
+      }
+      if (hasNonPassingVerification(task.lastReport)) {
+        task = {
+          ...task,
+          state: 'HUMAN_REQUIRED',
+          stopReason: 'brain attempted to complete with non-passing deterministic verification',
         }
         return { task, reports }
       }
