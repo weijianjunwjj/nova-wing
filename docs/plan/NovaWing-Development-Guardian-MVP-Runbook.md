@@ -102,7 +102,7 @@ export NOVAWING_CHATGPT_REASONING='high'
 npm run guardian:poc:canary
 ```
 
-这个命令会自动在系统临时目录创建一个独立 Git 仓库，里面只有一个故意写错的 `normalizeName` 实现和真实失败测试。它先提交干净 baseline，再启动：
+这个命令会自动在 NovaWing 的 `.guardian-workspaces/canary-*` 下创建一个独立 Git 仓库，里面只有一个故意写错的 `normalizeName` 实现和真实失败测试。它先提交干净 baseline，再启动：
 
 ```text
 ChatGPT Web Brain
@@ -112,7 +112,7 @@ ChatGPT Web Brain
 → done / revise / blocked
 ```
 
-安全边界：测试文件、`package.json` 与 `.git/**` 都 forbidden；Claude Code 不允许 commit/push；目标仓库是临时目录，不会修改 NovaWing 当前工作区或 OfferFlow。
+安全边界：测试文件、`package.json` 与 `.git/**` 都 forbidden；Claude Code 不允许 commit/push；目标仓库是隔离工作区，不会修改 NovaWing 当前源码或 OfferFlow。
 
 成功时必须同时满足：
 
@@ -123,6 +123,33 @@ ChatGPT Web Brain
 - 若 Reviewer 给出 `revise`，Claude Code 必须复用同一 session 继续。
 
 默认 Claude Code 使用 `sonnet`，ChatGPT reasoning 使用 `high`。可用环境变量覆盖模型，但第一轮金丝雀不建议提高成本。
+
+#### 性能诊断
+
+金丝雀默认开启性能诊断，不改变任务裁决，只记录真实耗时。最终 `canary-result` 会额外包含：
+
+```text
+timings:
+  canary/setup
+  chatgpt-web/bridge-command       # 每一轮 GPT Web review 的总耗时
+  claude-executor/clean-start      # git clean-worktree 检查
+  claude-executor/claude-code      # Claude Code 模型执行耗时
+  claude-executor/inspect-changes  # git status
+  claude-executor/verification     # 每条确定性验证命令
+  claude-executor/executor-total
+  guardian/run-total
+  canary/independent-final-test
+  canary/script-total
+
+bridgeDiagnostics:
+  ask-bridge --verbose 的阶段输出，并记录每行相对当前 review 的 elapsedMs
+```
+
+这样可以区分：本地 Git/npm 慢、Claude Code 慢、ChatGPT Web/Bridge 慢，还是浏览器自动化某一步卡住。诊断期间保持模型与 reasoning 不变，先测量再优化。若只想关闭 verbose 诊断：
+
+```bash
+export NOVAWING_GUARDIAN_DIAGNOSTICS=0
+```
 
 ### 4.2 再跑真实目标仓库
 
