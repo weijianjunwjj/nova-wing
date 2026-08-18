@@ -5,7 +5,9 @@ export type {
   AskBridgeCommandRequest,
   AskBridgeCommandResult,
   AskBridgeCommandRunner,
+  AskBridgeOutputEvent,
   AskBridgeReasoning,
+  AskBridgeTimingEvent,
 } from './ask-bridge-brain.js'
 export {
   TEN_X_CHAT_PINNED_VERSION,
@@ -29,6 +31,8 @@ export type { TenXChatBrainOptions } from './tenx-chat-brain.js'
 export { ClaudeCodeExecutor } from './claude-code-executor.js'
 export type {
   ClaudeCodeExecutorOptions,
+  ClaudeCodeTimingEvent,
+  ClaudeCodeTimingPhase,
   GuardianCommandRequest,
   GuardianCommandResult,
   GuardianCommandRunner,
