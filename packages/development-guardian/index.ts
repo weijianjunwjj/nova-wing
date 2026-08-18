@@ -1,4 +1,23 @@
 export { GuardianStopError, runGuardianTask } from './guardian.js'
+export {
+  TEN_X_CHAT_PINNED_VERSION,
+  createTenXChatProcessTransport,
+} from './delegate-transport.js'
+export type {
+  TenXChatCapturedResponse,
+  TenXChatDelegateAction,
+  TenXChatDelegateRequest,
+  TenXChatDelegateResponse,
+  TenXChatDelegateTransport,
+  TenXChatProcessTransportOptions,
+} from './delegate-transport.js'
+export {
+  TenXChatBrain,
+  TenXChatBrainProtocolError,
+  buildGuardianBrainPrompt,
+  parseDelegationPacket,
+} from './tenx-chat-brain.js'
+export type { TenXChatBrainOptions } from './tenx-chat-brain.js'
 export type {
   DelegationPacket,
   DelegationVerdict,
