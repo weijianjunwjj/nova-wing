@@ -49,7 +49,7 @@
     "release:prepare": "node scripts/release-prepare.mjs",
     "release:inspect": "node scripts/release-inspect.mjs",
     "release:selftest": "node scripts/release-selftest.mjs",
-    "guardian:chatgpt:login": "npx --yes 10x-chat@0.11.7 login chatgpt",
+    "guardian:chatgpt:login": "npx --yes 10x-chat@latest login chatgpt",
     "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
     "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
     "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
