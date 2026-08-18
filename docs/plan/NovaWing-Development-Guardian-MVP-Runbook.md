@@ -22,13 +22,15 @@ npm run check
 
 ### 当前选择：ask-bridge
 
-10x-chat PoC 在本机进入 Playwright Chromium 下载路径，国际 CDN 极慢。按照 Scope Lock 的 Bridge 止损规则，不继续为第三方浏览器二进制消耗时间，当前 MVP 切换到 `ask-bridge 0.2.10`。
+10x-chat PoC 在本机进入 Playwright Chromium 下载路径，国际 CDN 极慢。按照 Scope Lock 的 Bridge 止损规则，不继续为第三方浏览器二进制消耗时间，当前 MVP 使用 `ask-bridge 0.2.11`。
+
+`0.2.11` 相比此前固定的 `0.2.10` 包含与当前 PoC 直接相关的上游修复：兼容新版 `chrome-devtools-mcp` 的 `list_pages` 输出格式，避免 provider URL 解析失败后每次调用都误开新分页；同时上游已将 `chrome-devtools-mcp` 固定版本升级到 `1.7.0`。NovaWing 仍保留自己的 task → conversation URL 绑定与会话漂移 fail-closed，不依赖“任意 ChatGPT tab”复用。
 
 ask-bridge 使用系统已安装的真实 Google Chrome，通过 Chrome DevTools Protocol / chrome-devtools-mcp 操作网页；Windows 会检查 Program Files、Program Files (x86) 与 LOCALAPPDATA 的标准 Chrome 路径，因此不需要再下载一份 Playwright Chromium。
 
-### Git Bash 安装
+### Git Bash 安装 / 升级
 
-NovaWing 提供 Git Bash-only 安装脚本，直接下载 ask-bridge 官方 Windows Release：
+NovaWing 提供 Git Bash-only 安装脚本，直接下载固定版本的 ask-bridge 官方 Windows Release：
 
 ```bash
 npm run guardian:chatgpt:install
@@ -45,6 +47,8 @@ npm run guardian:chatgpt:install
 ```bash
 "$HOME/.local/bin/ask-bridge.exe" --version
 ```
+
+当前应输出 `0.2.11`。
 
 ### 第一次登录
 
@@ -75,7 +79,9 @@ NovaWing
 
 Guardian 不允许同一个 task 的每次 review 都新建 ChatGPT 会话。
 
-当没有显式配置 `NOVAWING_CHATGPT_CONVERSATION_URL` 时，第一次 review 允许 ask-bridge 创建会话；NovaWing 会从 ask-bridge stdout 的 `Thread Link` 捕获真实 ChatGPT conversation URL，并绑定到当前 task。之后同一进程内该 task 的所有 review 都必须带 `--session-url` 回到同一会话。
+当没有显式配置 `NOVAWING_CHATGPT_CONVERSATION_URL` 时，第一次 review 使用 `--new` 创建该 task 的独立 ChatGPT 会话；NovaWing 会从 ask-bridge stdout 的 `Thread Link` 捕获真实 ChatGPT conversation URL，并绑定到当前 task。之后同一进程内该 task 的所有 review 都必须带 `--session-url` 回到同一会话。
+
+模型与 reasoning 只在首轮创建 task 会话时设置；后续 `--session-url` review 不重复切换这些 UI 选项，以减少不必要的 Browser Bridge 开销。
 
 如果已绑定 task 的后续调用返回了不同的 Thread Link，Guardian fail-closed；如果第一次 review 没有获得 Thread Link，那么第二次 review 也不会静默新建会话，而是停止。
 
