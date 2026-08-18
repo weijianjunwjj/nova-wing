@@ -181,7 +181,7 @@ export class TenXChatBrain implements GuardianBrain {
     const response = await this.options.transport.request({
       action: 'chat',
       prompt,
-      timeoutMs: this.options.timeoutMs,
+      ...(this.options.timeoutMs === undefined ? {} : { timeoutMs: this.options.timeoutMs }),
     })
     return parseDelegationPacket(responseText(response))
   }
