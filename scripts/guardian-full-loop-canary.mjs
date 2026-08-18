@@ -10,13 +10,9 @@ import {
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
-function executableFor(command) {
-  return process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command
-}
-
 function run(command, args, cwd, timeoutMs = 60_000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executableFor(command), args, {
+    const child = spawn('bash', ['-lc', 'exec "$@"', '--', command, ...args], {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -91,17 +87,37 @@ async function createCanaryRepo() {
     `export function normalizeName(value) {\n  return value\n}\n`,
     'utf8',
   )
-  await writeFile(
-    join(root, 'test', 'normalize-name.test.mjs'),
-    `import assert from 'node:assert/strict'\nimport test from 'node:test'\n\nimport { normalizeName } from '../src/normalize-name.mjs'\n\ntest('normalizes whitespace and case', () => {\n  assert.equal(normalizeName('  Hello   World  '), 'hello-world')\n  assert.equal(normalizeName('NOVA WING'), 'nova-wing')\n  assert.equal(normalizeName('already-clean'), 'already-clean')\n})\n`,
-    'utf8',
-  )
+
+  const fixtureImportPath = ['..', 'src', 'normalize-name.mjs'].join('/')
+  const testSource = [
+    "import assert from 'node:assert/strict'",
+    "import test from 'node:test'",
+    '',
+    `import { normalizeName } from '${fixtureImportPath}'`,
+    '',
+    "test('normalizes whitespace and case', () => {",
+    "  assert.equal(normalizeName('  Hello   World  '), 'hello-world')",
+    "  assert.equal(normalizeName('NOVA WING'), 'nova-wing')",
+    "  assert.equal(normalizeName('already-clean'), 'already-clean')",
+    '})',
+    '',
+  ].join('\n')
+
+  await writeFile(join(root, 'test', 'normalize-name.test.mjs'), testSource, 'utf8')
 
   await mustRun('git', ['init'], root)
   await mustRun('git', ['add', '.'], root)
   await mustRun(
     'git',
-    ['-c', 'user.name=NovaWing Canary', '-c', 'user.email=canary@novawing.local', 'commit', '-m', 'baseline'],
+    [
+      '-c',
+      'user.name=NovaWing Canary',
+      '-c',
+      'user.email=canary@novawing.local',
+      'commit',
+      '-m',
+      'baseline',
+    ],
     root,
   )
 
