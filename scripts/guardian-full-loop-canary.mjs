@@ -10,9 +10,13 @@ import {
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
+function executableFor(command) {
+  return process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command
+}
+
 function run(command, args, cwd, timeoutMs = 60_000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(executableFor(command), args, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
