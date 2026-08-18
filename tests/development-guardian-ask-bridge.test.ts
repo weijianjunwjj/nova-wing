@@ -6,6 +6,8 @@ import {
   AskBridgeBrain,
   type AskBridgeCommandRequest,
   type AskBridgeCommandRunner,
+  type AskBridgeOutputEvent,
+  type AskBridgeTimingEvent,
 } from 'nova-wing/development-guardian'
 
 const packet = JSON.stringify({
@@ -126,6 +128,35 @@ test('ask-bridge brain refuses to silently switch conversation inside one task',
     brain.review({ task: { ...task, state: 'REVIEWING', iteration: 1 } }),
     /switched ChatGPT conversation unexpectedly/,
   )
+})
+
+test('ask-bridge brain exposes verbose diagnostics and command timing', async () => {
+  const diagnostics: AskBridgeOutputEvent[] = []
+  const timings: AskBridgeTimingEvent[] = []
+  const runner: AskBridgeCommandRunner = async (request) => {
+    request.onOutput?.({ stream: 'stdout', elapsedMs: 12.5, line: 'Checking open Chrome tabs...' })
+    await writePacket(request)
+    return { exitCode: 0, stdout: packet, stderr: '' }
+  }
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    verbose: true,
+    commandRunner: runner,
+    onDiagnostic: (event) => diagnostics.push(event),
+    onTiming: (event) => timings.push(event),
+  })
+
+  const result = await brain.review({ task })
+
+  assert.equal(result.verdict, 'proceed')
+  assert.deepEqual(diagnostics, [
+    { stream: 'stdout', elapsedMs: 12.5, line: 'Checking open Chrome tabs...' },
+  ])
+  assert.equal(timings.length, 1)
+  assert.equal(timings[0]?.phase, 'bridge-command')
+  assert.equal(timings[0]?.taskId, 'task-1')
+  assert.equal(timings[0]?.iteration, 0)
+  assert.ok((timings[0]?.durationMs ?? -1) >= 0)
 })
 
 test('ask-bridge brain falls back to clean stdout when output file is unavailable', async () => {
