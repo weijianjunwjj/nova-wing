@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.10"
+VERSION="0.2.11"
 ASSET="ask-bridge-x86_64-pc-windows-msvc.zip"
 URL="https://github.com/doggy8088/ask-bridge/releases/download/v${VERSION}/${ASSET}"
 INSTALL_DIR="${HOME}/.local/bin"
