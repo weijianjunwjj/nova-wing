@@ -10,10 +10,24 @@ import { buildGuardianBrainPrompt, parseDelegationPacket } from './tenx-chat-bra
 
 export type AskBridgeReasoning = 'auto' | 'instant' | 'medium' | 'high'
 
+export interface AskBridgeOutputEvent {
+  stream: 'stdout' | 'stderr'
+  elapsedMs: number
+  line: string
+}
+
+export interface AskBridgeTimingEvent {
+  phase: 'bridge-command'
+  taskId: string
+  iteration: number
+  durationMs: number
+}
+
 export interface AskBridgeCommandRequest {
   executable: string
   args: readonly string[]
   timeoutMs: number
+  onOutput?: (event: AskBridgeOutputEvent) => void
 }
 
 export interface AskBridgeCommandResult {
@@ -32,8 +46,11 @@ export interface AskBridgeBrainOptions {
   model?: string
   reasoning?: AskBridgeReasoning
   headless?: boolean
+  verbose?: boolean
   timeoutMs?: number
   commandRunner?: AskBridgeCommandRunner
+  onTiming?: (event: AskBridgeTimingEvent) => void
+  onDiagnostic?: (event: AskBridgeOutputEvent) => void
 }
 
 function defaultAskBridgeCommand(): string {
@@ -44,6 +61,7 @@ function defaultAskBridgeCommand(): string {
 
 function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBridgeCommandResult> {
   return new Promise((resolve, reject) => {
+    const startedAt = performance.now()
     const child = spawn(request.executable, [...request.args], {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -51,15 +69,56 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
     })
     let stdout = ''
     let stderr = ''
+    let stdoutPending = ''
+    let stderrPending = ''
     let settled = false
+
+    const emitLines = (stream: 'stdout' | 'stderr', chunk: string): void => {
+      if (request.onOutput === undefined) {
+        return
+      }
+      const pending = stream === 'stdout' ? `${stdoutPending}${chunk}` : `${stderrPending}${chunk}`
+      const lines = pending.split(/\r?\n/u)
+      const remainder = lines.pop() ?? ''
+      if (stream === 'stdout') {
+        stdoutPending = remainder
+      } else {
+        stderrPending = remainder
+      }
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (trimmed.length > 0) {
+          request.onOutput({ stream, elapsedMs: performance.now() - startedAt, line: trimmed })
+        }
+      }
+    }
+
+    const flushPending = (): void => {
+      if (request.onOutput === undefined) {
+        return
+      }
+      for (const [stream, pending] of [
+        ['stdout', stdoutPending],
+        ['stderr', stderrPending],
+      ] as const) {
+        const trimmed = pending.trim()
+        if (trimmed.length > 0) {
+          request.onOutput({ stream, elapsedMs: performance.now() - startedAt, line: trimmed })
+        }
+      }
+      stdoutPending = ''
+      stderrPending = ''
+    }
 
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
       stdout = `${stdout}${chunk}`.slice(-1_000_000)
+      emitLines('stdout', chunk)
     })
     child.stderr.on('data', (chunk: string) => {
       stderr = `${stderr}${chunk}`.slice(-100_000)
+      emitLines('stderr', chunk)
     })
 
     const closeCapturedStreams = (): void => {
@@ -72,6 +131,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
         return
       }
       settled = true
+      flushPending()
       child.kill()
       closeCapturedStreams()
       resolve({
@@ -87,6 +147,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       }
       settled = true
       clearTimeout(timer)
+      flushPending()
       closeCapturedStreams()
       reject(error)
     })
@@ -101,6 +162,7 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       // our stdout/stderr pipe handles and keep Node alive after ask-bridge itself exits.
       // Give the final output chunk a brief chance to arrive, then detach our read handles.
       setTimeout(() => {
+        flushPending()
         closeCapturedStreams()
         resolve({ exitCode, stdout, stderr })
       }, 50)
@@ -152,6 +214,9 @@ export class AskBridgeBrain implements GuardianBrain {
     const args = ['--provider', 'chatgpt', `--headless=${String(this.headless)}`]
     const conversationUrl = this.conversationUrlForTask(taskId)
 
+    if (this.options.verbose === true) {
+      args.push('--verbose')
+    }
     if (conversationUrl !== undefined) {
       args.push('--session-url', conversationUrl)
     }
@@ -194,12 +259,21 @@ export class AskBridgeBrain implements GuardianBrain {
 
     const prompt = buildGuardianBrainPrompt(input)
     const outputPath = join(tmpdir(), `novawing-ask-bridge-${randomUUID()}.md`)
+    const startedAt = performance.now()
 
     try {
       const result = await this.runner({
         executable: this.command,
         args: this.buildArgs(taskId, prompt, outputPath),
         timeoutMs: this.timeoutMs + 15_000,
+        ...(this.options.onDiagnostic === undefined ? {} : { onOutput: this.options.onDiagnostic }),
+      })
+
+      this.options.onTiming?.({
+        phase: 'bridge-command',
+        taskId,
+        iteration: input.task.iteration,
+        durationMs: performance.now() - startedAt,
       })
 
       if (result.exitCode !== 0) {
