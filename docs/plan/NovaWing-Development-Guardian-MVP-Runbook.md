@@ -41,7 +41,15 @@ npm run check
 
 ## 2. 第一次登录 ChatGPT Web Bridge
 
-10x-chat 被固定为 `0.11.7`，当前只作为可替换 ChatGPT Web Adapter。
+10x-chat 当前只作为可替换 ChatGPT Web Adapter。MVP PoC 阶段跟随 npm 的 `latest` dist-tag；只有真实 Bridge PoC 成功后才锁定一个已实际发布、已验证可用的具体版本。不要把 GitHub `main` 分支 `package.json` 中的版本号直接当成 npm 已发布版本。
+
+先确认 npm 实际解析到的版本：
+
+```bash
+npx --yes 10x-chat@latest --version
+```
+
+再登录：
 
 ```bash
 npm run guardian:chatgpt:login
@@ -96,6 +104,7 @@ npm run guardian:chatgpt:poc
 
 - 登录状态无法稳定复用；
 - `10x-chat` 无法稳定进入 ready；
+- npm `latest` 中尚未包含 `delegate` 命令；
 - ChatGPT 回复经常截断；
 - GPT 无法稳定输出合法 Delegation Packet；
 - 页面协议变化导致 Bridge 状态未知。
