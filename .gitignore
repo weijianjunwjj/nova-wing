@@ -3,6 +3,7 @@ dist/
 dist-tests/
 release-package/
 coverage/
+.guardian-workspaces/
 *.tgz
 *.sqlite
 *.sqlite-shm
