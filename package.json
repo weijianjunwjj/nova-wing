@@ -49,6 +49,7 @@
     "release:prepare": "node scripts/release-prepare.mjs",
     "release:inspect": "node scripts/release-inspect.mjs",
     "release:selftest": "node scripts/release-selftest.mjs",
+    "guardian:chatgpt:browser:install": "npx --yes patchright@1.59.4 install chromium",
     "guardian:chatgpt:login": "npx --yes 10x-chat@latest login chatgpt",
     "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
     "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
