@@ -6,9 +6,15 @@ const repositoryRoot = resolve(import.meta.dirname, '..')
 const packageJson = JSON.parse(
   readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'),
 )
-const expectedSubpaths = ['./core', './host-snapshot', './sqlite', './testing']
+const expectedSubpaths = [
+  './core',
+  './development-guardian',
+  './host-snapshot',
+  './sqlite',
+  './testing',
+]
 if (JSON.stringify(Object.keys(packageJson.exports).sort()) !== JSON.stringify(expectedSubpaths)) {
-  throw new Error('package exports must contain only the four documented subpaths')
+  throw new Error('package exports must contain only the documented subpaths')
 }
 for (const [subpath, conditions] of Object.entries(packageJson.exports)) {
   if (
@@ -23,6 +29,7 @@ for (const [subpath, conditions] of Object.entries(packageJson.exports)) {
 
 const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
+  'nova-wing/development-guardian': ['GuardianStopError', 'runGuardianTask'],
   'nova-wing/sqlite': [
     'NOVAWING_AUTHORITATIVE_TABLE_NAMES',
     'NOVAWING_AUTHORITATIVE_TABLES',
@@ -72,6 +79,7 @@ for (const forbidden of [
   'nova-wing/packages/sqlite/src/sqlite-nova-wing-store.js',
   'nova-wing/sqlite/migrations/index',
   'nova-wing/host-snapshot/registry',
+  'nova-wing/development-guardian/guardian',
 ]) {
   try {
     await import(forbidden)
@@ -86,7 +94,7 @@ for (const forbidden of [
 console.log(
   JSON.stringify({
     publicSubpaths: expectedSubpaths,
-    rejectedDeepImports: 5,
+    rejectedDeepImports: 6,
     status: 'ok',
   }),
 )
