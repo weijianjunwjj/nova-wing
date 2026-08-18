@@ -49,6 +49,7 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
     conversationUrl: 'https://chatgpt.com/c/test-session',
     model: 'GPT-5.6 Sol',
     reasoning: 'high',
+    headless: false,
     timeoutMs: 120_000,
     commandRunner: runner,
   })
@@ -58,9 +59,10 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
   assert.equal(result.verdict, 'proceed')
   assert.equal(requests.length, 1)
   assert.equal(requests[0]?.executable, 'ask-bridge.exe')
-  assert.deepEqual(requests[0]?.args.slice(0, 10), [
+  assert.deepEqual(requests[0]?.args.slice(0, 11), [
     '--provider',
     'chatgpt',
+    '--headless=false',
     '--session-url',
     'https://chatgpt.com/c/test-session',
     '--model',
