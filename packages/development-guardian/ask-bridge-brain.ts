@@ -220,15 +220,27 @@ function browserIdFromWebSocketUrl(url: string | undefined): string | undefined 
   return match?.[1]
 }
 
-function chatGptConversationKey(value: string | undefined): string | undefined {
+function isChatGptProviderPage(value: string | undefined): boolean {
   if (value === undefined) {
+    return false
+  }
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      ['chatgpt.com', 'www.chatgpt.com'].includes(url.hostname)
+    )
+  } catch {
+    return false
+  }
+}
+
+function chatGptConversationKey(value: string | undefined): string | undefined {
+  if (!isChatGptProviderPage(value) || value === undefined) {
     return undefined
   }
   try {
     const url = new URL(value)
-    if (url.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com'].includes(url.hostname)) {
-      return undefined
-    }
     const parts = url.pathname.split('/').filter(Boolean)
     const marker = parts.indexOf('c')
     const id = marker >= 0 ? parts[marker + 1] : undefined
@@ -283,7 +295,7 @@ async function defaultTabIsolator(request: AskBridgeTabIsolationRequest): Promis
   }
 
   const chatGptTargets = targets.filter(
-    (target) => target.type === 'page' && chatGptConversationKey(target.url) !== undefined,
+    (target) => target.type === 'page' && isChatGptProviderPage(target.url),
   )
   const matching = chatGptTargets.filter(
     (target) => chatGptConversationKey(target.url) === expectedKey && target.id !== undefined,
@@ -311,7 +323,7 @@ async function defaultTabIsolator(request: AskBridgeTabIsolationRequest): Promis
     return false
   }
   const remainingChatGpt = refreshed.filter(
-    (target) => target.type === 'page' && chatGptConversationKey(target.url) !== undefined,
+    (target) => target.type === 'page' && isChatGptProviderPage(target.url),
   )
   return (
     remainingChatGpt.length === 1 &&
