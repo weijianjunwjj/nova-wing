@@ -133,7 +133,7 @@ timings:
   canary/setup
   chatgpt-web/bridge-command       # 每一轮 GPT Web review 的总耗时
   claude-executor/clean-start      # git clean-worktree 检查
-  claude-executor/claude-code      # Claude Code 模型执行耗时
+  claude-executor/claude-code      # Claude Code 端到端 wall-clock
   claude-executor/inspect-changes  # git status
   claude-executor/verification     # 每条确定性验证命令
   claude-executor/executor-total
@@ -141,11 +141,21 @@ timings:
   canary/independent-final-test
   canary/script-total
 
+claudeBreakdown:
+  wallClockMs                      # NovaWing 实测 Claude Code 命令总耗时
+  reportedDurationMs               # Claude Code JSON 自报 duration_ms
+  apiDurationMs                    # Claude Code JSON 自报 duration_api_ms
+  reportedNonApiMs                 # reportedDurationMs - apiDurationMs
+  wallMinusReportedMs              # 进程启动/退出等外层差值
+  apiSharePctOfReported            # API 时间占 Claude 自报总时间比例
+  numTurns
+  totalCostUsd
+
 bridgeDiagnostics:
   ask-bridge --verbose 的阶段输出，并记录每行相对当前 review 的 elapsedMs
 ```
 
-这样可以区分：本地 Git/npm 慢、Claude Code 慢、ChatGPT Web/Bridge 慢，还是浏览器自动化某一步卡住。诊断期间保持模型与 reasoning 不变，先测量再优化。若只想关闭 verbose 诊断：
+这样可以区分：本地 Git/npm 慢、Claude Code 慢、Claude API/模型等待慢、Claude 本地 agent/tool loop 慢、ChatGPT Web/Bridge 慢，还是浏览器自动化某一步卡住。诊断期间保持模型与 reasoning 不变，先测量再优化。若只想关闭 verbose 诊断：
 
 ```bash
 export NOVAWING_GUARDIAN_DIAGNOSTICS=0
