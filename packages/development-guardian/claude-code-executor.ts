@@ -155,7 +155,13 @@ function buildClaudePrompt(task: GuardianTask, packet: DelegationPacket): string
     '不要为了“顺手优化”重构无关代码。',
     '验证命令由 Guardian 在你结束后独立执行；你可以阅读和编辑代码，但不要伪造验证结果。',
     '',
-    `task=${JSON.stringify({ id: task.id, goal: task.goal, iteration: task.iteration })}`,
+    `task=${JSON.stringify({
+      id: task.id,
+      goal: task.goal,
+      iteration: task.iteration,
+      allowed_paths: task.allowedPaths ?? null,
+      forbidden_paths: task.forbiddenPaths ?? null,
+    })}`,
     `delegation_packet=${JSON.stringify({
       goal: packet.goal,
       instructions: packet.instructions,
@@ -179,6 +185,39 @@ function parseChangedFiles(statusOutput: string): string[] {
       return renameTarget ?? path
     })
     .filter((path, index, all) => path.length > 0 && all.indexOf(path) === index)
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '')
+}
+
+function matchesPathRule(path: string, rule: string): boolean {
+  const normalizedPath = normalizePath(path)
+  const normalizedRule = normalizePath(rule)
+  if (normalizedRule.endsWith('/**')) {
+    const prefix = normalizedRule.slice(0, -3)
+    return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`)
+  }
+  return normalizedPath === normalizedRule || normalizedPath.startsWith(`${normalizedRule}/`)
+}
+
+function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): string[] {
+  const blockers: string[] = []
+  if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
+    for (const path of changedFiles) {
+      if (!task.allowedPaths.some((rule) => matchesPathRule(path, rule))) {
+        blockers.push(`changed file is outside allowed scope: ${path}`)
+      }
+    }
+  }
+  if (task.forbiddenPaths !== undefined) {
+    for (const path of changedFiles) {
+      if (task.forbiddenPaths.some((rule) => matchesPathRule(path, rule))) {
+        blockers.push(`changed file is inside forbidden scope: ${path}`)
+      }
+    }
+  }
+  return blockers
 }
 
 function commandFailureDetails(result: GuardianCommandResult): string {
@@ -212,6 +251,20 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     })
   }
 
+  private async readChangedFiles(): Promise<{
+    changedFiles: string[]
+    blocker?: string
+  }> {
+    const status = await this.runBash('git status --porcelain', 30_000)
+    if (status.exitCode !== 0) {
+      return {
+        changedFiles: [],
+        blocker: `cannot inspect changed files: ${commandFailureDetails(status)}`,
+      }
+    }
+    return { changedFiles: parseChangedFiles(status.stdout) }
+  }
+
   private async ensureCleanStart(task: GuardianTask): Promise<string | undefined> {
     if (this.activeTaskId === task.id) {
       return undefined
@@ -235,14 +288,13 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
   private buildClaudeArgs(task: GuardianTask, packet: DelegationPacket): string[] {
     const args = [
       '-p',
+      buildClaudePrompt(task, packet),
       '--output-format',
       'json',
       '--permission-mode',
       'acceptEdits',
       '--max-turns',
       String(this.maxTurns),
-      '--allowedTools',
-      ...DEFAULT_ALLOWED_TOOLS,
     ]
 
     if (this.options.model !== undefined) {
@@ -251,7 +303,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     if (this.sessionId !== undefined) {
       args.push('--resume', this.sessionId)
     }
-    args.push(buildClaudePrompt(task, packet))
+    args.push('--allowedTools', ...DEFAULT_ALLOWED_TOOLS)
     return args
   }
 
@@ -260,12 +312,15 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     blockers: string[]
     commandsRun: string[]
   }> {
+    const effectiveCommands = [...new Set(['git diff --check', ...commands.map((command) => command.trim())])]
     const results: VerificationResult[] = []
     const blockers: string[] = []
     const commandsRun: string[] = []
 
-    for (const rawCommand of commands) {
-      const command = rawCommand.trim()
+    for (const command of effectiveCommands) {
+      if (command.length === 0) {
+        continue
+      }
       if (!ALLOWED_VERIFICATION_COMMANDS.has(command)) {
         results.push({
           name: command,
@@ -312,26 +367,39 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       timeoutMs: this.timeoutMs,
     })
 
+    const changed = await this.readChangedFiles()
+    const blockers = [
+      ...(changed.blocker === undefined ? [] : [changed.blocker]),
+      ...scopeBlockers(input.task, changed.changedFiles),
+    ]
+
     if (claude.exitCode !== 0) {
+      blockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
       return {
         summary: 'Claude Code 执行失败。',
-        changedFiles: [],
+        changedFiles: changed.changedFiles,
         commandsRun: ['claude -p --output-format json'],
         verificationResults: [],
-        blockers: [`Claude Code failed: ${commandFailureDetails(claude)}`],
+        blockers,
       }
     }
 
-    const parsed = parseClaudeResult(claude.stdout)
-    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
-      this.sessionId = parsed.session_id
+    let parsed: ClaudeCodeJsonResult
+    try {
+      parsed = parseClaudeResult(claude.stdout)
+    } catch (error) {
+      blockers.push(error instanceof Error ? error.message : String(error))
+      return {
+        summary: 'Claude Code 返回了无法解析的结果。',
+        changedFiles: changed.changedFiles,
+        commandsRun: ['claude -p --output-format json'],
+        verificationResults: [],
+        blockers,
+      }
     }
 
-    const status = await this.runBash('git status --porcelain', 30_000)
-    const changedFiles = status.exitCode === 0 ? parseChangedFiles(status.stdout) : []
-    const blockers: string[] = []
-    if (status.exitCode !== 0) {
-      blockers.push(`cannot inspect changed files: ${commandFailureDetails(status)}`)
+    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
+      this.sessionId = parsed.session_id
     }
     if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
       blockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
@@ -344,7 +412,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       summary: typeof parsed.result === 'string' && parsed.result.trim().length > 0
         ? parsed.result.trim()
         : 'Claude Code 执行结束。',
-      changedFiles,
+      changedFiles: changed.changedFiles,
       commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
       verificationResults: verification.results,
       blockers,
