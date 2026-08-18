@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { writeFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
@@ -17,11 +18,19 @@ const packet = JSON.stringify({
   rationale: '目标明确',
 })
 
-test('ask-bridge brain drives ChatGPT session and parses packet', async () => {
+test('ask-bridge brain drives ChatGPT session and parses packet from output file', async () => {
   const requests: AskBridgeCommandRequest[] = []
-  const runner: AskBridgeCommandRunner = (request) => {
+  const runner: AskBridgeCommandRunner = async (request) => {
     requests.push(request)
-    return Promise.resolve({ exitCode: 0, stdout: packet, stderr: '' })
+    const outputIndex = request.args.indexOf('--output')
+    const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : undefined
+    assert.ok(outputPath)
+    await writeFile(outputPath, packet, 'utf8')
+    return {
+      exitCode: 0,
+      stdout: `${packet}\nnon-protocol stdout noise`,
+      stderr: '',
+    }
   }
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
@@ -57,7 +66,27 @@ test('ask-bridge brain drives ChatGPT session and parses packet', async () => {
     '--timeout',
     '120',
   ])
+  assert.ok(requests[0]?.args.includes('--output'))
   assert.match(requests[0]?.args.at(-1) ?? '', /唯一 Brain/)
+})
+
+test('ask-bridge brain falls back to clean stdout when output file is unavailable', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: 0, stdout: packet, stderr: '' }),
+  })
+
+  const result = await brain.review({
+    task: {
+      id: 'task-1',
+      goal: '完成最小任务',
+      state: 'READY',
+      iteration: 0,
+      maxIterations: 3,
+    },
+  })
+
+  assert.equal(result.verdict, 'proceed')
 })
 
 test('ask-bridge brain fails closed when bridge exits non-zero', async () => {
