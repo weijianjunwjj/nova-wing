@@ -2,9 +2,8 @@
 import { resolve } from 'node:path'
 
 import {
+  AskBridgeBrain,
   ClaudeCodeExecutor,
-  TenXChatBrain,
-  createTenXChatProcessTransport,
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
@@ -64,12 +63,12 @@ const forbiddenPaths = optionalList('NOVAWING_FORBIDDEN_PATHS')
 const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() || undefined
 const claudeModel = process.env.NOVAWING_CLAUDE_MODEL?.trim() || undefined
 const chatgptModel = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
+const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
 
-const transport = createTenXChatProcessTransport({ timeoutMs })
-const brain = new TenXChatBrain({
-  transport,
+const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),
   ...(chatgptModel === undefined ? {} : { model: chatgptModel }),
+  reasoning: chatgptReasoning,
   timeoutMs,
 })
 const executor = new ClaudeCodeExecutor({
@@ -130,6 +129,4 @@ try {
     ),
   )
   process.exitCode = 1
-} finally {
-  await brain.close().catch(() => {})
 }
