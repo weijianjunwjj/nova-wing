@@ -1,4 +1,12 @@
 export { GuardianStopError, runGuardianTask } from './guardian.js'
+export { AskBridgeBrain } from './ask-bridge-brain.js'
+export type {
+  AskBridgeBrainOptions,
+  AskBridgeCommandRequest,
+  AskBridgeCommandResult,
+  AskBridgeCommandRunner,
+  AskBridgeReasoning,
+} from './ask-bridge-brain.js'
 export {
   TEN_X_CHAT_PINNED_VERSION,
   createTenXChatProcessTransport,
