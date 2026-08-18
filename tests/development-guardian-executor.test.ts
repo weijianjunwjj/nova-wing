@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   ClaudeCodeExecutor,
+  type ClaudeCodeTimingEvent,
   type DelegationPacket,
   type GuardianCommandRequest,
   type GuardianCommandResult,
@@ -80,7 +81,12 @@ test('executor runs Claude Code then deterministic verification', async () => {
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const timings: ClaudeCodeTimingEvent[] = []
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+    onTiming: (event) => timings.push(event),
+  })
 
   const report = await executor.execute({ task: task(), packet: packet() })
 
@@ -94,6 +100,14 @@ test('executor runs Claude Code then deterministic verification', async () => {
   assert.match(runner.requests[1]?.args.join(' ') ?? '', /claude/)
   assert.equal(runner.requests[3]?.args.join(' '), '-lc git diff --check')
   assert.equal(runner.requests[4]?.args.join(' '), '-lc npm test')
+  assert.deepEqual(
+    timings.map((event) => event.phase),
+    ['clean-start', 'inspect-changes', 'claude-code', 'verification', 'verification', 'executor-total'],
+  )
+  const claudeTiming = timings.find((event) => event.phase === 'claude-code')
+  assert.equal(claudeTiming?.numTurns, 3)
+  assert.equal(claudeTiming?.totalCostUsd, 0.1)
+  assert.ok(timings.every((event) => event.durationMs >= 0))
 })
 
 test('executor refuses autonomous start on dirty worktree', async () => {
