@@ -67,7 +67,7 @@ NovaWing
 → ask-bridge
 → real Google Chrome
 → ChatGPT Web
-→ final response stdout
+→ final response output file
 → strict Delegation Packet
 ```
 
@@ -82,14 +82,25 @@ NovaWing
 }
 ```
 
-可选固定专用会话与模型：
+### 同一任务的 ChatGPT 会话连续性
+
+Guardian 不允许同一个 task 的每次 review 都新建 ChatGPT 会话。
+
+当没有显式配置 `NOVAWING_CHATGPT_CONVERSATION_URL` 时，第一次 review 允许 ask-bridge 创建会话；NovaWing 会从 ask-bridge stdout 的 `Thread Link` 捕获真实 ChatGPT conversation URL，并绑定到当前 task。之后同一进程内该 task 的所有 review 都必须带 `--session-url` 回到同一会话。
+
+如果已绑定 task 的后续调用返回了不同的 Thread Link，Guardian fail-closed；如果第一次 review 没有获得 Thread Link，那么第二次 review 也不会静默新建会话，而是停止。
+
+当前绑定先覆盖一次 Guardian 进程内的完整任务。进程重启后的 task/session 恢复属于后续 Trace + Resume 阶段；在此之前，如需跨进程固定会话，可以显式设置：
 
 ```bash
 export NOVAWING_CHATGPT_CONVERSATION_URL='https://chatgpt.com/c/你的会话ID'
+```
+
+可选模型与推理：
+
+```bash
 export NOVAWING_CHATGPT_MODEL='GPT-5.6 Sol'
 export NOVAWING_CHATGPT_REASONING='high'
-
-npm run guardian:chatgpt:poc
 ```
 
 ask-bridge 支持 `--session-url` 接续既有 ChatGPT 对话；ChatGPT reasoning 支持 `auto / instant / medium / high`。
@@ -128,9 +139,9 @@ export NOVAWING_GUARDIAN_TIMEOUT_MS='1200000'
 
 ## 5. 当前安全边界
 
-自动允许：GPT Web 生成 `proceed / revise / blocked / done`；Claude Code 在允许工具范围内读取、搜索、编辑；Guardian 独立执行白名单验证；同一任务 Claude session resume；最多按 `maxIterations` 循环。
+自动允许：GPT Web 生成 `proceed / revise / blocked / done`；Claude Code 在允许工具范围内读取、搜索、编辑；Guardian 独立执行白名单验证；同一任务 ChatGPT conversation 复用；同一任务 Claude session resume；最多按 `maxIterations` 循环。
 
-以下立即进入 HUMAN_REQUIRED：目标仓库启动时已有未提交改动；Bridge 失败或协议非法；Claude Code blocker / 异常；修改文件越过 allowedPaths 或进入 forbiddenPaths；非白名单验证命令；达到最大循环数；GPT 无执行证据直接 done；deterministic verification 缺失、failed 或 skipped。
+以下立即进入 HUMAN_REQUIRED：目标仓库启动时已有未提交改动；Bridge 失败或协议非法；同 task ChatGPT 会话发生漂移；Claude Code blocker / 异常；修改文件越过 allowedPaths 或进入 forbiddenPaths；非白名单验证命令；达到最大循环数；GPT 无执行证据直接 done；deterministic verification 缺失、failed 或 skipped。
 
 ## 6. 验证命令白名单
 
@@ -152,13 +163,13 @@ git diff --check
 
 ```text
 User Goal
-→ GPT Web: proceed
+→ GPT Web: proceed (bind one ChatGPT conversation)
 → Claude Code: execute
 → deterministic verification
-→ GPT Web: revise
-→ Claude Code: execute again (same session)
+→ same GPT Web conversation: revise
+→ Claude Code: execute again (same Claude session)
 → deterministic verification
-→ GPT Web: done
+→ same GPT Web conversation: done
 → COMPLETED
 ```
 
