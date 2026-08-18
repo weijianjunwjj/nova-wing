@@ -30,6 +30,7 @@ for (const [subpath, conditions] of Object.entries(packageJson.exports)) {
 const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
   'nova-wing/development-guardian': [
+    'ClaudeCodeExecutor',
     'GuardianStopError',
     'TEN_X_CHAT_PINNED_VERSION',
     'TenXChatBrain',
