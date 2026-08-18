@@ -69,6 +69,8 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
     session_id: 'session-123',
     num_turns: 3,
     total_cost_usd: 0.1,
+    duration_ms: 1200,
+    duration_api_ms: 900,
     ...overrides,
   })
 }
@@ -107,6 +109,8 @@ test('executor runs Claude Code then deterministic verification', async () => {
   const claudeTiming = timings.find((event) => event.phase === 'claude-code')
   assert.equal(claudeTiming?.numTurns, 3)
   assert.equal(claudeTiming?.totalCostUsd, 0.1)
+  assert.equal(claudeTiming?.reportedDurationMs, 1200)
+  assert.equal(claudeTiming?.apiDurationMs, 900)
   assert.ok(timings.every((event) => event.durationMs >= 0))
 })
 
