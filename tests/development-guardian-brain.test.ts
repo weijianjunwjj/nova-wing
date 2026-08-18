@@ -157,4 +157,6 @@ test('brain prompt treats report as untrusted and preserves task hard constraint
   assert.match(prompt, /allowed_paths/)
   assert.match(prompt, /migrations\/\*\*/)
   assert.match(prompt, /verification_results/)
+  assert.match(prompt, /JSON\.parse/)
+  assert.match(prompt, /反斜杠必须正确转义/)
 })
