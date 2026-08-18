@@ -45,11 +45,21 @@ export async function runGuardianTask(options: {
     }
 
     task = { ...task, state: 'REVIEWING' }
-    const packet = await options.brain.review({
-      task,
-      ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
-    })
-    requireExecutablePacket(packet)
+    let packet: DelegationPacket
+    try {
+      packet = await options.brain.review({
+        task,
+        ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
+      })
+      requireExecutablePacket(packet)
+    } catch (error) {
+      task = {
+        ...task,
+        state: 'HUMAN_REQUIRED',
+        stopReason: `brain review failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+      return { task, reports }
+    }
     task = { ...task, lastPacket: packet }
 
     if (packet.verdict === 'blocked') {
@@ -70,7 +80,7 @@ export async function runGuardianTask(options: {
         }
         return { task, reports }
       }
-      task = { ...task, state: 'COMPLETED' }
+      task = { ...task, state: 'COMPLETED', stopReason: undefined }
       return { task, reports }
     }
 
