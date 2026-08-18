@@ -32,7 +32,7 @@ function packet(verdict: DelegationPacket['verdict']): DelegationPacket {
   }
 }
 
-function report(status: 'passed' | 'failed' = 'passed'): ExecutionReport {
+function report(status: 'passed' | 'failed' | 'skipped' = 'passed'): ExecutionReport {
   return {
     summary: '执行完成',
     changedFiles: ['src/a.ts'],
@@ -97,7 +97,61 @@ test('failed deterministic verification prevents completion', async () => {
 
   const result = await runGuardianTask({ task: baseTask(), brain, executor })
   assert.equal(result.task.state, 'HUMAN_REQUIRED')
-  assert.match(result.task.stopReason ?? '', /failed deterministic verification/)
+  assert.match(result.task.stopReason ?? '', /non-passing deterministic verification/)
+})
+
+test('skipped deterministic verification prevents completion', async () => {
+  const brainPackets = [packet('proceed'), packet('done')]
+  const brain: GuardianBrain = {
+    async review() {
+      return brainPackets.shift() ?? packet('done')
+    },
+  }
+  const executor: GuardianExecutor = {
+    async execute() {
+      return report('skipped')
+    },
+  }
+
+  const result = await runGuardianTask({ task: baseTask(), brain, executor })
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.match(result.task.stopReason ?? '', /non-passing deterministic verification/)
+})
+
+test('brain cannot complete before any execution evidence exists', async () => {
+  const brain: GuardianBrain = {
+    async review() {
+      return packet('done')
+    },
+  }
+  const executor: GuardianExecutor = {
+    async execute() {
+      throw new Error('executor must not run')
+    },
+  }
+
+  const result = await runGuardianTask({ task: baseTask(), brain, executor })
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.iteration, 0)
+  assert.match(result.task.stopReason ?? '', /before any execution evidence/)
+})
+
+test('brain cannot complete without deterministic verification evidence', async () => {
+  const brainPackets = [packet('proceed'), packet('done')]
+  const brain: GuardianBrain = {
+    async review() {
+      return brainPackets.shift() ?? packet('done')
+    },
+  }
+  const executor: GuardianExecutor = {
+    async execute() {
+      return { ...report('passed'), verificationResults: [] }
+    },
+  }
+
+  const result = await runGuardianTask({ task: baseTask(), brain, executor })
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.match(result.task.stopReason ?? '', /without deterministic verification evidence/)
 })
 
 test('executor blocker moves task to human required', async () => {
