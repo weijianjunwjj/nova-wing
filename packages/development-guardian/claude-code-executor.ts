@@ -21,12 +21,30 @@ export type GuardianCommandRunner = (
   request: GuardianCommandRequest,
 ) => Promise<GuardianCommandResult>
 
+export type ClaudeCodeTimingPhase =
+  | 'clean-start'
+  | 'claude-code'
+  | 'inspect-changes'
+  | 'verification'
+  | 'executor-total'
+
+export interface ClaudeCodeTimingEvent {
+  phase: ClaudeCodeTimingPhase
+  taskId: string
+  iteration: number
+  durationMs: number
+  command?: string
+  numTurns?: number
+  totalCostUsd?: number
+}
+
 export interface ClaudeCodeExecutorOptions {
   cwd: string
   maxTurns?: number
   timeoutMs?: number
   model?: string
   commandRunner?: GuardianCommandRunner
+  onTiming?: (event: ClaudeCodeTimingEvent) => void
 }
 
 interface ClaudeCodeJsonResult {
@@ -241,6 +259,21 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     this.maxTurns = options.maxTurns ?? 12
   }
 
+  private emitTiming(
+    task: GuardianTask,
+    phase: ClaudeCodeTimingPhase,
+    durationMs: number,
+    details: Omit<ClaudeCodeTimingEvent, 'phase' | 'taskId' | 'iteration' | 'durationMs'> = {},
+  ): void {
+    this.options.onTiming?.({
+      phase,
+      taskId: task.id,
+      iteration: task.iteration,
+      durationMs,
+      ...details,
+    })
+  }
+
   private async runBash(command: string, timeoutMs = this.timeoutMs): Promise<GuardianCommandResult> {
     const spec = bashCommand(command)
     return this.runner({
@@ -307,7 +340,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return args
   }
 
-  private async verify(commands: readonly string[]): Promise<{
+  private async verify(task: GuardianTask, commands: readonly string[]): Promise<{
     results: VerificationResult[]
     blockers: string[]
     commandsRun: string[]
@@ -332,7 +365,9 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
 
       commandsRun.push(command)
+      const startedAt = performance.now()
       const result = await this.runBash(command)
+      this.emitTiming(task, 'verification', performance.now() - startedAt, { command })
       results.push({
         name: command,
         status: result.exitCode === 0 ? 'passed' : 'failed',
@@ -353,83 +388,105 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     task: GuardianTask
     packet: DelegationPacket
   }): Promise<ExecutionReport> {
-    const startBlocker = await this.ensureCleanStart(input.task)
-    if (startBlocker !== undefined) {
-      return {
-        summary: 'Claude Code 未启动。',
-        changedFiles: [],
-        commandsRun: ['git status --porcelain'],
-        verificationResults: [],
-        blockers: [startBlocker],
-      }
-    }
-
-    const args = this.buildClaudeArgs(input.task, input.packet)
-    const spec = claudeCommand(args)
-    const claude = await this.runner({
-      executable: spec.executable,
-      args: spec.args,
-      cwd: this.options.cwd,
-      timeoutMs: this.timeoutMs,
-    })
-
-    const changed = await this.readChangedFiles()
-    const blockers = [
-      ...(changed.blocker === undefined ? [] : [changed.blocker]),
-      ...scopeBlockers(input.task, changed.changedFiles),
-    ]
-
-    if (claude.exitCode !== 0) {
-      blockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
-      return {
-        summary: 'Claude Code 执行失败。',
-        changedFiles: changed.changedFiles,
-        commandsRun: ['claude -p --output-format json'],
-        verificationResults: [],
-        blockers,
-      }
-    }
-
-    let parsed: ClaudeCodeJsonResult
+    const totalStartedAt = performance.now()
     try {
-      parsed = parseClaudeResult(claude.stdout)
-    } catch (error) {
-      blockers.push(error instanceof Error ? error.message : String(error))
-      return {
-        summary: 'Claude Code 返回了无法解析的结果。',
-        changedFiles: changed.changedFiles,
-        commandsRun: ['claude -p --output-format json'],
-        verificationResults: [],
-        blockers,
+      const cleanStartedAt = performance.now()
+      const startBlocker = await this.ensureCleanStart(input.task)
+      this.emitTiming(input.task, 'clean-start', performance.now() - cleanStartedAt, {
+        command: 'git status --porcelain',
+      })
+      if (startBlocker !== undefined) {
+        return {
+          summary: 'Claude Code 未启动。',
+          changedFiles: [],
+          commandsRun: ['git status --porcelain'],
+          verificationResults: [],
+          blockers: [startBlocker],
+        }
       }
-    }
 
-    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
-      this.sessionId = parsed.session_id
-    }
-    if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
-      blockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
-    }
+      const args = this.buildClaudeArgs(input.task, input.packet)
+      const spec = claudeCommand(args)
+      const claudeStartedAt = performance.now()
+      const claude = await this.runner({
+        executable: spec.executable,
+        args: spec.args,
+        cwd: this.options.cwd,
+        timeoutMs: this.timeoutMs,
+      })
+      const claudeDurationMs = performance.now() - claudeStartedAt
 
-    if (blockers.length > 0) {
+      const changedStartedAt = performance.now()
+      const changed = await this.readChangedFiles()
+      this.emitTiming(input.task, 'inspect-changes', performance.now() - changedStartedAt, {
+        command: 'git status --porcelain',
+      })
+      const blockers = [
+        ...(changed.blocker === undefined ? [] : [changed.blocker]),
+        ...scopeBlockers(input.task, changed.changedFiles),
+      ]
+
+      if (claude.exitCode !== 0) {
+        this.emitTiming(input.task, 'claude-code', claudeDurationMs)
+        blockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
+        return {
+          summary: 'Claude Code 执行失败。',
+          changedFiles: changed.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers,
+        }
+      }
+
+      let parsed: ClaudeCodeJsonResult
+      try {
+        parsed = parseClaudeResult(claude.stdout)
+      } catch (error) {
+        this.emitTiming(input.task, 'claude-code', claudeDurationMs)
+        blockers.push(error instanceof Error ? error.message : String(error))
+        return {
+          summary: 'Claude Code 返回了无法解析的结果。',
+          changedFiles: changed.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers,
+        }
+      }
+
+      this.emitTiming(input.task, 'claude-code', claudeDurationMs, {
+        ...(typeof parsed.num_turns === 'number' ? { numTurns: parsed.num_turns } : {}),
+        ...(typeof parsed.total_cost_usd === 'number' ? { totalCostUsd: parsed.total_cost_usd } : {}),
+      })
+
+      if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
+        this.sessionId = parsed.session_id
+      }
+      if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
+        blockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
+      }
+
+      if (blockers.length > 0) {
+        return {
+          summary: this.reportSummary(parsed),
+          changedFiles: changed.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers,
+        }
+      }
+
+      const verification = await this.verify(input.task, input.packet.verification)
+      blockers.push(...verification.blockers)
+
       return {
         summary: this.reportSummary(parsed),
         changedFiles: changed.changedFiles,
-        commandsRun: ['claude -p --output-format json'],
-        verificationResults: [],
+        commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
+        verificationResults: verification.results,
         blockers,
       }
-    }
-
-    const verification = await this.verify(input.packet.verification)
-    blockers.push(...verification.blockers)
-
-    return {
-      summary: this.reportSummary(parsed),
-      changedFiles: changed.changedFiles,
-      commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
-      verificationResults: verification.results,
-      blockers,
+    } finally {
+      this.emitTiming(input.task, 'executor-total', performance.now() - totalStartedAt)
     }
   }
 }
