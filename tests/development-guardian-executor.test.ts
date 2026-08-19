@@ -260,3 +260,157 @@ test('executor prompt includes hard boundaries and excludes internal fields', as
   assert.doesNotMatch(prompt, /iteration.*3/, 'prompt must not include task.iteration')
   assert.doesNotMatch(prompt, /npm test/, 'prompt must not include verification command')
 })
+
+test('CASE A: executor auto-resumes once on max_turns with valid session', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
+    result(' M src/a.ts\n'),
+    result(claudeJson({ result: '已完成所有任务。' })),
+    result(' M src/a.ts\n M src/a.test.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.deepEqual(report.changedFiles, ['src/a.ts', 'src/a.test.ts'])
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    { name: 'npm test', status: 'passed' },
+  ])
+  assert.deepEqual(report.blockers, [])
+  assert.equal(report.summary, '已完成所有任务。')
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 2, 'should call Claude twice')
+  assert.ok(claudeRequests[1]?.args.includes('--resume'), 'second call should use --resume')
+  assert.ok(claudeRequests[1]?.args.includes('session-123'), 'second call should use same session')
+
+  const secondMaxTurnsIndex = claudeRequests[1]?.args.findIndex((entry) => entry === '--max-turns')
+  assert.ok(secondMaxTurnsIndex !== undefined && secondMaxTurnsIndex >= 0)
+  assert.equal(claudeRequests[1]?.args[secondMaxTurnsIndex + 1], '6', 'recovery should use 6 turns')
+
+  const secondPromptIndex = claudeRequests[1]?.args.findIndex((entry) => entry === '-p')
+  assert.ok(secondPromptIndex !== undefined && secondPromptIndex >= 0)
+  const secondPrompt = claudeRequests[1]?.args[secondPromptIndex + 1] ?? ''
+  assert.match(secondPrompt, /继续当前任务/, 'recovery prompt should indicate continuation')
+  assert.match(secondPrompt, /保留当前工作区修改/, 'recovery prompt should preserve changes')
+  assert.doesNotMatch(secondPrompt, /执行指令/, 'recovery prompt should not repeat full instructions')
+})
+
+test('CASE B: executor does not auto-resume when session_id is missing', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', session_id: '', result: '部分完成。' })),
+    result(' M src/a.ts\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /没有 session_id/)
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 1, 'should only call Claude once')
+})
+
+test('CASE C: executor does not auto-resume when scope violation exists', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
+    result(' M src/a.ts\n M forbidden/file.ts\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+  })
+
+  const report = await executor.execute({
+    task: task(0, { forbiddenPaths: ['forbidden/**'] }),
+    packet: packet(),
+  })
+
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /inside forbidden scope/)
+  assert.match(report.blockers[1] ?? '', /存在 scope violation.*不自动恢复/)
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 1, 'should only call Claude once')
+})
+
+test('CASE D: executor does not attempt third recovery after second max_turns', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
+    result(' M src/a.ts\n'),
+    result(claudeJson({ subtype: 'error_max_turns', result: '仍未完成。' })),
+    result(' M src/a.ts\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /首次达到 max_turns/)
+  assert.match(report.blockers[0] ?? '', /第二次执行仍达到 max_turns/)
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 2, 'should call Claude exactly twice')
+})
+
+test('CASE E: executor does not use recovery for non-max_turns errors', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_permission_denied', result: '权限不足。' })),
+    result(' M src/a.ts\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /not successful: error_permission_denied/)
+  assert.doesNotMatch(report.blockers[0] ?? '', /recovery/)
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 1, 'should only call Claude once')
+})
+
+test('CASE F: recovery does not trigger clean-worktree gate on legitimate changes', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
+    result(' M src/a.ts\n'),
+    result(claudeJson({ result: '已完成。' })),
+    result(' M src/a.ts\n M src/a.test.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.deepEqual(report.changedFiles, ['src/a.ts', 'src/a.test.ts'])
+  assert.equal(report.blockers.length, 0)
+
+  const statusRequests = runner.requests.filter(
+    (request) =>
+      request.args.length >= 2 &&
+      request.args[1]?.includes('git status --porcelain') === true,
+  )
+
+  assert.equal(statusRequests.length, 3, 'git status: once for clean gate, twice for inspect-changes')
+})

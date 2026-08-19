@@ -191,6 +191,30 @@ function buildClaudePrompt(task: GuardianTask, packet: DelegationPacket): string
   return parts.join('\n')
 }
 
+function buildRecoveryPrompt(task: GuardianTask, packet: DelegationPacket): string {
+  const parts = [
+    '继续当前任务。保留当前工作区修改，不要重新从头分析。',
+    '优先完成尚未完成的实现、必要回归测试和任务要求的 deterministic verification。',
+    '',
+    `目标：${packet.goal}`,
+    '',
+  ]
+  if (packet.constraints.length > 0) {
+    parts.push('实现约束：', ...packet.constraints.map((constraint) => `- ${constraint}`), '')
+  }
+  if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
+    parts.push('允许修改：', ...task.allowedPaths.map((path) => `- ${path}`), '')
+  }
+  if (task.forbiddenPaths !== undefined && task.forbiddenPaths.length > 0) {
+    parts.push('禁止修改：', ...task.forbiddenPaths.map((path) => `- ${path}`), '')
+  }
+  if (packet.doNotDo.length > 0) {
+    parts.push('明确禁止：', ...packet.doNotDo.map((rule) => `- ${rule}`), '')
+  }
+  parts.push('完成后只简要报告实际完成内容和 blocker（如有）。')
+  return parts.join('\n')
+}
+
 function parseChangedFiles(statusOutput: string): string[] {
   return statusOutput
     .split(/\r?\n/u)
@@ -251,6 +275,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
   private readonly maxTurns: number
   private sessionId: string | undefined
   private activeTaskId: string | undefined
+  private maxTurnRecoveryAttempted = false
 
   constructor(private readonly options: ClaudeCodeExecutorOptions) {
     this.runner = options.commandRunner ?? defaultCommandRunner
@@ -317,16 +342,20 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return undefined
   }
 
-  private buildClaudeArgs(task: GuardianTask, packet: DelegationPacket): string[] {
+  private buildClaudeArgs(
+    task: GuardianTask,
+    packet: DelegationPacket,
+    isRecovery = false,
+  ): string[] {
     const args = [
       '-p',
-      buildClaudePrompt(task, packet),
+      isRecovery ? buildRecoveryPrompt(task, packet) : buildClaudePrompt(task, packet),
       '--output-format',
       'json',
       '--permission-mode',
       'acceptEdits',
       '--max-turns',
-      String(this.maxTurns),
+      String(isRecovery ? 6 : this.maxTurns),
     ]
 
     if (this.options.model !== undefined) {
@@ -383,6 +412,115 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       : 'Claude Code 执行结束。'
   }
 
+  private isRecoverableMaxTurns(
+    parsed: ClaudeCodeJsonResult,
+    scopeBlockers: readonly string[],
+  ): boolean {
+    if (this.maxTurnRecoveryAttempted) {
+      return false
+    }
+    if (parsed.subtype !== 'error_max_turns') {
+      return false
+    }
+    if (typeof parsed.session_id !== 'string' || parsed.session_id.length === 0) {
+      return false
+    }
+    if (scopeBlockers.length > 0) {
+      return false
+    }
+    return true
+  }
+
+  private async executeClaudeOnce(
+    task: GuardianTask,
+    packet: DelegationPacket,
+    isRecovery = false,
+  ): Promise<{
+    claude: GuardianCommandResult
+    parsed: ClaudeCodeJsonResult
+    changedFiles: string[]
+    scopeBlockers: string[]
+    otherBlockers: string[]
+    claudeDurationMs: number
+  }> {
+    const args = this.buildClaudeArgs(task, packet, isRecovery)
+    const spec = claudeCommand(args)
+    const claudeStartedAt = performance.now()
+    const claude = await this.runner({
+      executable: spec.executable,
+      args: spec.args,
+      cwd: this.options.cwd,
+      timeoutMs: this.timeoutMs,
+    })
+    const claudeDurationMs = performance.now() - claudeStartedAt
+
+    const changedStartedAt = performance.now()
+    const changed = await this.readChangedFiles()
+    this.emitTiming(task, 'inspect-changes', performance.now() - changedStartedAt, {
+      command: 'git status --porcelain',
+    })
+    const taskScopeBlockers = [
+      ...(changed.blocker === undefined ? [] : [changed.blocker]),
+      ...scopeBlockers(task, changed.changedFiles),
+    ]
+    const otherBlockers: string[] = []
+
+    if (claude.exitCode !== 0) {
+      this.emitTiming(task, 'claude-code', claudeDurationMs)
+      otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
+      return {
+        claude,
+        parsed: { subtype: 'executor_failure' },
+        changedFiles: changed.changedFiles,
+        scopeBlockers: taskScopeBlockers,
+        otherBlockers,
+        claudeDurationMs,
+      }
+    }
+
+    let parsed: ClaudeCodeJsonResult
+    try {
+      parsed = parseClaudeResult(claude.stdout)
+    } catch (error) {
+      this.emitTiming(task, 'claude-code', claudeDurationMs)
+      otherBlockers.push(error instanceof Error ? error.message : String(error))
+      return {
+        claude,
+        parsed: { subtype: 'parse_failure' },
+        changedFiles: changed.changedFiles,
+        scopeBlockers: taskScopeBlockers,
+        otherBlockers,
+        claudeDurationMs,
+      }
+    }
+
+    this.emitTiming(task, 'claude-code', claudeDurationMs, {
+      ...(typeof parsed.num_turns === 'number' ? { numTurns: parsed.num_turns } : {}),
+      ...(typeof parsed.total_cost_usd === 'number' ? { totalCostUsd: parsed.total_cost_usd } : {}),
+      ...(typeof parsed.duration_ms === 'number' ? { reportedDurationMs: parsed.duration_ms } : {}),
+      ...(typeof parsed.duration_api_ms === 'number' ? { apiDurationMs: parsed.duration_api_ms } : {}),
+    })
+
+    if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
+      this.sessionId = parsed.session_id
+    }
+
+    if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
+      if (parsed.subtype !== 'error_max_turns') {
+        otherBlockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
+      }
+    }
+
+    return {
+      claude,
+      parsed,
+      changedFiles: changed.changedFiles,
+      scopeBlockers: taskScopeBlockers,
+      otherBlockers,
+      claudeDurationMs,
+    }
+  }
+
   async execute(input: {
     task: GuardianTask
     packet: DelegationPacket
@@ -404,87 +542,73 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         }
       }
 
-      const args = this.buildClaudeArgs(input.task, input.packet)
-      const spec = claudeCommand(args)
-      const claudeStartedAt = performance.now()
-      const claude = await this.runner({
-        executable: spec.executable,
-        args: spec.args,
-        cwd: this.options.cwd,
-        timeoutMs: this.timeoutMs,
-      })
-      const claudeDurationMs = performance.now() - claudeStartedAt
+      let firstAttempt = await this.executeClaudeOnce(input.task, input.packet, false)
+      let finalAttempt = firstAttempt
 
-      const changedStartedAt = performance.now()
-      const changed = await this.readChangedFiles()
-      this.emitTiming(input.task, 'inspect-changes', performance.now() - changedStartedAt, {
-        command: 'git status --porcelain',
-      })
-      const blockers = [
-        ...(changed.blocker === undefined ? [] : [changed.blocker]),
-        ...scopeBlockers(input.task, changed.changedFiles),
-      ]
+      if (
+        this.isRecoverableMaxTurns(firstAttempt.parsed, firstAttempt.scopeBlockers) &&
+        firstAttempt.otherBlockers.length === 0
+      ) {
+        this.maxTurnRecoveryAttempted = true
+        const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
+        finalAttempt = recoveryAttempt
 
-      if (claude.exitCode !== 0) {
-        this.emitTiming(input.task, 'claude-code', claudeDurationMs)
-        blockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
-        return {
-          summary: 'Claude Code 执行失败。',
-          changedFiles: changed.changedFiles,
-          commandsRun: ['claude -p --output-format json'],
-          verificationResults: [],
-          blockers,
+        if (
+          recoveryAttempt.parsed.subtype === 'error_max_turns' ||
+          recoveryAttempt.otherBlockers.length > 0 ||
+          recoveryAttempt.scopeBlockers.length > 0
+        ) {
+          const recoveryFailureContext =
+            recoveryAttempt.parsed.subtype === 'error_max_turns'
+              ? '第二次执行仍达到 max_turns'
+              : recoveryAttempt.otherBlockers.length > 0
+                ? `recovery 失败: ${recoveryAttempt.otherBlockers[0]}`
+                : `recovery 产生 scope violation: ${recoveryAttempt.scopeBlockers[0]}`
+
+          finalAttempt = {
+            ...recoveryAttempt,
+            otherBlockers: [
+              ...recoveryAttempt.otherBlockers,
+              `首次达到 max_turns 后自动 resume 一次，${recoveryFailureContext}`,
+            ],
+          }
+        }
+      } else if (firstAttempt.parsed.subtype === 'error_max_turns') {
+        finalAttempt = {
+          ...firstAttempt,
+          otherBlockers: [
+            ...firstAttempt.otherBlockers,
+            firstAttempt.scopeBlockers.length > 0
+              ? `达到 max_turns 但存在 scope violation，不自动恢复`
+              : typeof firstAttempt.parsed.session_id !== 'string' ||
+                  firstAttempt.parsed.session_id.length === 0
+                ? `达到 max_turns 但没有 session_id，不自动恢复`
+                : `达到 max_turns: ${firstAttempt.parsed.subtype ?? 'unknown'}`,
+          ],
         }
       }
 
-      let parsed: ClaudeCodeJsonResult
-      try {
-        parsed = parseClaudeResult(claude.stdout)
-      } catch (error) {
-        this.emitTiming(input.task, 'claude-code', claudeDurationMs)
-        blockers.push(error instanceof Error ? error.message : String(error))
+      const allBlockers = [...finalAttempt.scopeBlockers, ...finalAttempt.otherBlockers]
+
+      if (allBlockers.length > 0) {
         return {
-          summary: 'Claude Code 返回了无法解析的结果。',
-          changedFiles: changed.changedFiles,
+          summary: this.reportSummary(finalAttempt.parsed),
+          changedFiles: finalAttempt.changedFiles,
           commandsRun: ['claude -p --output-format json'],
           verificationResults: [],
-          blockers,
-        }
-      }
-
-      this.emitTiming(input.task, 'claude-code', claudeDurationMs, {
-        ...(typeof parsed.num_turns === 'number' ? { numTurns: parsed.num_turns } : {}),
-        ...(typeof parsed.total_cost_usd === 'number' ? { totalCostUsd: parsed.total_cost_usd } : {}),
-        ...(typeof parsed.duration_ms === 'number' ? { reportedDurationMs: parsed.duration_ms } : {}),
-        ...(typeof parsed.duration_api_ms === 'number' ? { apiDurationMs: parsed.duration_api_ms } : {}),
-      })
-
-      if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
-        this.sessionId = parsed.session_id
-      }
-      if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
-        blockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
-      }
-
-      if (blockers.length > 0) {
-        return {
-          summary: this.reportSummary(parsed),
-          changedFiles: changed.changedFiles,
-          commandsRun: ['claude -p --output-format json'],
-          verificationResults: [],
-          blockers,
+          blockers: allBlockers,
         }
       }
 
       const verification = await this.verify(input.task, input.packet.verification)
-      blockers.push(...verification.blockers)
+      allBlockers.push(...verification.blockers)
 
       return {
-        summary: this.reportSummary(parsed),
-        changedFiles: changed.changedFiles,
+        summary: this.reportSummary(finalAttempt.parsed),
+        changedFiles: finalAttempt.changedFiles,
         commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
         verificationResults: verification.results,
-        blockers,
+        blockers: allBlockers,
       }
     } finally {
       this.emitTiming(input.task, 'executor-total', performance.now() - totalStartedAt)
