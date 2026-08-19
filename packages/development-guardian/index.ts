@@ -54,3 +54,4 @@ export type {
   GuardianProgressObserver,
   GuardianProgressStatus,
 } from './progress.js'
+export * from './work-session/index.js'

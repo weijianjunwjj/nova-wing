@@ -59,5 +59,10 @@
   "devDependencies": {
     "@types/node": "24.10.1",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.60.0",
+    "@mastra/libsql": "^1.21.0",
+    "zod": "^4.4.3"
   }
 }
