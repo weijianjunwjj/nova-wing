@@ -146,6 +146,7 @@ export function buildGuardianBrainPrompt(input: {
     '- npm run lint',
     '- npm run check',
     '- git diff --check',
+    '- .venv/Scripts/python.exe -m pytest',
     '如果任务必须使用其他验证命令，不要把它塞进 verification；改为 blocked 并在 rationale 说明原因。',
     '',
     '裁决规则：',

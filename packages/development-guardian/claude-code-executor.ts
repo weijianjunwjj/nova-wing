@@ -56,6 +56,7 @@ export interface ClaudeCodeExecutorOptions {
   timeoutMs?: number
   model?: string
   allowNpmInstall?: boolean
+  allowPythonBootstrap?: boolean
   commandRunner?: GuardianCommandRunner
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
@@ -93,6 +94,7 @@ const ALLOWED_VERIFICATION_COMMANDS = new Set([
   'npm run lint',
   'npm run check',
   'git diff --check',
+  '.venv/Scripts/python.exe -m pytest',
 ])
 
 function defaultCommandRunner(request: GuardianCommandRequest): Promise<GuardianCommandResult> {
@@ -381,6 +383,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     const allowedTools: string[] = [...DEFAULT_ALLOWED_TOOLS]
     if (this.options.allowNpmInstall === true) {
       allowedTools.push('Bash(npm install:*)')
+    }
+    if (this.options.allowPythonBootstrap === true) {
+      allowedTools.push('Bash(python -m venv .venv)')
+      allowedTools.push('Bash(.venv/Scripts/python.exe -m pip install:*)')
     }
     args.push('--allowedTools', ...allowedTools)
     return args
