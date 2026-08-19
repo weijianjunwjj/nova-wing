@@ -169,16 +169,25 @@ function parseClaudeResult(stdout: string): ClaudeCodeJsonResult {
   return parsed as ClaudeCodeJsonResult
 }
 
-function buildClaudePrompt(packet: DelegationPacket): string {
+function buildClaudePrompt(task: GuardianTask, packet: DelegationPacket): string {
   const parts = ['你是 NovaWing Development Guardian 的 Executor。', '']
   parts.push(`目标：${packet.goal}`, '')
   if (packet.instructions.length > 0) {
-    parts.push('指令：', ...packet.instructions.map((instruction) => `- ${instruction}`), '')
+    parts.push('执行指令：', ...packet.instructions.map((instruction) => `- ${instruction}`), '')
   }
   if (packet.constraints.length > 0) {
-    parts.push('约束：', ...packet.constraints.map((constraint) => `- ${constraint}`), '')
+    parts.push('实现约束：', ...packet.constraints.map((constraint) => `- ${constraint}`), '')
   }
-  parts.push('完成后简要说明实际做了什么和仍存在的 blocker。')
+  if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
+    parts.push('允许修改：', ...task.allowedPaths.map((path) => `- ${path}`), '')
+  }
+  if (task.forbiddenPaths !== undefined && task.forbiddenPaths.length > 0) {
+    parts.push('禁止修改：', ...task.forbiddenPaths.map((path) => `- ${path}`), '')
+  }
+  if (packet.doNotDo.length > 0) {
+    parts.push('明确禁止：', ...packet.doNotDo.map((rule) => `- ${rule}`), '')
+  }
+  parts.push('完成后只简要报告实际完成内容和 blocker（如有）。')
   return parts.join('\n')
 }
 
@@ -308,10 +317,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return undefined
   }
 
-  private buildClaudeArgs(packet: DelegationPacket): string[] {
+  private buildClaudeArgs(task: GuardianTask, packet: DelegationPacket): string[] {
     const args = [
       '-p',
-      buildClaudePrompt(packet),
+      buildClaudePrompt(task, packet),
       '--output-format',
       'json',
       '--permission-mode',
@@ -395,7 +404,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         }
       }
 
-      const args = this.buildClaudeArgs(input.packet)
+      const args = this.buildClaudeArgs(input.task, input.packet)
       const spec = claudeCommand(args)
       const claudeStartedAt = performance.now()
       const claude = await this.runner({
