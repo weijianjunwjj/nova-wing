@@ -157,6 +157,31 @@ test('brain prompt treats report as untrusted and preserves task hard constraint
   assert.match(prompt, /allowed_paths/)
   assert.match(prompt, /migrations\/\*\*/)
   assert.match(prompt, /verification_results/)
+  assert.match(prompt, /"incomplete_reason":null/)
   assert.match(prompt, /JSON\.parse/)
   assert.match(prompt, /反斜杠必须正确转义/)
+})
+
+test('brain prompt serializes safe incomplete execution for Reviewer convergence', () => {
+  const incompleteReason = '执行预算耗尽（12 + 6 turns），但安全边界正常，需要 Brain 判断是否继续'
+  const prompt = buildGuardianBrainPrompt({
+    task: {
+      id: 'task-incomplete',
+      goal: '完成复杂任务',
+      state: 'REVIEWING',
+      iteration: 1,
+      maxIterations: 3,
+    },
+    report: {
+      summary: '部分完成',
+      changedFiles: ['src/a.ts'],
+      commandsRun: ['claude -p --output-format json'],
+      verificationResults: [],
+      blockers: [],
+      incompleteReason,
+    },
+  })
+
+  assert.match(prompt, /execution_report\.incomplete_reason 非空/)
+  assert.match(prompt, /"incomplete_reason":"执行预算耗尽（12 \+ 6 turns），但安全边界正常，需要 Brain 判断是否继续"/)
 })

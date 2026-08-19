@@ -91,6 +91,7 @@ function serializeReport(report: ExecutionReport | undefined): unknown {
     commands_run: report.commandsRun,
     verification_results: report.verificationResults,
     blockers: report.blockers,
+    incomplete_reason: report.incompleteReason ?? null,
     raw_output_ref: report.rawOutputRef ?? null,
   }
 }
@@ -150,6 +151,7 @@ export function buildGuardianBrainPrompt(input: {
     '裁决规则：',
     '- 首轮且目标明确：proceed，并给 Claude Code 可执行指令。',
     '- 已执行但实现需要修正：revise，并只给本轮需要修正的指令。',
+    '- execution_report.incomplete_reason 非空且无 blocker 时，表示执行安全但尚未完成；不得 done，应根据现有证据返回 revise，或在确实需要人工决策时 blocked。',
     '- 需要产品/架构选择、需要突破禁止范围、证据不足以安全继续：blocked。',
     '- 只有 execution_report 存在、无 blocker、确定性验证全部 passed、且 acceptance_criteria 已满足时才允许 done。',
     '- changed_files 若越过 allowed_paths 或进入 forbidden_paths，必须 blocked。',
