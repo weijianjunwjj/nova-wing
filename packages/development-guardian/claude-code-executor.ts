@@ -47,6 +47,7 @@ export interface ClaudeCodeExecutorOptions {
   model?: string
   commandRunner?: GuardianCommandRunner
   onTiming?: (event: ClaudeCodeTimingEvent) => void
+  onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
 }
 
 interface ClaudeCodeJsonResult {
@@ -392,12 +393,16 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
 
       commandsRun.push(command)
+      this.options.onVerification?.({ command, status: 'running' })
       const startedAt = performance.now()
       const result = await this.runBash(command)
-      this.emitTiming(task, 'verification', performance.now() - startedAt, { command })
+      const durationMs = performance.now() - startedAt
+      this.emitTiming(task, 'verification', durationMs, { command })
+      const status = result.exitCode === 0 ? 'passed' : 'failed'
+      this.options.onVerification?.({ command, status, durationMs })
       results.push({
         name: command,
-        status: result.exitCode === 0 ? 'passed' : 'failed',
+        status,
         ...(result.exitCode === 0 ? {} : { details: commandFailureDetails(result) }),
       })
     }
@@ -467,7 +472,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
 
     if (claude.exitCode !== 0) {
       this.emitTiming(task, 'claude-code', claudeDurationMs)
-      otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
+      const isTimeout = claude.exitCode === null && claude.signal === 'SIGTERM'
+      if (isTimeout) {
+        otherBlockers.push(`Claude Code execution timed out after ${this.timeoutMs}ms`)
+      } else {
+        otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
+      }
       return {
         claude,
         parsed: { subtype: 'executor_failure' },

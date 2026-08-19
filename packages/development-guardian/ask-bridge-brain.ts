@@ -277,6 +277,10 @@ export class AskBridgeBrain implements GuardianBrain {
       })
 
       if (result.exitCode !== 0) {
+        const isTimeout = result.exitCode === null
+        if (isTimeout) {
+          throw new Error(`ChatGPT review timed out after ${this.timeoutMs}ms`)
+        }
         throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
       }
 

@@ -5,6 +5,7 @@ import type {
   GuardianRunResult,
   GuardianTask,
 } from './model.js'
+import type { GuardianProgressObserver, GuardianProgressEvent } from './progress.js'
 
 export class GuardianStopError extends Error {
   constructor(
@@ -43,9 +44,27 @@ export async function runGuardianTask(options: {
   task: GuardianTask
   brain: GuardianBrain
   executor: GuardianExecutor
+  onProgress?: GuardianProgressObserver
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
+  const startedAt = performance.now()
+
+  const emitProgress = (
+    phase: GuardianProgressEvent['phase'],
+    status: GuardianProgressEvent['status'],
+    detail?: string,
+  ): void => {
+    options.onProgress?.({
+      phase,
+      status,
+      iteration: task.iteration,
+      elapsedMs: performance.now() - startedAt,
+      ...(detail === undefined ? {} : { detail }),
+    })
+  }
+
+  emitProgress('PREPARING', 'completed')
 
   while (true) {
     if (task.iteration >= task.maxIterations) {
@@ -54,10 +73,13 @@ export async function runGuardianTask(options: {
         state: 'HUMAN_REQUIRED',
         stopReason: `max iterations reached: ${task.maxIterations}`,
       }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
       return { task, reports }
     }
 
     task = { ...task, state: 'REVIEWING' }
+    const reviewPhase = task.lastReport === undefined ? 'REVIEWING' : 'FINAL_REVIEW'
+    emitProgress(reviewPhase, 'active')
     let packet: DelegationPacket
     try {
       packet = await options.brain.review({
@@ -65,12 +87,15 @@ export async function runGuardianTask(options: {
         ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
       })
       requireExecutablePacket(packet)
+      emitProgress(reviewPhase, 'completed')
     } catch (error) {
+      emitProgress(reviewPhase, 'failed', error instanceof Error ? error.message : String(error))
       task = {
         ...task,
         state: 'HUMAN_REQUIRED',
         stopReason: `brain review failed: ${error instanceof Error ? error.message : String(error)}`,
       }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
       return { task, reports }
     }
     task = { ...task, lastPacket: packet }
@@ -81,6 +106,7 @@ export async function runGuardianTask(options: {
         state: 'HUMAN_REQUIRED',
         stopReason: packet.rationale ?? 'brain reported blocked',
       }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
       return { task, reports }
     }
 
@@ -91,6 +117,7 @@ export async function runGuardianTask(options: {
           state: 'HUMAN_REQUIRED',
           stopReason: 'brain attempted to complete before any execution evidence',
         }
+        emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
         return { task, reports }
       }
       if (task.lastReport.verificationResults.length === 0) {
@@ -99,6 +126,7 @@ export async function runGuardianTask(options: {
           state: 'HUMAN_REQUIRED',
           stopReason: 'brain attempted to complete without deterministic verification evidence',
         }
+        emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
         return { task, reports }
       }
       if (hasNonPassingVerification(task.lastReport)) {
@@ -107,10 +135,12 @@ export async function runGuardianTask(options: {
           state: 'HUMAN_REQUIRED',
           stopReason: 'brain attempted to complete with non-passing deterministic verification',
         }
+        emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
         return { task, reports }
       }
       task = { ...task, state: 'COMPLETED' }
       delete task.stopReason
+      emitProgress('COMPLETED', 'completed')
       return { task, reports }
     }
 
@@ -122,15 +152,19 @@ export async function runGuardianTask(options: {
       lastPacket: executionPacket,
     }
 
+    emitProgress('EXECUTING', 'active')
     let report: ExecutionReport
     try {
       report = await options.executor.execute({ task, packet: executionPacket })
+      emitProgress('EXECUTING', 'completed')
     } catch (error) {
+      emitProgress('EXECUTING', 'failed', error instanceof Error ? error.message : String(error))
       task = {
         ...task,
         state: 'FAILED',
         stopReason: error instanceof Error ? error.message : 'executor failed',
       }
+      emitProgress('FAILED', 'completed', task.stopReason)
       return { task, reports }
     }
 
@@ -143,6 +177,7 @@ export async function runGuardianTask(options: {
         state: 'HUMAN_REQUIRED',
         stopReason: report.blockers.join('; '),
       }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
       return { task, reports }
     }
   }

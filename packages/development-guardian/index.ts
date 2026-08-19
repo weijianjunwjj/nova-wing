@@ -48,3 +48,9 @@ export type {
   VerificationStatus,
 } from './model.js'
 export type { GuardianBrain, GuardianExecutor } from './ports.js'
+export type {
+  GuardianPhase,
+  GuardianProgressEvent,
+  GuardianProgressObserver,
+  GuardianProgressStatus,
+} from './progress.js'

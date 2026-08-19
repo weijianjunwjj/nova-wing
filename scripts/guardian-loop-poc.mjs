@@ -7,6 +7,142 @@ import {
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
+class GuardianProgressDisplay {
+  constructor(targetRepo, goal) {
+    this.targetRepo = targetRepo
+    this.goal = goal
+    this.startedAt = performance.now()
+    this.currentPhase = null
+    this.heartbeatTimer = null
+    this.lastHeartbeat = null
+    this.iteration = 0
+  }
+
+  start() {
+    console.log('\nNovaWing Development Guardian')
+    console.log(`Task: ${this.goal}`)
+    console.log(`Target: ${this.targetRepo}`)
+    console.log('────────────────────────────────\n')
+  }
+
+  formatElapsed(ms) {
+    const seconds = Math.floor(ms / 1000)
+    if (seconds < 60) {
+      return `${seconds}s`
+    }
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = seconds % 60
+    return `${minutes}m ${remainingSeconds}s`
+  }
+
+  formatTimestamp() {
+    const now = new Date()
+    return now.toTimeString().slice(0, 8)
+  }
+
+  clearHeartbeat() {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+  }
+
+  startHeartbeat(phase) {
+    this.clearHeartbeat()
+    this.lastHeartbeat = performance.now()
+
+    this.heartbeatTimer = setInterval(() => {
+      const elapsed = performance.now() - this.lastHeartbeat
+      console.log(`[${this.formatTimestamp()}] ${phase} elapsed=${this.formatElapsed(elapsed)}`)
+    }, 30_000)
+  }
+
+  onProgress(event) {
+    const { phase, status, iteration, elapsedMs, detail, verification } = event
+
+    if (iteration > this.iteration) {
+      this.iteration = iteration
+      if (iteration > 1) {
+        console.log(`\niteration: ${iteration} / 3`)
+        console.log('↳ reviewer requested revision\n')
+      }
+    }
+
+    if (verification !== undefined) {
+      if (verification.status === 'running') {
+        console.log(`[${this.formatTimestamp()}] ● ${verification.command}`)
+      } else if (verification.status === 'passed') {
+        const elapsed = verification.durationMs !== undefined ? this.formatElapsed(verification.durationMs) : ''
+        console.log(`[${this.formatTimestamp()}] ✓ ${verification.command} ${elapsed}`)
+      } else if (verification.status === 'failed') {
+        const elapsed = verification.durationMs !== undefined ? this.formatElapsed(verification.durationMs) : ''
+        console.log(`[${this.formatTimestamp()}] ✗ ${verification.command} ${elapsed}`)
+      }
+      return
+    }
+
+    if (status === 'active') {
+      const phaseLabel = this.getPhaseLabel(phase)
+      console.log(`[${this.formatTimestamp()}] ${phaseLabel} started`)
+
+      if (phase === 'REVIEWING' || phase === 'FINAL_REVIEW' || phase === 'EXECUTING') {
+        this.startHeartbeat(phaseLabel)
+      }
+      this.currentPhase = phase
+
+    } else if (status === 'completed') {
+      this.clearHeartbeat()
+
+      if (phase === 'PREPARING') {
+        console.log(`[${this.formatTimestamp()}] ✓ PREPARING`)
+        return
+      }
+
+      const phaseLabel = this.getPhaseLabel(phase)
+      const elapsed = this.lastHeartbeat !== null
+        ? this.formatElapsed(performance.now() - this.lastHeartbeat)
+        : this.formatElapsed(elapsedMs)
+
+      console.log(`[${this.formatTimestamp()}] ✓ ${phaseLabel} ${elapsed}`)
+
+      if (phase === 'COMPLETED' || phase === 'HUMAN_REQUIRED' || phase === 'FAILED') {
+        console.log(`\nFinal State: ${phase}`)
+        if (detail) {
+          console.log(`Reason: ${detail}`)
+        }
+        console.log(`Total: ${this.formatElapsed(performance.now() - this.startedAt)}`)
+      }
+
+    } else if (status === 'failed') {
+      this.clearHeartbeat()
+      const phaseLabel = this.getPhaseLabel(phase)
+      console.log(`[${this.formatTimestamp()}] ✗ ${phaseLabel}`)
+      if (detail) {
+        console.log(`   Error: ${detail}`)
+      }
+    }
+  }
+
+  getPhaseLabel(phase) {
+    const labels = {
+      PREPARING: 'PREPARING',
+      REVIEWING: 'REVIEWING — ChatGPT Web',
+      EXECUTING: 'EXECUTING — Claude Code',
+      RECOVERING: 'RECOVERING — Claude Code',
+      VERIFYING: 'VERIFYING',
+      FINAL_REVIEW: 'FINAL REVIEW — ChatGPT Web',
+      COMPLETED: 'COMPLETED',
+      HUMAN_REQUIRED: 'HUMAN_REQUIRED',
+      FAILED: 'FAILED',
+    }
+    return labels[phase] ?? phase
+  }
+
+  cleanup() {
+    this.clearHeartbeat()
+  }
+}
+
 function requiredEnv(name) {
   const value = process.env[name]?.trim()
   if (!value) {
@@ -52,7 +188,8 @@ function resolveGitBashPath(value) {
 const targetRepo = resolveGitBashPath(requiredEnv('NOVAWING_TARGET_REPO'))
 const goalFromArgs = process.argv.slice(2).join(' ').trim()
 const goal = goalFromArgs || requiredEnv('NOVAWING_TASK_GOAL')
-const timeoutMs = optionalInt('NOVAWING_GUARDIAN_TIMEOUT_MS', 20 * 60 * 1000)
+const chatgptTimeoutMs = optionalInt('NOVAWING_CHATGPT_TIMEOUT_MS', 180_000)
+const claudeTimeoutMs = optionalInt('NOVAWING_CLAUDE_TIMEOUT_MS', 20 * 60 * 1000)
 const maxIterations = optionalInt('NOVAWING_GUARDIAN_MAX_ITERATIONS', 3)
 const maxClaudeTurns = optionalInt('NOVAWING_CLAUDE_MAX_TURNS', 12)
 const constraints = optionalList('NOVAWING_TASK_CONSTRAINTS')
@@ -69,14 +206,28 @@ const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),
   ...(chatgptModel === undefined ? {} : { model: chatgptModel }),
   reasoning: chatgptReasoning,
-  timeoutMs,
+  timeoutMs: chatgptTimeoutMs,
 })
+
+const display = new GuardianProgressDisplay(targetRepo, goal)
+
 const executor = new ClaudeCodeExecutor({
   cwd: targetRepo,
   maxTurns: maxClaudeTurns,
-  timeoutMs,
+  timeoutMs: claudeTimeoutMs,
   ...(claudeModel === undefined ? {} : { model: claudeModel }),
+  onVerification: (result) => {
+    display.onProgress({
+      phase: 'VERIFYING',
+      status: 'active',
+      iteration: 0,
+      elapsedMs: 0,
+      verification: result,
+    })
+  },
 })
+
+display.start()
 
 try {
   const result = await runGuardianTask({
@@ -94,7 +245,10 @@ try {
     },
     brain,
     executor,
+    onProgress: (event) => display.onProgress(event),
   })
+
+  display.cleanup()
 
   console.log(
     JSON.stringify(
@@ -118,6 +272,7 @@ try {
     process.exitCode = 1
   }
 } catch (error) {
+  display.cleanup()
   console.error(
     JSON.stringify(
       {
