@@ -58,7 +58,7 @@ class GuardianProgressDisplay {
   }
 
   onProgress(event) {
-    const { phase, status, iteration, elapsedMs, detail, verification } = event
+    const { phase, status, iteration, elapsedMs, detail, verification, recovery } = event
 
     if (iteration > this.iteration) {
       this.iteration = iteration
@@ -66,6 +66,12 @@ class GuardianProgressDisplay {
         console.log(`\niteration: ${iteration} / 3`)
         console.log('↳ reviewer requested revision\n')
       }
+    }
+
+    if (recovery !== undefined) {
+      console.log(`[${this.formatTimestamp()}] RECOVERING — Claude Code (max_turns, bounded)`)
+      console.log(`   session: ${recovery.sessionId}`)
+      return
     }
 
     if (verification !== undefined) {
@@ -223,6 +229,15 @@ const executor = new ClaudeCodeExecutor({
       iteration: 0,
       elapsedMs: 0,
       verification: result,
+    })
+  },
+  onRecovery: (recovery) => {
+    display.onProgress({
+      phase: 'RECOVERING',
+      status: 'active',
+      iteration: 0,
+      elapsedMs: 0,
+      recovery,
     })
   },
 })

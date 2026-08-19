@@ -20,6 +20,7 @@ export interface GuardianProgressEvent {
   sessionId?: string
   recovery?: {
     reason: string
+    sessionId: string
     bounded: boolean
   }
   verification?: {

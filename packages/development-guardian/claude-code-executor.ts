@@ -48,6 +48,7 @@ export interface ClaudeCodeExecutorOptions {
   commandRunner?: GuardianCommandRunner
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
+  onRecovery?: (recovery: { reason: 'max_turns'; sessionId: string; bounded: true }) => void
 }
 
 interface ClaudeCodeJsonResult {
@@ -561,6 +562,11 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         firstAttempt.otherBlockers.length === 0
       ) {
         maxTurnRecoveryAttempted = true
+        this.options.onRecovery?.({
+          reason: 'max_turns',
+          sessionId: firstAttempt.parsed.session_id ?? '',
+          bounded: true,
+        })
         const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
         finalAttempt = recoveryAttempt
 
