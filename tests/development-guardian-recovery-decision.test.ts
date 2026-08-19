@@ -45,7 +45,11 @@ test('recovery decision diagnostic captures exitCode != 0 blocker', async () => 
   const runner = new QueueRunner([
     result(''),
     result(
-      claudeJson({ subtype: 'error_max_turns', result: '部分完成。' }),
+      claudeJson({
+        subtype: 'error_max_turns',
+        result: '部分完成。',
+        session_id: '', // 空 session_id 阻止恢复
+      }),
       1, // exitCode = 1 模拟真实 Claude CLI 行为
     ),
     result(' M src/a.ts\n'),
@@ -74,15 +78,18 @@ test('recovery decision diagnostic captures exitCode != 0 blocker', async () => 
     },
   })
 
-  // exitCode != 0 时，executeClaudeOnce 会提前返回并输出诊断
-  assert.equal(report.blockers.length, 2, 'must have exitCode blocker and diagnostic')
-  const exitCodeBlocker = report.blockers.find((b) => b.includes('Claude Code failed'))
-  assert.ok(exitCodeBlocker, 'must report Claude Code failure with exit code 1')
+  // exitCode=1 + error_max_turns 但缺少 session_id，不触发恢复
+  assert.equal(report.blockers.length, 2, 'must have session_id blocker and diagnostic')
+  const sessionBlocker = report.blockers.find((b) => b.includes('没有 session_id'))
+  assert.ok(sessionBlocker, 'must report missing session_id')
 
   const diagnostic = report.blockers.find((b) => b.includes('[MAX_TURN_RECOVERY_DECISION]'))
   assert.ok(diagnostic, 'must include recovery decision diagnostic')
   assert.ok(diagnostic?.includes('eligible=false'), 'decision must be ineligible')
-  assert.ok(diagnostic?.includes('reason=nonzero_exit_code'), 'must show nonzero exit code reason')
+  assert.ok(
+    diagnostic?.includes('reason=session_id missing'),
+    'must show session_id missing reason',
+  )
   assert.ok(diagnostic?.includes('exitCode=1'), 'must show exit code 1')
 })
 

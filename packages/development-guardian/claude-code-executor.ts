@@ -67,6 +67,7 @@ interface ClaudeCodeJsonResult {
   is_error?: boolean
   result?: string
   session_id?: string
+  permission_denials?: unknown[]
   num_turns?: number
   total_cost_usd?: number
   duration_ms?: number
@@ -434,6 +435,8 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     maxTurnRecoveryAttempted: boolean,
   ): MaxTurnRecoveryDecision {
     const sessionIdPresent = typeof parsed.session_id === 'string' && parsed.session_id.length > 0
+    const hasPermissionDenials =
+      Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0
 
     if (maxTurnRecoveryAttempted) {
       return {
@@ -471,6 +474,18 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
     }
 
+    if (hasPermissionDenials) {
+      return {
+        eligible: false,
+        reason: 'permission denials present',
+        alreadyAttempted: false,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
+    }
+
     if (scopeBlockers.length > 0) {
       return {
         eligible: false,
@@ -497,7 +512,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
 
     return {
       eligible: true,
-      reason: 'all conditions met',
+      reason: 'recoverable_max_turns',
       alreadyAttempted: false,
       subtype: parsed.subtype,
       sessionIdPresent,
@@ -554,26 +569,32 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     if (claude.exitCode !== 0) {
       this.emitTiming(task, 'claude-code', claudeDurationMs)
       const isTimeout = claude.exitCode === null && claude.signal === 'SIGTERM'
-      if (isTimeout) {
-        otherBlockers.push(`Claude Code execution timed out after ${this.timeoutMs}ms`)
+
+      // 特殊处理：Claude 使用 exitCode=1 表达 error_max_turns，但这是合法的 terminal result
+      // 如果成功解析出 error_max_turns，不将其视为普通 transport failure
+      const isMaxTurnsResult =
+        parsed.subtype === 'error_max_turns' && parseError === undefined
+
+      if (isMaxTurnsResult) {
+        // 这是 max_turns terminal result（无论 session_id 是否存在）
+        // 保留真实的 parsed，让 evaluateMaxTurnRecovery 和后续诊断判断
+        // 注：exitCode=1 本身不是阻止恢复的理由，real blocker 是缺少 session_id / permission_denials 等
       } else {
-        otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
-      }
+        // 普通失败：timeout / parse failure / 其他 error subtype
+        if (isTimeout) {
+          otherBlockers.push(`Claude Code execution timed out after ${this.timeoutMs}ms`)
+        } else {
+          otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
+        }
 
-      // 如果解析出了 error_max_turns，输出恢复决策诊断
-      if (parsed.subtype === 'error_max_turns') {
-        const sessionIdPresent = typeof parsed.session_id === 'string' && parsed.session_id.length > 0
-        const diagnostic = `[MAX_TURN_RECOVERY_DECISION] eligible=false reason=nonzero_exit_code exitCode=${claude.exitCode} signal=${claude.signal ?? 'null'} subtype=${parsed.subtype} sessionIdPresent=${sessionIdPresent} scopeBlockers=${taskScopeBlockers.length} otherBlockers=${otherBlockers.length}`
-        otherBlockers.push(diagnostic)
-      }
-
-      return {
-        claude,
-        parsed: { subtype: 'executor_failure' },
-        changedFiles: changed.changedFiles,
-        scopeBlockers: taskScopeBlockers,
-        otherBlockers,
-        claudeDurationMs,
+        return {
+          claude,
+          parsed: { subtype: 'executor_failure' },
+          changedFiles: changed.changedFiles,
+          scopeBlockers: taskScopeBlockers,
+          otherBlockers,
+          claudeDurationMs,
+        }
       }
     }
 
