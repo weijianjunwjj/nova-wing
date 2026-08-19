@@ -506,3 +506,81 @@ test('CASE H: reused executor can recover max_turns in subsequent execute() call
   assert.ok(claudeRequests[2]?.args.includes('session-first'), 'second execution continues first session')
   assert.ok(claudeRequests[3]?.args.includes('session-second'), 'second recovery should use second session')
 })
+
+test('CASE UNTRACKED A: untracked files in allowed directory do not produce scope blocker', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result('?? apps/web/index.html\n?? apps/web/src/App.vue\n?? package.json\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/web/**', 'package.json'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(report.changedFiles, ['apps/web/index.html', 'apps/web/src/App.vue', 'package.json'])
+  assert.equal(report.blockers.length, 0, 'should have no scope blockers')
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    { name: 'npm test', status: 'passed' },
+  ])
+
+  const statusRequests = runner.requests.filter(
+    (request) =>
+      request.args.length >= 2 &&
+      request.args[1]?.includes('git status --porcelain') === true,
+  )
+  assert.ok(statusRequests.length >= 1, 'should call git status at least once')
+  const inspectStatusRequest = statusRequests.find((request) =>
+    request.args[1]?.includes('--untracked-files=all'),
+  )
+  assert.ok(
+    inspectStatusRequest !== undefined,
+    'inspect-changes should use --untracked-files=all',
+  )
+})
+
+test('CASE UNTRACKED B: untracked files outside allowed scope still produce blocker', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result('?? apps/api/main.py\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/web/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(report.changedFiles, ['apps/api/main.py'])
+  assert.equal(report.verificationResults.length, 0)
+  assert.match(report.blockers[0] ?? '', /outside allowed scope: apps\/api\/main\.py/)
+})
+
+test('CASE UNTRACKED C: tracked modified files still work correctly', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M apps/web/src/App.vue\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/web/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(report.changedFiles, ['apps/web/src/App.vue'])
+  assert.equal(report.blockers.length, 0)
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    { name: 'npm test', status: 'passed' },
+  ])
+})

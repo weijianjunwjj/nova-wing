@@ -325,7 +325,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     changedFiles: string[]
     blocker?: string
   }> {
-    const status = await this.runBash('git status --porcelain', 30_000)
+    const status = await this.runBash('git status --porcelain --untracked-files=all', 30_000)
     if (status.exitCode !== 0) {
       return {
         changedFiles: [],
@@ -553,7 +553,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     const changedStartedAt = performance.now()
     const changed = await this.readChangedFiles()
     this.emitTiming(task, 'inspect-changes', performance.now() - changedStartedAt, {
-      command: 'git status --porcelain',
+      command: 'git status --porcelain --untracked-files=all',
     })
     const taskScopeBlockers = [
       ...(changed.blocker === undefined ? [] : [changed.blocker]),
