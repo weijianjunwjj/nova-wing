@@ -275,7 +275,6 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
   private readonly maxTurns: number
   private sessionId: string | undefined
   private activeTaskId: string | undefined
-  private maxTurnRecoveryAttempted = false
 
   constructor(private readonly options: ClaudeCodeExecutorOptions) {
     this.runner = options.commandRunner ?? defaultCommandRunner
@@ -415,8 +414,9 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
   private isRecoverableMaxTurns(
     parsed: ClaudeCodeJsonResult,
     scopeBlockers: readonly string[],
+    maxTurnRecoveryAttempted: boolean,
   ): boolean {
-    if (this.maxTurnRecoveryAttempted) {
+    if (maxTurnRecoveryAttempted) {
       return false
     }
     if (parsed.subtype !== 'error_max_turns') {
@@ -526,6 +526,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     packet: DelegationPacket
   }): Promise<ExecutionReport> {
     const totalStartedAt = performance.now()
+    let maxTurnRecoveryAttempted = false
     try {
       const cleanStartedAt = performance.now()
       const startBlocker = await this.ensureCleanStart(input.task)
@@ -546,10 +547,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       let finalAttempt = firstAttempt
 
       if (
-        this.isRecoverableMaxTurns(firstAttempt.parsed, firstAttempt.scopeBlockers) &&
+        this.isRecoverableMaxTurns(firstAttempt.parsed, firstAttempt.scopeBlockers, maxTurnRecoveryAttempted) &&
         firstAttempt.otherBlockers.length === 0
       ) {
-        this.maxTurnRecoveryAttempted = true
+        maxTurnRecoveryAttempted = true
         const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
         finalAttempt = recoveryAttempt
 

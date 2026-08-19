@@ -414,3 +414,90 @@ test('CASE F: recovery does not trigger clean-worktree gate on legitimate change
 
   assert.equal(statusRequests.length, 3, 'git status: once for clean gate, twice for inspect-changes')
 })
+
+test('CASE G: real Claude Code error_max_turns payload triggers auto-resume', async () => {
+  const realClaudePayload = JSON.stringify({
+    type: 'result',
+    subtype: 'error_max_turns',
+    is_error: true,
+    num_turns: 13,
+    stop_reason: 'tool_use',
+    session_id: 'a61507a4-ab5b-4677-a842-7595eb47a902',
+    permission_denials: [],
+    terminal_reason: 'max_turns',
+    errors: ['Reached maximum number of turns (12)'],
+  })
+
+  const runner = new QueueRunner([
+    result(''),
+    result(realClaudePayload),
+    result(' M src/a.ts\n'),
+    result(claudeJson({ result: '已完成所有任务。' })),
+    result(' M src/a.ts\n M src/a.test.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({ task: task(), packet: packet() })
+
+  assert.deepEqual(report.changedFiles, ['src/a.ts', 'src/a.test.ts'])
+  assert.deepEqual(report.verificationResults, [
+    { name: 'git diff --check', status: 'passed' },
+    { name: 'npm test', status: 'passed' },
+  ])
+  assert.deepEqual(report.blockers, [], 'should have no blockers after successful recovery')
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 2, 'should call Claude twice: initial + recovery')
+  assert.ok(claudeRequests[1]?.args.includes('--resume'), 'second call should use --resume')
+  assert.ok(
+    claudeRequests[1]?.args.includes('a61507a4-ab5b-4677-a842-7595eb47a902'),
+    'second call should use real session_id',
+  )
+
+  const secondMaxTurnsIndex = claudeRequests[1]?.args.findIndex((entry) => entry === '--max-turns')
+  assert.ok(secondMaxTurnsIndex !== undefined && secondMaxTurnsIndex >= 0)
+  assert.equal(claudeRequests[1]?.args[secondMaxTurnsIndex + 1], '6', 'recovery should use 6 turns')
+})
+
+test('CASE H: reused executor can recover max_turns in subsequent execute() calls', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ subtype: 'error_max_turns', session_id: 'session-first' })),
+    result(' M src/a.ts\n'),
+    result(claudeJson({ result: '已完成第一次任务。', session_id: 'session-first' })),
+    result(' M src/a.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+    result(claudeJson({ subtype: 'error_max_turns', result: '第二次达到 max_turns。', session_id: 'session-second' })),
+    result(' M src/a.ts\n M src/b.ts\n'),
+    result(claudeJson({ result: '第二次 recovery 成功。', session_id: 'session-second' })),
+    result(' M src/a.ts\n M src/b.ts\n M src/c.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const firstReport = await executor.execute({ task: task(0), packet: packet() })
+  assert.deepEqual(firstReport.blockers, [], 'first execution should succeed after recovery')
+  assert.deepEqual(firstReport.changedFiles, ['src/a.ts'])
+
+  const secondReport = await executor.execute({
+    task: task(1),
+    packet: { ...packet(), verdict: 'revise' },
+  })
+  assert.deepEqual(secondReport.blockers, [], 'second execution should also succeed after recovery')
+  assert.deepEqual(secondReport.changedFiles, ['src/a.ts', 'src/b.ts', 'src/c.ts'])
+
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.equal(claudeRequests.length, 4, 'should call Claude 4 times: first + recovery1 + second + recovery2')
+  assert.ok(claudeRequests[1]?.args.includes('session-first'), 'first recovery should use first session')
+  assert.ok(claudeRequests[2]?.args.includes('--resume'), 'second execution should resume')
+  assert.ok(claudeRequests[2]?.args.includes('session-first'), 'second execution continues first session')
+  assert.ok(claudeRequests[3]?.args.includes('session-second'), 'second recovery should use second session')
+})
