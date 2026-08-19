@@ -55,6 +55,7 @@ export interface ClaudeCodeExecutorOptions {
   maxTurns?: number
   timeoutMs?: number
   model?: string
+  allowNpmInstall?: boolean
   commandRunner?: GuardianCommandRunner
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
@@ -376,7 +377,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     if (this.sessionId !== undefined) {
       args.push('--resume', this.sessionId)
     }
-    args.push('--allowedTools', ...DEFAULT_ALLOWED_TOOLS)
+
+    const allowedTools: string[] = [...DEFAULT_ALLOWED_TOOLS]
+    if (this.options.allowNpmInstall === true) {
+      allowedTools.push('Bash(npm install:*)')
+    }
+    args.push('--allowedTools', ...allowedTools)
     return args
   }
 

@@ -207,6 +207,8 @@ const conversationUrl = process.env.NOVAWING_CHATGPT_CONVERSATION_URL?.trim() ||
 const claudeModel = process.env.NOVAWING_CLAUDE_MODEL?.trim() || undefined
 const chatgptModel = process.env.NOVAWING_CHATGPT_MODEL?.trim() || undefined
 const chatgptReasoning = process.env.NOVAWING_CHATGPT_REASONING?.trim() || 'medium'
+const allowNpmInstall = process.env.NOVAWING_ALLOW_NPM_INSTALL?.trim() === '1' ||
+                         process.env.NOVAWING_ALLOW_NPM_INSTALL?.trim() === 'true'
 
 const brain = new AskBridgeBrain({
   ...(conversationUrl === undefined ? {} : { conversationUrl }),
@@ -222,6 +224,7 @@ const executor = new ClaudeCodeExecutor({
   maxTurns: maxClaudeTurns,
   timeoutMs: claudeTimeoutMs,
   ...(claudeModel === undefined ? {} : { model: claudeModel }),
+  ...(allowNpmInstall ? { allowNpmInstall: true } : {}),
   onVerification: (result) => {
     display.onProgress({
       phase: 'VERIFYING',
