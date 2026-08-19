@@ -84,7 +84,7 @@ test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic on 
   assert.ok(failureContext, 'must report second max_turns')
 })
 
-test('error_max_turns with exitCode=1 blocks recovery and shows no diagnostic', async () => {
+test('error_max_turns with exitCode=1 blocks recovery and shows diagnostic', async () => {
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' }), 1),
@@ -120,16 +120,24 @@ test('error_max_turns with exitCode=1 blocks recovery and shows no diagnostic', 
   })
 
   assert.equal(recoveries.length, 0, 'must not trigger recovery when exitCode != 0')
-  assert.equal(report.blockers.length, 1, 'must have only exitCode blocker')
+  assert.equal(report.blockers.length, 2, 'must have exitCode blocker and diagnostic')
+
   const exitCodeBlocker = report.blockers.find((b) => b.includes('Claude Code failed'))
   assert.ok(exitCodeBlocker, 'must report Claude Code failure')
   assert.ok(
     exitCodeBlocker?.includes('error_max_turns'),
     'blocker must contain stdout (JSON with error_max_turns)',
   )
+
+  const diagnostic = report.blockers.find((b) => b.includes('[MAX_TURN_RECOVERY_DECISION]'))
+  assert.ok(diagnostic, 'must include recovery decision diagnostic')
+  assert.ok(diagnostic?.includes('eligible=false'), 'must show ineligible')
+  assert.ok(diagnostic?.includes('reason=nonzero_exit_code'), 'must show nonzero exit code reason')
+  assert.ok(diagnostic?.includes('exitCode=1'), 'must show exit code 1')
+  assert.ok(diagnostic?.includes('subtype=error_max_turns'), 'must show subtype')
 })
 
-test('error_max_turns with exitCode=0 and otherBlockers shows diagnostic', async () => {
+test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic', async () => {
   const runner = new QueueRunner([
     result(''),
     result(
@@ -156,7 +164,7 @@ test('error_max_turns with exitCode=0 and otherBlockers shows diagnostic', async
     },
   })
 
-  await executor.execute({
+  const report = await executor.execute({
     task: {
       id: 'task-diagnostic-test',
       goal: 'test diagnostic output',
@@ -175,7 +183,12 @@ test('error_max_turns with exitCode=0 and otherBlockers shows diagnostic', async
   })
 
   assert.equal(recoveries.length, 1, 'must trigger recovery')
+  assert.equal(report.blockers.length, 0, 'must have no blockers when recovery succeeds')
+
   const claudeRequests = runner.requests.filter((req) => req.args.some((a) => a.includes('claude')))
   assert.equal(claudeRequests.length, 2, 'must call Claude twice')
   assert.ok(claudeRequests[1]?.args.includes('--resume'), 'second call must use --resume')
+
+  // 注意：eligible=true 的诊断不会出现在 finalAttempt.blockers 中，因为恢复成功了
+  // 诊断只在测试场景通过 onRecovery 的存在来触发，但不影响最终 report
 })

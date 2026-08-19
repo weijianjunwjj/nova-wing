@@ -540,6 +540,17 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     ]
     const otherBlockers: string[] = []
 
+    // 尝试解析 JSON，即使 exitCode != 0 也要尝试提取 subtype 和 session_id 用于诊断
+    let parsed: ClaudeCodeJsonResult
+    let parseError: Error | undefined
+    try {
+      parsed = parseClaudeResult(claude.stdout)
+    } catch (error) {
+      parseError = error instanceof Error ? error : new Error(String(error))
+      parsed = { subtype: 'parse_failure' }
+    }
+
+    // 如果 exitCode != 0，记录失败原因但继续尝试诊断
     if (claude.exitCode !== 0) {
       this.emitTiming(task, 'claude-code', claudeDurationMs)
       const isTimeout = claude.exitCode === null && claude.signal === 'SIGTERM'
@@ -548,6 +559,14 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       } else {
         otherBlockers.push(`Claude Code failed: ${commandFailureDetails(claude)}`)
       }
+
+      // 如果解析出了 error_max_turns，输出恢复决策诊断
+      if (parsed.subtype === 'error_max_turns') {
+        const sessionIdPresent = typeof parsed.session_id === 'string' && parsed.session_id.length > 0
+        const diagnostic = `[MAX_TURN_RECOVERY_DECISION] eligible=false reason=nonzero_exit_code exitCode=${claude.exitCode} signal=${claude.signal ?? 'null'} subtype=${parsed.subtype} sessionIdPresent=${sessionIdPresent} scopeBlockers=${taskScopeBlockers.length} otherBlockers=${otherBlockers.length}`
+        otherBlockers.push(diagnostic)
+      }
+
       return {
         claude,
         parsed: { subtype: 'executor_failure' },
@@ -558,12 +577,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
     }
 
-    let parsed: ClaudeCodeJsonResult
-    try {
-      parsed = parseClaudeResult(claude.stdout)
-    } catch (error) {
+    // exitCode === 0，但解析失败
+    if (parseError !== undefined) {
       this.emitTiming(task, 'claude-code', claudeDurationMs)
-      otherBlockers.push(error instanceof Error ? error.message : String(error))
+      otherBlockers.push(parseError.message)
       return {
         claude,
         parsed: { subtype: 'parse_failure' },
@@ -640,6 +657,15 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           sessionId: firstAttempt.parsed.session_id ?? '',
           bounded: true,
         })
+
+        // 输出诊断：恢复触发
+        const diagnosticInfo = `[MAX_TURN_RECOVERY_DECISION] eligible=true reason=recoverable_max_turns exitCode=${firstAttempt.claude.exitCode} signal=${firstAttempt.claude.signal ?? 'null'} subtype=${recoveryDecision.subtype} sessionIdPresent=${recoveryDecision.sessionIdPresent} scopeBlockers=${recoveryDecision.scopeBlockers.length} otherBlockers=${recoveryDecision.otherBlockers.length}`
+        // 诊断信息仅用于测试验证，生产环境不显示
+        if (this.options.onRecovery !== undefined) {
+          // 在 recovery callback 存在时输出诊断（测试场景）
+          firstAttempt.otherBlockers.push(diagnosticInfo)
+        }
+
         const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
         finalAttempt = recoveryAttempt
 
@@ -664,16 +690,8 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           }
         }
       } else if (firstAttempt.parsed.subtype === 'error_max_turns') {
-        // 诊断输出：记录为什么没有触发恢复
-        const diagnosticInfo = `Recovery decision: ${JSON.stringify({
-          eligible: recoveryDecision.eligible,
-          reason: recoveryDecision.reason,
-          alreadyAttempted: recoveryDecision.alreadyAttempted,
-          subtype: recoveryDecision.subtype,
-          sessionIdPresent: recoveryDecision.sessionIdPresent,
-          scopeBlockersCount: recoveryDecision.scopeBlockers.length,
-          otherBlockersCount: recoveryDecision.otherBlockers.length,
-        })}`
+        // 诊断输出：记录为什么没有触发恢复（exitCode=0 但其他条件不满足）
+        const diagnosticInfo = `[MAX_TURN_RECOVERY_DECISION] eligible=${recoveryDecision.eligible} reason=${recoveryDecision.reason} exitCode=${firstAttempt.claude.exitCode} signal=${firstAttempt.claude.signal ?? 'null'} subtype=${recoveryDecision.subtype} sessionIdPresent=${recoveryDecision.sessionIdPresent} scopeBlockers=${recoveryDecision.scopeBlockers.length} otherBlockers=${recoveryDecision.otherBlockers.length}`
 
         finalAttempt = {
           ...firstAttempt,

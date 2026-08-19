@@ -74,11 +74,16 @@ test('recovery decision diagnostic captures exitCode != 0 blocker', async () => 
     },
   })
 
-  // exitCode != 0 时，executeClaudeOnce 会提前返回，parsed.subtype = 'executor_failure'
-  // 此时不会进入 error_max_turns 的 else if 分支，因此不会有诊断信息
-  assert.equal(report.blockers.length, 1, 'must have only exitCode blocker')
+  // exitCode != 0 时，executeClaudeOnce 会提前返回并输出诊断
+  assert.equal(report.blockers.length, 2, 'must have exitCode blocker and diagnostic')
   const exitCodeBlocker = report.blockers.find((b) => b.includes('Claude Code failed'))
   assert.ok(exitCodeBlocker, 'must report Claude Code failure with exit code 1')
+
+  const diagnostic = report.blockers.find((b) => b.includes('[MAX_TURN_RECOVERY_DECISION]'))
+  assert.ok(diagnostic, 'must include recovery decision diagnostic')
+  assert.ok(diagnostic?.includes('eligible=false'), 'decision must be ineligible')
+  assert.ok(diagnostic?.includes('reason=nonzero_exit_code'), 'must show nonzero exit code reason')
+  assert.ok(diagnostic?.includes('exitCode=1'), 'must show exit code 1')
 })
 
 test('recovery decision diagnostic captures scopeBlockers', async () => {
@@ -112,11 +117,11 @@ test('recovery decision diagnostic captures scopeBlockers', async () => {
     },
   })
 
-  const diagnostic = report.blockers.find((b) => b.includes('Recovery decision'))
+  const diagnostic = report.blockers.find((b) => b.includes('[MAX_TURN_RECOVERY_DECISION]'))
   assert.ok(diagnostic, 'must include recovery decision diagnostic')
-  assert.ok(diagnostic?.includes('"eligible":false'), 'decision must be ineligible')
-  assert.ok(diagnostic?.includes('"scopeBlockersCount":1'), 'must show scopeBlockers present')
-  assert.ok(diagnostic?.includes('"otherBlockersCount":0'), 'must show no otherBlockers')
+  assert.ok(diagnostic?.includes('eligible=false'), 'decision must be ineligible')
+  assert.ok(diagnostic?.includes('scopeBlockers=1'), 'must show scopeBlockers present')
+  assert.ok(diagnostic?.includes('otherBlockers=0'), 'must show no otherBlockers')
 })
 
 test('recovery decision shows eligible when all conditions met', async () => {
