@@ -212,3 +212,51 @@ test('executor resumes same Claude Code session on revise round', async () => {
   assert.ok(claudeRequests[1]?.args.includes('--resume'))
   assert.ok(claudeRequests[1]?.args.includes('session-123'))
 })
+
+test('executor prompt includes hard boundaries and excludes internal fields', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M src/a.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  await executor.execute({
+    task: task(3, {
+      id: 'task-boundary-test',
+      allowedPaths: ['src/**'],
+      forbiddenPaths: ['test/**', 'package.json'],
+    }),
+    packet: {
+      verdict: 'proceed',
+      goal: '实现用户认证功能',
+      instructions: ['在 src/auth.ts 中添加登录方法'],
+      constraints: ['必须使用现有 hash 函数'],
+      verification: ['npm test'],
+      doNotDo: ['不要修改公开 API'],
+    },
+  })
+
+  const claudeRequest = runner.requests.find((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.ok(claudeRequest !== undefined, 'should have Claude Code request')
+
+  const promptArgIndex = claudeRequest.args.findIndex((entry) => entry === '-p')
+  assert.ok(promptArgIndex >= 0, 'should have -p flag')
+  const prompt = claudeRequest.args[promptArgIndex + 1] ?? ''
+
+  assert.match(prompt, /实现用户认证功能/, 'prompt must include goal')
+  assert.match(prompt, /在 src\/auth\.ts 中添加登录方法/, 'prompt must include instructions')
+  assert.match(prompt, /必须使用现有 hash 函数/, 'prompt must include constraints')
+  assert.match(prompt, /src\/\*\*/, 'prompt must include allowedPaths')
+  assert.match(prompt, /test\/\*\*/, 'prompt must include forbiddenPaths')
+  assert.match(prompt, /package\.json/, 'prompt must include forbiddenPaths')
+  assert.match(prompt, /不要修改公开 API/, 'prompt must include doNotDo')
+
+  assert.doesNotMatch(prompt, /task-boundary-test/, 'prompt must not include task.id')
+  assert.doesNotMatch(prompt, /iteration.*3/, 'prompt must not include task.iteration')
+  assert.doesNotMatch(prompt, /npm test/, 'prompt must not include verification command')
+})
