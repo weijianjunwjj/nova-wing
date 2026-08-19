@@ -40,6 +40,16 @@ export interface ClaudeCodeTimingEvent {
   apiDurationMs?: number
 }
 
+export interface MaxTurnRecoveryDecision {
+  eligible: boolean
+  reason: string
+  alreadyAttempted: boolean
+  subtype: string | undefined
+  sessionIdPresent: boolean
+  scopeBlockers: readonly string[]
+  otherBlockers: readonly string[]
+}
+
 export interface ClaudeCodeExecutorOptions {
   cwd: string
   maxTurns?: number
@@ -417,24 +427,83 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       : 'Claude Code 执行结束。'
   }
 
-  private isRecoverableMaxTurns(
+  private evaluateMaxTurnRecovery(
     parsed: ClaudeCodeJsonResult,
     scopeBlockers: readonly string[],
+    otherBlockers: readonly string[],
     maxTurnRecoveryAttempted: boolean,
-  ): boolean {
+  ): MaxTurnRecoveryDecision {
+    const sessionIdPresent = typeof parsed.session_id === 'string' && parsed.session_id.length > 0
+
     if (maxTurnRecoveryAttempted) {
-      return false
+      return {
+        eligible: false,
+        reason: 'recovery already attempted',
+        alreadyAttempted: true,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
     }
+
     if (parsed.subtype !== 'error_max_turns') {
-      return false
+      return {
+        eligible: false,
+        reason: `subtype is not error_max_turns (actual: ${parsed.subtype ?? 'undefined'})`,
+        alreadyAttempted: false,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
     }
-    if (typeof parsed.session_id !== 'string' || parsed.session_id.length === 0) {
-      return false
+
+    if (!sessionIdPresent) {
+      return {
+        eligible: false,
+        reason: 'session_id missing or empty',
+        alreadyAttempted: false,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
     }
+
     if (scopeBlockers.length > 0) {
-      return false
+      return {
+        eligible: false,
+        reason: `scope blockers present: ${scopeBlockers[0]}`,
+        alreadyAttempted: false,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
     }
-    return true
+
+    if (otherBlockers.length > 0) {
+      return {
+        eligible: false,
+        reason: `other blockers present: ${otherBlockers[0]}`,
+        alreadyAttempted: false,
+        subtype: parsed.subtype,
+        sessionIdPresent,
+        scopeBlockers,
+        otherBlockers,
+      }
+    }
+
+    return {
+      eligible: true,
+      reason: 'all conditions met',
+      alreadyAttempted: false,
+      subtype: parsed.subtype,
+      sessionIdPresent,
+      scopeBlockers,
+      otherBlockers,
+    }
   }
 
   private async executeClaudeOnce(
@@ -557,10 +626,14 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       let firstAttempt = await this.executeClaudeOnce(input.task, input.packet, false)
       let finalAttempt = firstAttempt
 
-      if (
-        this.isRecoverableMaxTurns(firstAttempt.parsed, firstAttempt.scopeBlockers, maxTurnRecoveryAttempted) &&
-        firstAttempt.otherBlockers.length === 0
-      ) {
+      const recoveryDecision = this.evaluateMaxTurnRecovery(
+        firstAttempt.parsed,
+        firstAttempt.scopeBlockers,
+        firstAttempt.otherBlockers,
+        maxTurnRecoveryAttempted,
+      )
+
+      if (recoveryDecision.eligible) {
         maxTurnRecoveryAttempted = true
         this.options.onRecovery?.({
           reason: 'max_turns',
@@ -591,6 +664,17 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           }
         }
       } else if (firstAttempt.parsed.subtype === 'error_max_turns') {
+        // 诊断输出：记录为什么没有触发恢复
+        const diagnosticInfo = `Recovery decision: ${JSON.stringify({
+          eligible: recoveryDecision.eligible,
+          reason: recoveryDecision.reason,
+          alreadyAttempted: recoveryDecision.alreadyAttempted,
+          subtype: recoveryDecision.subtype,
+          sessionIdPresent: recoveryDecision.sessionIdPresent,
+          scopeBlockersCount: recoveryDecision.scopeBlockers.length,
+          otherBlockersCount: recoveryDecision.otherBlockers.length,
+        })}`
+
         finalAttempt = {
           ...firstAttempt,
           otherBlockers: [
@@ -600,7 +684,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
               : typeof firstAttempt.parsed.session_id !== 'string' ||
                   firstAttempt.parsed.session_id.length === 0
                 ? `达到 max_turns 但没有 session_id，不自动恢复`
-                : `达到 max_turns: ${firstAttempt.parsed.subtype ?? 'unknown'}`,
+                : firstAttempt.otherBlockers.length > 0
+                  ? `达到 max_turns 但存在其他 blocker，不自动恢复`
+                  : `达到 max_turns: ${firstAttempt.parsed.subtype ?? 'unknown'}`,
+            diagnosticInfo,
           ],
         }
       }
