@@ -359,9 +359,14 @@ test('CASE D: executor does not attempt third recovery after second max_turns', 
 
   const report = await executor.execute({ task: task(), packet: packet() })
 
-  assert.equal(report.verificationResults.length, 0)
-  assert.match(report.blockers[0] ?? '', /首次达到 max_turns/)
-  assert.match(report.blockers[0] ?? '', /第二次执行仍达到 max_turns/)
+  assert.equal(report.verificationResults.length, 0, 'should not run verification on second max_turns')
+  assert.equal(report.blockers.length, 0, 'should have no blockers when safe boundaries are intact')
+  assert.notEqual(report.incompleteReason, undefined, 'should have incompleteReason')
+  assert.match(
+    report.incompleteReason ?? '',
+    /执行预算耗尽/,
+    'incompleteReason should mention budget exhaustion',
+  )
 
   const claudeRequests = runner.requests.filter((request) =>
     request.args.some((entry) => entry.includes('claude')),

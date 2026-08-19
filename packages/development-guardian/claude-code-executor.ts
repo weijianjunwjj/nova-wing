@@ -623,6 +623,13 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       this.sessionId = parsed.session_id
     }
 
+    // 检查 permission_denials
+    if (Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0) {
+      otherBlockers.push(
+        `Claude Code 尝试执行未授权操作，被拒绝 ${parsed.permission_denials.length} 次`,
+      )
+    }
+
     if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
       if (parsed.subtype !== 'error_max_turns') {
         otherBlockers.push(`Claude Code result is not successful: ${parsed.subtype ?? 'unknown'}`)
@@ -690,17 +697,51 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
         finalAttempt = recoveryAttempt
 
-        if (
-          recoveryAttempt.parsed.subtype === 'error_max_turns' ||
+        // 第二次 max_turns 后的判断
+        if (recoveryAttempt.parsed.subtype === 'error_max_turns') {
+          // 检查第二次是否也满足安全边界（无 scope violation、无 permission denial 等）
+          const secondRecoveryDecision = this.evaluateMaxTurnRecovery(
+            recoveryAttempt.parsed,
+            recoveryAttempt.scopeBlockers,
+            recoveryAttempt.otherBlockers,
+            true, // 已经尝试过一次 recovery
+          )
+
+          if (
+            secondRecoveryDecision.scopeBlockers.length === 0 &&
+            secondRecoveryDecision.otherBlockers.length === 0
+          ) {
+            // 安全边界正常，只是工作未完成
+            // 不添加 blocker，让 Guardian 重新请求 Brain review
+            finalAttempt = {
+              ...recoveryAttempt,
+              otherBlockers: [],
+            }
+            // incompleteReason 将在最终 return 时添加
+          } else {
+            // 有真正的安全 blocker
+            const recoveryFailureContext =
+              recoveryAttempt.scopeBlockers.length > 0
+                ? `recovery 产生 scope violation: ${recoveryAttempt.scopeBlockers[0]}`
+                : `recovery 失败: ${recoveryAttempt.otherBlockers[0]}`
+
+            finalAttempt = {
+              ...recoveryAttempt,
+              otherBlockers: [
+                ...recoveryAttempt.otherBlockers,
+                `首次达到 max_turns 后自动 resume 一次，${recoveryFailureContext}`,
+              ],
+            }
+          }
+        } else if (
           recoveryAttempt.otherBlockers.length > 0 ||
           recoveryAttempt.scopeBlockers.length > 0
         ) {
+          // 不是 max_turns，而是其他类型的 blocker
           const recoveryFailureContext =
-            recoveryAttempt.parsed.subtype === 'error_max_turns'
-              ? '第二次执行仍达到 max_turns'
-              : recoveryAttempt.otherBlockers.length > 0
-                ? `recovery 失败: ${recoveryAttempt.otherBlockers[0]}`
-                : `recovery 产生 scope violation: ${recoveryAttempt.scopeBlockers[0]}`
+            recoveryAttempt.otherBlockers.length > 0
+              ? `recovery 失败: ${recoveryAttempt.otherBlockers[0]}`
+              : `recovery 产生 scope violation: ${recoveryAttempt.scopeBlockers[0]}`
 
           finalAttempt = {
             ...recoveryAttempt,
@@ -733,6 +774,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
 
       const allBlockers = [...finalAttempt.scopeBlockers, ...finalAttempt.otherBlockers]
 
+      // 检查是否是第二次 max_turns 且安全边界正常
+      const isSecondMaxTurnsSafe =
+        maxTurnRecoveryAttempted &&
+        finalAttempt.parsed.subtype === 'error_max_turns' &&
+        allBlockers.length === 0
+
       if (allBlockers.length > 0) {
         return {
           summary: this.reportSummary(finalAttempt.parsed),
@@ -740,6 +787,20 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           commandsRun: ['claude -p --output-format json'],
           verificationResults: [],
           blockers: allBlockers,
+        }
+      }
+
+      // 如果是第二次 max_turns 且安全边界正常，不运行 verification
+      // 因为已知任务未完成，让 Guardian 重新请求 Brain review
+      if (isSecondMaxTurnsSafe) {
+        return {
+          summary: this.reportSummary(finalAttempt.parsed),
+          changedFiles: finalAttempt.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers: [],
+          incompleteReason:
+            '执行预算耗尽（12 + 6 turns），但安全边界正常，需要 Brain 判断是否继续',
         }
       }
 

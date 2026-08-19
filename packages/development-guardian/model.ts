@@ -33,6 +33,7 @@ export interface ExecutionReport {
   verificationResults: readonly VerificationResult[]
   blockers: readonly string[]
   rawOutputRef?: string
+  incompleteReason?: string
 }
 
 export interface GuardianTask {

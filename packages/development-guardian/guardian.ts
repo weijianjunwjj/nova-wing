@@ -180,5 +180,13 @@ export async function runGuardianTask(options: {
       emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
       return { task, reports }
     }
+
+    // 如果有 incompleteReason 但没有 blockers，重新进入 REVIEWING
+    // 让 Brain 根据当前进展判断是否 revise
+    if (report.incompleteReason !== undefined) {
+      emitProgress('EXECUTING', 'completed', report.incompleteReason)
+      // 继续循环，重新进入 REVIEWING
+      continue
+    }
   }
 }

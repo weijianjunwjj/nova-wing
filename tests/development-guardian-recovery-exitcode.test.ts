@@ -79,9 +79,13 @@ test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic on 
   })
 
   assert.equal(recoveries.length, 1, 'must trigger recovery once')
-  assert.equal(report.blockers.length, 1, 'must have failure context blocker')
-  const failureContext = report.blockers.find((b) => b.includes('第二次执行仍达到 max_turns'))
-  assert.ok(failureContext, 'must report second max_turns')
+  assert.equal(report.blockers.length, 0, 'must have no blockers when safe boundaries are intact')
+  assert.notEqual(report.incompleteReason, undefined, 'must have incompleteReason')
+  assert.match(
+    report.incompleteReason ?? '',
+    /执行预算耗尽/,
+    'incompleteReason should mention budget exhaustion',
+  )
 })
 
 test('error_max_turns with exitCode=1 + valid session_id triggers recovery', async () => {
