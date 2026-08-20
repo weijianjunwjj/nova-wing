@@ -73,11 +73,12 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   }
 
   // Permission required (capability 不足)
+  // 不依赖英文关键词，根据结构化证据判断
   if (
     task.lastReport?.permissionDenials !== undefined &&
     task.lastReport.permissionDenials.length > 0 &&
-    task.lastPacket?.verdict === 'blocked' &&
-    task.lastPacket?.rationale?.includes('capability')
+    task.lastReport.blockers.length === 0 &&
+    task.lastPacket?.verdict === 'blocked'
   ) {
     return {
       category: 'PERMISSION_REQUIRED',
@@ -102,7 +103,8 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
 
 export interface GuardianWorkSessionTaskRunnerOptions {
   brain: GuardianBrain
-  executor: GuardianExecutor
+  createExecutor: (task: WorkSessionTask, resumeData?: unknown) => GuardianExecutor
+  createGuardianTask?: (task: WorkSessionTask, resumeData?: unknown) => GuardianTask
   taskBuilder?: GuardianTaskBuilderOptions
 }
 
@@ -115,16 +117,21 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
   async run(
     workSessionTask: WorkSessionTask,
-    _resumeData?: any,
+    resumeData?: any,
   ): Promise<WorkSessionTaskResult> {
     // 从 Work Session Task 构造 Guardian Task
-    const guardianTask = createGuardianTask(workSessionTask, this.options.taskBuilder)
+    const guardianTask = this.options.createGuardianTask
+      ? this.options.createGuardianTask(workSessionTask, resumeData)
+      : createGuardianTask(workSessionTask, this.options.taskBuilder)
+
+    // 为每个 Work Session Task 创建新的 Executor instance
+    const executor = this.options.createExecutor(workSessionTask, resumeData)
 
     // 运行 Guardian
     const result = await runGuardianTask({
       task: guardianTask,
       brain: this.options.brain,
-      executor: this.options.executor,
+      executor,
     })
 
     // 映射结果
@@ -163,5 +170,3 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     }
   }
 }
-
-

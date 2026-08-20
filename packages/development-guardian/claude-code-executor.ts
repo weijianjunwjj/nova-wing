@@ -119,6 +119,30 @@ const SENSITIVE_FIELDS = new Set([
 ])
 
 /**
+ * 安全处理权限证据文本，做敏感信息 redaction
+ */
+function sanitizePermissionEvidenceText(
+  value: unknown,
+  maxLength: number,
+  redactedFallback: string,
+): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    return redactedFallback
+  }
+
+  const lowerValue = value.toLowerCase()
+  const hasSensitive = Array.from(SENSITIVE_FIELDS).some((field) =>
+    lowerValue.includes(field),
+  )
+
+  if (hasSensitive) {
+    return redactedFallback
+  }
+
+  return value.slice(0, maxLength)
+}
+
+/**
  * 从 Claude permission_denials 中安全提取 evidence
  * 不信任外部数据，只提取明确允许的字段
  */
@@ -147,23 +171,21 @@ function extractPermissionDenialEvidence(
 
     // 提取 operation / command，做 redaction
     const operation = denialObj.operation ?? denialObj.command ?? denialObj.description
-    if (typeof operation === 'string' && operation.length > 0) {
-      // 检查是否包含敏感字段名
-      const lowerOp = operation.toLowerCase()
-      const hasSensitive = Array.from(SENSITIVE_FIELDS).some((field) =>
-        lowerOp.includes(field),
-      )
-      if (hasSensitive) {
-        result.operation = '[operation contains sensitive data]'
-      } else {
-        result.operation = operation.slice(0, 300)
-      }
-    }
+    result.operation = sanitizePermissionEvidenceText(
+      operation,
+      300,
+      '[operation contains sensitive data]',
+    )
 
-    // 提取 reason / message
+    // 提取 reason / message，做 redaction
     const reason = denialObj.reason ?? denialObj.message
-    if (typeof reason === 'string' && reason.length > 0) {
-      result.summary = reason.slice(0, 200)
+    const sanitizedReason = sanitizePermissionEvidenceText(
+      reason,
+      200,
+      'permission denial details redacted',
+    )
+    if (sanitizedReason !== 'permission denial details redacted') {
+      result.summary = sanitizedReason
     }
 
     evidence.push(result)
