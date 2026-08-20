@@ -192,6 +192,7 @@ describe('Work Session W001 - Durable Skeleton', () => {
       'All tasks should be completed',
     )
     assert.strictEqual(state2.currentTaskId, null, 'No current task')
+    assert.strictEqual(state2.humanRequired, undefined, 'humanRequired should be cleared after completion')
 
     // 核心验证：第二套 runner 的执行次数
     // runner2 的 T1 不应该执行（因为已在 completed 列表）
@@ -277,9 +278,15 @@ describe('Work Session W001 - Durable Skeleton', () => {
         message.includes('failed') || causeMessage.includes('failed'),
         `Error message should contain 'failed', got: ${message}`,
       )
-    } finally {
-      await runtime.close()
     }
+
+    // 验证 Mastra 持久化的 FAILED state
+    const snapshot = await runtime.verifySnapshot()
+    assert.strictEqual(snapshot.exists, true, 'Snapshot should exist')
+    assert.strictEqual(snapshot.status, 'failed', 'Persisted status should be failed')
+    assert.strictEqual(snapshot.hasSuspendedStep, false, 'Should not have suspended step')
+
+    await runtime.close()
 
     // 验证状态
     assert.deepStrictEqual(
@@ -316,44 +323,70 @@ describe('Work Session W001 - Durable Skeleton', () => {
       },
     }
 
-    // T1 initially requires human, then completes on resume
-    const taskRunner = new FakeTaskRunner({
+    // T1 初次需要人工介入，resume 后完成
+    const taskRunner1 = new FakeTaskRunner({
       T1: { type: 'HUMAN_REQUIRED', category: 'PERMISSION_REQUIRED', reason: 'need approval' },
       T2: { type: 'COMPLETED' },
       T3: { type: 'COMPLETED' },
     })
 
-    const config: WorkSessionRuntimeConfig = {
+    const config1: WorkSessionRuntimeConfig = {
       definition,
-      taskRunner,
+      taskRunner: taskRunner1,
       storageUrl,
     }
 
     // 第一次执行
-    const runtime1 = new WorkSessionRuntime(config)
+    const runtime1 = new WorkSessionRuntime(config1)
     const state1 = await runtime1.start()
 
     assert.strictEqual(state1.state, 'SUSPENDED')
     assert.deepStrictEqual(state1.completedTaskIds, [])
     assert.strictEqual(state1.currentTaskId, 'T1')
-    assert.strictEqual(taskRunner.getExecutionCount('T1'), 1)
-    assert.strictEqual(taskRunner.getExecutionCount('T2'), 0)
+    assert.strictEqual(taskRunner1.getExecutionCount('T1'), 1)
+    assert.strictEqual(taskRunner1.getExecutionCount('T2'), 0)
 
     // 关闭第一个 runtime
     await runtime1.close()
 
-    // 模拟进程重启，修改 T1 behavior 为 COMPLETED
-    taskRunner.setBehavior('T1', { type: 'COMPLETED' })
+    // 模拟进程重启，使用 fresh runner，T1 使用 CONDITIONAL behavior
+    const taskRunner2 = new FakeTaskRunner({
+      T1: {
+        type: 'CONDITIONAL',
+        checkResumeData: resumeData => {
+          // resume 时带有 approval 字段，T1 完成
+          if (resumeData?.approval === true) {
+            return { type: 'COMPLETED' }
+          }
+          return { type: 'HUMAN_REQUIRED', category: 'PERMISSION_REQUIRED', reason: 'still need approval' }
+        },
+      },
+      T2: { type: 'COMPLETED' },
+      T3: { type: 'COMPLETED' },
+    })
 
-    const runtime2 = new WorkSessionRuntime(config)
+    const config2: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: taskRunner2,
+      storageUrl,
+    }
+
+    const runtime2 = new WorkSessionRuntime(config2)
     const state2 = await runtime2.resume({ approval: true })
 
-    // 验证 T1 继续执行，不是直接跳到 T2
+    // 验证 T1 继续执行并完成，然后 T2、T3 也执行
     assert.strictEqual(state2.state, 'COMPLETED')
     assert.deepStrictEqual(state2.completedTaskIds, ['T1', 'T2', 'T3'])
-    assert.strictEqual(taskRunner.getExecutionCount('T1'), 2)
-    assert.strictEqual(taskRunner.getExecutionCount('T2'), 1)
-    assert.strictEqual(taskRunner.getExecutionCount('T3'), 1)
+    assert.strictEqual(state2.humanRequired, undefined, 'humanRequired should be cleared')
+
+    // taskRunner2 是新实例，T1 执行 1 次，T2 执行 1 次，T3 执行 1 次
+    assert.strictEqual(taskRunner2.getExecutionCount('T1'), 1)
+    assert.strictEqual(taskRunner2.getExecutionCount('T2'), 1)
+    assert.strictEqual(taskRunner2.getExecutionCount('T3'), 1)
+
+    // taskRunner1 计数不变
+    assert.strictEqual(taskRunner1.getExecutionCount('T1'), 1)
+    assert.strictEqual(taskRunner1.getExecutionCount('T2'), 0)
 
     await runtime2.close()
   })

@@ -89,10 +89,30 @@ export class WorkSessionRuntime {
       throw new Error(`Workflow ${this.workflowId} not found after registration`)
     }
 
+    // 检查 runId 是否已存在，fail-closed
+    const runId = this.config.definition.id
+    try {
+      const existingRun = await workflow.getWorkflowRunById(runId)
+      if (existingRun) {
+        throw new Error(
+          `Work session ${runId} already exists. Use resume() instead of start().`,
+        )
+      }
+    } catch (error: any) {
+      // 如果是 "not found" 错误，说明 runId 不存在，可以继续
+      if (!error.message.includes('not found') && !error.message.includes('already exists')) {
+        throw error
+      }
+      // 如果是 "already exists"，直接抛出
+      if (error.message.includes('already exists')) {
+        throw error
+      }
+    }
+
     try {
       // 使用 sessionId 作为 runId
       const run = await workflow.createRun({
-        runId: this.config.definition.id,
+        runId,
       })
 
       const result = await run.start({
@@ -215,10 +235,11 @@ export class WorkSessionRuntime {
           const result = await self.config.taskRunner.run(task, resumeData)
 
           if (result.status === 'COMPLETED') {
-            // 任务完成，更新状态
+            // 任务完成，更新状态，清除可能残留的 humanRequired
             const completedState: WorkflowState = {
               ...currentState,
               completedTaskIds: [...currentState.completedTaskIds, task.id],
+              humanRequired: undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(completedState)
@@ -263,6 +284,7 @@ export class WorkSessionRuntime {
           ...currentState,
           state: 'COMPLETED',
           currentTaskId: null,
+          humanRequired: undefined,
           updatedAt: new Date().toISOString(),
         }
         await setState(finalState)
