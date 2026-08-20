@@ -270,6 +270,7 @@ export class WorkSessionRuntime {
             const failedState: WorkflowState = {
               ...currentState,
               state: 'FAILED',
+              humanRequired: undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(failedState)

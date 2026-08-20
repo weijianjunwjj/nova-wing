@@ -390,5 +390,146 @@ describe('Work Session W001 - Durable Skeleton', () => {
 
     await runtime2.close()
   })
+
+  it('Case D: duplicate start() on existing session fails closed', async () => {
+    const definition: WorkSessionDefinition = {
+      id: 'test-session-d',
+      targetRepo: '/test/repo',
+      branch: 'main',
+      tasks: [
+        { id: 'T1', goal: 'Task requiring human input' },
+        { id: 'T2', goal: 'Complete task 2' },
+      ],
+      limits: {
+        softMinutes: 45,
+        hardMinutes: 60,
+        maxTasks: 5,
+      },
+    }
+
+    const taskRunner1 = new FakeTaskRunner({
+      T1: { type: 'HUMAN_REQUIRED', category: 'PERMISSION_REQUIRED', reason: 'need approval' },
+      T2: { type: 'COMPLETED' },
+    })
+
+    const config1: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: taskRunner1,
+      storageUrl,
+    }
+
+    // 第一次 start() 成功
+    const runtime1 = new WorkSessionRuntime(config1)
+    const state1 = await runtime1.start()
+
+    assert.strictEqual(state1.state, 'SUSPENDED')
+    assert.strictEqual(taskRunner1.getExecutionCount('T1'), 1)
+
+    await runtime1.close()
+
+    // 第二次尝试 start() 相同 session，必须失败
+    const taskRunner2 = new FakeTaskRunner({
+      T1: { type: 'COMPLETED' },
+      T2: { type: 'COMPLETED' },
+    })
+
+    const config2: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: taskRunner2,
+      storageUrl,
+    }
+
+    const runtime2 = new WorkSessionRuntime(config2)
+
+    await assert.rejects(
+      runtime2.start(),
+      /already exists|resume/i,
+      'Should reject duplicate start() with clear error',
+    )
+
+    // 验证 runner2 未执行任何任务
+    assert.strictEqual(taskRunner2.getExecutionCount('T1'), 0)
+    assert.strictEqual(taskRunner2.getExecutionCount('T2'), 0)
+
+    await runtime2.close()
+  })
+
+  it('Case E: resume() on FAILED session fails closed', async () => {
+    const definition: WorkSessionDefinition = {
+      id: 'test-session-e',
+      targetRepo: '/test/repo',
+      branch: 'main',
+      tasks: [
+        { id: 'T1', goal: 'Complete task 1' },
+        { id: 'T2', goal: 'Fail task 2' },
+        { id: 'T3', goal: 'Complete task 3' },
+      ],
+      limits: {
+        softMinutes: 45,
+        hardMinutes: 60,
+        maxTasks: 5,
+      },
+    }
+
+    const taskRunner1 = new FakeTaskRunner({
+      T1: { type: 'COMPLETED' },
+      T2: { type: 'FAILED', error: 'simulated failure' },
+      T3: { type: 'COMPLETED' },
+    })
+
+    const config1: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: taskRunner1,
+      storageUrl,
+    }
+
+    // 第一次运行：T1 完成，T2 失败
+    const runtime1 = new WorkSessionRuntime(config1)
+
+    try {
+      await runtime1.start()
+      assert.fail('Should have thrown error for FAILED task')
+    } catch (error) {
+      assert.ok(error instanceof Error)
+      assert.ok(
+        error.message.includes('failed'),
+        `Error message should contain 'failed', got: ${error.message}`,
+      )
+    }
+
+    // 验证 Mastra persisted status 为 failed
+    const snapshot = await runtime1.verifySnapshot()
+    assert.strictEqual(snapshot.status, 'failed', 'Persisted status should be failed')
+
+    await runtime1.close()
+
+    // 第二次尝试 resume() FAILED session，必须失败
+    const taskRunner2 = new FakeTaskRunner({
+      T1: { type: 'COMPLETED' },
+      T2: { type: 'COMPLETED' },
+      T3: { type: 'COMPLETED' },
+    })
+
+    const config2: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: taskRunner2,
+      storageUrl,
+    }
+
+    const runtime2 = new WorkSessionRuntime(config2)
+
+    await assert.rejects(
+      runtime2.resume({}),
+      /failed|cannot resume/i,
+      'Should reject resume() on FAILED session with clear error',
+    )
+
+    // 验证 runner2 未执行任何任务
+    assert.strictEqual(taskRunner2.getExecutionCount('T1'), 0)
+    assert.strictEqual(taskRunner2.getExecutionCount('T2'), 0)
+    assert.strictEqual(taskRunner2.getExecutionCount('T3'), 0)
+
+    await runtime2.close()
+  })
 })
 
