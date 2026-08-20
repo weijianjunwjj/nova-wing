@@ -32,10 +32,12 @@ const expectedRuntimeExports = {
   'nova-wing/development-guardian': [
     'AskBridgeBrain',
     'ClaudeCodeExecutor',
+    'FakeTaskRunner',
     'GuardianStopError',
     'TEN_X_CHAT_PINNED_VERSION',
     'TenXChatBrain',
     'TenXChatBrainProtocolError',
+    'WorkSessionRuntime',
     'buildGuardianBrainPrompt',
     'createTenXChatProcessTransport',
     'parseDelegationPacket',

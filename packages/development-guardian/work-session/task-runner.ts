@@ -15,5 +15,5 @@ export interface WorkSessionTaskResult {
 }
 
 export interface WorkSessionTaskRunner {
-  run(task: WorkSessionTask): Promise<WorkSessionTaskResult>
+  run(task: WorkSessionTask, resumeData?: any): Promise<WorkSessionTaskResult>
 }

@@ -65,25 +65,35 @@ describe('Work Session W001 - Durable Skeleton', () => {
       },
     }
 
-    // 创建 FakeTaskRunner
-    const taskRunner = new FakeTaskRunner({
+    // ===== 第一阶段：第一次执行 =====
+    // 创建 runner1，T2 使用 CONDITIONAL 行为
+    const runner1 = new FakeTaskRunner({
       T1: { type: 'COMPLETED' },
       T2: {
-        type: 'HUMAN_REQUIRED',
-        category: 'DECISION_REQUIRED',
-        reason: 'choose database mode',
+        type: 'CONDITIONAL',
+        checkResumeData: (resumeData) => {
+          // 如果有 decision，表示 resume，返回 COMPLETED
+          if (resumeData?.decision) {
+            return { type: 'COMPLETED' }
+          }
+          // 否则第一次执行，返回 HUMAN_REQUIRED
+          return {
+            type: 'HUMAN_REQUIRED',
+            category: 'DECISION_REQUIRED',
+            reason: 'choose database mode',
+          }
+        },
       },
       T3: { type: 'COMPLETED' },
     })
 
-    const config: WorkSessionRuntimeConfig = {
+    const config1: WorkSessionRuntimeConfig = {
       definition,
-      taskRunner,
+      taskRunner: runner1,
       storageUrl,
     }
 
-    // ===== 第一次执行 =====
-    const runtime1 = new WorkSessionRuntime(config)
+    const runtime1 = new WorkSessionRuntime(config1)
     const state1 = await runtime1.start()
 
     // 验证第一次执行后的状态
@@ -95,17 +105,17 @@ describe('Work Session W001 - Durable Skeleton', () => {
     )
     assert.strictEqual(state1.currentTaskId, 'T2', 'Current task should be T2')
     assert.strictEqual(
-      taskRunner.getExecutionCount('T1'),
+      runner1.getExecutionCount('T1'),
       1,
       'T1 should execute exactly once',
     )
     assert.strictEqual(
-      taskRunner.getExecutionCount('T2'),
+      runner1.getExecutionCount('T2'),
       1,
       'T2 should execute once',
     )
     assert.strictEqual(
-      taskRunner.getExecutionCount('T3'),
+      runner1.getExecutionCount('T3'),
       0,
       'T3 should not execute yet',
     )
@@ -120,17 +130,58 @@ describe('Work Session W001 - Durable Skeleton', () => {
       'Should have correct reason',
     )
 
+    const runId1 = runtime1.getRunId()
+    assert.ok(runId1, 'Should have runId')
+
+    // ===== 验证 Mastra Snapshot 持久化 =====
+    const snapshot = await runtime1.verifySnapshot()
+    assert.strictEqual(snapshot.exists, true, 'Mastra snapshot should exist')
+    assert.strictEqual(snapshot.status, 'suspended', 'Snapshot should be suspended')
+    assert.strictEqual(
+      snapshot.hasSuspendedStep,
+      true,
+      'Snapshot should have suspended step',
+    )
+    assert.strictEqual(
+      snapshot.suspendedStepId,
+      'execute-tasks-serially',
+      'Suspended step should be the task executor',
+    )
+
     // ===== 模拟进程重启 =====
-    // 完全销毁第一套 runtime
+    // 完全销毁第一套 runtime 和 runner
     await runtime1.close()
+    // runner1 不再使用
 
-    // 在 resume 前，将 T2 的行为修改为 COMPLETED（模拟用户提供决策后任务可以完成）
-    taskRunner.setBehavior('T2', { type: 'COMPLETED' })
+    // ===== 第二阶段：创建全新的 runtime 和 runner =====
+    // 创建 runner2，使用相同的 CONDITIONAL 逻辑
+    const runner2 = new FakeTaskRunner({
+      T1: { type: 'COMPLETED' },
+      T2: {
+        type: 'CONDITIONAL',
+        checkResumeData: (resumeData) => {
+          if (resumeData?.decision) {
+            return { type: 'COMPLETED' }
+          }
+          return {
+            type: 'HUMAN_REQUIRED',
+            category: 'DECISION_REQUIRED',
+            reason: 'choose database mode',
+          }
+        },
+      },
+      T3: { type: 'COMPLETED' },
+    })
 
-    // ===== 创建新的 runtime，使用相同的 storage 和 definition =====
-    const runtime2 = new WorkSessionRuntime(config)
+    const config2: WorkSessionRuntimeConfig = {
+      definition,
+      taskRunner: runner2,
+      storageUrl, // 相同的 storage URL
+    }
 
-    // Resume with decision
+    const runtime2 = new WorkSessionRuntime(config2)
+
+    // Resume with decision（runId 自动使用 definition.id）
     const state2 = await runtime2.resume({ decision: 'docker' })
 
     // 验证 resume 后的状态
@@ -142,21 +193,41 @@ describe('Work Session W001 - Durable Skeleton', () => {
     )
     assert.strictEqual(state2.currentTaskId, null, 'No current task')
 
-    // 核心验证：T1 总执行次数仍然是 1
+    // 核心验证：第二套 runner 的执行次数
+    // runner2 的 T1 不应该执行（因为已在 completed 列表）
     assert.strictEqual(
-      taskRunner.getExecutionCount('T1'),
+      runner2.getExecutionCount('T1'),
+      0,
+      'runner2: T1 should NOT execute (already completed)',
+    )
+    // T2 在 resume 时执行一次（带 decision）
+    assert.strictEqual(
+      runner2.getExecutionCount('T2'),
       1,
-      'T1 should still execute exactly once (not rerun)',
+      'runner2: T2 should execute once with resumeData',
+    )
+    // T3 在 T2 完成后执行一次
+    assert.strictEqual(
+      runner2.getExecutionCount('T3'),
+      1,
+      'runner2: T3 should execute once after T2 resumed',
+    )
+
+    // 验证 runner1 的执行次数未变（因为是不同实例）
+    assert.strictEqual(
+      runner1.getExecutionCount('T1'),
+      1,
+      'runner1: T1 count should remain 1',
     )
     assert.strictEqual(
-      taskRunner.getExecutionCount('T2'),
-      2,
-      'T2 should execute twice (initial + resume)',
+      runner1.getExecutionCount('T2'),
+      1,
+      'runner1: T2 count should remain 1',
     )
     assert.strictEqual(
-      taskRunner.getExecutionCount('T3'),
-      1,
-      'T3 should execute once after T2 resumed',
+      runner1.getExecutionCount('T3'),
+      0,
+      'runner1: T3 count should remain 0',
     )
 
     await runtime2.close()
@@ -199,7 +270,13 @@ describe('Work Session W001 - Durable Skeleton', () => {
     } catch (error) {
       // Expected failure
       assert.ok(error instanceof Error)
-      assert.ok(error.message.includes('failed'))
+      // Mastra 可能包装错误，检查消息或 cause
+      const message = error.message
+      const causeMessage = (error as any).cause?.message || ''
+      assert.ok(
+        message.includes('failed') || causeMessage.includes('failed'),
+        `Error message should contain 'failed', got: ${message}`,
+      )
     } finally {
       await runtime.close()
     }
