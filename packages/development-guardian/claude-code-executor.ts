@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process'
 
-import type { DelegationPacket, ExecutionReport, GuardianTask, VerificationResult } from './model.js'
+import type {
+  DelegationPacket,
+  ExecutionReport,
+  GuardianTask,
+  VerificationResult,
+  PermissionDenialEvidence,
+} from './model.js'
 import type { GuardianExecutor } from './ports.js'
 
 export interface GuardianCommandRequest {
@@ -96,6 +102,104 @@ const ALLOWED_VERIFICATION_COMMANDS = new Set([
   'git diff --check',
   '.venv/Scripts/python.exe -m pytest',
 ])
+
+/**
+ * 敏感字段列表，必须 redact
+ */
+const SENSITIVE_FIELDS = new Set([
+  'token',
+  'secret',
+  'password',
+  'authorization',
+  'cookie',
+  'api_key',
+  'apikey',
+  'credential',
+  'auth',
+])
+
+/**
+ * 从 Claude permission_denials 中安全提取 evidence
+ * 不信任外部数据，只提取明确允许的字段
+ */
+function extractPermissionDenialEvidence(
+  rawDenials: unknown[],
+): PermissionDenialEvidence[] {
+  const evidence: PermissionDenialEvidence[] = []
+
+  for (const denial of rawDenials.slice(0, 10)) { // 最多处理 10 个
+    if (denial === null || typeof denial !== 'object' || Array.isArray(denial)) {
+      evidence.push({
+        summary: 'permission denial details unavailable',
+      })
+      continue
+    }
+
+    const denialObj = denial as Record<string, unknown>
+    const result: PermissionDenialEvidence = {
+      summary: 'permission denial',
+    }
+
+    // 提取 tool
+    if (typeof denialObj.tool === 'string' && denialObj.tool.length > 0) {
+      result.tool = denialObj.tool.slice(0, 100)
+    }
+
+    // 提取 operation / command，做 redaction
+    const operation = denialObj.operation ?? denialObj.command ?? denialObj.description
+    if (typeof operation === 'string' && operation.length > 0) {
+      // 检查是否包含敏感字段名
+      const lowerOp = operation.toLowerCase()
+      const hasSensitive = Array.from(SENSITIVE_FIELDS).some((field) =>
+        lowerOp.includes(field),
+      )
+      if (hasSensitive) {
+        result.operation = '[operation contains sensitive data]'
+      } else {
+        result.operation = operation.slice(0, 300)
+      }
+    }
+
+    // 提取 reason / message
+    const reason = denialObj.reason ?? denialObj.message
+    if (typeof reason === 'string' && reason.length > 0) {
+      result.summary = reason.slice(0, 200)
+    }
+
+    evidence.push(result)
+  }
+
+  return evidence
+}
+
+/**
+ * 获取当前 Executor 允许的 capabilities
+ */
+function getExecutorCapabilities(options: {
+  allowNpmInstall?: boolean
+  allowPythonBootstrap?: boolean
+}): string[] {
+  const capabilities = [
+    'Read',
+    'Edit',
+    'Write',
+    'Glob',
+    'Grep',
+    'git status',
+    'git diff',
+  ]
+
+  if (options.allowNpmInstall === true) {
+    capabilities.push('npm install')
+  }
+
+  if (options.allowPythonBootstrap === true) {
+    capabilities.push('python venv bootstrap')
+    capabilities.push('venv pip install')
+  }
+
+  return capabilities
+}
 
 function defaultCommandRunner(request: GuardianCommandRequest): Promise<GuardianCommandResult> {
   return new Promise((resolve, reject) => {
@@ -444,11 +548,11 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     parsed: ClaudeCodeJsonResult,
     scopeBlockers: readonly string[],
     otherBlockers: readonly string[],
+    permissionDenials: readonly PermissionDenialEvidence[],
     maxTurnRecoveryAttempted: boolean,
   ): MaxTurnRecoveryDecision {
     const sessionIdPresent = typeof parsed.session_id === 'string' && parsed.session_id.length > 0
-    const hasPermissionDenials =
-      Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0
+    const hasPermissionDenials = permissionDenials.length > 0
 
     if (maxTurnRecoveryAttempted) {
       return {
@@ -486,10 +590,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
     }
 
+    // W002: max_turns + permission denial 禁止 internal recovery
+    // 需要 Reviewer 判断是否可用已有能力替代
     if (hasPermissionDenials) {
       return {
         eligible: false,
-        reason: 'permission denials present',
+        reason: 'permission denials present, requires Reviewer judgement',
         alreadyAttempted: false,
         subtype: parsed.subtype,
         sessionIdPresent,
@@ -543,6 +649,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     changedFiles: string[]
     scopeBlockers: string[]
     otherBlockers: string[]
+    permissionDenials: PermissionDenialEvidence[]
     claudeDurationMs: number
   }> {
     const args = this.buildClaudeArgs(task, packet, isRecovery)
@@ -566,6 +673,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       ...scopeBlockers(task, changed.changedFiles),
     ]
     const otherBlockers: string[] = []
+    const permissionDenials: PermissionDenialEvidence[] = []
 
     // 尝试解析 JSON，即使 exitCode != 0 也要尝试提取 subtype 和 session_id 用于诊断
     let parsed: ClaudeCodeJsonResult
@@ -605,6 +713,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           changedFiles: changed.changedFiles,
           scopeBlockers: taskScopeBlockers,
           otherBlockers,
+          permissionDenials,
           claudeDurationMs,
         }
       }
@@ -620,6 +729,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         changedFiles: changed.changedFiles,
         scopeBlockers: taskScopeBlockers,
         otherBlockers,
+        permissionDenials,
         claudeDurationMs,
       }
     }
@@ -635,11 +745,9 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       this.sessionId = parsed.session_id
     }
 
-    // 检查 permission_denials
+    // 提取 permission denial evidence，但不直接加入 blockers
     if (Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0) {
-      otherBlockers.push(
-        `Claude Code 尝试执行未授权操作，被拒绝 ${parsed.permission_denials.length} 次`,
-      )
+      permissionDenials.push(...extractPermissionDenialEvidence(parsed.permission_denials))
     }
 
     if (parsed.is_error === true || (parsed.subtype !== undefined && parsed.subtype !== 'success')) {
@@ -654,6 +762,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       changedFiles: changed.changedFiles,
       scopeBlockers: taskScopeBlockers,
       otherBlockers,
+      permissionDenials,
       claudeDurationMs,
     }
   }
@@ -687,6 +796,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         firstAttempt.parsed,
         firstAttempt.scopeBlockers,
         firstAttempt.otherBlockers,
+        firstAttempt.permissionDenials,
         maxTurnRecoveryAttempted,
       )
 
@@ -711,11 +821,12 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
 
         // 第二次 max_turns 后的判断
         if (recoveryAttempt.parsed.subtype === 'error_max_turns') {
-          // 检查第二次是否也满足安全边界（无 scope violation、无 permission denial 等）
+          // 检查第二次是否也满足安全边界（无 scope violation、无其他 blocker）
           const secondRecoveryDecision = this.evaluateMaxTurnRecovery(
             recoveryAttempt.parsed,
             recoveryAttempt.scopeBlockers,
             recoveryAttempt.otherBlockers,
+            recoveryAttempt.permissionDenials,
             true, // 已经尝试过一次 recovery
           )
 
@@ -749,20 +860,20 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           recoveryAttempt.otherBlockers.length > 0 ||
           recoveryAttempt.scopeBlockers.length > 0
         ) {
-          // 不是 max_turns，而是其他类型的 blocker
-          const recoveryFailureContext =
-            recoveryAttempt.otherBlockers.length > 0
-              ? `recovery 失败: ${recoveryAttempt.otherBlockers[0]}`
-              : `recovery 产生 scope violation: ${recoveryAttempt.scopeBlockers[0]}`
-
-          finalAttempt = {
-            ...recoveryAttempt,
-            otherBlockers: [
-              ...recoveryAttempt.otherBlockers,
-              `首次达到 max_turns 后自动 resume 一次，${recoveryFailureContext}`,
-            ],
-          }
+          // recovery 运行中产生 blocker
+          finalAttempt = recoveryAttempt
         }
+        // 否则 recovery 成功，使用 recoveryAttempt 的结果
+      } else if (
+        firstAttempt.parsed.subtype === 'error_max_turns' &&
+        firstAttempt.permissionDenials.length > 0 &&
+        firstAttempt.scopeBlockers.length === 0 &&
+        firstAttempt.otherBlockers.length === 0
+      ) {
+        // W002: max_turns + permission denial，无 scope violation 或其他 blocker
+        // 不触发 internal recovery，也不作为 blocker
+        // 直接跳到最终检查，返回 incompleteReason 给 Reviewer
+        finalAttempt = firstAttempt
       } else if (firstAttempt.parsed.subtype === 'error_max_turns') {
         // 诊断输出：记录为什么没有触发恢复（exitCode=0 但其他条件不满足）
         const diagnosticInfo = `[MAX_TURN_RECOVERY_DECISION] eligible=${recoveryDecision.eligible} reason=${recoveryDecision.reason} exitCode=${firstAttempt.claude.exitCode} signal=${firstAttempt.claude.signal ?? 'null'} subtype=${recoveryDecision.subtype} sessionIdPresent=${recoveryDecision.sessionIdPresent} scopeBlockers=${recoveryDecision.scopeBlockers.length} otherBlockers=${recoveryDecision.otherBlockers.length}`
@@ -785,13 +896,29 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
       }
 
       const allBlockers = [...finalAttempt.scopeBlockers, ...finalAttempt.otherBlockers]
+      const executorCapabilities = getExecutorCapabilities({
+        allowNpmInstall: this.options.allowNpmInstall ?? false,
+        allowPythonBootstrap: this.options.allowPythonBootstrap ?? false,
+      })
 
-      // 检查是否是第二次 max_turns 且安全边界正常
+      // 检查是否是第二次 max_turns 且安全边界正常，或者有 permission denials 但无其他 blocker
       const isSecondMaxTurnsSafe =
         maxTurnRecoveryAttempted &&
         finalAttempt.parsed.subtype === 'error_max_turns' &&
         allBlockers.length === 0
 
+      const hasPermissionDenialsOnly =
+        finalAttempt.permissionDenials.length > 0 &&
+        allBlockers.length === 0 &&
+        finalAttempt.parsed.subtype !== 'error_max_turns'
+
+      const isFirstMaxTurnsWithPermissionDenial =
+        !maxTurnRecoveryAttempted &&
+        finalAttempt.parsed.subtype === 'error_max_turns' &&
+        finalAttempt.permissionDenials.length > 0 &&
+        allBlockers.length === 0
+
+      // 如果有 scope violation 或其他真正的 blocker，返回 blockers
       if (allBlockers.length > 0) {
         return {
           summary: this.reportSummary(finalAttempt.parsed),
@@ -799,6 +926,40 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           commandsRun: ['claude -p --output-format json'],
           verificationResults: [],
           blockers: allBlockers,
+          ...(finalAttempt.permissionDenials.length > 0
+            ? { permissionDenials: finalAttempt.permissionDenials }
+            : {}),
+          executorCapabilities,
+        }
+      }
+
+      // 如果只有 permission denials，不运行 verification，让 Reviewer 判断
+      if (hasPermissionDenialsOnly) {
+        return {
+          summary: this.reportSummary(finalAttempt.parsed),
+          changedFiles: finalAttempt.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers: [],
+          incompleteReason: '执行遇到权限拒绝，需要 Reviewer 判断是否可使用已有授权能力替代；如不能则 blocked',
+          permissionDenials: finalAttempt.permissionDenials,
+          executorCapabilities,
+        }
+      }
+
+      // W002: 首次 max_turns + permission denial
+      // 不触发 internal recovery，返回 incompleteReason 给 Reviewer
+      if (isFirstMaxTurnsWithPermissionDenial) {
+        return {
+          summary: this.reportSummary(finalAttempt.parsed),
+          changedFiles: finalAttempt.changedFiles,
+          commandsRun: ['claude -p --output-format json'],
+          verificationResults: [],
+          blockers: [],
+          incompleteReason:
+            '执行达到 max_turns 且遇到权限拒绝，需要 Reviewer 判断是否可使用已有授权能力替代；如不能则 blocked',
+          permissionDenials: finalAttempt.permissionDenials,
+          executorCapabilities,
         }
       }
 
@@ -813,6 +974,10 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           blockers: [],
           incompleteReason:
             '执行预算耗尽（12 + 6 turns），但安全边界正常，需要 Brain 判断是否继续',
+          ...(finalAttempt.permissionDenials.length > 0
+            ? { permissionDenials: finalAttempt.permissionDenials }
+            : {}),
+          executorCapabilities,
         }
       }
 
@@ -825,6 +990,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
         verificationResults: verification.results,
         blockers: allBlockers,
+        executorCapabilities,
       }
     } finally {
       this.emitTiming(input.task, 'executor-total', performance.now() - totalStartedAt)

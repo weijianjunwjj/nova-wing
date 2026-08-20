@@ -197,19 +197,23 @@ test('error_max_turns with exitCode=1 but missing session_id blocks recovery', a
   )
 })
 
-test('error_max_turns with exitCode=1 but permission_denials blocks recovery', async () => {
+test('error_max_turns with permission_denials extracts evidence without blocking', async () => {
+  // W002: permission denials 不再阻止恢复，而是提取为 evidence
+  // 场景：success (非 max_turns) + permission denials → 提取 evidence，不触发 recovery
   const runner = new QueueRunner([
-    result(''),
+    result(''), // git status --porcelain (clean check)
     result(
       claudeJson({
-        subtype: 'error_max_turns',
+        subtype: 'success',
         result: '部分完成。',
         session_id: 'session-xyz',
-        permission_denials: [{ tool: 'Bash', reason: 'user denied' }],
+        permission_denials: [{ tool: 'Bash', reason: 'user denied', command: 'rm -rf' }],
       }),
-      1,
-    ),
-    result(' M src/a.ts\n'),
+      0, // exitCode=0，success
+    ), // claude command
+    result(' M src/a.ts\n'), // git status --porcelain --untracked-files (changed files)
+    result(claudeJson({ exit_code: 0, stdout: '', stderr: '' })), // git diff --check
+    // W002: permission denial present 但 success，不运行其他 verification
   ])
 
   const recoveries: unknown[] = []
@@ -224,8 +228,8 @@ test('error_max_turns with exitCode=1 but permission_denials blocks recovery', a
 
   const report = await executor.execute({
     task: {
-      id: 'task-permission-denials',
-      goal: 'test permission_denials blocks recovery',
+      id: 'task-permission-denials-success',
+      goal: 'test permission_denials evidence extraction',
       state: 'EXECUTING',
       iteration: 1,
       maxIterations: 3,
@@ -235,19 +239,23 @@ test('error_max_turns with exitCode=1 but permission_denials blocks recovery', a
       goal: 'test permission denials',
       instructions: ['implement feature'],
       constraints: [],
-      verification: [],
+      verification: ['npm test'], // W002: 有 permission denial 时不运行 verification
       doNotDo: [],
     },
   })
 
-  assert.equal(recoveries.length, 0, 'must not trigger recovery when permission_denials present')
-  const diagnostic = report.blockers.find((b) => b.includes('[MAX_TURN_RECOVERY_DECISION]'))
-  assert.ok(diagnostic, 'must include diagnostic')
-  assert.ok(diagnostic?.includes('eligible=false'), 'must show ineligible')
+  // W002: success + permission denials → 提取 evidence，设置 incompleteReason
+  assert.equal(recoveries.length, 0, 'must not trigger recovery for success result')
+  assert.equal(report.blockers.length, 0, 'must not have blockers')
+  assert.ok(report.permissionDenials !== undefined, 'must have permission denials evidence')
+  assert.ok(report.permissionDenials!.length > 0, 'must extract permission denial evidence')
+  assert.ok(report.permissionDenials![0]!.tool === 'Bash', 'must extract tool name')
+  assert.ok(report.incompleteReason !== undefined, 'must have incomplete reason')
   assert.ok(
-    diagnostic?.includes('permission denials') || diagnostic?.includes('permission_denials'),
-    'must reference permission denials',
+    report.incompleteReason?.includes('权限拒绝') || report.incompleteReason?.includes('permission'),
+    'incomplete reason must reference permission denials',
   )
+  assert.ok(report.executorCapabilities !== undefined, 'must provide executor capabilities')
 })
 
 test('error_max_turns with exitCode=1 but scope violation blocks recovery', async () => {

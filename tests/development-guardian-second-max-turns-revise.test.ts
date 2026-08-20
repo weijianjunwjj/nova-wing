@@ -192,9 +192,9 @@ test('second max_turns with scope violation requires human', async () => {
   assert.equal(brainCallCount, 1, 'Brain must be called only once')
 })
 
-test('second max_turns with permission denial requires human', async () => {
-  // Scenario: 第二次 max_turns 但有 permission_denials
-  // 必须直接进入 HUMAN_REQUIRED
+test('second max_turns with permission denial enters recovery loop until maxIterations', async () => {
+  // W002: 第二次 max_turns 有 permission_denials 但无其他 blocker
+  // Guardian 会重新进入 REVIEWING，但最终会因 maxIterations 停止
   const runner = new QueueRunner([
     commandResult(''), // git status --porcelain (clean)
     commandResult(
@@ -207,22 +207,40 @@ test('second max_turns with permission denial requires human', async () => {
       claudeJson({
         subtype: 'error_max_turns',
         num_turns: 6,
-        permission_denials: [{ tool: 'Bash', command: 'rm -rf' }],
-        result: '尝试危险操作。',
+        permission_denials: [{ tool: 'Bash', command: 'mkdir new_folder' }],
+        result: '尝试创建目录但被拒绝。',
       }),
       1,
     ),
     commandResult(' M src/feature.ts\n'),
+    // 不运行 verification，因为 permission denial + incomplete
   ])
 
   let brainCallCount = 0
   const brain: GuardianBrain = {
-    async review() {
+    async review(input) {
       brainCallCount += 1
       if (brainCallCount === 1) {
         return packet('proceed')
       }
-      throw new Error('Brain should not be called again after permission denial')
+      // 第二次 Brain 应该收到 permission denials
+      const report = input.report
+      assert.ok(report !== undefined, 'second review must have report')
+      assert.ok(report!.permissionDenials !== undefined, 'must have permission denials')
+      assert.ok(report!.executorCapabilities !== undefined, 'must have executor capabilities')
+      assert.ok(report!.incompleteReason !== undefined, 'must have incomplete reason')
+      assert.equal(report!.blockers.length, 0, 'must not have blockers for permission denial only')
+
+      // Reviewer 判断无法使用已有能力完成，需要新权限
+      return {
+        verdict: 'blocked',
+        goal: '完成功能',
+        instructions: [],
+        constraints: ['保持类型安全'],
+        verification: ['npm test'],
+        doNotDo: ['不要修改数据库'],
+        rationale: 'task requires file system capability not in executor_capabilities',
+      }
     },
   }
 
@@ -233,7 +251,7 @@ test('second max_turns with permission denial requires human', async () => {
 
   const result = await runGuardianTask({
     task: {
-      id: 'task-second-max-turns-permission-denial',
+      id: 'task-second-max-turns-permission-denial-blocked',
       goal: '完成功能',
       state: 'READY',
       iteration: 0,
@@ -243,15 +261,26 @@ test('second max_turns with permission denial requires human', async () => {
     executor,
   })
 
-  assert.equal(result.task.state, 'HUMAN_REQUIRED', 'must require human intervention')
+  // W002: permission denial 让 Guardian 重新进入 REVIEWING
+  // Brain 判断 blocked，最终进入 HUMAN_REQUIRED
+  assert.equal(result.task.state, 'HUMAN_REQUIRED', 'must require human for new capability')
   assert.equal(result.task.iteration, 1, 'must have 1 iteration')
   assert.equal(result.reports.length, 1, 'must have 1 execution report')
+  assert.equal(brainCallCount, 2, 'Brain must be called twice (proceed + blocked)')
+
   const firstReport = result.reports[0]
   if (firstReport === undefined) {
     throw new Error('first report must exist')
   }
-  assert.ok(firstReport.blockers.length > 0, 'report must have blockers')
-  assert.equal(brainCallCount, 1, 'Brain must be called only once')
+  assert.equal(firstReport.blockers.length, 0, 'report must not have blockers')
+  assert.ok(firstReport.permissionDenials !== undefined, 'must have permission denials')
+  assert.ok(firstReport.incompleteReason !== undefined, 'must have incomplete reason')
+
+  // 确认 stopReason 来自 Brain blocked verdict
+  assert.ok(
+    result.task.stopReason?.includes('capability') || result.task.stopReason?.includes('blocked'),
+    'stopReason must reflect Brain blocked for new capability',
+  )
 })
 
 test('second max_turns with Brain blocked verdict requires human', async () => {

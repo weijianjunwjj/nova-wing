@@ -93,6 +93,8 @@ function serializeReport(report: ExecutionReport | undefined): unknown {
     blockers: report.blockers,
     incomplete_reason: report.incompleteReason ?? null,
     raw_output_ref: report.rawOutputRef ?? null,
+    permission_denials: report.permissionDenials ?? null,
+    executor_capabilities: report.executorCapabilities ?? null,
   }
 }
 
@@ -153,6 +155,11 @@ export function buildGuardianBrainPrompt(input: {
     '- 首轮且目标明确：proceed，并给 Claude Code 可执行指令。',
     '- 已执行但实现需要修正：revise，并只给本轮需要修正的指令。',
     '- execution_report.incomplete_reason 非空且无 blocker 时，表示执行安全但尚未完成；不得 done，应根据现有证据返回 revise，或在确实需要人工决策时 blocked。',
+    '- 如果 execution_report.permission_denials 非空且无 blocker：',
+    '  - 判断是否存在"不增加权限、不突破 scope"的已授权替代方案；',
+    '  - 如果可以使用 executor_capabilities 内已有能力完成：verdict=revise，instructions 必须明确告诉 Executor 不要重复被拒绝操作，改用当前已授权能力（例如优先使用 Write/Edit，而不是未授权 shell 生成文件）；',
+    '  - 如果完成任务确实必须新增当前 capability 之外的权限：verdict=blocked，rationale 说明需要什么 capability 和为什么；',
+    '  - 禁止建议绕过权限系统，禁止要求 generic Bash，禁止把 permission denial 当成已执行成功。',
     '- 需要产品/架构选择、需要突破禁止范围、证据不足以安全继续：blocked。',
     '- 只有 execution_report 存在、无 blocker、确定性验证全部 passed、且 acceptance_criteria 已满足时才允许 done。',
     '- changed_files 若越过 allowed_paths 或进入 forbidden_paths，必须 blocked。',

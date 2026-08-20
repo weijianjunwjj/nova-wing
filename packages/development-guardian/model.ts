@@ -26,6 +26,16 @@ export interface VerificationResult {
   details?: string
 }
 
+/**
+ * 安全的 Permission Denial 证据
+ * 从外部 Executor 输出中提取，必须做 redaction 和长度限制
+ */
+export interface PermissionDenialEvidence {
+  tool?: string
+  operation?: string
+  summary: string
+}
+
 export interface ExecutionReport {
   summary: string
   changedFiles: readonly string[]
@@ -34,6 +44,8 @@ export interface ExecutionReport {
   blockers: readonly string[]
   rawOutputRef?: string
   incompleteReason?: string
+  permissionDenials?: readonly PermissionDenialEvidence[]
+  executorCapabilities?: readonly string[]
 }
 
 export interface GuardianTask {
