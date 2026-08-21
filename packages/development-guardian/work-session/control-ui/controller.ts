@@ -38,10 +38,13 @@ export interface WorkSessionControlControllerOptions {
   pollIntervalMs?: number
   /** recent events ring buffer 上限；缺省 100 */
   maxRecentEvents?: number
+  /** W005-A remote closure：仅用于展示 active elapsed 的可测试 clock，缺省 Date.now。 */
+  clock?: { now(): number }
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 250
 const DEFAULT_MAX_RECENT_EVENTS = 100
+const SAFE_SESSION_FAILED_MESSAGE = 'Session failed. Check local diagnostics.'
 
 /** Guardian phase 快照：只保留结构化字段，绝不携带 raw detail / provider payload。 */
 interface GuardianPhaseSnapshot {
@@ -55,6 +58,7 @@ export class WorkSessionControlController {
   private readonly runtime: WorkSessionControlRuntime
   private readonly pollIntervalMs: number
   private readonly maxRecentEvents: number
+  private readonly clock?: { now(): number }
 
   private started = false
   private closed = false
@@ -66,6 +70,8 @@ export class WorkSessionControlController {
   private pollTimer: NodeJS.Timeout | undefined
   private prevState: WorkSessionDurableState | undefined
   private prevSignature: string | undefined
+  /** 上一次向 SSE 广播的展示 active elapsed 秒桶；避免 250ms spam。 */
+  private prevElapsedSecond: number | undefined
   /** 明确持有 runtime.start() 的 Promise，rejection 已被 catch，绝不产生 unhandled rejection。 */
   private startPromise: Promise<void> | undefined
 
@@ -79,6 +85,7 @@ export class WorkSessionControlController {
   constructor(options: WorkSessionControlControllerOptions) {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.maxRecentEvents = options.maxRecentEvents ?? DEFAULT_MAX_RECENT_EVENTS
+    this.clock = options.clock
     // 注入的 factory 拿到 Guardian progress sink；controller 把 GuardianProgressEvent
     // 转成 GUARDIAN_PHASE recent event。生产 factory 把 sink 接到 runner.onProgress。
     this.runtime = options.createRuntime((event) => this.onGuardianProgress(event))
@@ -121,18 +128,18 @@ export class WorkSessionControlController {
 
     // 异步启动；真正的运行结果经 polling + SSE 暴露，不 await 整场 Work Session。
     // 明确持有 rejection：fake/真实 runtime 的 start() 失败不得产生 unhandled rejection。
+    // 原始 error.message 可能包含 credential/provider payload，因此绝不进入 Web event。
     this.startPromise = this.runtime
       .start()
       .then(() => {
         // 状态变化由 polling 观察，无需在此处理。
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         this.emit({
           type: 'SESSION_FAILED',
-          data: {
-            failureReason: error instanceof Error ? error.message : String(error),
-          },
+          data: { message: SAFE_SESSION_FAILED_MESSAGE },
         })
+        this.broadcastSnapshot()
       })
 
     return { started: true }
@@ -170,8 +177,9 @@ export class WorkSessionControlController {
               ...(state.checkpointPushes !== undefined
                 ? { checkpointPushes: state.checkpointPushes }
                 : {}),
-              ...(state.activeElapsedMs !== undefined
-                ? { activeElapsedMs: state.activeElapsedMs }
+              ...(state.activeElapsedMs !== undefined ||
+              state.activeSegmentStartedAt !== undefined
+                ? { activeElapsedMs: this.displayActiveElapsedMs(state) }
                 : {}),
               ...(state.completionReason !== undefined
                 ? { completionReason: state.completionReason }
@@ -179,9 +187,8 @@ export class WorkSessionControlController {
               ...(state.humanRequired !== undefined
                 ? { humanRequired: state.humanRequired }
                 : {}),
-              ...(state.failureReason !== undefined
-                ? { failureReason: state.failureReason }
-                : {}),
+              // failureReason 是本地诊断事实，可能含 provider/credential 文本；
+              // Web snapshot 只暴露 FAILED state，不复制 raw failureReason。
             }
           : {}),
       },
@@ -211,6 +218,26 @@ export class WorkSessionControlController {
     this.subscribers.clear()
   }
 
+  private now(): number {
+    return this.clock?.now() ?? Date.now()
+  }
+
+  /**
+   * W004 保持 durable active-time 语义不变；这里只计算浏览器展示值。
+   * RUNNING 时加入当前尚未 settle 的 segment，SUSPENDED/terminal 只显示已结算基数。
+   */
+  private displayActiveElapsedMs(state: WorkSessionDurableState): number {
+    const base = state.activeElapsedMs ?? 0
+    if (state.state !== 'RUNNING' || state.activeSegmentStartedAt === undefined) {
+      return base
+    }
+    return base + Math.max(0, this.now() - state.activeSegmentStartedAt)
+  }
+
+  private elapsedSecondOf(state: WorkSessionDurableState): number {
+    return Math.floor(this.displayActiveElapsedMs(state) / 1000)
+  }
+
   private startPolling(): void {
     if (this.pollTimer !== undefined || this.closed) {
       return
@@ -232,6 +259,7 @@ export class WorkSessionControlController {
     if (state === undefined) {
       this.prevState = undefined
       this.prevSignature = undefined
+      this.prevElapsedSecond = undefined
       return
     }
 
@@ -240,6 +268,9 @@ export class WorkSessionControlController {
 
     if (prev === undefined) {
       this.prevSignature = this.signatureOf(state)
+      this.prevElapsedSecond = this.elapsedSecondOf(state)
+      // runtime 首次建立 durable state 时主动广播，避免 UI 依赖下一次语义变化才更新。
+      this.broadcastSnapshot()
       return
     }
 
@@ -248,15 +279,20 @@ export class WorkSessionControlController {
     }
 
     const signature = this.signatureOf(state)
-    if (signature !== this.prevSignature) {
+    const elapsedSecond = this.elapsedSecondOf(state)
+    const semanticChanged = signature !== this.prevSignature
+    const elapsedSecondChanged = elapsedSecond !== this.prevElapsedSecond
+
+    if (semanticChanged || elapsedSecondChanged) {
       this.prevSignature = signature
+      this.prevElapsedSecond = elapsedSecond
       this.broadcastSnapshot()
     }
   }
 
   /**
-   * 只比较"有意义"字段；activeElapsedMs 持续增长，不参与签名，
-   * 避免每 250ms 刷一次 snapshot / recent event。
+   * 只比较“有意义”字段；展示 active elapsed 由独立秒桶控制，
+   * 不写 recent event，且最多每跨 1 秒广播一次 snapshot。
    */
   private signatureOf(state: WorkSessionDurableState): string {
     return JSON.stringify([
@@ -269,7 +305,6 @@ export class WorkSessionControlController {
       state.checkpointCommits ?? null,
       state.checkpointPushes ?? null,
       state.completionReason ?? null,
-      state.failureReason ?? null,
     ])
   }
 
@@ -293,9 +328,10 @@ export class WorkSessionControlController {
               : {},
         })
       } else if (curr.state === 'FAILED') {
+        // raw failureReason 可能含 credential/provider output；Web recent event 只发安全文案。
         events.push({
           type: 'SESSION_FAILED',
-          data: curr.failureReason !== undefined ? { failureReason: curr.failureReason } : {},
+          data: { message: SAFE_SESSION_FAILED_MESSAGE },
         })
       }
     }
