@@ -17,11 +17,25 @@ import type {
 } from './model.js'
 import type { WorkSessionTaskRunner } from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
+import {
+  finalizeCompletedTask,
+  readCurrentHeadSha,
+  type GitCheckpointFinalizer,
+  type GitCheckpointPolicy,
+} from './git-checkpoint.js'
+
+export interface WorkSessionGitCheckpointConfig {
+  policy: GitCheckpointPolicy
+  /** 可替换 finalizer；缺省使用内置 finalizeCompletedTask */
+  finalizer?: GitCheckpointFinalizer
+}
 
 export interface WorkSessionRuntimeConfig {
   definition: WorkSessionDefinition
   taskRunner: WorkSessionTaskRunner
   storageUrl: string
+  /** W004-A: 可选 Git checkpoint 配置 */
+  gitCheckpoint?: WorkSessionGitCheckpointConfig
 }
 
 export interface ResumeInput {
@@ -50,6 +64,9 @@ const WorkflowStateSchema = z.object({
     reason: z.string(),
   }).optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
+  checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
+  failureReason: z.string().optional(), // W004-A FINAL
+  currentTaskBaseHeadSha: z.string().optional(), // W004-A FINAL
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -89,6 +106,7 @@ export class WorkSessionRuntime {
       currentTaskIndex: 0,
       currentTaskId: null,
       completedTaskIds: [],
+      checkpointCommits: {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
@@ -310,17 +328,110 @@ export class WorkSessionRuntime {
           currentState = updatedState
           self.latestState = updatedState
 
+          // W004-A FINAL: autoCommit=true 时，在第一次真正开始某 Task 前捕获 base HEAD。
+          // suspend/resume 同一个 Task 时复用已保存 SHA，禁止重新采样。
+          const gitCheckpoint = self.config.gitCheckpoint
+          if (
+            gitCheckpoint !== undefined &&
+            gitCheckpoint.policy.autoCommit === true &&
+            currentState.currentTaskBaseHeadSha === undefined
+          ) {
+            const baseHeadSha = await readCurrentHeadSha(self.config.definition.targetRepo)
+            const baseHeadState: WorkflowState = {
+              ...currentState,
+              currentTaskBaseHeadSha: baseHeadSha,
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(baseHeadState)
+            currentState = baseHeadState
+            self.latestState = baseHeadState
+          }
+
           // W003: 传递 checkpoint 给 TaskRunner
           const checkpoint = currentState.currentTaskCheckpoint
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint)
 
           if (result.status === 'COMPLETED') {
-            // 任务完成，更新状态，清除 humanRequired 和 checkpoint
+            const completionEvidence = result.completionEvidence
+
+            // W004-A REVIEW REVISE: autoCommit 开启时，真 COMPLETED 必须携带结构化 evidence。
+            // 不允许"跳过 finalizer 直接把 Task 标 COMPLETED 并进入下一 Task"。
+            if (
+              gitCheckpoint !== undefined &&
+              gitCheckpoint.policy.autoCommit === true &&
+              completionEvidence === undefined
+            ) {
+              const failureReason = `completed task ${task.id} missing completion evidence`
+              const failedState: WorkflowState = {
+                ...currentState,
+                state: 'FAILED',
+                failureReason,
+                humanRequired: undefined,
+                currentTaskCheckpoint: undefined,
+                updatedAt: new Date().toISOString(),
+              }
+              await setState(failedState)
+              self.latestState = failedState
+              throw new Error(failureReason)
+            }
+
+            // W004-A: 真 COMPLETED → 可选 safe git checkpoint（Task 边界）
+            // checkpoint 必须先于"标记完成并进入下一 Task"完成；commit 本身失败
+            // 则 Session FAILED，不得进入下一 Task。
+            let checkpointCommitSha: string | undefined
+            if (
+              completionEvidence !== undefined &&
+              gitCheckpoint !== undefined &&
+              gitCheckpoint.policy.autoCommit === true
+            ) {
+              const finalizer = gitCheckpoint.finalizer ?? finalizeCompletedTask
+              try {
+                const commitResult = await finalizer({
+                  repoPath: self.config.definition.targetRepo,
+                  expectedBranch: self.config.definition.branch,
+                  task,
+                  completionEvidence,
+                  policy: gitCheckpoint.policy,
+                  ...(currentState.currentTaskBaseHeadSha !== undefined
+                    ? { expectedBaseHeadSha: currentState.currentTaskBaseHeadSha }
+                    : {}),
+                })
+                checkpointCommitSha = commitResult.commitSha
+              } catch (error) {
+                // Git checkpoint execution failure → Session FAILED，不是 DECISION_REQUIRED
+                const failureReason =
+                  error instanceof Error ? error.message : String(error)
+                const failedState: WorkflowState = {
+                  ...currentState,
+                  state: 'FAILED',
+                  failureReason,
+                  humanRequired: undefined,
+                  currentTaskCheckpoint: undefined,
+                  updatedAt: new Date().toISOString(),
+                }
+                await setState(failedState)
+                self.latestState = failedState
+                throw new Error(
+                  `Git checkpoint failed for task ${task.id}: ${failureReason}`,
+                )
+              }
+            }
+
+            // 任务完成，更新状态，清除 humanRequired 和 checkpoint 以及 base HEAD
             const completedState: WorkflowState = {
               ...currentState,
               completedTaskIds: [...currentState.completedTaskIds, task.id],
+              ...(checkpointCommitSha !== undefined
+                ? {
+                    checkpointCommits: {
+                      ...(currentState.checkpointCommits ?? {}),
+                      [task.id]: checkpointCommitSha,
+                    },
+                  }
+                : {}),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              currentTaskBaseHeadSha: undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(completedState)
@@ -414,6 +525,17 @@ export class WorkSessionRuntime {
     if (wfState.currentTaskCheckpoint) {
       result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
     }
+    // W004-A: 传递 checkpoint commits
+    if (wfState.checkpointCommits !== undefined) {
+      result.checkpointCommits = wfState.checkpointCommits
+    }
+    // W004-A FINAL: 传递 checkpoint failure 原因与 base HEAD
+    if (wfState.failureReason !== undefined) {
+      result.failureReason = wfState.failureReason
+    }
+    if (wfState.currentTaskBaseHeadSha !== undefined) {
+      result.currentTaskBaseHeadSha = wfState.currentTaskBaseHeadSha
+    }
     return result
   }
 
@@ -429,6 +551,18 @@ export class WorkSessionRuntime {
    */
   getRunId(): string {
     return this.config.definition.id
+  }
+
+  /**
+   * W004-A FINAL: 读取当前 NovaWing durable domain state（含 FAILED 后的 failureReason）。
+   * 用于在 checkpoint failure 后断言 domain state 已持久化为 FAILED，
+   * 而不是只依赖 Mastra workflow status。
+   */
+  getDurableState(): WorkSessionDurableState | undefined {
+    if (this.latestState === undefined) {
+      return undefined
+    }
+    return this.convertWorkflowStateToDurableState(this.latestState)
   }
 
   /**

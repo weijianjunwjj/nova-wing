@@ -47,6 +47,15 @@ export interface WorkSessionDurableState {
   humanRequired?: HumanRequired
   /** W003: 当前 Task 的 recovery checkpoint（仅当 SUSPENDED 时存在） */
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
+  /**
+   * W004-A: 每个已完成 Task 对应的 commit SHA。
+   * 连续 Task 需要区分 T1→sha1 / T2→sha2 / T3→sha3，故不保存单一 lastCommitSha。
+   */
+  checkpointCommits?: Record<string, string>
+  /** W004-A FINAL: Git checkpoint/finalization 失败时的明确错误原因（仅 FAILED 时存在） */
+  failureReason?: string
+  /** W004-A FINAL: 当前 Task 开始时的 HEAD（仅 autoCommit=true 时使用） */
+  currentTaskBaseHeadSha?: string
   createdAt: Date
   updatedAt: Date
 }

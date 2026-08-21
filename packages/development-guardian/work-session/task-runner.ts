@@ -5,8 +5,33 @@
 
 import type { WorkSessionTask, HumanRequired } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
+import type { DelegationVerdict, VerificationResult } from '../model.js'
 
 export type WorkSessionTaskResultStatus = 'COMPLETED' | 'HUMAN_REQUIRED' | 'FAILED'
+
+/**
+ * W004-A: Task 完成的结构化证据。
+ *
+ * WorkSession 不得靠 summary 文本猜测"这个 Task 好像完成了"。
+ * Git checkpoint 的 commit gate 只认这份结构化证据，不读取 Guardian 内部对象。
+ *
+ * 仅包含 Git finalization 必要信息，不把完整 Guardian Task / ExecutionReport
+ * 泄漏给 WorkSession。
+ */
+export interface TaskCompletionEvidence {
+  /** Task 产生的 changed files（modified/new/deleted） */
+  changedFiles: readonly string[]
+  /** 要求执行的 deterministic verification 结果 */
+  verificationResults: readonly VerificationResult[]
+  /** blockers；真 COMPLETED 必须为 0 */
+  blockers: readonly string[]
+  /** final Reviewer verdict；允许 commit 只认 'done' */
+  finalReviewerVerdict: DelegationVerdict
+  /** 要求执行的 deterministic verification 命令（来自 final packet.verification） */
+  requiredVerification: readonly string[]
+  /** Executor 报告 incomplete 时非空；finalizer 据此 fail closed */
+  incompleteReason?: string
+}
 
 export interface WorkSessionTaskResult {
   status: WorkSessionTaskResultStatus
@@ -15,6 +40,8 @@ export interface WorkSessionTaskResult {
   error?: string
   /** W003: HUMAN_REQUIRED 时可选的恢复 checkpoint */
   checkpoint?: GuardianTaskRecoveryCheckpoint
+  /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
+  completionEvidence?: TaskCompletionEvidence
 }
 
 export interface WorkSessionTaskRunner {

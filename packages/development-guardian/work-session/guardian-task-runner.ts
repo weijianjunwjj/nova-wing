@@ -11,6 +11,7 @@ import type { WorkSessionTask, HumanRequired } from './model.js'
 import type {
   WorkSessionTaskRunner,
   WorkSessionTaskResult,
+  TaskCompletionEvidence,
 } from './task-runner.js'
 import type {
   GuardianTaskRecoveryCheckpoint,
@@ -543,11 +544,32 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
     // 映射结果
     if (result.task.state === 'COMPLETED') {
+      // W004-A: 真 COMPLETED 时把最小结构化 evidence 返回给 WorkSession。
+      // COMPLETED 语义已保证 lastReport 存在、verification 全 passed、blockers 为空、
+      // lastPacket.verdict === 'done'；这里只摘取 Git finalization 必要字段，
+      // 不把完整 Guardian 内部对象泄漏给 WorkSession。
+      const report = result.task.lastReport
+      const packet = result.task.lastPacket
+      const completionEvidence: TaskCompletionEvidence | undefined =
+        report !== undefined && packet !== undefined
+          ? {
+              changedFiles: report.changedFiles,
+              verificationResults: report.verificationResults,
+              blockers: report.blockers,
+              finalReviewerVerdict: packet.verdict,
+              requiredVerification: packet.verification,
+              ...(report.incompleteReason !== undefined
+                ? { incompleteReason: report.incompleteReason }
+                : {}),
+            }
+          : undefined
+
       return {
         status: 'COMPLETED',
         ...(result.task.lastReport?.summary !== undefined
           ? { summary: result.task.lastReport.summary }
           : {}),
+        ...(completionEvidence !== undefined ? { completionEvidence } : {}),
       }
     }
 
