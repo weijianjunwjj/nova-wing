@@ -46,6 +46,13 @@ export interface ExecutionReport {
   incompleteReason?: string
   permissionDenials?: readonly PermissionDenialEvidence[]
   executorCapabilities?: readonly string[]
+  /**
+   * Guardian 可在 Claude 执行后独立完成的 deterministic verification 命令。
+   * 与 executorCapabilities 区分：这些不是给 Claude 的工具权限，
+   * 而是 Guardian executor 自身能运行的验证命令（MVP allowlist）。
+   * Reviewer 据此判断：denied verification command 不必由 Claude 直接执行。
+   */
+  deterministicVerificationCapabilities?: readonly string[]
 }
 
 export interface GuardianTask {
@@ -62,6 +69,12 @@ export interface GuardianTask {
   lastPacket?: DelegationPacket
   lastReport?: ExecutionReport
   stopReason?: string
+  /**
+   * W003: 本次 run() 是否携带并成功验证了 GuardianTaskRecoveryCheckpoint。
+   * 这是 recovery continuation 的唯一 source of truth；
+   * 不由 lastPacket / lastReport / sessionId / conversationUrl 推断。
+   */
+  recoveryContinuation?: boolean
 }
 
 export interface GuardianRunResult {

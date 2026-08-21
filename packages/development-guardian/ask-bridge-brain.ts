@@ -53,6 +53,15 @@ export interface AskBridgeBrainOptions {
   onDiagnostic?: (event: AskBridgeOutputEvent) => void
 }
 
+/**
+ * W003: AskBridgeBrain Provider State
+ * 用于持久化和恢复 ChatGPT conversation 状态
+ */
+export interface AskBridgeBrainProviderState {
+  taskConversationUrls: Record<string, string>
+  reviewedTaskIds: readonly string[]
+}
+
 function defaultAskBridgeCommand(): string {
   return process.platform === 'win32'
     ? join(homedir(), '.local', 'bin', 'ask-bridge.exe')
@@ -201,6 +210,32 @@ export class AskBridgeBrain implements GuardianBrain {
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000
     this.command = options.command ?? defaultAskBridgeCommand()
     this.headless = options.headless ?? process.platform !== 'win32'
+  }
+
+  /**
+   * W003: 捕获当前 provider state 用于持久化
+   */
+  captureProviderState(): AskBridgeBrainProviderState {
+    return {
+      taskConversationUrls: Object.fromEntries(this.taskConversationUrls),
+      reviewedTaskIds: Array.from(this.reviewedTaskIds),
+    }
+  }
+
+  /**
+   * W003: 从持久化 state 恢复
+   */
+  restoreProviderState(state: AskBridgeBrainProviderState): void {
+    this.taskConversationUrls.clear()
+    this.reviewedTaskIds.clear()
+
+    for (const [taskId, url] of Object.entries(state.taskConversationUrls)) {
+      this.taskConversationUrls.set(taskId, url)
+    }
+
+    for (const taskId of state.reviewedTaskIds) {
+      this.reviewedTaskIds.add(taskId)
+    }
   }
 
   private conversationUrlForTask(taskId: string): string | undefined {

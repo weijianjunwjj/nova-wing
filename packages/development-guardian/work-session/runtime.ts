@@ -16,6 +16,7 @@ import type {
   WorkSessionDurableState,
 } from './model.js'
 import type { WorkSessionTaskRunner } from './task-runner.js'
+import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 
 export interface WorkSessionRuntimeConfig {
   definition: WorkSessionDefinition
@@ -26,6 +27,15 @@ export interface WorkSessionRuntimeConfig {
 export interface ResumeInput {
   decision?: unknown
   approval?: boolean
+}
+
+export interface RecoveryCheckpointResumeOptions {
+  /** 目标 session id（必须等于本 runtime 的 definition.id） */
+  sessionId: string
+  /** 显式 Legacy Adoption 产生的恢复 checkpoint */
+  checkpoint: GuardianTaskRecoveryCheckpoint
+  /** 传给既有 resume path 的 resume data */
+  resumeData?: ResumeInput
 }
 
 // Workflow state schema
@@ -39,6 +49,7 @@ const WorkflowStateSchema = z.object({
     category: z.string(),
     reason: z.string(),
   }).optional(),
+  currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -186,6 +197,74 @@ export class WorkSessionRuntime {
     }
   }
 
+  /**
+   * W003 FINAL: 显式 Legacy Recovery 入口。
+   *
+   * 把一个显式创建的 GuardianTaskRecoveryCheckpoint（例如 adoptLegacyRecoveryCheckpoint
+   * 的结果）认领为指定 session 的恢复基线，然后走既有 Mastra resume path。
+   *
+   * 调用者不需要直接操作 Mastra raw snapshot：
+   * - storage.getStore('workflows') / loadWorkflowSnapshot / persistWorkflowSnapshot
+   * - 修改 rawSnapshot.value.currentTaskCheckpoint
+   *
+   * 本 API 内部负责：
+   * - session 必须存在（否则 fail closed）；
+   * - session 必须处于合法可恢复状态（SUSPENDED）；
+   * - session 的 currentTaskId 必须与 checkpoint.task.id 一致（fail-closed identity gate）；
+   * - 把 checkpoint 持久化为 currentTaskCheckpoint；
+   * - 复用既有 resume path（repo identity 后续仍由 Runner 的 RepositoryCheckpoint gate 验证）。
+   */
+  async resumeFromRecoveryCheckpoint(
+    options: RecoveryCheckpointResumeOptions,
+  ): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    if (options.sessionId !== runId) {
+      throw new Error(
+        `recovery session mismatch: expected sessionId=${runId}, got ${options.sessionId}`,
+      )
+    }
+
+    const workflowName = `work-session-${this.config.definition.id}`
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) {
+      throw new Error(`recovery failed: storage unavailable for ${workflowName}`)
+    }
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) {
+      throw new Error(
+        `recovery failed: workflows storage domain unavailable for ${workflowName}`,
+      )
+    }
+
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null) {
+      throw new Error(`recovery failed: no resumable session found for ${runId}`)
+    }
+    if (snapshot.status !== 'suspended') {
+      throw new Error(
+        `recovery failed: session ${runId} is not resumable (status=${snapshot.status})`,
+      )
+    }
+
+    const workflowState = snapshot.value as unknown as WorkflowState
+    if (workflowState.currentTaskId !== options.checkpoint.task.id) {
+      throw new Error(
+        `recovery checkpoint task ${options.checkpoint.task.id} does not match session current task ${workflowState.currentTaskId ?? 'null'}`,
+      )
+    }
+
+    // 持久化 checkpoint，交给既有 resume path；
+    // repo identity（branch/HEAD/fingerprint）由 Runner 的 RepositoryCheckpoint gate 验证。
+    snapshot.value = {
+      ...workflowState,
+      currentTaskCheckpoint: options.checkpoint,
+      updatedAt: new Date().toISOString(),
+    } as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+
+    return this.resume(options.resumeData ?? {})
+  }
+
   private createWorkflow() {
     const self = this
 
@@ -231,15 +310,17 @@ export class WorkSessionRuntime {
           currentState = updatedState
           self.latestState = updatedState
 
-          // 执行任务，传递 resumeData
-          const result = await self.config.taskRunner.run(task, resumeData)
+          // W003: 传递 checkpoint 给 TaskRunner
+          const checkpoint = currentState.currentTaskCheckpoint
+          const result = await self.config.taskRunner.run(task, resumeData, checkpoint)
 
           if (result.status === 'COMPLETED') {
-            // 任务完成，更新状态，清除可能残留的 humanRequired
+            // 任务完成，更新状态，清除 humanRequired 和 checkpoint
             const completedState: WorkflowState = {
               ...currentState,
               completedTaskIds: [...currentState.completedTaskIds, task.id],
               humanRequired: undefined,
+              currentTaskCheckpoint: undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(completedState)
@@ -254,6 +335,7 @@ export class WorkSessionRuntime {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
+              currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
               updatedAt: new Date().toISOString(),
             }
             await setState(suspendedState)
@@ -271,6 +353,7 @@ export class WorkSessionRuntime {
               ...currentState,
               state: 'FAILED',
               humanRequired: undefined,
+              currentTaskCheckpoint: undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(failedState)
@@ -286,6 +369,7 @@ export class WorkSessionRuntime {
           state: 'COMPLETED',
           currentTaskId: null,
           humanRequired: undefined,
+          currentTaskCheckpoint: undefined,
           updatedAt: new Date().toISOString(),
         }
         await setState(finalState)
@@ -325,6 +409,10 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    // W003: 传递 checkpoint
+    if (wfState.currentTaskCheckpoint) {
+      result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
     }
     return result
   }

@@ -1,4 +1,5 @@
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
+import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
 export interface GuardianBrain {
   review(input: {
@@ -12,4 +13,27 @@ export interface GuardianExecutor {
     task: GuardianTask
     packet: DelegationPacket
   }): Promise<ExecutionReport>
+}
+
+/**
+ * W003: 可恢复 Executor 显式契约
+ *
+ * 支持两级恢复能力的 Executor 必须实现此接口。
+ * 不要通过 duck typing 或依赖 executor.options 实现恢复逻辑。
+ */
+export interface GuardianRecoverableExecutor extends GuardianExecutor {
+  /**
+   * 捕获 provider 会话状态（如 Claude sessionId、ChatGPT conversationUrl）
+   */
+  captureProviderState?(): ProviderSessionState
+
+  /**
+   * 恢复 provider 会话状态
+   */
+  restoreProviderState?(state: ProviderSessionState): void
+
+  /**
+   * 设置允许的 worktree checkpoint（用于 resume 验证）
+   */
+  setRecoveryCheckpoint?(checkpoint: RepositoryCheckpoint): void
 }

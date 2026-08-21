@@ -319,3 +319,55 @@ test('executor never includes generic or disallowed Python commands', async () =
     assert.ok(!found, `should not include generic or disallowed pattern: ${pattern}`)
   }
 })
+
+// W003 BOOTSTRAP CLOSURE: changedFiles 与 worktree fingerprint 对 runtime artifact 的语义一致
+// 只忽略 untracked 的 node_modules/.venv/dist 产物；tracked 修改始终纳入（不得 blanket-ignore）
+test('untracked venv artifacts are excluded from changedFiles; tracked files kept', async () => {
+  const runner = new QueueRunner([
+    result(''), // ensureCleanStart: git status --porcelain（clean）
+    result(claudeJson()),
+    result(' M apps/api/main.py\n?? .venv/Scripts/python.exe\n?? .venv/pyvenv.cfg\n?? .venv/Lib/site-packages/_pytest/__init__.py\n'), // readChangedFiles
+    result('diff clean'), // git diff --check
+  ])
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+    allowPythonBootstrap: true,
+  })
+
+  const report = await executor.execute({
+    task: task(),
+    packet: packet([]),
+  })
+
+  assert.deepEqual(
+    report.changedFiles,
+    ['apps/api/main.py'],
+    'untracked venv artifacts must be excluded from changedFiles',
+  )
+})
+
+test('tracked changes under artifact dirs are still captured (no blanket ignore)', async () => {
+  const runner = new QueueRunner([
+    result(''), // ensureCleanStart: git status --porcelain（clean）
+    result(claudeJson()),
+    result(' M .venv/pyvenv.cfg\n?? apps/api/new.py\n M node_modules/pkg/index.js\n'), // readChangedFiles
+    result('diff clean'), // git diff --check
+  ])
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+    allowPythonBootstrap: true,
+  })
+
+  const report = await executor.execute({
+    task: task(),
+    packet: packet([]),
+  })
+
+  assert.deepEqual(
+    report.changedFiles,
+    ['.venv/pyvenv.cfg', 'apps/api/new.py', 'node_modules/pkg/index.js'],
+    'tracked changes under artifact dirs must be captured',
+  )
+})

@@ -185,3 +185,89 @@ test('brain prompt serializes safe incomplete execution for Reviewer convergence
   assert.match(prompt, /execution_report\.incomplete_reason 非空/)
   assert.match(prompt, /"incomplete_reason":"执行预算耗尽（12 \+ 6 turns），但安全边界正常，需要 Brain 判断是否继续"/)
 })
+
+// W003 BOOTSTRAP CLOSURE：venv missing + bootstrap capability → Reviewer 必须 revise bootstrap
+test('brain prompt requires revise (not blocked) when venv missing and python bootstrap capability is approved', () => {
+  const prompt = buildGuardianBrainPrompt({
+    task: {
+      id: 'task-bootstrap',
+      goal: 'Create the minimal FastAPI backend',
+      state: 'REVIEWING',
+      iteration: 2,
+      maxIterations: 10,
+      constraints: ['只允许修改 apps/api/**'],
+      doNotDo: ['不要 git commit'],
+    },
+    report: {
+      summary: 'venv 未创建，pytest 无法运行',
+      changedFiles: ['apps/api/main.py'],
+      commandsRun: ['claude -p --output-format json', '.venv/Scripts/python.exe -m pytest'],
+      verificationResults: [
+        { name: 'git diff --check', status: 'passed' },
+        {
+          name: '.venv/Scripts/python.exe -m pytest',
+          status: 'failed',
+          details: '.venv/Scripts/python.exe: No such file or directory',
+        },
+      ],
+      blockers: [],
+      executorCapabilities: ['python venv bootstrap', 'venv pip install'],
+      deterministicVerificationCapabilities: ['.venv/Scripts/python.exe -m pytest', 'git diff --check'],
+    },
+  })
+
+  // 必须识别为 recoverable bootstrap prerequisite 并要求 revise
+  assert.match(prompt, /recoverable bootstrap prerequisite/)
+  assert.match(prompt, /必须 verdict=revise/)
+  assert.match(prompt, /不得 blocked/)
+  assert.match(prompt, /不得把该失败当作 ENVIRONMENT_REQUIRED/)
+  assert.match(prompt, /PERMISSION_REQUIRED/)
+
+  // instructions 必须明确精确的 venv 命令
+  assert.match(prompt, /python -m venv \.venv/)
+  assert.match(prompt, /\.venv\/Scripts\/python\.exe -m pip install -r/)
+
+  // requirements 路径来自 task/repo 已知事实，不泛化 dependency resolver
+  assert.match(prompt, /requirements 路径必须来自当前 task\/repo 已知事实/)
+
+  // deterministic verification 交回 Guardian，不让 Executor 自己跑 pytest/git diff
+  assert.match(prompt, /不要让 Executor 自己执行 pytest \/ git diff --check/)
+  assert.match(prompt, /Guardian deterministic verifier/)
+
+  // 不扩大权限
+  assert.match(prompt, /不得要求新增 generic Bash/)
+  assert.match(prompt, /uv、poetry、conda 或 bare pip/)
+})
+
+test('brain prompt keeps normal revise semantics when venv missing but no bootstrap capability', () => {
+  const prompt = buildGuardianBrainPrompt({
+    task: {
+      id: 'task-no-bootstrap',
+      goal: '完成最小任务',
+      state: 'REVIEWING',
+      iteration: 1,
+      maxIterations: 5,
+    },
+    report: {
+      summary: 'venv 未创建，pytest 无法运行',
+      changedFiles: [],
+      commandsRun: ['.venv/Scripts/python.exe -m pytest'],
+      verificationResults: [
+        {
+          name: '.venv/Scripts/python.exe -m pytest',
+          status: 'failed',
+          details: '.venv/Scripts/python.exe: No such file or directory',
+        },
+      ],
+      blockers: [],
+      deterministicVerificationCapabilities: ['.venv/Scripts/python.exe -m pytest', 'git diff --check'],
+    },
+  })
+
+  // 没有 executor_capabilities 的 bootstrap 信号时，bootstrap 恢复规则不适用；
+  // 规则文本必须引用 executor_capabilities 同时包含两个 capability 才触发。
+  assert.ok(
+    prompt.includes('executor_capabilities 同时包含 "python venv bootstrap" 与 "venv pip install"'),
+    'bootstrap recovery rule must require both approved capabilities',
+  )
+})

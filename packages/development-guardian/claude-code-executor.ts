@@ -7,7 +7,8 @@ import type {
   VerificationResult,
   PermissionDenialEvidence,
 } from './model.js'
-import type { GuardianExecutor } from './ports.js'
+import type { GuardianRecoverableExecutor } from './ports.js'
+import type { RepositoryCheckpoint, ProviderSessionState } from './work-session/checkpoint.js'
 
 export interface GuardianCommandRequest {
   executable: string
@@ -46,6 +47,19 @@ export interface ClaudeCodeTimingEvent {
   apiDurationMs?: number
 }
 
+/**
+ * Claude 执行模式
+ *
+ * 区分三种语义完全不同的 invocation：
+ * - fresh: 新任务第一次执行（或同 executor revise 沿用既有语义），normal prompt，normal maxTurns
+ * - task-continuation: 任务延续（Exact / Recovery Resume），continuation prompt，normal maxTurns
+ * - max-turn-recovery: max_turns 内部 bounded recovery，continuation prompt，固定 6 turns
+ *
+ * 关键：continuation prompt 不是 max_turns 专属。
+ * task-continuation 用普通 task budget，不降为 6 turns。
+ */
+export type ClaudeExecutionMode = 'fresh' | 'task-continuation' | 'max-turn-recovery'
+
 export interface MaxTurnRecoveryDecision {
   eligible: boolean
   reason: string
@@ -67,6 +81,22 @@ export interface ClaudeCodeExecutorOptions {
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
   onRecovery?: (recovery: { reason: 'max_turns'; sessionId: string; bounded: true }) => void
+  /** W003: 允许的 worktree checkpoint（用于 resume 验证） */
+  allowedWorktreeCheckpoint?: {
+    taskId: string
+    branch: string
+    headSha: string
+    worktreeFingerprint: string
+  }
+}
+
+/**
+ * W003: ClaudeCodeExecutor Provider State
+ * 用于持久化和恢复 Claude session 状态
+ */
+export interface ClaudeCodeExecutorProviderState {
+  sessionId?: string
+  activeTaskId?: string
 }
 
 interface ClaudeCodeJsonResult {
@@ -192,6 +222,15 @@ function extractPermissionDenialEvidence(
   }
 
   return evidence
+}
+
+/**
+ * Guardian 可独立执行的 deterministic verification 命令（MVP allowlist）。
+ * 这些能力给 Guardian executor，而不是 Claude：Reviewer 看到 permission denial
+ * 命中这里时，应把验证命令放进 verification 由 Guardian 执行，而不是 blocked。
+ */
+function getDeterministicVerificationCapabilities(): string[] {
+  return [...ALLOWED_VERIFICATION_COMMANDS]
 }
 
 /**
@@ -333,9 +372,9 @@ function buildClaudePrompt(task: GuardianTask, packet: DelegationPacket): string
   return parts.join('\n')
 }
 
-function buildRecoveryPrompt(task: GuardianTask, packet: DelegationPacket): string {
+function buildContinuationPrompt(task: GuardianTask, packet: DelegationPacket): string {
   const parts = [
-    '继续当前任务。保留当前工作区修改，不要重新从头分析。',
+    '继续当前任务。保留当前工作区修改，不要从头重新实现，不要重新从头分析。',
     '优先完成尚未完成的实现、必要回归测试和任务要求的 deterministic verification。',
     '',
     `目标：${packet.goal}`,
@@ -357,17 +396,32 @@ function buildRecoveryPrompt(task: GuardianTask, packet: DelegationPacket): stri
   return parts.join('\n')
 }
 
+/**
+ * 解析 git status --porcelain --untracked-files=all 输出为 changedFiles。
+ *
+ * 与 worktree fingerprint 对 runtime artifact 的语义保持一致（见 worktree-fingerprint）：
+ * - untracked（??）且位于 node_modules/.venv/dist 等产物目录 → 忽略。
+ *   构建产物不是任务交付物，不该塞进 execution_report 撑爆 Reviewer prompt；
+ * - tracked 修改（即使位于这些产物目录）→ 始终纳入，不得 blanket-ignore。
+ */
 function parseChangedFiles(statusOutput: string): string[] {
   return statusOutput
     .split(/\r?\n/u)
     .map((line) => line.trimEnd())
     .filter((line) => line.length >= 4)
     .map((line) => {
+      const statusPrefix = line.slice(0, 2)
       const path = line.slice(3).trim()
       const renameTarget = path.includes(' -> ') ? path.split(' -> ').at(-1) : path
-      return renameTarget ?? path
+      return { statusPrefix, path: renameTarget ?? path }
     })
-    .filter((path, index, all) => path.length > 0 && all.indexOf(path) === index)
+    .filter(
+      (entry) =>
+        entry.path.length > 0 &&
+        !(entry.statusPrefix === '??' && isIgnoredScopePath(entry.path)),
+    )
+    .filter((entry, index, all) => all.findIndex((other) => other.path === entry.path) === index)
+    .map((entry) => entry.path)
 }
 
 function normalizePath(path: string): string {
@@ -384,10 +438,22 @@ function matchesPathRule(path: string, rule: string): boolean {
   return normalizedPath === normalizedRule || normalizedPath.startsWith(`${normalizedRule}/`)
 }
 
+/** 依赖/产物目录：允许能力（venv bootstrap 等）产生的执行产物不算 scope 修改 */
+const SCOPE_IGNORED_DIR_SEGMENTS = new Set(['node_modules', '.venv', 'dist'])
+
+function isIgnoredScopePath(path: string): boolean {
+  return normalizePath(path)
+    .split('/')
+    .some((segment) => SCOPE_IGNORED_DIR_SEGMENTS.has(segment))
+}
+
 function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): string[] {
   const blockers: string[] = []
   if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
     for (const path of changedFiles) {
+      if (isIgnoredScopePath(path)) {
+        continue
+      }
       if (!task.allowedPaths.some((rule) => matchesPathRule(path, rule))) {
         blockers.push(`changed file is outside allowed scope: ${path}`)
       }
@@ -411,17 +477,51 @@ function commandFailureDetails(result: GuardianCommandResult): string {
   return `exit=${String(result.exitCode)} signal=${String(result.signal)}`
 }
 
-export class ClaudeCodeExecutor implements GuardianExecutor {
+export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   private readonly runner: GuardianCommandRunner
   private readonly timeoutMs: number
   private readonly maxTurns: number
   private sessionId: string | undefined
+  private allowedCheckpoint: RepositoryCheckpoint | undefined
   private activeTaskId: string | undefined
 
   constructor(private readonly options: ClaudeCodeExecutorOptions) {
     this.runner = options.commandRunner ?? defaultCommandRunner
     this.timeoutMs = options.timeoutMs ?? 20 * 60 * 1000
     this.maxTurns = options.maxTurns ?? 12
+  }
+
+  /**
+   * W003: 捕获当前 provider state 用于持久化
+   *
+   * 只返回 provider-owned durable state（如 Claude sessionId）。
+   * 不返回 executor-instance ephemeral binding（如 activeTaskId）。
+   */
+  captureProviderState(): ProviderSessionState {
+    return {
+      ...(this.sessionId !== undefined ? { claudeSessionId: this.sessionId } : {}),
+    }
+  }
+
+  /**
+   * W003: 从持久化 state 恢复
+   *
+   * 只恢复 provider-owned durable state（如 Claude sessionId）。
+   * 不恢复 executor-instance ephemeral binding（如 activeTaskId）。
+   *
+   * activeTaskId 必须 always start undefined，即使 restore 了 sessionId。
+   */
+  restoreProviderState(state: ProviderSessionState): void {
+    if (state.claudeSessionId !== undefined) {
+      this.sessionId = state.claudeSessionId
+    }
+  }
+
+  /**
+   * W003: 设置恢复检查点
+   */
+  setRecoveryCheckpoint(checkpoint: RepositoryCheckpoint): void {
+    this.allowedCheckpoint = checkpoint
   }
 
   private emitTiming(
@@ -463,45 +563,152 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     return { changedFiles: parseChangedFiles(status.stdout) }
   }
 
-  private async ensureCleanStart(task: GuardianTask): Promise<string | undefined> {
+  private async ensureCleanStart(task: GuardianTask): Promise<{
+    blocker?: string
+    /** true 表示本次 execute 是 task continuation（checkpoint 验证通过后授权） */
+    continuation: boolean
+  }> {
+    // A 场景：same executor / same task / revise
+    // activeTaskId 内存绑定授权 dirty worktree，但不构成 resume（保持既有 revise 语义）。
+    // 必须在跑 git status 之前短路：原逻辑不消费额外命令队列，
+    // 否则同 executor revise 会多一次 git status，破坏命令序列。
     if (this.activeTaskId === task.id) {
-      return undefined
+      return { continuation: false }
     }
+
+    // 一个 executor 实例只允许绑定一个任务
     if (this.activeTaskId !== undefined && this.activeTaskId !== task.id) {
-      return `executor is already bound to another task: ${this.activeTaskId}`
+      return {
+        blocker: `executor is already bound to another task: ${this.activeTaskId}`,
+        continuation: false,
+      }
     }
 
     const status = await this.runBash('git status --porcelain', 30_000)
     if (status.exitCode !== 0) {
-      return `cannot inspect git status: ${commandFailureDetails(status)}`
-    }
-    if (status.stdout.trim().length > 0) {
-      return 'target repository has pre-existing changes; MVP requires a clean worktree before autonomous execution'
+      return {
+        blocker: `cannot inspect git status: ${commandFailureDetails(status)}`,
+        continuation: false,
+      }
     }
 
-    this.activeTaskId = task.id
-    return undefined
+    const hasDirtyFiles = status.stdout.trim().length > 0
+
+    // W003: 有 allowedWorktreeCheckpoint 时验证是否匹配
+    // checkpoint 验证通过 → NEW executor 的 task continuation（Exact / Recovery Resume）
+    // RepositoryCheckpoint 才是恢复授权依据；sessionId 不授权 dirty worktree 放行
+    const checkpoint = this.allowedCheckpoint ?? this.options.allowedWorktreeCheckpoint
+    if (hasDirtyFiles && checkpoint !== undefined) {
+      // this.allowedCheckpoint 是 RepositoryCheckpoint (没有 taskId)
+      // this.options.allowedWorktreeCheckpoint 有 taskId
+      const checkpointTaskId = 'taskId' in checkpoint ? checkpoint.taskId : undefined
+
+      // 验证 taskId 匹配（仅当 checkpoint 有 taskId 时）
+      if (checkpointTaskId !== undefined && checkpointTaskId !== task.id) {
+        return {
+          blocker: `dirty worktree belongs to different task: expected ${checkpointTaskId}, got ${task.id}`,
+          continuation: false,
+        }
+      }
+
+      // 验证 branch
+      const branchResult = await this.runBash('git branch --show-current', 30_000)
+      if (branchResult.exitCode !== 0) {
+        return {
+          blocker: `cannot read current branch: ${commandFailureDetails(branchResult)}`,
+          continuation: false,
+        }
+      }
+      const currentBranch = branchResult.stdout.trim()
+      if (currentBranch !== checkpoint.branch) {
+        return {
+          blocker: `REPO_DRIFT: branch changed from ${checkpoint.branch} to ${currentBranch}`,
+          continuation: false,
+        }
+      }
+
+      // 验证 HEAD
+      const headResult = await this.runBash('git rev-parse HEAD', 30_000)
+      if (headResult.exitCode !== 0) {
+        return {
+          blocker: `cannot read HEAD: ${commandFailureDetails(headResult)}`,
+          continuation: false,
+        }
+      }
+      const currentHead = headResult.stdout.trim()
+      if (currentHead !== checkpoint.headSha) {
+        return {
+          blocker: `REPO_DRIFT: HEAD changed from ${checkpoint.headSha.slice(0, 8)} to ${currentHead.slice(0, 8)}`,
+          continuation: false,
+        }
+      }
+
+      // 验证 worktree fingerprint
+      const fullStatus = await this.runBash('git status --porcelain --untracked-files=all', 30_000)
+      if (fullStatus.exitCode !== 0) {
+        return {
+          blocker: `cannot read full git status: ${commandFailureDetails(fullStatus)}`,
+          continuation: false,
+        }
+      }
+
+      // 动态导入 worktree-fingerprint（避免循环依赖）
+      const { parseGitStatus, computeWorktreeFingerprint } = await import('./work-session/worktree-fingerprint.js')
+      const entries = parseGitStatus(fullStatus.stdout)
+      const currentFingerprint = await computeWorktreeFingerprint(this.options.cwd, entries)
+
+      if (currentFingerprint !== checkpoint.worktreeFingerprint) {
+        return {
+          blocker: `REPO_DRIFT: worktree files changed since checkpoint`,
+          continuation: false,
+        }
+      }
+
+      // checkpoint 验证通过，允许 dirty worktree，本次 execute 是 task continuation
+      return { continuation: true }
+    }
+
+    // 没有 checkpoint，要求 clean worktree（W002 之前的行为）
+    if (hasDirtyFiles) {
+      return {
+        blocker:
+          'target repository has pre-existing changes; MVP requires a clean worktree before autonomous execution',
+        continuation: false,
+      }
+    }
+
+    return { continuation: false }
   }
 
   private buildClaudeArgs(
     task: GuardianTask,
     packet: DelegationPacket,
-    isRecovery = false,
+    mode: ClaudeExecutionMode,
   ): string[] {
+    const useContinuationPrompt = mode !== 'fresh'
+    const maxTurns = mode === 'max-turn-recovery' ? 6 : this.maxTurns
     const args = [
       '-p',
-      isRecovery ? buildRecoveryPrompt(task, packet) : buildClaudePrompt(task, packet),
+      useContinuationPrompt ? buildContinuationPrompt(task, packet) : buildClaudePrompt(task, packet),
       '--output-format',
       'json',
       '--permission-mode',
       'acceptEdits',
       '--max-turns',
-      String(isRecovery ? 6 : this.maxTurns),
+      String(maxTurns),
     ]
 
     if (this.options.model !== undefined) {
       args.push('--model', this.options.model)
     }
+
+    // --resume 策略：
+    // - max-turn-recovery: sessionId 存在时必须 --resume（recovery 前置条件已保证 sessionIdPresent）
+    // - task-continuation: 有 restored sessionId 时 --resume（Exact Resume），无 sessionId 时不 --resume（Recovery Resume）
+    // - fresh: 同 executor revise 时已有 sessionId 则继续该 session（W002 既有行为）
+    // 三种模式下 --resume 只取决于 sessionId 是否存在，不依赖 mode。
+    // 只有 setRecoveryCheckpoint 验证通过的 checkpoint 才能授权 dirty worktree，
+    // sessionId 本身不授权任何 dirty worktree 放行（见 ensureCleanStart）。
     if (this.sessionId !== undefined) {
       args.push('--resume', this.sessionId)
     }
@@ -664,7 +871,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
   private async executeClaudeOnce(
     task: GuardianTask,
     packet: DelegationPacket,
-    isRecovery = false,
+    mode: ClaudeExecutionMode,
   ): Promise<{
     claude: GuardianCommandResult
     parsed: ClaudeCodeJsonResult
@@ -674,7 +881,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     permissionDenials: PermissionDenialEvidence[]
     claudeDurationMs: number
   }> {
-    const args = this.buildClaudeArgs(task, packet, isRecovery)
+    const args = this.buildClaudeArgs(task, packet, mode)
     const spec = claudeCommand(args)
     const claudeStartedAt = performance.now()
     const claude = await this.runner({
@@ -797,21 +1004,29 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
     let maxTurnRecoveryAttempted = false
     try {
       const cleanStartedAt = performance.now()
-      const startBlocker = await this.ensureCleanStart(input.task)
+      const startCheck = await this.ensureCleanStart(input.task)
       this.emitTiming(input.task, 'clean-start', performance.now() - cleanStartedAt, {
         command: 'git status --porcelain',
       })
-      if (startBlocker !== undefined) {
+      if (startCheck.blocker !== undefined) {
         return {
           summary: 'Claude Code 未启动。',
           changedFiles: [],
           commandsRun: ['git status --porcelain'],
           verificationResults: [],
-          blockers: [startBlocker],
+          blockers: [startCheck.blocker],
         }
       }
 
-      let firstAttempt = await this.executeClaudeOnce(input.task, input.packet, false)
+      // 记录当前 active task，用于后续 revise 判断
+      this.activeTaskId = input.task.id
+
+      // 第一次 Claude invocation 的 mode：
+      // - checkpoint 验证通过（startCheck.continuation）→ task-continuation（Exact / Recovery Resume）
+      // - 其他（clean worktree 或 same executor revise）→ fresh
+      // 只有 RepositoryCheckpoint 验证通过才能进入 task-continuation，sessionId 不授权
+      const firstMode: ClaudeExecutionMode = startCheck.continuation ? 'task-continuation' : 'fresh'
+      let firstAttempt = await this.executeClaudeOnce(input.task, input.packet, firstMode)
       let finalAttempt = firstAttempt
 
       const recoveryDecision = this.evaluateMaxTurnRecovery(
@@ -838,7 +1053,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           firstAttempt.otherBlockers.push(diagnosticInfo)
         }
 
-        const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, true)
+        const recoveryAttempt = await this.executeClaudeOnce(input.task, input.packet, 'max-turn-recovery')
         finalAttempt = recoveryAttempt
 
         // 第二次 max_turns 后的判断
@@ -922,6 +1137,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         allowNpmInstall: this.options.allowNpmInstall ?? false,
         allowPythonBootstrap: this.options.allowPythonBootstrap ?? false,
       })
+      const deterministicVerificationCapabilities = getDeterministicVerificationCapabilities()
 
       // 检查是否是第二次 max_turns 且安全边界正常，或者有 permission denials 但无其他 blocker
       const isSecondMaxTurnsSafe =
@@ -952,10 +1168,11 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
             ? { permissionDenials: finalAttempt.permissionDenials }
             : {}),
           executorCapabilities,
+          deterministicVerificationCapabilities,
         }
       }
 
-      // 如果只有 permission denials，不运行 verification，让 Reviewer 判断
+      //如果只有 permission denials，不运行 verification，让 Reviewer 判断
       if (hasPermissionDenialsOnly) {
         return {
           summary: this.reportSummary(finalAttempt.parsed),
@@ -966,6 +1183,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
           incompleteReason: '执行遇到权限拒绝，需要 Reviewer 判断是否可使用已有授权能力替代；如不能则 blocked',
           permissionDenials: finalAttempt.permissionDenials,
           executorCapabilities,
+          deterministicVerificationCapabilities,
         }
       }
 
@@ -982,6 +1200,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
             '执行达到 max_turns 且遇到权限拒绝，需要 Reviewer 判断是否可使用已有授权能力替代；如不能则 blocked',
           permissionDenials: finalAttempt.permissionDenials,
           executorCapabilities,
+          deterministicVerificationCapabilities,
         }
       }
 
@@ -1000,6 +1219,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
             ? { permissionDenials: finalAttempt.permissionDenials }
             : {}),
           executorCapabilities,
+          deterministicVerificationCapabilities,
         }
       }
 
@@ -1013,6 +1233,7 @@ export class ClaudeCodeExecutor implements GuardianExecutor {
         verificationResults: verification.results,
         blockers: allBlockers,
         executorCapabilities,
+        deterministicVerificationCapabilities,
       }
     } finally {
       this.emitTiming(input.task, 'executor-total', performance.now() - totalStartedAt)

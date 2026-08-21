@@ -8,6 +8,7 @@ import type {
   WorkSessionTaskResult,
 } from './task-runner.js'
 import type { WorkSessionTask } from './model.js'
+import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 
 export type FakeTaskBehavior =
   | { type: 'COMPLETED' }
@@ -23,7 +24,11 @@ export class FakeTaskRunner implements WorkSessionTaskRunner {
     this.behaviors = new Map(Object.entries(behaviors))
   }
 
-  async run(task: WorkSessionTask, resumeData?: any): Promise<WorkSessionTaskResult> {
+  async run(
+    task: WorkSessionTask,
+    resumeData?: any,
+    _checkpoint?: GuardianTaskRecoveryCheckpoint,
+  ): Promise<WorkSessionTaskResult> {
     const count = this.executionCounts.get(task.id) ?? 0
     this.executionCounts.set(task.id, count + 1)
 

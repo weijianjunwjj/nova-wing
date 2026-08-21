@@ -220,5 +220,3 @@ test('CASE 3: max_turns + permission denial + scope violation fails closed', asy
   )
   assert.notEqual(report.permissionDenials, undefined, 'must include permission denials')
 })
-
-
