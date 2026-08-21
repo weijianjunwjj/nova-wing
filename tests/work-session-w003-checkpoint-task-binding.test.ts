@@ -300,7 +300,7 @@ await test('W003 CLOSURE: checkpoint without repo verification capability fails 
   const result = await runner.run({ id: 'T-failclosed', goal: 'fail closed test' }, undefined, checkpoint)
 
   assert.strictEqual(result.status, 'HUMAN_REQUIRED', 'must require human when verification unavailable')
-  assert.strictEqual(result.humanRequired?.category, 'CHECKPOINT_VERIFICATION_UNAVAILABLE')
+  assert.strictEqual(result.humanRequired?.category, 'REPO_DRIFT', 'unverifiable checkpoint fails closed as REPO_DRIFT')
   assert.ok(
     (result.humanRequired?.reason ?? '').includes('checkpoint verification unavailable'),
     'reason must state checkpoint verification unavailable',

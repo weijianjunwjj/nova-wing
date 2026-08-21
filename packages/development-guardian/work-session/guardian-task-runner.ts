@@ -418,11 +418,12 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     const gitRunner = this.options.gitRunner
     if (repoPath === undefined || gitRunner === undefined) {
       // fail closed：缺少 repo identity 验证能力时不得自动信任 checkpoint。
+      // 无法验证 RepositoryCheckpoint → 无法证明 repository 未 drift → 统一归类 REPO_DRIFT。
       // 不做任何 provider 恢复 / recovery continuation / Brain / Executor 启动。
       return {
         ok: false,
         reason: 'checkpoint verification unavailable',
-        category: 'CHECKPOINT_VERIFICATION_UNAVAILABLE',
+        category: 'REPO_DRIFT',
       }
     }
 
