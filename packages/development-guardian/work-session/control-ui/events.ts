@@ -48,6 +48,7 @@ export interface ControlEventInput {
  * 刻意不包含：
  * - currentTaskCheckpoint（含 provider conversation URL / sessionId）；
  * - activeSegmentStartedAt / createdAt / updatedAt；
+ * - failureReason / provider raw error；
  * - 任何 secret / control token / env。
  */
 export interface WorkSessionControlSnapshot {
@@ -75,10 +76,10 @@ export interface WorkSessionControlSnapshot {
     completedTaskIds?: readonly string[]
     checkpointCommits?: Record<string, string>
     checkpointPushes?: Record<string, string>
+    /** W005-A 展示值：RUNNING 时包含当前未 settle 的 active segment。 */
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
-    failureReason?: string
   }
   guardian: {
     phase?: string
