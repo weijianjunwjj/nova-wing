@@ -45,6 +45,13 @@ export async function runGuardianTask(options: {
   brain: GuardianBrain
   executor: GuardianExecutor
   onProgress?: GuardianProgressObserver
+  /**
+   * W004-B: 纯 additive optional hook。返回 true 时停止当前 Guardian autonomous loop，
+   * 不再启动下一 provider operation（Reviewer / Executor），并以
+   * WORK_SESSION_HARD_LIMIT_REACHED marker 进入 HUMAN_REQUIRED。
+   * 未提供时现有 behavior 100% 不变。
+   */
+  shouldStopAutonomousWork?: () => boolean
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
@@ -64,9 +71,28 @@ export async function runGuardianTask(options: {
     })
   }
 
+  /** W004-B: hard boundary 到点 → HUMAN_REQUIRED + 精确 stop marker */
+  const stopForHardLimit = (): boolean => {
+    if (options.shouldStopAutonomousWork?.() !== true) {
+      return false
+    }
+    task = {
+      ...task,
+      state: 'HUMAN_REQUIRED',
+      stopReason: 'WORK_SESSION_HARD_LIMIT_REACHED',
+    }
+    emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+    return true
+  }
+
   emitProgress('PREPARING', 'completed')
 
   while (true) {
+    // W004-B checkpoint A：每次开始新的 Brain review 前。绝不 kill 正在 mutation 的 process。
+    if (stopForHardLimit()) {
+      return { task, reports }
+    }
+
     if (task.iteration >= task.maxIterations) {
       task = {
         ...task,
@@ -141,6 +167,12 @@ export async function runGuardianTask(options: {
       task = { ...task, state: 'COMPLETED' }
       delete task.stopReason
       emitProgress('COMPLETED', 'completed')
+      return { task, reports }
+    }
+
+    // W004-B checkpoint B：Reviewer 已返回、但开始新的 Executor execute 前。
+    // verdict 为 proceed/revise（blocked/done 已在上方 return），此处到点则不再启动 Executor。
+    if (stopForHardLimit()) {
       return { task, reports }
     }
 

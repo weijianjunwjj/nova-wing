@@ -14,12 +14,14 @@ import { z } from 'zod'
 import type {
   WorkSessionDefinition,
   WorkSessionDurableState,
+  WorkSessionCompletionReason,
 } from './model.js'
-import type { WorkSessionTaskRunner } from './task-runner.js'
+import type { WorkSessionTaskRunner, WorkSessionTaskRunContext } from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
   finalizeCompletedTask,
   readCurrentHeadSha,
+  GitPushError,
   type GitCheckpointFinalizer,
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
@@ -36,6 +38,8 @@ export interface WorkSessionRuntimeConfig {
   storageUrl: string
   /** W004-A: 可选 Git checkpoint 配置 */
   gitCheckpoint?: WorkSessionGitCheckpointConfig
+  /** W004-B: 可注入 clock 用于 active-time / hard deadline（缺省 Date.now） */
+  clock?: { now(): number }
 }
 
 export interface ResumeInput {
@@ -65,13 +69,38 @@ const WorkflowStateSchema = z.object({
   }).optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
+  checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
   failureReason: z.string().optional(), // W004-A FINAL
   currentTaskBaseHeadSha: z.string().optional(), // W004-A FINAL
+  activeElapsedMs: z.number().optional(), // W004-B
+  activeSegmentStartedAt: z.number().optional(), // W004-B
+  completionReason: z
+    .enum(['ALL_TASKS_COMPLETED', 'SOFT_LIMIT', 'HARD_LIMIT', 'MAX_TASKS'])
+    .optional(), // W004-B
   createdAt: z.string(),
   updatedAt: z.string(),
 })
 
 type WorkflowState = z.infer<typeof WorkflowStateSchema>
+
+/**
+ * W004-B: 最小 fail-fast limits 校验。invalid definition 必须在任何
+ * TaskRunner / provider / git mutation 前失败；不自动纠正用户 limits。
+ */
+function validateWorkSessionLimits(limits: WorkSessionDefinition['limits']): void {
+  if (!Number.isInteger(limits.maxTasks) || limits.maxTasks < 1) {
+    throw new Error('WorkSession limits.maxTasks must be an integer >= 1')
+  }
+  if (typeof limits.softMinutes !== 'number' || Number.isNaN(limits.softMinutes) || limits.softMinutes < 0) {
+    throw new Error('WorkSession limits.softMinutes must be >= 0')
+  }
+  if (typeof limits.hardMinutes !== 'number' || Number.isNaN(limits.hardMinutes) || limits.hardMinutes <= 0) {
+    throw new Error('WorkSession limits.hardMinutes must be > 0')
+  }
+  if (limits.hardMinutes < limits.softMinutes) {
+    throw new Error('WorkSession limits.hardMinutes must be >= softMinutes')
+  }
+}
 
 export class WorkSessionRuntime {
   private mastra: Mastra
@@ -80,6 +109,8 @@ export class WorkSessionRuntime {
   private latestState?: WorkflowState
 
   constructor(config: WorkSessionRuntimeConfig) {
+    // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
+    validateWorkSessionLimits(config.definition.limits)
     this.config = config
     // runId = sessionId，简化 identity 管理
     this.workflowId = `work-session-${config.definition.id}`
@@ -99,6 +130,59 @@ export class WorkSessionRuntime {
     this.createWorkflow()
   }
 
+  /** W004-B: 当前 clock 帧内时间（毫秒） */
+  private now(): number {
+    return this.config.clock?.now() ?? Date.now()
+  }
+
+  /** W004-B: active working time（毫秒）。suspend 期间不累积。 */
+  private activeElapsedMs(state: WorkflowState): number {
+    const base = state.activeElapsedMs ?? 0
+    if (state.activeSegmentStartedAt === undefined) {
+      return base
+    }
+    return base + (this.now() - state.activeSegmentStartedAt)
+  }
+
+  /** W004-B: 结算当前 active segment，清空 segment start（用于 SUSPEND/terminal） */
+  private settleActiveTime(state: WorkflowState): {
+    activeElapsedMs: number
+    activeSegmentStartedAt: undefined
+  } {
+    return {
+      activeElapsedMs: this.activeElapsedMs(state),
+      activeSegmentStartedAt: undefined,
+    }
+  }
+
+  /**
+   * W004-B: claim 新 Task 前的 limit 检查（优先级 hard > maxTasks > soft）。
+   * 命中返回对应 completionReason；未命中返回 undefined。
+   */
+  private checkClaimLimits(state: WorkflowState): WorkSessionCompletionReason | undefined {
+    const elapsed = this.activeElapsedMs(state)
+    const limits = this.config.definition.limits
+    if (elapsed >= limits.hardMinutes * 60_000) {
+      return 'HARD_LIMIT'
+    }
+    if (state.completedTaskIds.length >= limits.maxTasks) {
+      return 'MAX_TASKS'
+    }
+    if (elapsed >= limits.softMinutes * 60_000) {
+      return 'SOFT_LIMIT'
+    }
+    return undefined
+  }
+
+  /** W004-B: 当前 active segment 的 hard deadline 绝对时间（clock 帧内毫秒） */
+  private computeHardDeadlineAtMs(state: WorkflowState): number {
+    const limits = this.config.definition.limits
+    const hardMs = limits.hardMinutes * 60_000
+    const accumulated = state.activeElapsedMs ?? 0
+    const segmentStart = state.activeSegmentStartedAt ?? this.now()
+    return segmentStart + hardMs - accumulated
+  }
+
   async start(): Promise<WorkSessionDurableState> {
     const initialState: WorkflowState = {
       sessionId: this.config.definition.id,
@@ -107,6 +191,8 @@ export class WorkSessionRuntime {
       currentTaskId: null,
       completedTaskIds: [],
       checkpointCommits: {},
+      activeElapsedMs: 0,
+      activeSegmentStartedAt: this.now(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
@@ -308,6 +394,19 @@ export class WorkSessionRuntime {
         // 使用本地变量追踪最新状态
         let currentState = state
 
+        // W004-B: 恢复（suspend 已清空 segment start）时重新开始 active segment。
+        // 首次 start 已在 initialState 设置 segment start，此处不会重复触发。
+        if (currentState.activeSegmentStartedAt === undefined) {
+          const resumedState: WorkflowState = {
+            ...currentState,
+            activeSegmentStartedAt: self.now(),
+            updatedAt: new Date().toISOString(),
+          }
+          await setState(resumedState)
+          currentState = resumedState
+          self.latestState = resumedState
+        }
+
         // 从当前 task index 开始
         for (let i = currentState.currentTaskIndex; i < tasks.length; i++) {
           const task = tasks[i]!
@@ -315,6 +414,26 @@ export class WorkSessionRuntime {
           // 如果这个任务已经完成，跳过（这是 Mastra 恢复语义的核心）
           if (currentState.completedTaskIds.includes(task.id)) {
             continue
+          }
+
+          // W004-B: claim 新 Task 前检查 limits（resume 已 claim 的当前 Task 不截断）。
+          if (currentState.currentTaskId !== task.id) {
+            const limitReason = self.checkClaimLimits(currentState)
+            if (limitReason !== undefined) {
+              const limitState: WorkflowState = {
+                ...currentState,
+                state: 'COMPLETED',
+                currentTaskId: null,
+                completionReason: limitReason,
+                humanRequired: undefined,
+                currentTaskCheckpoint: undefined,
+                ...self.settleActiveTime(currentState),
+                updatedAt: new Date().toISOString(),
+              }
+              await setState(limitState)
+              self.latestState = limitState
+              return { final: true }
+            }
           }
 
           // 更新状态
@@ -348,8 +467,12 @@ export class WorkSessionRuntime {
           }
 
           // W003: 传递 checkpoint 给 TaskRunner
+          // W004-B: 同时传递 hard deadline（clock 帧内），供 Guardian adapter 构造 stop hook
           const checkpoint = currentState.currentTaskCheckpoint
-          const result = await self.config.taskRunner.run(task, resumeData, checkpoint)
+          const runContext: WorkSessionTaskRunContext = {
+            hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
+          }
+          const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
 
           if (result.status === 'COMPLETED') {
             const completionEvidence = result.completionEvidence
@@ -379,6 +502,7 @@ export class WorkSessionRuntime {
             // checkpoint 必须先于"标记完成并进入下一 Task"完成；commit 本身失败
             // 则 Session FAILED，不得进入下一 Task。
             let checkpointCommitSha: string | undefined
+            let checkpointPushSha: string | undefined
             if (
               completionEvidence !== undefined &&
               gitCheckpoint !== undefined &&
@@ -397,16 +521,29 @@ export class WorkSessionRuntime {
                     : {}),
                 })
                 checkpointCommitSha = commitResult.commitSha
+                checkpointPushSha = commitResult.pushSha
               } catch (error) {
                 // Git checkpoint execution failure → Session FAILED，不是 DECISION_REQUIRED
                 const failureReason =
                   error instanceof Error ? error.message : String(error)
+                // W004-B: push 失败但 local commit 已成功 → 保留 commitSha（partial success 可见），
+                // checkpointPushes 无对应 entry，completedTaskIds 不包含本 Task。
+                const partialCommitSha = error instanceof GitPushError ? error.commitSha : undefined
                 const failedState: WorkflowState = {
                   ...currentState,
                   state: 'FAILED',
                   failureReason,
                   humanRequired: undefined,
                   currentTaskCheckpoint: undefined,
+                  ...(partialCommitSha !== undefined
+                    ? {
+                        checkpointCommits: {
+                          ...(currentState.checkpointCommits ?? {}),
+                          [task.id]: partialCommitSha,
+                        },
+                      }
+                    : {}),
+                  ...self.settleActiveTime(currentState),
                   updatedAt: new Date().toISOString(),
                 }
                 await setState(failedState)
@@ -429,6 +566,14 @@ export class WorkSessionRuntime {
                     },
                   }
                 : {}),
+              ...(checkpointPushSha !== undefined
+                ? {
+                    checkpointPushes: {
+                      ...(currentState.checkpointPushes ?? {}),
+                      [task.id]: checkpointPushSha,
+                    },
+                  }
+                : {}),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               currentTaskBaseHeadSha: undefined,
@@ -447,6 +592,7 @@ export class WorkSessionRuntime {
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
+              ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
             }
             await setState(suspendedState)
@@ -465,6 +611,7 @@ export class WorkSessionRuntime {
               state: 'FAILED',
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
             }
             await setState(failedState)
@@ -479,8 +626,10 @@ export class WorkSessionRuntime {
           ...currentState,
           state: 'COMPLETED',
           currentTaskId: null,
+          completionReason: 'ALL_TASKS_COMPLETED',
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
+          ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
           updatedAt: new Date().toISOString(),
         }
         await setState(finalState)
@@ -528,6 +677,19 @@ export class WorkSessionRuntime {
     // W004-A: 传递 checkpoint commits
     if (wfState.checkpointCommits !== undefined) {
       result.checkpointCommits = wfState.checkpointCommits
+    }
+    // W004-B: 传递 checkpoint pushes / completionReason / active-time
+    if (wfState.checkpointPushes !== undefined) {
+      result.checkpointPushes = wfState.checkpointPushes
+    }
+    if (wfState.completionReason !== undefined) {
+      result.completionReason = wfState.completionReason
+    }
+    if (wfState.activeElapsedMs !== undefined) {
+      result.activeElapsedMs = wfState.activeElapsedMs
+    }
+    if (wfState.activeSegmentStartedAt !== undefined) {
+      result.activeSegmentStartedAt = wfState.activeSegmentStartedAt
     }
     // W004-A FINAL: 传递 checkpoint failure 原因与 base HEAD
     if (wfState.failureReason !== undefined) {

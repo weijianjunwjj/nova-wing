@@ -6,6 +6,7 @@
 import type {
   WorkSessionTaskRunner,
   WorkSessionTaskResult,
+  WorkSessionTaskRunContext,
 } from './task-runner.js'
 import type { WorkSessionTask } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
@@ -28,6 +29,7 @@ export class FakeTaskRunner implements WorkSessionTaskRunner {
     task: WorkSessionTask,
     resumeData?: any,
     _checkpoint?: GuardianTaskRecoveryCheckpoint,
+    _context?: WorkSessionTaskRunContext,
   ): Promise<WorkSessionTaskResult> {
     const count = this.executionCounts.get(task.id) ?? 0
     this.executionCounts.set(task.id, count + 1)

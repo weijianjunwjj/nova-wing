@@ -12,6 +12,7 @@ import type {
   WorkSessionTaskRunner,
   WorkSessionTaskResult,
   TaskCompletionEvidence,
+  WorkSessionTaskRunContext,
 } from './task-runner.js'
 import type {
   GuardianTaskRecoveryCheckpoint,
@@ -188,6 +189,15 @@ function isPureReviewerTimeout(reason: string): boolean {
 export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   const reason = task.stopReason ?? 'unknown'
 
+  // W004-B hard boundary：精确 stop marker → BUDGET_EXHAUSTED（优先级最高）。
+  // 不得映射成 DECISION_REQUIRED / STALLED / ENVIRONMENT_REQUIRED。
+  if (reason.includes('WORK_SESSION_HARD_LIMIT_REACHED')) {
+    return {
+      category: 'BUDGET_EXHAUSTED',
+      reason: 'work session hard time boundary reached',
+    }
+  }
+
   // Max iterations reached
   if (reason.includes('max iterations')) {
     return {
@@ -277,6 +287,8 @@ export interface GuardianWorkSessionTaskRunnerOptions {
   repoPath?: string
   /** W003: Git 命令运行器（用于 checkpoint） */
   gitRunner?: (command: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  /** W004-B: 可注入 clock，用于 hard deadline 判断（缺省 Date.now） */
+  clock?: { now(): number }
 }
 
 /**
@@ -478,6 +490,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     workSessionTask: WorkSessionTask,
     resumeData?: any,
     checkpoint?: GuardianTaskRecoveryCheckpoint,
+    context?: WorkSessionTaskRunContext,
   ): Promise<WorkSessionTaskResult> {
     // W003 Task Identity gate：checkpoint 只能授权它所属的 Task（fail-closed）
     // 不靠 repository checkpoint 单独授权另一个 Task；必须最先判断，不做任何 git/provider 调用
@@ -536,10 +549,19 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     }
 
     // 运行 Guardian
+    // W004-B: context.hardDeadlineAtMs + 可测试 clock → 构造 shouldStopAutonomousWork。
+    // 未提供 deadline 时不注入 hook，现有 Guardian behavior 100% 不变。
+    const hardDeadlineAtMs = context?.hardDeadlineAtMs
     const result = await runGuardianTask({
       task: guardianTask,
       brain: this.options.brain,
       executor,
+      ...(hardDeadlineAtMs !== undefined
+        ? {
+            shouldStopAutonomousWork: () =>
+              (this.options.clock?.now() ?? Date.now()) >= hardDeadlineAtMs,
+          }
+        : {}),
     })
 
     // 映射结果

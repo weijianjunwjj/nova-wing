@@ -25,6 +25,16 @@ export interface WorkSessionLimits {
   maxTasks: number
 }
 
+/**
+ * W004-B: Session 在 COMPLETED 状态下的结束原因。
+ * 只有 state=COMPLETED 时使用；FAILED/SUSPENDED 不携带此字段。
+ */
+export type WorkSessionCompletionReason =
+  | 'ALL_TASKS_COMPLETED'
+  | 'SOFT_LIMIT'
+  | 'HARD_LIMIT'
+  | 'MAX_TASKS'
+
 export interface WorkSessionDefinition {
   id: string
   targetRepo: string
@@ -52,10 +62,22 @@ export interface WorkSessionDurableState {
    * 连续 Task 需要区分 T1→sha1 / T2→sha2 / T3→sha3，故不保存单一 lastCommitSha。
    */
   checkpointCommits?: Record<string, string>
+  /**
+   * W004-B: 每个已完成 Task 的 push SHA（仅 autoPush=true 且远端验证通过时存在）。
+   * 与 checkpointCommits（local commit SHA）区分：commit 成功但 push 失败时，
+   * checkpointCommits 有值而 checkpointPushes 无对应 entry。
+   */
+  checkpointPushes?: Record<string, string>
+  /** W004-B FINAL: 当前 Task 开始时的 HEAD（仅 autoCommit=true 时使用） */
+  currentTaskBaseHeadSha?: string
+  /** W004-B: 已结算的 active working time（毫秒）；suspend 期间不累积 */
+  activeElapsedMs?: number
+  /** W004-B: 当前 active segment 的开始时间（clock 帧内绝对毫秒）；SUSPEND/terminal 时清空 */
+  activeSegmentStartedAt?: number
+  /** W004-B: 正常结束原因（仅 COMPLETED 时存在） */
+  completionReason?: WorkSessionCompletionReason
   /** W004-A FINAL: Git checkpoint/finalization 失败时的明确错误原因（仅 FAILED 时存在） */
   failureReason?: string
-  /** W004-A FINAL: 当前 Task 开始时的 HEAD（仅 autoCommit=true 时使用） */
-  currentTaskBaseHeadSha?: string
   createdAt: Date
   updatedAt: Date
 }

@@ -25,14 +25,25 @@ import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
 import { normalizePath, parseGitStatus } from './worktree-fingerprint.js'
 
+export interface PushRemotePolicy {
+  /** remote 名（如 origin） */
+  name: string
+  /** 显式信任的 remote URL；必须与实际 `git remote get-url <name>` 精确一致 */
+  expectedUrl: string
+}
+
 export interface GitCheckpointPolicy {
   autoCommit: boolean
   autoPush: boolean
+  /** W004-B: autoPush=true 时必须显式提供 remote identity；缺失 fail closed */
+  pushRemote?: PushRemotePolicy
 }
 
 export interface GitCheckpointResult {
   commitSha: string
   committedFiles: readonly string[]
+  /** W004-B: push 成功且远端 SHA 验证通过后的远端 SHA（仅 autoPush=true 时存在） */
+  pushSha?: string
 }
 
 export interface GitCheckpointCommandResult {
@@ -69,6 +80,20 @@ export class GitCheckpointError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'GitCheckpointError'
+  }
+}
+
+/**
+ * W004-B: push 阶段失败。与 commit 失败区分：此时 local commit 已成功，
+ * `commitSha` 携带已提交的 SHA，供 runtime 表达"local commit 已发生、push 未完成"的部分成功状态。
+ */
+export class GitPushError extends GitCheckpointError {
+  constructor(
+    message: string,
+    public readonly commitSha: string,
+  ) {
+    super(message)
+    this.name = 'GitPushError'
   }
 }
 
@@ -156,6 +181,122 @@ export async function readCurrentHeadSha(
   return head
 }
 
+export interface PushCheckpointCommitOptions {
+  repoPath: string
+  expectedBranch: string
+  /** 本 Task 刚生成的 local commit SHA（push 前 HEAD 必须等于它） */
+  commitSha: string
+  /** 显式信任的 remote identity */
+  remote: PushRemotePolicy
+  /** 测试/替换用；缺省直接 spawn git executable + argv */
+  commandRunner?: GitCheckpointCommandRunner
+}
+
+export interface PushCheckpointResult {
+  pushSha: string
+}
+
+/**
+ * W004-B: 窄 push 组件。只在 local commit 成功后调用。
+ *
+ * 任何 remote mutation 前必须通过全部 gate：
+ * 1. remote identity 显式非空；
+ * 2. expectedBranch 非 protected；
+ * 3. actual branch === expectedBranch；
+ * 4. actual HEAD === 本 Task 刚生成的 commitSha；
+ * 5. remote name 存在（git remote get-url --push --all）；
+ * 6. push URL 恰好一个，且 === explicitly trusted expectedUrl（精确一致）。
+ *
+ * 然后才 `git push --porcelain <remote> <commitSha>:refs/heads/<expectedBranch>`，
+ * push source 用 immutable commit SHA（不是 HEAD），避免 HEAD gate 之后被移动的 TOCTOU。
+ * push 成功后仍用 `git ls-remote --heads` 验证远端 SHA === commitSha，否则 fail closed。
+ * 绝不使用 --force / -f / --force-with-lease / --delete / --all / --tags / tag / 任意 refspec。
+ */
+export async function pushCheckpointCommit(
+  options: PushCheckpointCommitOptions,
+): Promise<PushCheckpointResult> {
+  const { repoPath, expectedBranch, commitSha, remote } = options
+  const runGit = options.commandRunner ?? createDefaultCommandRunner(repoPath)
+
+  // gate: remote identity 必须显式非空
+  if (typeof remote.name !== 'string' || remote.name.trim().length === 0) {
+    throw new GitCheckpointError('push remote name is missing; refusing to push')
+  }
+  if (typeof remote.expectedUrl !== 'string' || remote.expectedUrl.trim().length === 0) {
+    throw new GitCheckpointError('push remote expectedUrl is missing; refusing to push')
+  }
+
+  // gate: 不得 push protected branch
+  if (PROTECTED_BRANCHES.has(expectedBranch)) {
+    throw new GitCheckpointError(`refusing to push to protected branch: ${expectedBranch}`)
+  }
+
+  // gate: actual branch === expectedBranch
+  const actualBranch = await runGitString(runGit, ['branch', '--show-current'])
+  if (actualBranch !== expectedBranch) {
+    throw new GitCheckpointError(
+      `branch drift before push: expected ${expectedBranch}, got ${actualBranch || '(detached)'}`,
+    )
+  }
+
+  // gate: actual HEAD === 本 Task 刚生成的 commitSha（W004-B CASE W）
+  const actualHead = await runGitString(runGit, ['rev-parse', 'HEAD'])
+  if (actualHead !== commitSha) {
+    throw new GitCheckpointError('HEAD changed after commit before push; refusing to push')
+  }
+
+  // gate: remote 的 push URL 必须恰好一个且精确一致（不因名叫 origin 就信任）。
+  // 用 --push 读取实际 push URL：若配置了 pushurl（可能是 evil），会优先返回 pushurl，
+  // 从而暴露 "fetch url trusted + pushurl evil" 的隐患；--all 暴露多个 pushurl。
+  const pushUrlStdout = await runGitString(runGit, [
+    'remote',
+    'get-url',
+    '--push',
+    '--all',
+    remote.name,
+  ])
+  const pushUrls = pushUrlStdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  if (pushUrls.length !== 1) {
+    throw new GitCheckpointError(
+      `remote ${remote.name} must have exactly one push URL, got ${pushUrls.length}; refusing to push`,
+    )
+  }
+  const actualPushUrl = pushUrls[0]
+  if (actualPushUrl !== remote.expectedUrl) {
+    throw new GitCheckpointError(
+      `remote ${remote.name} push URL mismatch; refusing to push`,
+    )
+  }
+
+  // 精确 push：immutable commit SHA → refs/heads/<expectedBranch>。
+  // 不用 HEAD refspec，避免 HEAD gate 之后 HEAD 被移动（TOCTOU）仍 push 错误对象。
+  await runGitChecked(runGit, [
+    'push',
+    '--porcelain',
+    remote.name,
+    `${commitSha}:refs/heads/${expectedBranch}`,
+  ])
+
+  // push exitCode=0 仍不够：远端 SHA 必须 === commitSha，否则 fail closed
+  const remoteHead = await runGitString(runGit, [
+    'ls-remote',
+    '--heads',
+    remote.name,
+    `refs/heads/${expectedBranch}`,
+  ])
+  const remoteSha = remoteHead.split(/\s+/u)[0] ?? ''
+  if (remoteSha !== commitSha) {
+    throw new GitCheckpointError(
+      `remote checkpoint verification failed: expected ${commitSha}, got ${remoteSha || '(none)'}`,
+    )
+  }
+
+  return { pushSha: remoteSha }
+}
+
 function validateCompletionEvidence(evidence: TaskCompletionEvidence): void {
   if (evidence.finalReviewerVerdict !== 'done') {
     throw new GitCheckpointError(
@@ -226,9 +367,10 @@ export async function finalizeCompletedTask(
   if (policy.autoCommit !== true) {
     throw new GitCheckpointError('autoCommit is disabled; refusing to commit')
   }
-  // W004-A 不实现 push；policy 请求 push 一律 fail closed
-  if (policy.autoPush === true) {
-    throw new GitCheckpointError('autoPush is not implemented in W004-A; refusing to push')
+  // W004-B: autoPush=true 必须显式提供 remote identity，否则 fail closed（在 commit 前，零 mutation）
+  const pushRequested = policy.autoPush === true
+  if (pushRequested && policy.pushRemote === undefined) {
+    throw new GitCheckpointError('autoPush requires explicit pushRemote; refusing to commit or push')
   }
 
   // gate: completion evidence 完整且全 passed（含 finalReviewerVerdict=done、blockers=0）
@@ -315,5 +457,31 @@ export async function finalizeCompletedTask(
     throw new GitCheckpointError('cannot read commit SHA after commit')
   }
 
-  return { commitSha, committedFiles: evidenceFiles }
+  // W004-B: autoPush=true 时在 local commit 成功后 push + 远端 SHA 验证
+  let pushSha: string | undefined
+  if (pushRequested) {
+    const remote = policy.pushRemote
+    if (remote === undefined) {
+      // 理论上已被上方 gate 拦截；此处防御性 fail closed
+      throw new GitPushError('autoPush requires explicit pushRemote', commitSha)
+    }
+    try {
+      const pushResult = await pushCheckpointCommit({
+        repoPath,
+        expectedBranch,
+        commitSha,
+        remote,
+        commandRunner: runGit,
+      })
+      pushSha = pushResult.pushSha
+    } catch (error) {
+      // local commit 已成功；push 失败必须携带 commitSha（partial success 可见）
+      if (error instanceof GitCheckpointError) {
+        throw new GitPushError(error.message, commitSha)
+      }
+      throw error
+    }
+  }
+
+  return { commitSha, committedFiles: evidenceFiles, ...(pushSha !== undefined ? { pushSha } : {}) }
 }
