@@ -109,7 +109,7 @@ await test('W005-A ACTIVE-1: RUNNING display elapsed includes current active seg
   const server = new WorkSessionControlServer({ controller, port: 0 })
   const address = await server.start()
   try {
-    const status = await (await fetch(`${address.url}/api/status`)).json() as {
+    const status = (await (await fetch(`${address.url}/api/status`)).json()) as {
       runtime: { activeElapsedMs?: number }
     }
     assert.equal(status.runtime.activeElapsedMs, 13 * MIN)
@@ -172,7 +172,6 @@ await test('W005-A ACTIVE-3: SUSPENDED wall-clock time does not increase display
   runtime.state = makeState({
     state: 'SUSPENDED',
     activeElapsedMs: 13 * MIN,
-    activeSegmentStartedAt: undefined,
     humanRequired: { category: 'DECISION_REQUIRED', reason: 'choose database mode' },
   })
 
