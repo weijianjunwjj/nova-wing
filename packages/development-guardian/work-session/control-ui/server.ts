@@ -1,0 +1,331 @@
+/**
+ * W005-A Thin Local Control Surface — HTTP + SSE Server
+ *
+ * Node native http server + Server-Sent Events + vanilla HTML/CSS/JS。
+ *
+ * 网络安全边界：
+ * - 只 bind 127.0.0.1，禁止 0.0.0.0 / :: / LAN / 公网；
+ * - mutation endpoint 验证 ephemeral control token + Origin；
+ * - 不设置 Access-Control-Allow-Origin: *，不实现 CORS control API；
+ * - token 只经首次 HTML bootstrap 注入，不进 DB / log / SSE / URL query / status。
+ */
+
+import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import type { WorkSessionControlController } from './controller.js'
+import { renderHtml, APP_JS, STYLES_CSS } from './view.js'
+import type { ControlEvent } from './events.js'
+
+export interface WorkSessionControlServerOptions {
+  controller: WorkSessionControlController
+  /** 仅允许覆盖端口（默认 4317）；host 固定 127.0.0.1。 */
+  port?: number
+}
+
+export interface WorkSessionControlServerAddress {
+  host: string
+  port: number
+  url: string
+}
+
+const DEFAULT_HOST = '127.0.0.1'
+const DEFAULT_PORT = 4317
+/** POST body 上限；start 不需要 body，仅防御任意 payload。 */
+const MAX_BODY_BYTES = 4096
+
+const SSE_CONTENT_TYPE = 'text/event-stream; charset=utf-8'
+const JSON_CONTENT_TYPE = 'application/json; charset=utf-8'
+
+/** SSE envelope：每个 event 携带 id / timestamp / type / data。 */
+interface SseEnvelope {
+  id: number
+  timestamp: string
+  type: string
+  data: unknown
+}
+
+export class WorkSessionControlServer {
+  private readonly controller: WorkSessionControlController
+  private readonly port: number
+  private readonly token: string
+  private readonly server: Server
+  private readonly sseClients = new Set<ServerResponse>()
+
+  private address?: WorkSessionControlServerAddress
+  private sseId = 0
+
+  constructor(options: WorkSessionControlServerOptions) {
+    this.controller = options.controller
+    this.port = options.port ?? DEFAULT_PORT
+    this.token = randomBytes(32).toString('hex')
+    this.server = createServer((req, res) => {
+      void this.handle(req, res)
+    })
+  }
+
+  /** 返回实际 host/port/url。host 恒为 127.0.0.1。 */
+  getAddress(): WorkSessionControlServerAddress | undefined {
+    return this.address
+  }
+
+  /** 仅供测试读取，验证 token 不被 status/SSE 泄漏时用。 */
+  getTokenForTest(): string {
+    return this.token
+  }
+
+  async start(): Promise<WorkSessionControlServerAddress> {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error): void => reject(error)
+      this.server.once('error', onError)
+      this.server.listen(this.port, DEFAULT_HOST, () => {
+        this.server.off('error', onError)
+        resolve()
+      })
+    })
+
+    const address = this.server.address()
+    const port = typeof address === 'object' && address !== null ? address.port : this.port
+    this.address = {
+      host: DEFAULT_HOST,
+      port,
+      url: `http://${DEFAULT_HOST}:${port}`,
+    }
+    this.controller.setServerInfo(this.address.host, this.address.port, this.address.url)
+    return this.address
+  }
+
+  /** 关闭：结束 SSE 客户端、关闭 HTTP listener、清理 controller polling timer。 */
+  async close(): Promise<void> {
+    for (const res of this.sseClients) {
+      res.end()
+    }
+    this.sseClients.clear()
+
+    if (this.address !== undefined) {
+      await new Promise<void>((resolve) => {
+        this.server.close(() => resolve())
+      })
+    }
+    this.controller.close()
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // W005-A FINAL: strict Host gate —— 先于任何路由，拒绝 DNS rebinding。
+    // 不返回 HTML/bootstrap/status/SSE，也不执行 mutation。
+    if (req.headers.host !== this.expectedHost()) {
+      return this.respondJson(res, 403, { error: 'forbidden host' })
+    }
+
+    const method = req.method ?? 'GET'
+    const path = this.pathOf(req)
+
+    res.setHeader('Cache-Control', 'no-store')
+
+    if (method === 'GET' && path === '/') return this.serveHtml(res)
+    if (method === 'GET' && path === '/app.js') return this.serveAppJs(res)
+    if (method === 'GET' && path === '/styles.css') return this.serveCss(res)
+    if (method === 'GET' && path === '/api/status') return this.serveStatus(res)
+    if (method === 'GET' && path === '/api/events') return this.serveEvents(req, res)
+    if (method === 'POST' && path === '/api/session/start') {
+      return this.serveStart(req, res)
+    }
+
+    const knownPaths = new Set([
+      '/',
+      '/app.js',
+      '/styles.css',
+      '/api/status',
+      '/api/events',
+      '/api/session/start',
+    ])
+    if (knownPaths.has(path)) {
+      return this.respondJson(res, 405, { error: 'method not allowed' })
+    }
+    return this.respondJson(res, 404, { error: 'not found' })
+  }
+
+  private pathOf(req: IncomingMessage): string {
+    const raw = req.url ?? '/'
+    const index = raw.indexOf('?')
+    return index === -1 ? raw : raw.slice(0, index)
+  }
+
+  private serveHtml(res: ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      // script-src 'self'：bootstrap token 走 application/json data 标签，非 inline script。
+      'Content-Security-Policy':
+        "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    })
+    res.end(
+      renderHtml({
+        controlToken: this.token,
+        serverOrigin: this.origin(),
+      }),
+    )
+  }
+
+  private serveAppJs(res: ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/javascript; charset=utf-8',
+      'Cache-Control': 'no-store',
+    })
+    res.end(APP_JS)
+  }
+
+  private serveCss(res: ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/css; charset=utf-8',
+      'Cache-Control': 'no-store',
+    })
+    res.end(STYLES_CSS)
+  }
+
+  private serveStatus(res: ServerResponse): void {
+    this.respondJson(res, 200, this.controller.getSnapshot())
+  }
+
+  private serveStart(req: IncomingMessage, res: ServerResponse): void {
+    // 1. Origin 校验：同源或非浏览器（无 Origin）放行，其余拒绝。
+    const origin = req.headers.origin
+    if (origin !== undefined && origin !== this.origin()) {
+      this.respondJson(res, 403, { error: 'forbidden origin' })
+      return
+    }
+
+    // 2. control token 校验（timing-safe）。
+    const token = req.headers['x-novawing-control-token']
+    if (typeof token !== 'string' || !this.tokenMatches(token)) {
+      this.respondJson(res, 403, { error: 'forbidden' })
+      return
+    }
+
+    // 3. body 上限（start 不需要 body）。
+    this.readBodyWithLimit(req, res, () => {
+      const result = this.controller.start()
+      if (result.started) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: 'session already started' })
+      }
+    })
+  }
+
+  private readBodyWithLimit(
+    req: IncomingMessage,
+    res: ServerResponse,
+    onDone: () => void,
+  ): void {
+    let size = 0
+    let settled = false
+    const fail = (): void => {
+      if (!settled) {
+        settled = true
+        this.respondJson(res, 413, { error: 'payload too large' })
+      }
+    }
+    req.on('data', (chunk: Buffer) => {
+      if (settled) {
+        return
+      }
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        fail()
+        req.destroy()
+      }
+    })
+    req.on('end', () => {
+      if (!settled) {
+        settled = true
+        onDone()
+      }
+    })
+  }
+
+  private serveEvents(req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': SSE_CONTENT_TYPE,
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+    })
+    res.flushHeaders?.()
+
+    this.writeSse(res, 'connected', {
+      id: this.nextSseId(),
+      timestamp: new Date().toISOString(),
+      type: 'connected',
+      data: {},
+    })
+    this.writeSse(res, 'snapshot', {
+      id: this.nextSseId(),
+      timestamp: new Date().toISOString(),
+      type: 'snapshot',
+      data: this.controller.getSnapshot(),
+    })
+
+    const unsubscribe = this.controller.subscribe({
+      onEvent: (event) => {
+        const sseEvent = event.type === 'GUARDIAN_PHASE' ? 'guardian' : 'activity'
+        this.writeSse(res, sseEvent, envelopeFromEvent(event, this.nextSseId()))
+      },
+      onSnapshot: (snapshot) => {
+        this.writeSse(res, 'snapshot', {
+          id: this.nextSseId(),
+          timestamp: new Date().toISOString(),
+          type: 'snapshot',
+          data: snapshot,
+        })
+      },
+    })
+
+    this.sseClients.add(res)
+    const cleanup = (): void => {
+      unsubscribe()
+      this.sseClients.delete(res)
+    }
+    req.on('close', cleanup)
+    res.on('close', cleanup)
+  }
+
+  private writeSse(res: ServerResponse, sseEvent: string, envelope: SseEnvelope): void {
+    res.write(`event: ${sseEvent}\ndata: ${JSON.stringify(envelope)}\n\n`)
+  }
+
+  private nextSseId(): number {
+    return ++this.sseId
+  }
+
+  private tokenMatches(provided: string): boolean {
+    const a = Buffer.from(provided)
+    const b = Buffer.from(this.token)
+    if (a.length !== b.length) {
+      return false
+    }
+    return timingSafeEqual(a, b)
+  }
+
+  private origin(): string {
+    return this.address?.url ?? `http://${DEFAULT_HOST}:${this.port}`
+  }
+
+  /** 由实际 bind 端口构造的 trusted Host；不是从 request Host 动态生成。 */
+  private expectedHost(): string {
+    const port = this.address?.port ?? this.port
+    return `${DEFAULT_HOST}:${port}`
+  }
+
+  private respondJson(res: ServerResponse, status: number, payload: unknown): void {
+    res.writeHead(status, { 'Content-Type': JSON_CONTENT_TYPE, 'Cache-Control': 'no-store' })
+    res.end(JSON.stringify(payload))
+  }
+}
+
+function envelopeFromEvent(event: ControlEvent, id: number): SseEnvelope {
+  return {
+    id,
+    timestamp: event.timestamp,
+    type: event.type,
+    data: event.data,
+  }
+}

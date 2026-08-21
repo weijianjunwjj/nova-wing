@@ -6,6 +6,7 @@
 
 import type { GuardianTask } from '../model.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
+import type { GuardianProgressObserver } from '../progress.js'
 import { runGuardianTask } from '../guardian.js'
 import type { WorkSessionTask, HumanRequired } from './model.js'
 import type {
@@ -289,6 +290,8 @@ export interface GuardianWorkSessionTaskRunnerOptions {
   gitRunner?: (command: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   /** W004-B: 可注入 clock，用于 hard deadline 判断（缺省 Date.now） */
   clock?: { now(): number }
+  /** W005-A: 纯 additive Guardian progress observer，原样透传给 runGuardianTask。 */
+  onProgress?: GuardianProgressObserver
 }
 
 /**
@@ -561,6 +564,9 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
             shouldStopAutonomousWork: () =>
               (this.options.clock?.now() ?? Date.now()) >= hardDeadlineAtMs,
           }
+        : {}),
+      ...(this.options.onProgress !== undefined
+        ? { onProgress: this.options.onProgress }
         : {}),
     })
 

@@ -716,6 +716,14 @@ export class WorkSessionRuntime {
   }
 
   /**
+   * W005-A: 暴露 definition（project/branch/tasks/limits），供 local control UI 渲染。
+   * 纯只读 additive，不改任何既有语义。
+   */
+  getDefinition(): WorkSessionDefinition {
+    return this.config.definition
+  }
+
+  /**
    * W004-A FINAL: 读取当前 NovaWing durable domain state（含 FAILED 后的 failureReason）。
    * 用于在 checkpoint failure 后断言 domain state 已持久化为 FAILED，
    * 而不是只依赖 Mastra workflow status。
