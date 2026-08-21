@@ -328,8 +328,12 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
   /**
    * W003: 捕获 provider session state
+   *
+   * checkpoint 必须绑定当前 Task：只读取 taskId 对应的 conversation URL。
+   * 禁止 first key / arbitrary key 猜测，否则会把另一个任务的 URL 写进 checkpoint。
    */
   private captureProviderSessionState(
+    taskId: string,
     brain: GuardianBrain,
     executor: GuardianRecoverableExecutor,
   ): ProviderSessionState {
@@ -339,15 +343,12 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     if ('captureProviderState' in brain && typeof brain.captureProviderState === 'function') {
       const brainState = brain.captureProviderState()
       if (typeof brainState === 'object' && brainState !== null) {
-        // 通用处理：不依赖 AskBridgeBrain 具体结构
+        // 通用处理：不依赖 AskBridgeBrain 具体结构，但显式按 taskId 读取
         if ('taskConversationUrls' in brainState && typeof brainState.taskConversationUrls === 'object') {
           const urls = brainState.taskConversationUrls as Record<string, string | undefined>
-          const taskId = Object.keys(urls)[0]
-          if (taskId !== undefined) {
-            const url = urls[taskId]
-            if (url !== undefined) {
-              state.chatgptConversationUrl = url
-            }
+          const url = urls[taskId]
+          if (url !== undefined) {
+            state.chatgptConversationUrl = url
           }
         }
       }
@@ -412,12 +413,17 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
    */
   private async verifyResumeCheckpoint(
     checkpoint: GuardianTaskRecoveryCheckpoint,
-  ): Promise<{ ok: boolean; reason?: string }> {
+  ): Promise<{ ok: boolean; reason?: string; category?: string }> {
     const repoPath = this.options.repoPath
     const gitRunner = this.options.gitRunner
     if (repoPath === undefined || gitRunner === undefined) {
-      // 未配置 repo 验证能力时不 gate（保持既有行为）
-      return { ok: true }
+      // fail closed：缺少 repo identity 验证能力时不得自动信任 checkpoint。
+      // 不做任何 provider 恢复 / recovery continuation / Brain / Executor 启动。
+      return {
+        ok: false,
+        reason: 'checkpoint verification unavailable',
+        category: 'CHECKPOINT_VERIFICATION_UNAVAILABLE',
+      }
     }
 
     try {
@@ -502,7 +508,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
           status: 'HUMAN_REQUIRED',
           ...(gate.reason !== undefined ? { summary: gate.reason } : {}),
           humanRequired: {
-            category: 'REPO_DRIFT',
+            category: gate.category ?? 'REPO_DRIFT',
             reason: gate.reason ?? 'REPO_DRIFT',
           },
         }
@@ -560,7 +566,11 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       if (this.options.repoPath !== undefined) {
         const repoCheckpoint = await this.captureRepositoryCheckpoint(this.options.repoPath)
         if (repoCheckpoint !== undefined) {
-          const providerState = this.captureProviderSessionState(this.options.brain, executor)
+          const providerState = this.captureProviderSessionState(
+            workSessionTask.id,
+            this.options.brain,
+            executor,
+          )
 
           capturedCheckpoint = {
             version: 1,

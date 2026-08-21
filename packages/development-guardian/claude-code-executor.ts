@@ -451,9 +451,8 @@ function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): str
   const blockers: string[] = []
   if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
     for (const path of changedFiles) {
-      if (isIgnoredScopePath(path)) {
-        continue
-      }
+      // 能进入 changedFiles 的 artifact path 已是 tracked meaningful change（parseChangedFiles
+      // 只过滤 untracked 产物），必须进入 allowed scope 检查，不得按目录名 blanket-ignore。
       if (!task.allowedPaths.some((rule) => matchesPathRule(path, rule))) {
         blockers.push(`changed file is outside allowed scope: ${path}`)
       }

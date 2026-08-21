@@ -584,3 +584,75 @@ test('CASE UNTRACKED C: tracked modified files still work correctly', async () =
     { name: 'npm test', status: 'passed' },
   ])
 })
+
+// ============ CASE TRACKED ARTIFACT: tracked artifact path 必须进入 scope enforcement ============
+// parseChangedFiles 只过滤 untracked 产物；tracked 修改（即使位于 node_modules/.venv/dist）
+// 仍进入 changedFiles，且必须接受 allowed scope 检查，不得按目录名 blanket-ignore。
+
+test('CASE TRACKED ARTIFACT A: tracked node_modules change outside allowed scope produces blocker', async () => {
+  const runner = new QueueRunner([
+    result(''), // ensureCleanStart: git status --porcelain（clean）
+    result(claudeJson()),
+    result(' M node_modules/pkg/index.js\n'), // readChangedFiles
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/api/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(
+    report.changedFiles,
+    ['node_modules/pkg/index.js'],
+    'tracked node_modules change must enter changedFiles',
+  )
+  assert.equal(report.verificationResults.length, 0, 'scope blocker short-circuits verification')
+  assert.match(
+    report.blockers[0] ?? '',
+    /outside allowed scope: node_modules\/pkg\/index\.js/,
+    'tracked node_modules change must be a scope blocker',
+  )
+})
+
+test('CASE TRACKED ARTIFACT B: tracked .venv and dist changes enter scope enforcement', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M .venv/pyvenv.cfg\n M dist/out.js\n'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/api/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(report.changedFiles, ['.venv/pyvenv.cfg', 'dist/out.js'])
+  assert.equal(report.blockers.length, 2, 'both tracked artifact changes must be outside allowed scope')
+  assert.match(report.blockers[0] ?? '', /outside allowed scope: \.venv\/pyvenv\.cfg/)
+  assert.match(report.blockers[1] ?? '', /outside allowed scope: dist\/out\.js/)
+})
+
+test('CASE TRACKED ARTIFACT C: untracked artifact files remain filtered from changedFiles', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson()),
+    result(' M apps/api/main.py\n?? node_modules/untracked-pkg/index.js\n?? .venv/Lib/site-packages/foo.py\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+
+  const report = await executor.execute({
+    task: task(0, { allowedPaths: ['apps/api/**'] }),
+    packet: packet(),
+  })
+
+  assert.deepEqual(
+    report.changedFiles,
+    ['apps/api/main.py'],
+    'untracked artifacts must stay filtered; allowed tracked change captured',
+  )
+  assert.equal(report.blockers.length, 0, 'filtered untracked artifacts must not block')
+})
