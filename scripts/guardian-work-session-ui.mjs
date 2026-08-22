@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import {
   createProductionWorkSessionUi,
   loadTrustedWorkSessionConfig,
+  resolveProductionSmtpEnvironment,
 } from 'nova-wing/development-guardian'
 
 function configPathFromArgs(args) {
@@ -22,7 +23,9 @@ function configPathFromArgs(args) {
 
 try {
   const config = await loadTrustedWorkSessionConfig(configPathFromArgs(process.argv.slice(2)))
-  const app = await createProductionWorkSessionUi(config)
+  const app = await createProductionWorkSessionUi(config, {
+    env: await resolveProductionSmtpEnvironment(config),
+  })
   const address = await app.start()
 
   console.log('NovaWing Work Session UI')

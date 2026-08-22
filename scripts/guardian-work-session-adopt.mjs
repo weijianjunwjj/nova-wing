@@ -5,6 +5,7 @@ import {
   adoptProductionLegacyWorkSession,
   createProductionWorkSessionUi,
   loadTrustedWorkSessionConfig,
+  resolveProductionSmtpEnvironment,
 } from 'nova-wing/development-guardian'
 
 function configPathFromArgs(args) {
@@ -24,7 +25,9 @@ function configPathFromArgs(args) {
 let app
 try {
   const config = await loadTrustedWorkSessionConfig(configPathFromArgs(process.argv.slice(2)))
-  app = await createProductionWorkSessionUi(config)
+  app = await createProductionWorkSessionUi(config, {
+    env: await resolveProductionSmtpEnvironment(config),
+  })
 
   console.log('NovaWing Legacy Adoption')
   console.log(`Session: ${config.session.id}`)

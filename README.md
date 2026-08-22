@@ -127,6 +127,16 @@ npm run check:unused
 npm run check:boundaries
 ```
 
+## Work Session SMTP 本机配置（Windows）
+
+当可信 Work Session 配置启用邮件通知时，可一次性保存 SMTP notification secrets：
+
+```bash
+npm run guardian:notification:setup -- --from-env
+```
+
+本机文件位置为 `%LOCALAPPDATA%\NovaWing\secrets\smtp.json`。setup 使用 Windows `icacls` 收紧文件 ACL；该文件是本机 ACL 保护的 secret persistence，不是 Git tracked config，也不等同于 DPAPI 或 Credential Manager 的静态加密。之后 `guardian:work-session:ui` 和 `guardian:work-session:adopt` 会在没有 SMTP 环境变量时自动读取它。完整的 7 个显式 SMTP 环境变量始终优先；部分环境变量会安全失败，绝不与本机文件混用。
+
 ## 当前切片假设
 
 - 为满足当前独立开发边界，本阶段使用独立临时 SQLite；未来同库运行时仍只注入 SQLite 连接/路径，不改变 Core API，也不得查询宿主表。
