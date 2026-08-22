@@ -19,6 +19,12 @@ import type {
 import type { WorkSessionTaskRunner, WorkSessionTaskRunContext } from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
+  createHumanRequiredNotification,
+  type NotificationDeliveryObserver,
+  type NotificationDeliveryResult,
+  type WorkSessionNotifier,
+} from './notifier.js'
+import {
   finalizeCompletedTask,
   readCurrentHeadSha,
   GitPushError,
@@ -40,6 +46,15 @@ export interface WorkSessionRuntimeConfig {
   gitCheckpoint?: WorkSessionGitCheckpointConfig
   /** W004-B: 可注入 clock 用于 active-time / hard deadline（缺省 Date.now） */
   clock?: { now(): number }
+  /** W006: alert-only port. Guardian/Brain/Executor never receive this capability. */
+  notifier?: WorkSessionNotifier
+  /** W006: safe structured delivery diagnostics for terminal/local control UI. */
+  notificationObserver?: NotificationDeliveryObserver
+  /** W006: optional safe local URL provider; runtime never depends on HTTP server types. */
+  localControlUrl?: () => string | undefined
+  /** W006: initial attempt + one retry; tests may inject a zero delay. */
+  notificationRetryDelayMs?: number
+  notificationWait?: (delayMs: number) => Promise<void>
 }
 
 export interface ResumeInput {
@@ -67,6 +82,9 @@ const WorkflowStateSchema = z.object({
     category: z.string(),
     reason: z.string(),
   }).optional(),
+  humanRequiredGeneration: z.number().int().nonnegative().optional(),
+  lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
+  lastNotifiedHumanRequiredGeneration: z.number().int().nonnegative().optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
   checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
@@ -112,6 +130,8 @@ export class WorkSessionRuntime {
   private latestState?: WorkflowState
   private pauseRequested = false
   private stopAfterTaskRequested = false
+  private notificationPromise: Promise<void> | undefined
+  private lastNotificationDelivery: NotificationDeliveryResult | undefined
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -288,7 +308,9 @@ export class WorkSessionRuntime {
       if (!this.latestState) {
         throw new Error('Workflow state was not updated')
       }
-      return this.convertWorkflowStateToDurableState(this.latestState)
+      const durableState = this.convertWorkflowStateToDurableState(this.latestState)
+      this.scheduleHumanRequiredNotification(durableState, false)
+      return durableState
     } catch (error) {
       throw error
     }
@@ -337,7 +359,12 @@ export class WorkSessionRuntime {
       if (!this.latestState) {
         throw new Error('Workflow state was not updated during resume')
       }
-      return this.convertWorkflowStateToDurableState(this.latestState)
+      const durableState = this.convertWorkflowStateToDurableState(this.latestState)
+      this.scheduleHumanRequiredNotification(
+        durableState,
+        resumeInput.decision !== undefined,
+      )
+      return durableState
     } catch (error) {
       throw error
     }
@@ -707,6 +734,7 @@ export class WorkSessionRuntime {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
+              humanRequiredGeneration: (currentState.humanRequiredGeneration ?? 0) + 1,
               suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
@@ -792,6 +820,15 @@ export class WorkSessionRuntime {
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
     }
+    if (wfState.humanRequiredGeneration !== undefined) {
+      result.humanRequiredGeneration = wfState.humanRequiredGeneration
+    }
+    if (wfState.lastNotificationAttemptGeneration !== undefined) {
+      result.lastNotificationAttemptGeneration = wfState.lastNotificationAttemptGeneration
+    }
+    if (wfState.lastNotifiedHumanRequiredGeneration !== undefined) {
+      result.lastNotifiedHumanRequiredGeneration = wfState.lastNotifiedHumanRequiredGeneration
+    }
     // W003: 传递 checkpoint
     if (wfState.currentTaskCheckpoint) {
       result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
@@ -833,6 +870,7 @@ export class WorkSessionRuntime {
   }
 
   async close(): Promise<void> {
+    await this.notificationPromise
     const storage = this.mastra.getStorage()
     if (storage) {
       await storage.close()
@@ -901,6 +939,153 @@ export class WorkSessionRuntime {
     return this.convertWorkflowStateToDurableState(this.latestState)
   }
 
+  /** W006: production owner/tests can explicitly hold the bounded delivery promise. */
+  getNotificationPromise(): Promise<void> | undefined {
+    return this.notificationPromise
+  }
+
+  getLastNotificationDelivery(): NotificationDeliveryResult | undefined {
+    return this.lastNotificationDelivery === undefined
+      ? undefined
+      : { ...this.lastNotificationDelivery }
+  }
+
+  private scheduleHumanRequiredNotification(
+    state: WorkSessionDurableState,
+    forceSafeReason: boolean,
+  ): void {
+    if (
+      this.config.notifier === undefined ||
+      state.state !== 'SUSPENDED' ||
+      state.humanRequired === undefined ||
+      state.suspensionReason === 'USER_PAUSED' ||
+      state.humanRequiredGeneration === undefined ||
+      state.lastNotificationAttemptGeneration === state.humanRequiredGeneration
+    ) {
+      return
+    }
+
+    const previous = this.notificationPromise ?? Promise.resolve()
+    this.notificationPromise = previous
+      .then(() => this.deliverHumanRequiredNotification(state, forceSafeReason))
+      .catch(() => {
+        // Delivery is an alert side channel. Never reject start/resume/close or
+        // create an unhandled rejection because local notification plumbing failed.
+      })
+  }
+
+  private async deliverHumanRequiredNotification(
+    state: WorkSessionDurableState,
+    forceSafeReason: boolean,
+  ): Promise<void> {
+    const notifier = this.config.notifier
+    const generation = state.humanRequiredGeneration
+    if (notifier === undefined || generation === undefined || state.humanRequired === undefined) {
+      return
+    }
+    const localControlUrl = this.config.localControlUrl?.()
+    const notification = createHumanRequiredNotification({
+      definition: this.config.definition,
+      state,
+      generation,
+      ...(localControlUrl === undefined ? {} : { localControlUrl }),
+      forceSafeReason,
+    })
+    const deliveryBase = {
+      notificationId: notification.notificationId,
+      taskId: state.currentTaskId,
+      category: state.humanRequired.category,
+    }
+
+    try {
+      const claimed = await this.persistNotificationGeneration(
+        generation,
+        'lastNotificationAttemptGeneration',
+      )
+      if (!claimed) return
+
+      let sent = false
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await notifier.notifyHumanRequired(notification)
+          sent = true
+          break
+        } catch {
+          if (attempt === 0) {
+            await (this.config.notificationWait ?? defaultNotificationWait)(
+              this.config.notificationRetryDelayMs ?? 1_000,
+            )
+          }
+        }
+      }
+
+      if (sent) {
+        try {
+          await this.persistNotificationGeneration(
+            generation,
+            'lastNotifiedHumanRequiredGeneration',
+          )
+        } catch {
+          // The durable attempt marker already prevents restart spam. A failure
+          // to persist the optional success marker must not misreport a sent email.
+        }
+      }
+      this.observeNotification({
+        status: sent ? 'SENT' : 'FAILED',
+        ...deliveryBase,
+      })
+    } catch {
+      this.observeNotification({ status: 'FAILED', ...deliveryBase })
+    }
+  }
+
+  private async persistNotificationGeneration(
+    generation: number,
+    field: 'lastNotificationAttemptGeneration' | 'lastNotifiedHumanRequiredGeneration',
+  ): Promise<boolean> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return false
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return false
+    const workflowName = `work-session-${this.config.definition.id}`
+    const runId = this.config.definition.id
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') return false
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (
+      !parsed.success ||
+      parsed.data.state !== 'SUSPENDED' ||
+      parsed.data.humanRequired === undefined ||
+      parsed.data.humanRequiredGeneration !== generation
+    ) {
+      return false
+    }
+    if (parsed.data[field] === generation) return false
+    const updated: WorkflowState = {
+      ...parsed.data,
+      [field]: generation,
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = updated as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+    if (
+      this.latestState?.state === 'SUSPENDED' &&
+      this.latestState.humanRequiredGeneration === generation
+    ) {
+      this.latestState = updated
+    }
+    return true
+  }
+
+  private observeNotification(result: NotificationDeliveryResult): void {
+    this.lastNotificationDelivery = result
+    try {
+      this.config.notificationObserver?.(result)
+    } catch {
+      // Observer failures must not affect the suspended Work Session.
+    }
+  }
+
   /**
    * 验证 Mastra snapshot 是否存在
    * 用于测试验证持久化
@@ -942,4 +1127,8 @@ export class WorkSessionRuntime {
 
     return result
   }
+}
+
+function defaultNotificationWait(delayMs: number): Promise<void> {
+  return new Promise((resolveWait) => setTimeout(resolveWait, delayMs))
 }

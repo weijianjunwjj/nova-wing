@@ -13,6 +13,8 @@ import {
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
+import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
+import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
 import {
   WorkSessionRuntime,
   type WorkSessionRuntimeConfig,
@@ -64,6 +66,11 @@ const TrustedConfigSchema = z.object({
     allowNpmInstall: z.boolean(),
     allowPythonBootstrap: z.boolean(),
   }).strict(),
+  notification: z.object({
+    email: z.object({
+      enabled: z.boolean(),
+    }).strict(),
+  }).strict().optional(),
   storageUrl: z.string().optional(),
 }).strict()
 
@@ -253,6 +260,8 @@ export interface ProductionWorkSessionDependencies {
   gitProcessRunner?: ProductionGitProcessRunner
   serverPort?: number
   env?: NodeJS.ProcessEnv
+  createSmtpTransport?: (config: SmtpTransportConfig) => SmtpMailTransport
+  notificationRetryDelayMs?: number
 }
 
 export interface ProductionWorkSessionUi {
@@ -283,6 +292,14 @@ export async function createProductionWorkSessionUi(
 ): Promise<ProductionWorkSessionUi> {
   const trusted = await validateTrustedWorkSessionConfig(config)
   const env = dependencies.env ?? process.env
+  const notifier = trusted.notification?.email.enabled === true
+    ? createSmtpWorkSessionNotifierFromEnv({
+        env,
+        ...(dependencies.createSmtpTransport === undefined
+          ? {}
+          : { createTransport: dependencies.createSmtpTransport }),
+      })
+    : undefined
   const definition: WorkSessionDefinition = {
     id: trusted.session.id,
     targetRepo: trusted.session.targetRepo,
@@ -311,9 +328,10 @@ export async function createProductionWorkSessionUi(
     dependencies.gitProcessRunner,
   )
   let runtime: ClosableControlRuntime | undefined
+  let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
-    createRuntime(eventSink) {
+    createRuntime(eventSink, notificationSink) {
       const runner = new GuardianWorkSessionTaskRunner({
         brain,
         repoPath: definition.targetRepo,
@@ -367,6 +385,12 @@ export async function createProductionWorkSessionUi(
               : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }),
           },
         },
+        ...(notifier === undefined ? {} : { notifier }),
+        notificationObserver: notificationSink,
+        localControlUrl: () => localControlUrl,
+        ...(dependencies.notificationRetryDelayMs === undefined
+          ? {}
+          : { notificationRetryDelayMs: dependencies.notificationRetryDelayMs }),
       }
       runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
       return runtime
@@ -385,7 +409,11 @@ export async function createProductionWorkSessionUi(
     controller,
     server,
     runtime,
-    start: () => server.start(),
+    async start() {
+      const address = await server.start()
+      localControlUrl = address.url
+      return address
+    },
     async close() {
       await server.close()
       await runtime?.close?.()

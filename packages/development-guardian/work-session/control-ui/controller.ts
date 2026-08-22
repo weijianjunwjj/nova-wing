@@ -20,6 +20,10 @@ import type {
 } from '../model.js'
 import type { GuardianProgressEvent, GuardianProgressObserver } from '../../progress.js'
 import type {
+  NotificationDeliveryObserver,
+  NotificationDeliveryResult,
+} from '../notifier.js'
+import type {
   ControlEvent,
   ControlEventInput,
   WorkSessionControlSnapshot,
@@ -30,6 +34,7 @@ import type {
 /** runtime factory：控制面注入 createRuntime(eventSink)，测试注入 fake runtime。 */
 export type WorkSessionRuntimeFactory = (
   eventSink: GuardianProgressObserver,
+  notificationSink: NotificationDeliveryObserver,
 ) => WorkSessionControlRuntime
 
 export interface WorkSessionControlControllerOptions {
@@ -97,7 +102,10 @@ export class WorkSessionControlController {
     this.clock = options.clock
     // 注入的 factory 拿到 Guardian progress sink；controller 把 GuardianProgressEvent
     // 转成 GUARDIAN_PHASE recent event。生产 factory 把 sink 接到 runner.onProgress。
-    this.runtime = options.createRuntime((event) => this.onGuardianProgress(event))
+    this.runtime = options.createRuntime(
+      (event) => this.onGuardianProgress(event),
+      (result) => this.onNotificationDelivery(result),
+    )
     // 持续观察 runtime state；未 start 时 state 为 undefined，poll 无副作用。
     this.startPolling()
   }
@@ -508,6 +516,18 @@ export class WorkSessionControlController {
         status: event.status,
         iteration: event.iteration,
         elapsedMs: event.elapsedMs,
+      },
+    })
+    this.broadcastSnapshot()
+  }
+
+  private onNotificationDelivery(result: NotificationDeliveryResult): void {
+    this.emit({
+      type: result.status === 'SENT' ? 'NOTIFICATION_SENT' : 'NOTIFICATION_FAILED',
+      data: {
+        notificationId: result.notificationId,
+        taskId: result.taskId,
+        category: result.category,
       },
     })
     this.broadcastSnapshot()

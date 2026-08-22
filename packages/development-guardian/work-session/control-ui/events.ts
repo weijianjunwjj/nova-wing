@@ -29,6 +29,8 @@ export type ControlEventType =
   | 'STOP_AFTER_TASK_REQUESTED'
   | 'SESSION_RESUME_REQUESTED'
   | 'SESSION_RESUMED'
+  | 'NOTIFICATION_SENT'
+  | 'NOTIFICATION_FAILED'
 
 /**
  * 单条 recent event。data 只包含展示需要的安全字段；

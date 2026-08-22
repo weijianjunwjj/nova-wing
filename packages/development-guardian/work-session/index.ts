@@ -12,3 +12,21 @@ export * from './worktree-fingerprint.js'
 export * from './legacy-recovery.js'
 export * from './git-checkpoint.js'
 export * from './production.js'
+export type {
+  HumanRequiredNotification,
+  WorkSessionNotifier,
+  NotificationDeliveryStatus,
+  NotificationDeliveryResult,
+  NotificationDeliveryObserver,
+} from './notifier.js'
+export {
+  SmtpWorkSessionNotifier,
+  createSmtpWorkSessionNotifierFromEnv,
+} from './smtp-notifier.js'
+export type {
+  SmtpTransportConfig,
+  SmtpMailOptions,
+  SmtpMailTransport,
+  SmtpWorkSessionNotifierOptions,
+  SmtpNotifierEnvironmentOptions,
+} from './smtp-notifier.js'

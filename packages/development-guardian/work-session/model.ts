@@ -58,6 +58,12 @@ export interface WorkSessionDurableState {
   currentTaskId: string | null
   completedTaskIds: readonly string[]
   humanRequired?: HumanRequired
+  /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。 */
+  humanRequiredGeneration?: number
+  /** W006: 已执行过 bounded delivery attempt 的 generation（成功或失败）。 */
+  lastNotificationAttemptGeneration?: number
+  /** W006: 最近成功送达通知的 generation。 */
+  lastNotifiedHumanRequiredGeneration?: number
   /** W003: 当前 Task 的 recovery checkpoint（仅当 SUSPENDED 时存在） */
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
   /**
