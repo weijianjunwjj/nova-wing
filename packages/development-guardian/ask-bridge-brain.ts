@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianBrain } from './ports.js'
+import { RetryableGuardianBrainError } from './brain-error.js'
 import { buildGuardianBrainPrompt, parseDelegationPacket } from './tenx-chat-brain.js'
 
 export type AskBridgeReasoning = 'auto' | 'instant' | 'medium' | 'high'
@@ -314,7 +315,7 @@ export class AskBridgeBrain implements GuardianBrain {
       if (result.exitCode !== 0) {
         const isTimeout = result.exitCode === null
         if (isTimeout) {
-          throw new Error(`ChatGPT review timed out after ${this.timeoutMs}ms`)
+          throw new RetryableGuardianBrainError(`ChatGPT review timed out after ${this.timeoutMs}ms`)
         }
         throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
       }

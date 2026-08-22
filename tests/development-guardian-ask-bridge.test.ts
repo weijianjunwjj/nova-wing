@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   AskBridgeBrain,
+  RetryableGuardianBrainError,
   type AskBridgeCommandRequest,
   type AskBridgeCommandRunner,
   type AskBridgeOutputEvent,
@@ -190,4 +191,20 @@ test('ask-bridge brain fails closed when bridge exits non-zero', async () => {
   })
 
   await assert.rejects(brain.review({ task }), /Chrome not found/)
+})
+
+test('ask-bridge brain marks only command-runner timeout as retryable', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    timeoutMs: 120_000,
+    commandRunner: () => Promise.resolve({ exitCode: null, stdout: '', stderr: '' }),
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'timeout' &&
+      error.message === 'ChatGPT review timed out after 120000ms',
+  )
 })

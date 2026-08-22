@@ -1,4 +1,5 @@
 export { GuardianStopError, runGuardianTask } from './guardian.js'
+export { RetryableGuardianBrainError } from './brain-error.js'
 export { AskBridgeBrain } from './ask-bridge-brain.js'
 export type {
   AskBridgeBrainOptions,

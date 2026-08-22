@@ -6,6 +6,7 @@ import type {
   GuardianTask,
 } from './model.js'
 import type { GuardianProgressObserver, GuardianProgressEvent } from './progress.js'
+import { RetryableGuardianBrainError } from './brain-error.js'
 
 export class GuardianStopError extends Error {
   constructor(
@@ -58,6 +59,8 @@ export async function runGuardianTask(options: {
    * already-running review/execution.
    */
   shouldPauseAutonomousWork?: () => boolean
+  /** Additive bounded retry budget per Brain review operation. Defaults to zero. */
+  maxBrainReviewRetries?: number
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
@@ -129,10 +132,28 @@ export async function runGuardianTask(options: {
     emitProgress(reviewPhase, 'active')
     let packet: DelegationPacket
     try {
-      packet = await options.brain.review({
-        task,
-        ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
-      })
+      let retriesRemaining = options.maxBrainReviewRetries ?? 0
+      while (true) {
+        try {
+          packet = await options.brain.review({
+            task,
+            ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
+          })
+          break
+        } catch (error) {
+          if (!(error instanceof RetryableGuardianBrainError) || retriesRemaining <= 0) {
+            throw error
+          }
+          retriesRemaining -= 1
+
+          // Every retry starts a new provider operation and must cross both
+          // autonomous safety boundaries before the next invocation.
+          if (stopForHardLimit() || stopForUserPause()) {
+            return { task, reports }
+          }
+          emitProgress(reviewPhase, 'active', 'retrying retryable brain failure')
+        }
+      }
       requireExecutablePacket(packet)
       emitProgress(reviewPhase, 'completed')
     } catch (error) {

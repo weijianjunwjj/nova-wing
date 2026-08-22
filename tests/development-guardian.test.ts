@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   runGuardianTask,
+  RetryableGuardianBrainError,
   type DelegationPacket,
   type ExecutionReport,
   type GuardianBrain,
@@ -59,6 +60,87 @@ test('guardian completes after execute and review done', async () => {
   assert.equal(result.task.state, 'COMPLETED')
   assert.equal(result.task.iteration, 1)
   assert.equal(result.reports.length, 1)
+})
+
+test('guardian retries one typed transient Brain timeout without adding an executor iteration', async () => {
+  let reviews = 0
+  let executions = 0
+  const brain: GuardianBrain = {
+    async review() {
+      reviews += 1
+      if (reviews === 1) {
+        throw new RetryableGuardianBrainError('ChatGPT review timed out after 600000ms')
+      }
+      return reviews === 2 ? packet('proceed') : packet('done')
+    },
+  }
+  const executor: GuardianExecutor = {
+    async execute() {
+      executions += 1
+      return report()
+    },
+  }
+
+  const result = await runGuardianTask({
+    task: baseTask(), brain, executor, maxBrainReviewRetries: 1,
+  })
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(reviews, 3)
+  assert.equal(executions, 1)
+  assert.equal(result.task.iteration, 1)
+})
+
+test('guardian stops after consecutive retryable Brain timeouts', async () => {
+  let reviews = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+  })
+  assert.equal(reviews, 2)
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.match(result.task.stopReason ?? '', /brain review failed: timeout/)
+})
+
+test('guardian does not retry ordinary Brain errors', async () => {
+  let reviews = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; throw new Error('protocol failure') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+  })
+  assert.equal(reviews, 1)
+  assert.match(result.task.stopReason ?? '', /protocol failure/)
+})
+
+test('guardian checks hard limit again before retrying a transient Brain timeout', async () => {
+  let reviews = 0
+  let hardLimit = false
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; hardLimit = true; throw new RetryableGuardianBrainError('timeout') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    shouldStopAutonomousWork: () => hardLimit,
+  })
+  assert.equal(reviews, 1)
+  assert.equal(result.task.stopReason, 'WORK_SESSION_HARD_LIMIT_REACHED')
+})
+
+test('guardian checks pause again before retrying a transient Brain timeout', async () => {
+  let reviews = 0
+  let paused = false
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; paused = true; throw new RetryableGuardianBrainError('timeout') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    shouldPauseAutonomousWork: () => paused,
+  })
+  assert.equal(reviews, 1)
+  assert.equal(result.task.stopReason, 'WORK_SESSION_USER_PAUSE_REQUESTED')
 })
 
 test('guardian supports review revise loop', async () => {

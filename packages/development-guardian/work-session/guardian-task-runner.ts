@@ -292,6 +292,8 @@ export interface GuardianWorkSessionTaskRunnerOptions {
   clock?: { now(): number }
   /** W005-A: 纯 additive Guardian progress observer，原样透传给 runGuardianTask。 */
   onProgress?: GuardianProgressObserver
+  /** Defaults to one bounded retry for each transient Brain review timeout. */
+  maxBrainReviewRetries?: number
 }
 
 /**
@@ -605,6 +607,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       ...(this.options.onProgress !== undefined
         ? { onProgress: this.options.onProgress }
         : {}),
+      maxBrainReviewRetries: this.options.maxBrainReviewRetries ?? 1,
     })
 
     // 映射结果

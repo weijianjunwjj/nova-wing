@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import {
   GuardianWorkSessionTaskRunner,
+  RetryableGuardianBrainError,
   WorkSessionRuntime,
   type DelegationPacket,
   type ExecutionReport,
@@ -100,6 +101,48 @@ await test('W005-B PAUSE-A: pause before Reviewer starts returns PAUSED with che
   assert.equal(reviews, 0)
   assert.equal(executor.calls, 0)
   assert.equal(result.checkpoint?.task.stopReason, 'WORK_SESSION_USER_PAUSE_REQUESTED')
+})
+
+await test('reviewer timeout is retried once by the Work Session adapter default', async () => {
+  let reviews = 0
+  const executor = new RecordingExecutor()
+  const runner = adapter({
+    brain: {
+      async review() {
+        reviews += 1
+        if (reviews === 1) {
+          throw new RetryableGuardianBrainError('ChatGPT review timed out after 600000ms')
+        }
+        return reviews === 2 ? packet('proceed') : packet('done')
+      },
+    },
+    executor,
+  })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' })
+  assert.equal(result.status, 'COMPLETED')
+  assert.equal(reviews, 3)
+  assert.equal(executor.calls, 1)
+})
+
+await test('exhausted reviewer timeout retry remains HUMAN_REQUIRED and STALLED', async () => {
+  let reviews = 0
+  const executor = new RecordingExecutor()
+  const runner = adapter({
+    brain: {
+      async review() {
+        reviews += 1
+        throw new RetryableGuardianBrainError('ChatGPT review timed out after 600000ms')
+      },
+    },
+    executor,
+  })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'STALLED')
+  assert.equal(reviews, 2)
+  assert.equal(executor.calls, 0)
 })
 
 await test('W005-B PAUSE-B: pause requested during Reviewer prevents Executor', async () => {
