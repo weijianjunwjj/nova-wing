@@ -381,6 +381,31 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     return state
   }
 
+  private async captureTaskCheckpoint(
+    task: GuardianTask,
+    workSessionTask: WorkSessionTask,
+    executor: GuardianRecoverableExecutor,
+  ): Promise<GuardianTaskRecoveryCheckpoint | undefined> {
+    if (this.options.repoPath === undefined) {
+      return undefined
+    }
+    const repoCheckpoint = await this.captureRepositoryCheckpoint(this.options.repoPath)
+    if (repoCheckpoint === undefined) {
+      return undefined
+    }
+    return {
+      version: 1,
+      task,
+      provider: this.captureProviderSessionState(
+        workSessionTask.id,
+        this.options.brain,
+        executor,
+      ),
+      repo: repoCheckpoint,
+      capturedAt: new Date().toISOString(),
+    }
+  }
+
   /**
    * W003: 从 checkpoint 恢复 provider state
    */
@@ -495,6 +520,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     checkpoint?: GuardianTaskRecoveryCheckpoint,
     context?: WorkSessionTaskRunContext,
   ): Promise<WorkSessionTaskResult> {
+    const sanitizedResumeInput = sanitizeResumeInput(resumeData)
     // W003 Task Identity gate：checkpoint 只能授权它所属的 Task（fail-closed）
     // 不靠 repository checkpoint 单独授权另一个 Task；必须最先判断，不做任何 git/provider 调用
     if (checkpoint !== undefined && checkpoint.task.id !== workSessionTask.id) {
@@ -511,12 +537,12 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     // 从 checkpoint 或新建 Guardian Task
     let guardianTask = checkpoint?.task ?? (
       this.options.createGuardianTask
-        ? this.options.createGuardianTask(workSessionTask, resumeData)
+        ? this.options.createGuardianTask(workSessionTask, sanitizedResumeInput)
         : createGuardianTask(workSessionTask, this.options.taskBuilder)
     )
 
     // 为每个 Work Session Task 创建新的 Executor instance
-    const executor = this.options.createExecutor(workSessionTask, resumeData)
+    const executor = this.options.createExecutor(workSessionTask, sanitizedResumeInput)
 
     // W003: 如果有 checkpoint，先做 repo gate —— 任何 provider execution 之前
     if (checkpoint !== undefined) {
@@ -537,7 +563,11 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       // W003: recovery continuation 只取决于"本次 run() 携带并成功验证了 checkpoint"。
       // 通过 task identity gate（run 顶部）与 RepositoryCheckpoint gate（上方）之后即视为延续，
       // 不由 sessionId / conversationUrl / lastPacket / lastReport 推断。
-      guardianTask = { ...guardianTask, recoveryContinuation: true }
+      guardianTask = {
+        ...checkpoint.task,
+        recoveryContinuation: true,
+        resumeInput: sanitizedResumeInput,
+      }
 
       // 如果 executor 支持 setRecoveryCheckpoint，设置 checkpoint
       if (typeof executor.setRecoveryCheckpoint === 'function') {
@@ -549,6 +579,10 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
           worktreeFingerprint: checkpoint.repo.worktreeFingerprint,
         })
       }
+    }
+
+    if (checkpoint === undefined && Object.keys(sanitizedResumeInput).length > 0) {
+      guardianTask = { ...guardianTask, resumeInput: sanitizedResumeInput }
     }
 
     // 运行 Guardian
@@ -564,6 +598,9 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
             shouldStopAutonomousWork: () =>
               (this.options.clock?.now() ?? Date.now()) >= hardDeadlineAtMs,
           }
+        : {}),
+      ...(context?.shouldPauseAutonomousWork !== undefined
+        ? { shouldPauseAutonomousWork: context.shouldPauseAutonomousWork }
         : {}),
       ...(this.options.onProgress !== undefined
         ? { onProgress: this.options.onProgress }
@@ -610,28 +647,28 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       }
     }
 
-    if (result.task.state === 'HUMAN_REQUIRED') {
-      // W003: 捕获 checkpoint
-      let capturedCheckpoint: GuardianTaskRecoveryCheckpoint | undefined
-
-      if (this.options.repoPath !== undefined) {
-        const repoCheckpoint = await this.captureRepositoryCheckpoint(this.options.repoPath)
-        if (repoCheckpoint !== undefined) {
-          const providerState = this.captureProviderSessionState(
-            workSessionTask.id,
-            this.options.brain,
-            executor,
-          )
-
-          capturedCheckpoint = {
-            version: 1,
-            task: result.task,
-            provider: providerState,
-            repo: repoCheckpoint,
-            capturedAt: new Date().toISOString(),
-          }
-        }
+    if (result.task.stopReason === 'WORK_SESSION_USER_PAUSE_REQUESTED') {
+      const capturedCheckpoint = await this.captureTaskCheckpoint(
+        result.task,
+        workSessionTask,
+        executor,
+      )
+      return {
+        status: 'PAUSED',
+        ...(result.task.lastReport?.summary !== undefined
+          ? { summary: result.task.lastReport.summary }
+          : {}),
+        ...(capturedCheckpoint !== undefined ? { checkpoint: capturedCheckpoint } : {}),
       }
+    }
+
+    if (result.task.state === 'HUMAN_REQUIRED') {
+      // W003/W005-B: HUMAN_REQUIRED and PAUSED share exact checkpoint semantics.
+      const capturedCheckpoint = await this.captureTaskCheckpoint(
+        result.task,
+        workSessionTask,
+        executor,
+      )
 
       return {
         status: 'HUMAN_REQUIRED',
@@ -649,4 +686,22 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       error: `unexpected Guardian state: ${result.task.state}`,
     }
   }
+}
+
+function sanitizeResumeInput(value: unknown): { decision?: string; approval?: boolean } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  const result: { decision?: string; approval?: boolean } = {}
+  if (typeof record.decision === 'string') {
+    const decision = record.decision.trim().slice(0, 2_000)
+    if (decision.length > 0) {
+      result.decision = decision
+    }
+  }
+  if (typeof record.approval === 'boolean') {
+    result.approval = record.approval
+  }
+  return result
 }

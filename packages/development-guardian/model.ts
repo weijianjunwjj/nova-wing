@@ -75,6 +75,14 @@ export interface GuardianTask {
    * 不由 lastPacket / lastReport / sessionId / conversationUrl 推断。
    */
   recoveryContinuation?: boolean
+  /**
+   * W005-B: one trusted, explicit continuation input submitted by the user.
+   * It never changes task boundaries or tool capabilities.
+   */
+  resumeInput?: {
+    decision?: string
+    approval?: boolean
+  }
 }
 
 export interface GuardianRunResult {

@@ -54,6 +54,7 @@
     "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
     "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
     "guardian:poc:canary": "npm run build && node scripts/guardian-full-loop-canary.mjs",
+    "guardian:work-session:ui": "npm run build && node scripts/guardian-work-session-ui.mjs",
     "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {

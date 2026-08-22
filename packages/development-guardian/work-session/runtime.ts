@@ -43,7 +43,7 @@ export interface WorkSessionRuntimeConfig {
 }
 
 export interface ResumeInput {
-  decision?: unknown
+  decision?: string
   approval?: boolean
 }
 
@@ -77,6 +77,8 @@ const WorkflowStateSchema = z.object({
   completionReason: z
     .enum(['ALL_TASKS_COMPLETED', 'SOFT_LIMIT', 'HARD_LIMIT', 'MAX_TASKS'])
     .optional(), // W004-B
+  suspensionReason: z.enum(['USER_PAUSED']).optional(), // W005-B
+  cancellationReason: z.enum(['STOP_AFTER_TASK']).optional(), // W005-B
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -107,6 +109,8 @@ export class WorkSessionRuntime {
   private config: WorkSessionRuntimeConfig
   private workflowId: string
   private latestState?: WorkflowState
+  private pauseRequested = false
+  private stopAfterTaskRequested = false
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -381,7 +385,7 @@ export class WorkSessionRuntime {
       }),
       stateSchema: WorkflowStateSchema,
       resumeSchema: z.object({
-        decision: z.any().optional(),
+        decision: z.string().optional(),
         approval: z.boolean().optional(),
       }),
       suspendSchema: z.object({
@@ -399,6 +403,9 @@ export class WorkSessionRuntime {
         if (currentState.activeSegmentStartedAt === undefined) {
           const resumedState: WorkflowState = {
             ...currentState,
+            state: 'RUNNING',
+            humanRequired: undefined,
+            suspensionReason: undefined,
             activeSegmentStartedAt: self.now(),
             updatedAt: new Date().toISOString(),
           }
@@ -418,6 +425,27 @@ export class WorkSessionRuntime {
 
           // W004-B: claim 新 Task 前检查 limits（resume 已 claim 的当前 Task 不截断）。
           if (currentState.currentTaskId !== task.id) {
+            // W005-B: a pause received between Tasks suspends before claiming the next
+            // Task. currentTaskId is deliberately left unchanged; no TASK_STARTED is
+            // fabricated for work that has not begun.
+            if (self.pauseRequested) {
+              self.pauseRequested = false
+              const pausedState: WorkflowState = {
+                ...currentState,
+                state: 'SUSPENDED',
+                humanRequired: undefined,
+                suspensionReason: 'USER_PAUSED',
+                ...self.settleActiveTime(currentState),
+                updatedAt: new Date().toISOString(),
+              }
+              await setState(pausedState)
+              self.latestState = pausedState
+              return await suspend(
+                { reason: 'USER_PAUSED' },
+                { resumeLabel: 'user-pause' },
+              )
+            }
+
             const limitReason = self.checkClaimLimits(currentState)
             if (limitReason !== undefined) {
               const limitState: WorkflowState = {
@@ -471,6 +499,7 @@ export class WorkSessionRuntime {
           const checkpoint = currentState.currentTaskCheckpoint
           const runContext: WorkSessionTaskRunContext = {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
+            shouldPauseAutonomousWork: () => self.pauseRequested,
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
 
@@ -582,7 +611,50 @@ export class WorkSessionRuntime {
             await setState(completedState)
             currentState = completedState
             self.latestState = completedState
+
+            // W005-B: stop-after-task is observed only after verification and the
+            // full safe commit/push checkpoint path. Real queue completion wins.
+            if (
+              self.stopAfterTaskRequested &&
+              completedState.completedTaskIds.length < tasks.length
+            ) {
+              self.stopAfterTaskRequested = false
+              self.pauseRequested = false
+              const cancelledState: WorkflowState = {
+                ...completedState,
+                state: 'CANCELLED',
+                cancellationReason: 'STOP_AFTER_TASK',
+                completionReason: undefined,
+                suspensionReason: undefined,
+                humanRequired: undefined,
+                currentTaskCheckpoint: undefined,
+                ...self.settleActiveTime(completedState),
+                updatedAt: new Date().toISOString(),
+              }
+              await setState(cancelledState)
+              self.latestState = cancelledState
+              return { final: true }
+            }
             continue
+          }
+
+          if (result.status === 'PAUSED') {
+            self.pauseRequested = false
+            const pausedState: WorkflowState = {
+              ...currentState,
+              state: 'SUSPENDED',
+              humanRequired: undefined,
+              suspensionReason: 'USER_PAUSED',
+              currentTaskCheckpoint: result.checkpoint,
+              ...self.settleActiveTime(currentState),
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(pausedState)
+            self.latestState = pausedState
+            return await suspend(
+              { reason: 'USER_PAUSED' },
+              { resumeLabel: 'user-pause' },
+            )
           }
 
           if (result.status === 'HUMAN_REQUIRED') {
@@ -591,6 +663,7 @@ export class WorkSessionRuntime {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
+              suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
               ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
@@ -627,6 +700,8 @@ export class WorkSessionRuntime {
           state: 'COMPLETED',
           currentTaskId: null,
           completionReason: 'ALL_TASKS_COMPLETED',
+          suspensionReason: undefined,
+          cancellationReason: undefined,
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
           ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
@@ -685,6 +760,12 @@ export class WorkSessionRuntime {
     if (wfState.completionReason !== undefined) {
       result.completionReason = wfState.completionReason
     }
+    if (wfState.suspensionReason !== undefined) {
+      result.suspensionReason = wfState.suspensionReason
+    }
+    if (wfState.cancellationReason !== undefined) {
+      result.cancellationReason = wfState.cancellationReason
+    }
     if (wfState.activeElapsedMs !== undefined) {
       result.activeElapsedMs = wfState.activeElapsedMs
     }
@@ -721,6 +802,41 @@ export class WorkSessionRuntime {
    */
   getDefinition(): WorkSessionDefinition {
     return this.config.definition
+  }
+
+  requestPause(): { accepted: boolean; reason?: string } {
+    if (this.latestState?.state !== 'RUNNING') {
+      return { accepted: false, reason: 'session is not running' }
+    }
+    if (this.pauseRequested) {
+      return { accepted: false, reason: 'pause already requested' }
+    }
+    this.pauseRequested = true
+    return { accepted: true }
+  }
+
+  requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    if (this.latestState?.state !== 'RUNNING') {
+      return { accepted: false, reason: 'session is not running' }
+    }
+    if (this.stopAfterTaskRequested) {
+      return { accepted: false, reason: 'stop after task already requested' }
+    }
+    this.stopAfterTaskRequested = true
+    return { accepted: true }
+  }
+
+  getControlIntents(): {
+    pauseRequested: boolean
+    stopAfterTaskRequested: boolean
+  } {
+    return {
+      pauseRequested:
+        this.latestState?.state === 'RUNNING' && this.pauseRequested,
+      stopAfterTaskRequested:
+        (this.latestState?.state === 'RUNNING' || this.latestState?.state === 'SUSPENDED') &&
+        this.stopAfterTaskRequested,
+    }
   }
 
   /**

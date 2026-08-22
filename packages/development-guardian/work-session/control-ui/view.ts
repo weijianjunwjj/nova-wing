@@ -61,7 +61,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
   </section>
 
   <section id="decision-card" class="card decision" hidden>
-    <h2>Needs your decision</h2>
+    <h2 id="decision-title">Needs your decision</h2>
     <div class="row">
       <span class="label">Category</span>
       <span id="decision-category" class="value">—</span>
@@ -70,7 +70,12 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span class="label">Reason</span>
       <span id="decision-reason" class="value">—</span>
     </div>
-    <p class="note">Resume controls arrive in W005-B</p>
+    <p id="decision-guidance" class="note"></p>
+    <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
+    <button id="resume-decision-btn" type="button" class="primary" hidden>Resume with decision</button>
+    <button id="resume-resolved-btn" type="button" class="primary" hidden>I've resolved it — Resume</button>
+    <button id="resume-paused-btn" type="button" class="primary" hidden>Resume</button>
+    <span id="resume-note" class="note"></span>
   </section>
 
   <section class="card">
@@ -104,6 +109,8 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
 
 <footer class="footer">
   <button id="start-btn" type="button" class="primary">Start</button>
+  <button id="pause-btn" type="button" hidden>Pause</button>
+  <button id="stop-btn" type="button" hidden>Stop after task</button>
   <span id="start-note" class="note"></span>
 </footer>
 
@@ -187,6 +194,32 @@ function render(snapshot) {
   renderGuardian(guardian)
   renderRecent(snapshot.recentEvents || [])
   renderDecision(rt)
+  renderControls(rt, snapshot.controls || {})
+}
+
+function renderControls(rt, controls) {
+  var state = rt.state || 'READY'
+  var startBtn = el('start-btn')
+  var pauseBtn = el('pause-btn')
+  var stopBtn = el('stop-btn')
+  if (startBtn) {
+    startBtn.hidden = rt.started === true
+  }
+  if (pauseBtn) {
+    pauseBtn.hidden = state !== 'RUNNING'
+    pauseBtn.disabled = controls.pauseRequested === true
+    pauseBtn.textContent = controls.pauseRequested === true ? 'Pause requested' : 'Pause'
+  }
+  if (stopBtn) {
+    stopBtn.hidden = state !== 'RUNNING'
+    stopBtn.disabled = controls.stopAfterTaskRequested === true
+    stopBtn.textContent = controls.stopAfterTaskRequested === true
+      ? 'Stop requested'
+      : 'Stop after task'
+  }
+  if (state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED') {
+    setText('start-note', 'Paused by you')
+  }
 }
 
 function renderTasks(cfg, rt) {
@@ -269,10 +302,38 @@ function renderDecision(rt) {
   var card = el('decision-card')
   if (!card) return
   var hr = rt.humanRequired
-  if (rt.state === 'SUSPENDED' && hr) {
+  var category = hr ? hr.category : ''
+  var userPaused = rt.state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED'
+  if (rt.state === 'SUSPENDED' && (hr || userPaused)) {
     card.hidden = false
-    setText('decision-category', hr.category || '—')
-    setText('decision-reason', hr.reason || '—')
+    setText('decision-title', userPaused ? 'Paused by you' : 'Needs your decision')
+    setText('decision-category', userPaused ? 'USER_PAUSED' : (category || '—'))
+    setText('decision-reason', userPaused ? 'Resume from the saved checkpoint when ready.' : (hr.reason || '—'))
+
+    var input = el('decision-input')
+    var decisionBtn = el('resume-decision-btn')
+    var resolvedBtn = el('resume-resolved-btn')
+    var pausedBtn = el('resume-paused-btn')
+    var needsDecision = category === 'DECISION_REQUIRED' || category === 'STALLED'
+    var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED'
+    if (input) input.hidden = !needsDecision
+    if (decisionBtn) decisionBtn.hidden = !needsDecision
+    if (resolvedBtn) resolvedBtn.hidden = !resolvedAck
+    if (pausedBtn) pausedBtn.hidden = !userPaused
+
+    if (resolvedAck) {
+      setText('decision-guidance', 'Complete the required action outside NovaWing. Do not enter credentials here.')
+    } else if (category === 'PERMISSION_REQUIRED') {
+      setText('decision-guidance', 'Update trusted project permissions first.')
+    } else if (category === 'BUDGET_EXHAUSTED') {
+      setText('decision-guidance', 'Start a new Session with newly approved limits.')
+    } else if (category === 'REPO_DRIFT') {
+      setText('decision-guidance', 'Repository recovery or explicit adoption is required.')
+    } else if (category === 'SAFETY_BLOCKED') {
+      setText('decision-guidance', 'This safety block cannot be resumed generically.')
+    } else {
+      setText('decision-guidance', '')
+    }
   } else {
     card.hidden = true
   }
@@ -313,8 +374,60 @@ async function start() {
   refresh()
 }
 
+async function requestControl(path) {
+  try {
+    await fetch(path, {
+      method: 'POST',
+      headers: { 'X-NovaWing-Control-Token': controlToken }
+    })
+  } finally {
+    refresh()
+  }
+}
+
+async function resumeSession(payload) {
+  var note = el('resume-note')
+  try {
+    var res = await fetch('/api/session/resume', {
+      method: 'POST',
+      headers: {
+        'X-NovaWing-Control-Token': controlToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
+    if (note) note.textContent = res.status === 202 ? 'Resume requested' : 'Resume rejected'
+  } finally {
+    refresh()
+  }
+}
+
 var startBtn = el('start-btn')
 if (startBtn) startBtn.addEventListener('click', start)
+var pauseBtn = el('pause-btn')
+if (pauseBtn) pauseBtn.addEventListener('click', function () {
+  pauseBtn.disabled = true
+  requestControl('/api/session/pause')
+})
+var stopBtn = el('stop-btn')
+if (stopBtn) stopBtn.addEventListener('click', function () {
+  stopBtn.disabled = true
+  requestControl('/api/session/stop-after-task')
+})
+var resumeDecisionBtn = el('resume-decision-btn')
+if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', function () {
+  var input = el('decision-input')
+  var decision = input ? input.value.trim() : ''
+  if (decision.length > 0) resumeSession({ decision: decision })
+})
+var resumeResolvedBtn = el('resume-resolved-btn')
+if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
+  resumeSession({ approval: true })
+})
+var resumePausedBtn = el('resume-paused-btn')
+if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {
+  resumeSession({})
+})
 
 refresh()
 
@@ -516,6 +629,18 @@ main {
 
 .decision h2 { color: var(--warn); }
 
+.decision textarea {
+  width: 100%;
+  margin: 8px 0 10px;
+  padding: 9px 10px;
+  resize: vertical;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 13px/1.5 var(--mono);
+}
+
 .debug pre {
   margin: 12px 0 0;
   font-family: var(--mono);
@@ -545,6 +670,21 @@ button.primary {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+}
+
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 button.primary:disabled {

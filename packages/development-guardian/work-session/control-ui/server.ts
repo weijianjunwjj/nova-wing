@@ -129,6 +129,15 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/start') {
       return this.serveStart(req, res)
     }
+    if (method === 'POST' && path === '/api/session/pause') {
+      return this.servePause(req, res)
+    }
+    if (method === 'POST' && path === '/api/session/stop-after-task') {
+      return this.serveStopAfterTask(req, res)
+    }
+    if (method === 'POST' && path === '/api/session/resume') {
+      return this.serveResume(req, res)
+    }
 
     const knownPaths = new Set([
       '/',
@@ -137,6 +146,9 @@ export class WorkSessionControlServer {
       '/api/status',
       '/api/events',
       '/api/session/start',
+      '/api/session/pause',
+      '/api/session/stop-after-task',
+      '/api/session/resume',
     ])
     if (knownPaths.has(path)) {
       return this.respondJson(res, 405, { error: 'method not allowed' })
@@ -187,21 +199,9 @@ export class WorkSessionControlServer {
   }
 
   private serveStart(req: IncomingMessage, res: ServerResponse): void {
-    // 1. Origin 校验：同源或非浏览器（无 Origin）放行，其余拒绝。
-    const origin = req.headers.origin
-    if (origin !== undefined && origin !== this.origin()) {
-      this.respondJson(res, 403, { error: 'forbidden origin' })
+    if (!this.authorizeMutation(req, res)) {
       return
     }
-
-    // 2. control token 校验（timing-safe）。
-    const token = req.headers['x-novawing-control-token']
-    if (typeof token !== 'string' || !this.tokenMatches(token)) {
-      this.respondJson(res, 403, { error: 'forbidden' })
-      return
-    }
-
-    // 3. body 上限（start 不需要 body）。
     this.readBodyWithLimit(req, res, () => {
       const result = this.controller.start()
       if (result.started) {
@@ -212,12 +212,82 @@ export class WorkSessionControlServer {
     })
   }
 
+  private servePause(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) {
+      return
+    }
+    this.readBodyWithLimit(req, res, () => {
+      const result = this.controller.requestPause()
+      if (result.accepted) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: result.reason ?? 'pause rejected' })
+      }
+    })
+  }
+
+  private serveStopAfterTask(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) {
+      return
+    }
+    this.readBodyWithLimit(req, res, () => {
+      const result = this.controller.requestStopAfterTask()
+      if (result.accepted) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: result.reason ?? 'stop after task rejected' })
+      }
+    })
+  }
+
+  private serveResume(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) {
+      return
+    }
+    const contentType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(res, 415, { error: 'content type must be application/json' })
+      return
+    }
+    this.readBodyWithLimit(req, res, (body) => {
+      const parsed = parseResumeBody(body)
+      if (!parsed.ok) {
+        this.respondJson(res, 400, { error: parsed.error })
+        return
+      }
+      const result = this.controller.resume(parsed.input)
+      if (result.accepted) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: result.reason ?? 'resume rejected' })
+      }
+    })
+  }
+
+  private authorizeMutation(req: IncomingMessage, res: ServerResponse): boolean {
+    // 1. Origin 校验：同源或非浏览器（无 Origin）放行，其余拒绝。
+    const origin = req.headers.origin
+    if (origin !== undefined && origin !== this.origin()) {
+      this.respondJson(res, 403, { error: 'forbidden origin' })
+      return false
+    }
+
+    // 2. control token 校验（timing-safe）。
+    const token = req.headers['x-novawing-control-token']
+    if (typeof token !== 'string' || !this.tokenMatches(token)) {
+      this.respondJson(res, 403, { error: 'forbidden' })
+      return false
+    }
+    return true
+  }
+
   private readBodyWithLimit(
     req: IncomingMessage,
     res: ServerResponse,
-    onDone: () => void,
+    onDone: (body: string) => void,
   ): void {
     let size = 0
+    let body = ''
     let settled = false
     const fail = (): void => {
       if (!settled) {
@@ -233,12 +303,14 @@ export class WorkSessionControlServer {
       if (size > MAX_BODY_BYTES) {
         fail()
         req.destroy()
+      } else {
+        body += chunk.toString('utf8')
       }
     })
     req.on('end', () => {
       if (!settled) {
         settled = true
-        onDone()
+        onDone(body)
       }
     })
   }
@@ -328,4 +400,43 @@ function envelopeFromEvent(event: ControlEvent, id: number): SseEnvelope {
     type: event.type,
     data: event.data,
   }
+}
+
+function parseResumeBody(body: string):
+  | { ok: true; input: { decision?: string; approval?: boolean } }
+  | { ok: false; error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { ok: false, error: 'malformed JSON' }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'resume body must be an object' }
+  }
+  const record = parsed as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (keys.some((key) => key !== 'decision' && key !== 'approval')) {
+    return { ok: false, error: 'resume body contains unknown fields' }
+  }
+  if (record.decision !== undefined && record.approval !== undefined) {
+    return { ok: false, error: 'resume body must contain decision or approval, not both' }
+  }
+  if (record.decision !== undefined) {
+    if (typeof record.decision !== 'string') {
+      return { ok: false, error: 'decision must be a string' }
+    }
+    const decision = record.decision.trim()
+    if (decision.length < 1 || decision.length > 2_000) {
+      return { ok: false, error: 'decision must be 1..2000 characters' }
+    }
+    return { ok: true, input: { decision } }
+  }
+  if (record.approval !== undefined) {
+    if (typeof record.approval !== 'boolean') {
+      return { ok: false, error: 'approval must be a boolean' }
+    }
+    return { ok: true, input: { approval: record.approval } }
+  }
+  return { ok: true, input: {} }
 }

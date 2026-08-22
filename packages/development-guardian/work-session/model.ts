@@ -35,6 +35,9 @@ export type WorkSessionCompletionReason =
   | 'HARD_LIMIT'
   | 'MAX_TASKS'
 
+export type WorkSessionSuspensionReason = 'USER_PAUSED'
+export type WorkSessionCancellationReason = 'STOP_AFTER_TASK'
+
 export interface WorkSessionDefinition {
   id: string
   targetRepo: string
@@ -76,6 +79,10 @@ export interface WorkSessionDurableState {
   activeSegmentStartedAt?: number
   /** W004-B: 正常结束原因（仅 COMPLETED 时存在） */
   completionReason?: WorkSessionCompletionReason
+  /** W005-B: only present for a user-requested safe-boundary suspension. */
+  suspensionReason?: WorkSessionSuspensionReason
+  /** W005-B: only present when an explicit stop-after-task ends the session. */
+  cancellationReason?: WorkSessionCancellationReason
   /** W004-A FINAL: Git checkpoint/finalization 失败时的明确错误原因（仅 FAILED 时存在） */
   failureReason?: string
   createdAt: Date

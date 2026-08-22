@@ -52,6 +52,12 @@ export async function runGuardianTask(options: {
    * 未提供时现有 behavior 100% 不变。
    */
   shouldStopAutonomousWork?: () => boolean
+  /**
+   * W005-B: user pause is independent from the W004 hard-limit hook. A true
+   * result stops before the next provider operation without killing any
+   * already-running review/execution.
+   */
+  shouldPauseAutonomousWork?: () => boolean
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
@@ -85,11 +91,26 @@ export async function runGuardianTask(options: {
     return true
   }
 
+  const stopForUserPause = (): boolean => {
+    if (options.shouldPauseAutonomousWork?.() !== true) {
+      return false
+    }
+    task = {
+      ...task,
+      state: 'HUMAN_REQUIRED',
+      stopReason: 'WORK_SESSION_USER_PAUSE_REQUESTED',
+    }
+    return true
+  }
+
   emitProgress('PREPARING', 'completed')
 
   while (true) {
     // W004-B checkpoint A：每次开始新的 Brain review 前。绝不 kill 正在 mutation 的 process。
     if (stopForHardLimit()) {
+      return { task, reports }
+    }
+    if (stopForUserPause()) {
       return { task, reports }
     }
 
@@ -173,6 +194,9 @@ export async function runGuardianTask(options: {
     // W004-B checkpoint B：Reviewer 已返回、但开始新的 Executor execute 前。
     // verdict 为 proceed/revise（blocked/done 已在上方 return），此处到点则不再启动 Executor。
     if (stopForHardLimit()) {
+      return { task, reports }
+    }
+    if (stopForUserPause()) {
       return { task, reports }
     }
 

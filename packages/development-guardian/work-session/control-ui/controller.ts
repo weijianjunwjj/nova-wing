@@ -45,6 +45,12 @@ export interface WorkSessionControlControllerOptions {
 const DEFAULT_POLL_INTERVAL_MS = 250
 const DEFAULT_MAX_RECENT_EVENTS = 100
 const SAFE_SESSION_FAILED_MESSAGE = 'Session failed. Check local diagnostics.'
+const SAFE_POST_RESUME_HUMAN_REASON = 'Additional input is required. Check local diagnostics.'
+
+export interface ControlResumeInput {
+  decision?: string
+  approval?: boolean
+}
 
 /** Guardian phase 快照：只保留结构化字段，绝不携带 raw detail / provider payload。 */
 interface GuardianPhaseSnapshot {
@@ -74,6 +80,9 @@ export class WorkSessionControlController {
   private prevElapsedSecond: number | undefined
   /** 明确持有 runtime.start() 的 Promise，rejection 已被 catch，绝不产生 unhandled rejection。 */
   private startPromise: Promise<void> | undefined
+  private resumePromise: Promise<void> | undefined
+  /** Current Task whose user decision must never be echoed back by provider-derived reasons. */
+  private resumeInputRedactionTaskId: string | undefined
 
   private guardianPhase: GuardianPhaseSnapshot | undefined
   private serverInfo: WorkSessionControlSnapshot['server'] = {
@@ -115,6 +124,10 @@ export class WorkSessionControlController {
     return this.startPromise
   }
 
+  getResumePromise(): Promise<void> | undefined {
+    return this.resumePromise
+  }
+
   /**
    * 启动 Session。防 duplicate：第二次调用返回 started=false。
    * runtime.start() 异步 fire-and-forget，不阻塞调用方（HTTP 202）。
@@ -145,10 +158,81 @@ export class WorkSessionControlController {
     return { started: true }
   }
 
+  requestPause(): { accepted: boolean; reason?: string } {
+    const result = this.runtime.requestPause()
+    if (result.accepted) {
+      this.emit({ type: 'PAUSE_REQUESTED', data: { control: 'pause' } })
+      this.broadcastSnapshot()
+    }
+    return result
+  }
+
+  requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    const result = this.runtime.requestStopAfterTask()
+    if (result.accepted) {
+      this.emit({
+        type: 'STOP_AFTER_TASK_REQUESTED',
+        data: { control: 'stop-after-task' },
+      })
+      this.broadcastSnapshot()
+    }
+    return result
+  }
+
+  resume(input: ControlResumeInput): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    if (state?.state !== 'SUSPENDED') {
+      return { accepted: false, reason: 'session is not suspended' }
+    }
+    if (this.resumePromise !== undefined) {
+      return { accepted: false, reason: 'resume already in progress' }
+    }
+
+    const validated = validateResumeForState(state, input)
+    if (!validated.accepted) {
+      return validated
+    }
+
+    const category = state.suspensionReason === 'USER_PAUSED'
+      ? 'USER_PAUSED'
+      : state.humanRequired?.category ?? 'UNKNOWN'
+    const safeEventData = {
+      taskId: state.currentTaskId,
+      category,
+    }
+    if (validated.input?.decision !== undefined && state.currentTaskId !== null) {
+      this.resumeInputRedactionTaskId = state.currentTaskId
+    }
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.broadcastSnapshot()
+
+    // W005-B: resume is background-owned just like start. The user's decision is
+    // passed only to the runtime/provider path and never copied into events/status.
+    this.resumePromise = this.runtime
+      .resume(validated.input ?? {})
+      .then(() => {
+        this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
+        this.broadcastSnapshot()
+      })
+      .catch(() => {
+        this.emit({
+          type: 'SESSION_FAILED',
+          data: { message: SAFE_SESSION_FAILED_MESSAGE },
+        })
+        this.broadcastSnapshot()
+      })
+      .finally(() => {
+        this.resumePromise = undefined
+      })
+
+    return { accepted: true }
+  }
+
   /** 返回结构化 snapshot，不包含任何 secret / token / provider payload。 */
   getSnapshot(): WorkSessionControlSnapshot {
     const definition = this.runtime.getDefinition()
     const state = this.runtime.getDurableState()
+    const controls = this.runtime.getControlIntents()
 
     return {
       server: { ...this.serverInfo },
@@ -185,13 +269,20 @@ export class WorkSessionControlController {
                 ? { completionReason: state.completionReason }
                 : {}),
               ...(state.humanRequired !== undefined
-                ? { humanRequired: state.humanRequired }
+                ? { humanRequired: this.safeHumanRequired(state) }
+                : {}),
+              ...(state.suspensionReason !== undefined
+                ? { suspensionReason: state.suspensionReason }
+                : {}),
+              ...(state.cancellationReason !== undefined
+                ? { cancellationReason: state.cancellationReason }
                 : {}),
               // failureReason 是本地诊断事实，可能含 provider/credential 文本；
               // Web snapshot 只暴露 FAILED state，不复制 raw failureReason。
             }
           : {}),
       },
+      controls,
       guardian: this.guardianPhase !== undefined ? { ...this.guardianPhase } : {},
       recentEvents: [...this.recentEvents],
     }
@@ -305,6 +396,8 @@ export class WorkSessionControlController {
       state.checkpointCommits ?? null,
       state.checkpointPushes ?? null,
       state.completionReason ?? null,
+      state.suspensionReason ?? null,
+      state.cancellationReason ?? null,
     ])
   }
 
@@ -333,13 +426,21 @@ export class WorkSessionControlController {
           type: 'SESSION_FAILED',
           data: { message: SAFE_SESSION_FAILED_MESSAGE },
         })
+      } else if (
+        curr.state === 'SUSPENDED' &&
+        curr.suspensionReason === 'USER_PAUSED'
+      ) {
+        events.push({
+          type: 'SESSION_PAUSED',
+          data: { taskId: curr.currentTaskId, control: 'pause' },
+        })
       }
     }
 
     if (prev.humanRequired === undefined && curr.humanRequired !== undefined) {
       events.push({
         type: 'HUMAN_REQUIRED',
-        data: humanRequiredData(curr.humanRequired),
+        data: humanRequiredData(this.safeHumanRequired(curr)),
       })
     }
 
@@ -396,6 +497,23 @@ export class WorkSessionControlController {
     this.broadcastSnapshot()
   }
 
+  private safeHumanRequired(state: WorkSessionDurableState): HumanRequired {
+    const humanRequired = state.humanRequired
+    if (humanRequired === undefined) {
+      return { category: 'UNKNOWN', reason: SAFE_POST_RESUME_HUMAN_REASON }
+    }
+    if (
+      state.currentTaskId !== null &&
+      state.currentTaskId === this.resumeInputRedactionTaskId
+    ) {
+      return {
+        category: humanRequired.category,
+        reason: SAFE_POST_RESUME_HUMAN_REASON,
+      }
+    }
+    return humanRequired
+  }
+
   private emit(input: ControlEventInput): void {
     const event: ControlEvent = {
       id: ++this.eventId,
@@ -422,4 +540,45 @@ export class WorkSessionControlController {
 
 function humanRequiredData(hr: HumanRequired): Record<string, unknown> {
   return { category: hr.category, reason: hr.reason }
+}
+
+function validateResumeForState(
+  state: WorkSessionDurableState,
+  input: ControlResumeInput,
+): { accepted: boolean; reason?: string; input?: ControlResumeInput } {
+  const decision = typeof input.decision === 'string' ? input.decision.trim() : undefined
+  const hasDecision = decision !== undefined && decision.length >= 1 && decision.length <= 2_000
+  const hasApproval = input.approval !== undefined
+
+  if (state.suspensionReason === 'USER_PAUSED') {
+    if (input.decision !== undefined || input.approval !== undefined) {
+      return { accepted: false, reason: 'user pause resume does not accept decision data' }
+    }
+    return { accepted: true, input: {} }
+  }
+
+  switch (state.humanRequired?.category) {
+    case 'DECISION_REQUIRED':
+    case 'STALLED':
+      if (!hasDecision || hasApproval) {
+        return { accepted: false, reason: 'a decision is required' }
+      }
+      return { accepted: true, input: { decision } }
+    case 'ENVIRONMENT_REQUIRED':
+    case 'CREDENTIAL_REQUIRED':
+      if (input.approval !== true || input.decision !== undefined) {
+        return { accepted: false, reason: 'resolved acknowledgement is required' }
+      }
+      return { accepted: true, input: { approval: true } }
+    case 'PERMISSION_REQUIRED':
+      return { accepted: false, reason: 'trusted project permissions must be updated first' }
+    case 'SAFETY_BLOCKED':
+      return { accepted: false, reason: 'safety block cannot be generically resumed' }
+    case 'REPO_DRIFT':
+      return { accepted: false, reason: 'repository drift requires recovery or adoption' }
+    case 'BUDGET_EXHAUSTED':
+      return { accepted: false, reason: 'session limits are exhausted' }
+    default:
+      return { accepted: false, reason: 'unsupported suspension category' }
+  }
 }

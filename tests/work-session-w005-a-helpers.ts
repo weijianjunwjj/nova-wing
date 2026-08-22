@@ -47,7 +47,18 @@ export class FakeRuntime implements WorkSessionControlRuntime {
   definition: WorkSessionDefinition
   state: WorkSessionDurableState | undefined
   startCalls = 0
+  resumeCalls = 0
+  resumeInputs: Array<{ decision?: string; approval?: boolean }> = []
+  pauseRequested = false
+  stopAfterTaskRequested = false
   startDeferred:
+    | {
+        promise: Promise<WorkSessionDurableState>
+        resolve: (state: WorkSessionDurableState) => void
+        reject: (error: unknown) => void
+      }
+    | undefined
+  resumeDeferred:
     | {
         promise: Promise<WorkSessionDurableState>
         resolve: (state: WorkSessionDurableState) => void
@@ -68,6 +79,38 @@ export class FakeRuntime implements WorkSessionControlRuntime {
       return makeState({ state: 'RUNNING' })
     }
     return this.state
+  }
+
+  async resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState> {
+    this.resumeCalls++
+    this.resumeInputs.push(input)
+    if (this.resumeDeferred !== undefined) {
+      return this.resumeDeferred.promise
+    }
+    return this.state ?? makeState({ state: 'RUNNING' })
+  }
+
+  requestPause(): { accepted: boolean; reason?: string } {
+    if (this.state?.state !== 'RUNNING' || this.pauseRequested) {
+      return { accepted: false, reason: 'session is not running' }
+    }
+    this.pauseRequested = true
+    return { accepted: true }
+  }
+
+  requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    if (this.state?.state !== 'RUNNING' || this.stopAfterTaskRequested) {
+      return { accepted: false, reason: 'session is not running' }
+    }
+    this.stopAfterTaskRequested = true
+    return { accepted: true }
+  }
+
+  getControlIntents(): { pauseRequested: boolean; stopAfterTaskRequested: boolean } {
+    return {
+      pauseRequested: this.pauseRequested,
+      stopAfterTaskRequested: this.stopAfterTaskRequested,
+    }
   }
 
   getDurableState(): WorkSessionDurableState | undefined {
@@ -94,6 +137,20 @@ export class FakeRuntime implements WorkSessionControlRuntime {
       reject: (error) => {
         rejectFn?.(error)
       },
+    }
+  }
+
+  deferResume(): void {
+    let resolveFn: ((state: WorkSessionDurableState) => void) | undefined
+    let rejectFn: ((error: unknown) => void) | undefined
+    const promise = new Promise<WorkSessionDurableState>((resolve, reject) => {
+      resolveFn = resolve
+      rejectFn = reject
+    })
+    this.resumeDeferred = {
+      promise,
+      resolve: (state) => resolveFn?.(state),
+      reject: (error) => rejectFn?.(error),
     }
   }
 }

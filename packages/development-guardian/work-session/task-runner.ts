@@ -7,7 +7,7 @@ import type { WorkSessionTask, HumanRequired } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { DelegationVerdict, VerificationResult } from '../model.js'
 
-export type WorkSessionTaskResultStatus = 'COMPLETED' | 'HUMAN_REQUIRED' | 'FAILED'
+export type WorkSessionTaskResultStatus = 'COMPLETED' | 'HUMAN_REQUIRED' | 'FAILED' | 'PAUSED'
 
 /**
  * W004-A: Task 完成的结构化证据。
@@ -51,6 +51,8 @@ export interface WorkSessionTaskResult {
 export interface WorkSessionTaskRunContext {
   /** hard deadline 绝对时间（clock 帧内毫秒）；超过后不得启动新的 Reviewer/Executor iteration */
   hardDeadlineAtMs?: number
+  /** W005-B: checked only at Guardian safe autonomous boundaries. */
+  shouldPauseAutonomousWork?: () => boolean
 }
 
 export interface WorkSessionTaskRunner {

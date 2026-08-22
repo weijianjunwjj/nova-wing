@@ -24,6 +24,11 @@ export type ControlEventType =
   | 'HUMAN_REQUIRED'
   | 'SESSION_COMPLETED'
   | 'SESSION_FAILED'
+  | 'PAUSE_REQUESTED'
+  | 'SESSION_PAUSED'
+  | 'STOP_AFTER_TASK_REQUESTED'
+  | 'SESSION_RESUME_REQUESTED'
+  | 'SESSION_RESUMED'
 
 /**
  * 单条 recent event。data 只包含展示需要的安全字段；
@@ -80,6 +85,12 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    suspensionReason?: string
+    cancellationReason?: string
+  }
+  controls: {
+    pauseRequested: boolean
+    stopAfterTaskRequested: boolean
   }
   guardian: {
     phase?: string
@@ -96,6 +107,10 @@ export interface WorkSessionControlSnapshot {
  */
 export interface WorkSessionControlRuntime {
   start(): Promise<WorkSessionDurableState>
+  resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
+  requestPause(): { accepted: boolean; reason?: string }
+  requestStopAfterTask(): { accepted: boolean; reason?: string }
+  getControlIntents(): { pauseRequested: boolean; stopAfterTaskRequested: boolean }
   getDurableState(): WorkSessionDurableState | undefined
   getDefinition(): WorkSessionDefinition
 }
