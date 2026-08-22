@@ -38,6 +38,7 @@ const expectedRuntimeExports = {
     'GuardianStopError',
     'GuardianWorkSessionTaskRunner',
     'LEGACY_PRE_EXISTING_DIRTY_REASON',
+    'RetryableGuardianBrainError',
     'SmtpWorkSessionNotifier',
     'TEN_X_CHAT_PINNED_VERSION',
     'TenXChatBrain',

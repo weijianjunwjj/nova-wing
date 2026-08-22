@@ -6,6 +6,12 @@ export interface GuardianBrain {
     task: GuardianTask
     report?: ExecutionReport
   }): Promise<DelegationPacket>
+
+  /**
+   * Discard only this Task's replaceable provider conversation binding so the
+   * next review starts a fresh provider session with the same Guardian evidence.
+   */
+  resetTaskReviewSession?(taskId: string): void
 }
 
 export interface GuardianExecutor {

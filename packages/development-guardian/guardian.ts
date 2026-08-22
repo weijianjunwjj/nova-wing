@@ -61,6 +61,8 @@ export async function runGuardianTask(options: {
   shouldPauseAutonomousWork?: () => boolean
   /** Additive bounded retry budget per Brain review operation. Defaults to zero. */
   maxBrainReviewRetries?: number
+  /** Additive bounded provider-session rotation budget per review operation. Defaults to zero. */
+  maxBrainReviewSessionRotations?: number
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
@@ -133,6 +135,7 @@ export async function runGuardianTask(options: {
     let packet: DelegationPacket
     try {
       let retriesRemaining = options.maxBrainReviewRetries ?? 0
+      let rotationsRemaining = options.maxBrainReviewSessionRotations ?? 0
       while (true) {
         try {
           packet = await options.brain.review({
@@ -141,17 +144,37 @@ export async function runGuardianTask(options: {
           })
           break
         } catch (error) {
-          if (!(error instanceof RetryableGuardianBrainError) || retriesRemaining <= 0) {
+          if (!(error instanceof RetryableGuardianBrainError)) {
             throw error
           }
-          retriesRemaining -= 1
 
-          // Every retry starts a new provider operation and must cross both
-          // autonomous safety boundaries before the next invocation.
-          if (stopForHardLimit() || stopForUserPause()) {
-            return { task, reports }
+          if (retriesRemaining > 0) {
+            retriesRemaining -= 1
+            // Every retry starts a new provider operation and must cross both
+            // autonomous safety boundaries before the next invocation.
+            if (stopForHardLimit() || stopForUserPause()) {
+              return { task, reports }
+            }
+            emitProgress(reviewPhase, 'active', 'retrying retryable brain failure')
+            continue
           }
-          emitProgress(reviewPhase, 'active', 'retrying retryable brain failure')
+
+          if (
+            rotationsRemaining > 0 &&
+            options.brain.resetTaskReviewSession !== undefined
+          ) {
+            // Rotation plus its fresh review is another provider operation and
+            // must cross the autonomous boundary before changing provider state.
+            if (stopForHardLimit() || stopForUserPause()) {
+              return { task, reports }
+            }
+            options.brain.resetTaskReviewSession(task.id)
+            rotationsRemaining -= 1
+            emitProgress(reviewPhase, 'active', 'rotating retryable brain session')
+            continue
+          }
+
+          throw error
         }
       }
       requireExecutablePacket(packet)

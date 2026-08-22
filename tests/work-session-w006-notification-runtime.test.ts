@@ -6,7 +6,11 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
+  GuardianWorkSessionTaskRunner,
+  RetryableGuardianBrainError,
   WorkSessionRuntime,
+  type DelegationPacket,
+  type ExecutionReport,
   type HumanRequiredNotification,
   type NotificationDeliveryResult,
   type WorkSessionDefinition,
@@ -22,6 +26,24 @@ function definition(id: string): WorkSessionDefinition {
     branch: 'feat/work-session-mvp',
     tasks: [{ id: 'T1', goal: 'task one' }],
     limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
+  }
+}
+
+function proceedPacket(verdict: 'proceed' | 'done'): DelegationPacket {
+  return {
+    verdict,
+    goal: 'task one',
+    instructions: verdict === 'proceed' ? ['implement'] : [],
+    constraints: [],
+    verification: ['npm test'],
+    doNotDo: [],
+  }
+}
+
+function passedReport(): ExecutionReport {
+  return {
+    summary: 'done', changedFiles: [], commandsRun: ['npm test'],
+    verificationResults: [{ name: 'npm test', status: 'passed' }], blockers: [],
   }
 }
 
@@ -114,6 +136,60 @@ await test('W006 NOTIFY-A/B/C: COMPLETED, FAILED, and USER_PAUSED never notify',
     assert.equal(state.suspensionReason, 'USER_PAUSED')
     assert.equal(pausedNotifier.attempts, 0)
     await paused.close()
+  })
+})
+
+await test('W006 reviewer rotation notifies only when the fresh session also times out', async () => {
+  await withStorage('w006-rotation-success-', async (storageUrl) => {
+    const notifier = new RecordingNotifier()
+    let reviews = 0
+    let rotations = 0
+    const taskRunner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review() {
+          reviews += 1
+          if (reviews <= 2) throw new RetryableGuardianBrainError('timeout')
+          return reviews === 3 ? proceedPacket('proceed') : proceedPacket('done')
+        },
+        resetTaskReviewSession() { rotations += 1 },
+      },
+      createExecutor: () => ({ async execute() { return passedReport() } }),
+    })
+    const runtime = new WorkSessionRuntime({
+      definition: definition('w006-rotation-success'), storageUrl, taskRunner, notifier,
+      notificationRetryDelayMs: 0,
+    })
+
+    assert.equal((await runtime.start()).state, 'COMPLETED')
+    assert.equal(rotations, 1)
+    assert.equal(notifier.attempts, 0)
+    await runtime.close()
+  })
+
+  await withStorage('w006-rotation-exhausted-', async (storageUrl) => {
+    const notifier = new RecordingNotifier()
+    let reviews = 0
+    let rotations = 0
+    const taskRunner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+        resetTaskReviewSession() { rotations += 1 },
+      },
+      createExecutor: () => ({ async execute() { throw new Error('must not execute') } }),
+    })
+    const runtime = new WorkSessionRuntime({
+      definition: definition('w006-rotation-exhausted'), storageUrl, taskRunner, notifier,
+      notificationRetryDelayMs: 0,
+    })
+
+    const state = await runtime.start()
+    assert.equal(state.state, 'SUSPENDED')
+    assert.equal(state.humanRequired?.category, 'STALLED')
+    assert.equal(reviews, 3)
+    assert.equal(rotations, 1)
+    await runtime.getNotificationPromise()
+    assert.equal(notifier.attempts, 1)
+    await runtime.close()
   })
 })
 

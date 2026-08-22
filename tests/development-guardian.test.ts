@@ -143,6 +143,141 @@ test('guardian checks pause again before retrying a transient Brain timeout', as
   assert.equal(result.task.stopReason, 'WORK_SESSION_USER_PAUSE_REQUESTED')
 })
 
+test('guardian rotates one stuck Brain session and completes with preserved task evidence', async () => {
+  let reviews = 0
+  let rotations = 0
+  let executions = 0
+  const seenTasks: GuardianTask[] = []
+  const brain: GuardianBrain = {
+    async review(input) {
+      reviews += 1
+      seenTasks.push(input.task)
+      if (reviews <= 2) throw new RetryableGuardianBrainError('timeout')
+      return reviews === 3 ? packet('proceed') : packet('done')
+    },
+    resetTaskReviewSession(taskId) {
+      assert.equal(taskId, 'task-1')
+      rotations += 1
+    },
+  }
+  const result = await runGuardianTask({
+    task: baseTask({
+      constraints: ['constraint'],
+      acceptanceCriteria: ['acceptance'],
+      doNotDo: ['forbidden action'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: ['secrets/**'],
+      recoveryContinuation: true,
+      resumeInput: { decision: 'continue' },
+    }),
+    brain,
+    executor: { async execute() { executions += 1; return report() } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(reviews, 4, 'three initial-review calls plus a separate final review')
+  assert.equal(rotations, 1)
+  assert.equal(executions, 1)
+  assert.equal(result.task.iteration, 1)
+  assert.deepEqual(seenTasks[2]?.constraints, ['constraint'])
+  assert.deepEqual(seenTasks[2]?.acceptanceCriteria, ['acceptance'])
+  assert.deepEqual(seenTasks[2]?.resumeInput, { decision: 'continue' })
+})
+
+test('guardian permits no fourth call after a rotated session also times out', async () => {
+  let reviews = 0
+  let rotations = 0
+  const brain: GuardianBrain = {
+    async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+    resetTaskReviewSession() { rotations += 1 },
+  }
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain,
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(reviews, 3)
+  assert.equal(rotations, 1)
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+})
+
+test('guardian preserves two-attempt behavior when Brain cannot rotate sessions', async () => {
+  let reviews = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(reviews, 2)
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+})
+
+test('guardian checks hard limit before rotating a stuck Brain session', async () => {
+  let reviews = 0
+  let rotations = 0
+  const brain: GuardianBrain = {
+    async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+    resetTaskReviewSession() { rotations += 1 },
+  }
+  const result = await runGuardianTask({
+    task: baseTask(), brain,
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+    shouldStopAutonomousWork: () => reviews >= 2,
+  })
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 0)
+  assert.equal(result.task.stopReason, 'WORK_SESSION_HARD_LIMIT_REACHED')
+})
+
+test('guardian checks pause before rotating a stuck Brain session', async () => {
+  let reviews = 0
+  let rotations = 0
+  const brain: GuardianBrain = {
+    async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+    resetTaskReviewSession() { rotations += 1 },
+  }
+  const result = await runGuardianTask({
+    task: baseTask(), brain,
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+    shouldPauseAutonomousWork: () => reviews >= 2,
+  })
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 0)
+  assert.equal(result.task.stopReason, 'WORK_SESSION_USER_PAUSE_REQUESTED')
+})
+
+test('guardian never rotates on an ordinary Brain protocol error', async () => {
+  let reviews = 0
+  let rotations = 0
+  const brain: GuardianBrain = {
+    async review() {
+      reviews += 1
+      if (reviews === 1) throw new RetryableGuardianBrainError('timeout')
+      throw new Error('protocol failure')
+    },
+    resetTaskReviewSession() { rotations += 1 },
+  }
+  const result = await runGuardianTask({
+    task: baseTask(), brain,
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 0)
+  assert.match(result.task.stopReason ?? '', /protocol failure/)
+})
+
 test('guardian supports review revise loop', async () => {
   const brainPackets = [packet('proceed'), packet('revise'), packet('done')]
   const brain: GuardianBrain = {

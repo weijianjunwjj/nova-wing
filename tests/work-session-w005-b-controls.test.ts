@@ -12,11 +12,13 @@ import {
   type ExecutionReport,
   type GuardianBrain,
   type GuardianTask,
+  type GuardianTaskRecoveryCheckpoint,
   type TaskCompletionEvidence,
   type WorkSessionDefinition,
   type WorkSessionTaskResult,
 } from 'nova-wing/development-guardian'
 import type { GuardianRecoverableExecutor } from '../packages/development-guardian/ports.js'
+import { computeWorktreeFingerprint } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
 
 const REPO = process.cwd()
 const BRANCH = 'feat/work-session-mvp'
@@ -48,12 +50,25 @@ class RecordingExecutor implements GuardianRecoverableExecutor {
   calls = 0
   returned = false
   onExecute?: () => void
+  claudeSessionId?: string
 
   async execute(): Promise<ExecutionReport> {
     this.calls++
     this.onExecute?.()
     this.returned = true
     return report()
+  }
+
+  captureProviderState(): { claudeSessionId?: string } {
+    return this.claudeSessionId === undefined ? {} : { claudeSessionId: this.claudeSessionId }
+  }
+
+  restoreProviderState(state: { claudeSessionId?: string }): void {
+    if (state.claudeSessionId === undefined) {
+      delete this.claudeSessionId
+    } else {
+      this.claudeSessionId = state.claudeSessionId
+    }
   }
 }
 
@@ -143,6 +158,131 @@ await test('exhausted reviewer timeout retry remains HUMAN_REQUIRED and STALLED'
   assert.equal(result.humanRequired?.category, 'STALLED')
   assert.equal(reviews, 2)
   assert.equal(executor.calls, 0)
+})
+
+await test('W003 rotation replaces only the restored Brain URL and preserves checkpoint truth', async () => {
+  const oldUrl = 'https://chatgpt.com/c/old-task-session'
+  const newUrl = 'https://chatgpt.com/c/new-task-session'
+  let reviews = 0
+  let rotations = 0
+  let conversationUrl: string | undefined
+  let reviewed = false
+  const brain: GuardianBrain & {
+    captureProviderState(): { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] }
+    restoreProviderState(state: { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] }): void
+  } = {
+    restoreProviderState(state) {
+      conversationUrl = state.taskConversationUrls['T1']
+      reviewed = state.reviewedTaskIds.includes('T1')
+    },
+    captureProviderState() {
+      return {
+        taskConversationUrls: conversationUrl === undefined ? {} : { T1: conversationUrl },
+        reviewedTaskIds: reviewed ? ['T1'] : [],
+      }
+    },
+    resetTaskReviewSession(taskId) {
+      assert.equal(taskId, 'T1')
+      conversationUrl = undefined
+      reviewed = false
+      rotations += 1
+    },
+    async review(input) {
+      reviews += 1
+      assert.equal(input.task.lastReport?.summary, 'executor returned normally')
+      assert.equal(input.task.recoveryContinuation, true)
+      if (reviews <= 2) throw new RetryableGuardianBrainError('timeout')
+      assert.equal(conversationUrl, undefined)
+      conversationUrl = newUrl
+      reviewed = true
+      return packet('blocked')
+    },
+  }
+  const executor = new RecordingExecutor()
+  const repo = {
+    repoPath: REPO,
+    branch: BRANCH,
+    headSha: HEAD,
+    changedFiles: [] as readonly string[],
+    worktreeFingerprint: await computeWorktreeFingerprint(REPO, []),
+  }
+  const checkpoint: GuardianTaskRecoveryCheckpoint = {
+    version: 1,
+    task: {
+      id: 'T1', goal: 'one', state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 10,
+      lastReport: report(),
+    },
+    provider: { chatgptConversationUrl: oldUrl, claudeSessionId: 'claude-session' },
+    repo,
+    capturedAt: new Date().toISOString(),
+  }
+  const runner = adapter({ brain, executor })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' }, undefined, checkpoint)
+
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(reviews, 3)
+  assert.equal(rotations, 1)
+  assert.equal(result.checkpoint?.provider.chatgptConversationUrl, newUrl)
+  assert.equal(result.checkpoint?.provider.claudeSessionId, 'claude-session')
+  assert.deepEqual(result.checkpoint?.repo, repo)
+})
+
+await test('W003 fresh-session timeout checkpoint never restores the discarded URL', async () => {
+  let reviews = 0
+  let conversationUrl: string | undefined
+  const brain: GuardianBrain & {
+    captureProviderState(): { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] }
+    restoreProviderState(state: { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] }): void
+  } = {
+    restoreProviderState(state) { conversationUrl = state.taskConversationUrls['T1'] },
+    captureProviderState() {
+      return { taskConversationUrls: conversationUrl === undefined ? {} : { T1: conversationUrl }, reviewedTaskIds: [] }
+    },
+    resetTaskReviewSession() { conversationUrl = undefined },
+    async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+  }
+  const executor = new RecordingExecutor()
+  const repo = {
+    repoPath: REPO, branch: BRANCH, headSha: HEAD, changedFiles: [] as readonly string[],
+    worktreeFingerprint: await computeWorktreeFingerprint(REPO, []),
+  }
+  const checkpoint: GuardianTaskRecoveryCheckpoint = {
+    version: 1,
+    task: { id: 'T1', goal: 'one', state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 10, lastReport: report() },
+    provider: { chatgptConversationUrl: 'https://chatgpt.com/c/old-task-session', claudeSessionId: 'claude-session' },
+    repo,
+    capturedAt: new Date().toISOString(),
+  }
+  const runner = adapter({ brain, executor })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' }, undefined, checkpoint)
+
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'STALLED')
+  assert.equal(reviews, 3)
+  assert.equal(result.checkpoint?.provider.chatgptConversationUrl, undefined)
+  assert.equal(result.checkpoint?.provider.claudeSessionId, 'claude-session')
+  assert.deepEqual(result.checkpoint?.repo, repo)
+})
+
+await test('Work Session adapter allows session rotation to be disabled for tests', async () => {
+  let reviews = 0
+  let rotations = 0
+  const executor = new RecordingExecutor()
+  const runner = new GuardianWorkSessionTaskRunner({
+    brain: {
+      async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    createExecutor: () => executor,
+    maxBrainReviewSessionRotations: 0,
+  })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 0)
 })
 
 await test('W005-B PAUSE-B: pause requested during Reviewer prevents Executor', async () => {

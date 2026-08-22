@@ -205,6 +205,8 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly headless: boolean
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
+  /** Tasks whose replaceable state must override the constructor's initial URL. */
+  private readonly rotatedTaskIds = new Set<string>()
 
   constructor(private readonly options: AskBridgeBrainOptions = {}) {
     this.runner = options.commandRunner ?? defaultCommandRunner
@@ -229,9 +231,11 @@ export class AskBridgeBrain implements GuardianBrain {
   restoreProviderState(state: AskBridgeBrainProviderState): void {
     this.taskConversationUrls.clear()
     this.reviewedTaskIds.clear()
+    this.rotatedTaskIds.clear()
 
     for (const [taskId, url] of Object.entries(state.taskConversationUrls)) {
       this.taskConversationUrls.set(taskId, url)
+      this.rotatedTaskIds.add(taskId)
     }
 
     for (const taskId of state.reviewedTaskIds) {
@@ -239,8 +243,16 @@ export class AskBridgeBrain implements GuardianBrain {
     }
   }
 
+  resetTaskReviewSession(taskId: string): void {
+    this.taskConversationUrls.delete(taskId)
+    this.reviewedTaskIds.delete(taskId)
+    this.rotatedTaskIds.add(taskId)
+  }
+
   private conversationUrlForTask(taskId: string): string | undefined {
-    return this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
+    return this.rotatedTaskIds.has(taskId)
+      ? this.taskConversationUrls.get(taskId)
+      : this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
   }
 
   private buildArgs(taskId: string, prompt: string, outputPath: string): string[] {
@@ -251,7 +263,7 @@ export class AskBridgeBrain implements GuardianBrain {
     if (this.options.verbose === true) {
       args.push('--verbose')
     }
-    if (isFirstReview && this.options.conversationUrl === undefined) {
+    if (isFirstReview && (this.options.conversationUrl === undefined || this.rotatedTaskIds.has(taskId))) {
       args.push('--new')
     } else if (conversationUrl !== undefined) {
       args.push('--session-url', conversationUrl)
@@ -277,7 +289,11 @@ export class AskBridgeBrain implements GuardianBrain {
       )
     }
 
-    if (this.options.conversationUrl === undefined && expectedUrl === undefined && returnedUrl !== undefined) {
+    if (
+      (this.options.conversationUrl === undefined || this.rotatedTaskIds.has(taskId)) &&
+      expectedUrl === undefined &&
+      returnedUrl !== undefined
+    ) {
       this.taskConversationUrls.set(taskId, returnedUrl)
     }
   }

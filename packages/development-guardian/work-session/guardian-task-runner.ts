@@ -294,6 +294,8 @@ export interface GuardianWorkSessionTaskRunnerOptions {
   onProgress?: GuardianProgressObserver
   /** Defaults to one bounded retry for each transient Brain review timeout. */
   maxBrainReviewRetries?: number
+  /** Defaults to one bounded Brain provider-session rotation per review operation. */
+  maxBrainReviewSessionRotations?: number
 }
 
 /**
@@ -608,6 +610,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         ? { onProgress: this.options.onProgress }
         : {}),
       maxBrainReviewRetries: this.options.maxBrainReviewRetries ?? 1,
+      maxBrainReviewSessionRotations: this.options.maxBrainReviewSessionRotations ?? 1,
     })
 
     // 映射结果

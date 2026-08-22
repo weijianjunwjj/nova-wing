@@ -208,3 +208,87 @@ test('ask-bridge brain marks only command-runner timeout as retryable', async ()
       error.message === 'ChatGPT review timed out after 120000ms',
   )
 })
+
+test('ask-bridge rotation resets only one Task and records the fresh conversation', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const newUrl = 'https://chatgpt.com/c/new-task-session'
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return { exitCode: 0, stdout: `Thread Link: ${newUrl}`, stderr: '' }
+    },
+  })
+  const otherUrl = 'https://chatgpt.com/c/other-task-session'
+  brain.restoreProviderState({
+    taskConversationUrls: {
+      'task-1': 'https://chatgpt.com/c/old-task-session',
+      'task-2': otherUrl,
+    },
+    reviewedTaskIds: ['task-1', 'task-2'],
+  })
+
+  brain.resetTaskReviewSession('task-1')
+  const resetState = brain.captureProviderState()
+  assert.equal(resetState.taskConversationUrls['task-1'], undefined)
+  assert.equal(resetState.reviewedTaskIds.includes('task-1'), false)
+  assert.equal(resetState.taskConversationUrls['task-2'], otherUrl)
+  assert.equal(resetState.reviewedTaskIds.includes('task-2'), true)
+
+  await brain.review({ task })
+
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  assert.equal(requests[0]?.args.includes('--session-url'), false)
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  const freshState = brain.captureProviderState()
+  assert.equal(freshState.taskConversationUrls['task-1'], newUrl)
+  assert.equal(Object.values(freshState.taskConversationUrls).includes('https://chatgpt.com/c/old-task-session'), false)
+  assert.equal(freshState.taskConversationUrls['task-2'], otherUrl)
+})
+
+test('ask-bridge rotation never restores the old URL after the fresh review times out', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: null, stdout: '', stderr: '' }),
+  })
+  brain.restoreProviderState({
+    taskConversationUrls: { 'task-1': 'https://chatgpt.com/c/old-task-session' },
+    reviewedTaskIds: ['task-1'],
+  })
+
+  brain.resetTaskReviewSession('task-1')
+  await assert.rejects(brain.review({ task }), RetryableGuardianBrainError)
+
+  const state = brain.captureProviderState()
+  assert.equal(state.taskConversationUrls['task-1'], undefined)
+  assert.equal(state.reviewedTaskIds.includes('task-1'), false)
+})
+
+test('ask-bridge rotation overrides an initially fixed conversation for that Task', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    conversationUrl: 'https://chatgpt.com/c/initial-fixed-session',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/fresh-session', stderr: '' }
+    },
+  })
+
+  brain.resetTaskReviewSession('task-1')
+  await brain.review({ task })
+
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  assert.equal(requests[0]?.args.includes('--session-url'), false)
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(brain.captureProviderState().taskConversationUrls['task-1'], 'https://chatgpt.com/c/fresh-session')
+})
