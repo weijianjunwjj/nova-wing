@@ -19,6 +19,7 @@ import type {
 import type { WorkSessionTaskRunner, WorkSessionTaskRunContext } from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
+  createWorkSessionCompletedNotification,
   createHumanRequiredNotification,
   type NotificationDeliveryObserver,
   type NotificationDeliveryResult,
@@ -55,6 +56,8 @@ export interface WorkSessionRuntimeConfig {
   /** W006: initial attempt + one retry; tests may inject a zero delay. */
   notificationRetryDelayMs?: number
   notificationWait?: (delayMs: number) => Promise<void>
+  /** Opt-in completion emails; omission preserves the W006 HUMAN_REQUIRED-only behavior. */
+  notifyOnCompleted?: boolean
 }
 
 export interface ResumeInput {
@@ -85,6 +88,8 @@ const WorkflowStateSchema = z.object({
   humanRequiredGeneration: z.number().int().nonnegative().optional(),
   lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
   lastNotifiedHumanRequiredGeneration: z.number().int().nonnegative().optional(),
+  completionNotificationAttempted: z.boolean().optional(),
+  completionNotified: z.boolean().optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
   checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
@@ -309,7 +314,7 @@ export class WorkSessionRuntime {
         throw new Error('Workflow state was not updated')
       }
       const durableState = this.convertWorkflowStateToDurableState(this.latestState)
-      this.scheduleHumanRequiredNotification(durableState, false)
+      this.scheduleNotificationsForState(durableState, false)
       return durableState
     } catch (error) {
       throw error
@@ -360,7 +365,7 @@ export class WorkSessionRuntime {
         throw new Error('Workflow state was not updated during resume')
       }
       const durableState = this.convertWorkflowStateToDurableState(this.latestState)
-      this.scheduleHumanRequiredNotification(
+      this.scheduleNotificationsForState(
         durableState,
         resumeInput.decision !== undefined,
       )
@@ -829,6 +834,12 @@ export class WorkSessionRuntime {
     if (wfState.lastNotifiedHumanRequiredGeneration !== undefined) {
       result.lastNotifiedHumanRequiredGeneration = wfState.lastNotifiedHumanRequiredGeneration
     }
+    if (wfState.completionNotificationAttempted !== undefined) {
+      result.completionNotificationAttempted = wfState.completionNotificationAttempted
+    }
+    if (wfState.completionNotified !== undefined) {
+      result.completionNotified = wfState.completionNotified
+    }
     // W003: 传递 checkpoint
     if (wfState.currentTaskCheckpoint) {
       result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
@@ -950,6 +961,14 @@ export class WorkSessionRuntime {
       : { ...this.lastNotificationDelivery }
   }
 
+  private scheduleNotificationsForState(
+    state: WorkSessionDurableState,
+    forceSafeReason: boolean,
+  ): void {
+    this.scheduleHumanRequiredNotification(state, forceSafeReason)
+    this.scheduleCompletedNotification(state)
+  }
+
   private scheduleHumanRequiredNotification(
     state: WorkSessionDurableState,
     forceSafeReason: boolean,
@@ -1037,6 +1056,104 @@ export class WorkSessionRuntime {
     } catch {
       this.observeNotification({ status: 'FAILED', ...deliveryBase })
     }
+  }
+
+  private scheduleCompletedNotification(state: WorkSessionDurableState): void {
+    if (
+      this.config.notifier?.notifyCompleted === undefined ||
+      this.config.notifyOnCompleted !== true ||
+      state.state !== 'COMPLETED' ||
+      state.completionReason !== 'ALL_TASKS_COMPLETED' ||
+      state.completionNotificationAttempted === true
+    ) {
+      return
+    }
+    const previous = this.notificationPromise ?? Promise.resolve()
+    this.notificationPromise = previous
+      .then(() => this.deliverCompletedNotification())
+      .catch(() => {
+        // Completion delivery is an alert side channel and must never change a completed session.
+      })
+  }
+
+  private async deliverCompletedNotification(): Promise<void> {
+    const notifier = this.config.notifier
+    if (notifier?.notifyCompleted === undefined) return
+    const claimed = await this.persistCompletionNotificationFlag('completionNotificationAttempted')
+    if (!claimed) return
+
+    const state = this.getDurableState()
+    if (state === undefined || state.state !== 'COMPLETED' || state.completionReason !== 'ALL_TASKS_COMPLETED') {
+      return
+    }
+    const notification = createWorkSessionCompletedNotification({
+      definition: this.config.definition,
+      state,
+    })
+    let sent = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await notifier.notifyCompleted(notification)
+        sent = true
+        break
+      } catch {
+        if (attempt === 0) {
+          await (this.config.notificationWait ?? defaultNotificationWait)(
+            this.config.notificationRetryDelayMs ?? 1_000,
+          )
+        }
+      }
+    }
+    if (sent) {
+      try {
+        await this.persistCompletionNotificationFlag('completionNotified')
+      } catch {
+        // The durable attempt claim remains authoritative for restart dedupe.
+      }
+    }
+    this.observeNotification({
+      status: sent ? 'SENT' : 'FAILED',
+      notificationId: notification.notificationId,
+      taskId: null,
+      category: 'ALL_TASKS_COMPLETED',
+      kind: 'COMPLETED',
+    })
+  }
+
+  private async persistCompletionNotificationFlag(
+    field: 'completionNotificationAttempted' | 'completionNotified',
+  ): Promise<boolean> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return false
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return false
+    const workflowName = `work-session-${this.config.definition.id}`
+    const runId = this.config.definition.id
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null) return false
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (
+      !parsed.success ||
+      parsed.data.state !== 'COMPLETED' ||
+      parsed.data.completionReason !== 'ALL_TASKS_COMPLETED' ||
+      parsed.data[field] === true
+    ) {
+      return false
+    }
+    const updated: WorkflowState = {
+      ...parsed.data,
+      [field]: true,
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = updated as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+    if (
+      this.latestState?.state === 'COMPLETED' &&
+      this.latestState.completionReason === 'ALL_TASKS_COMPLETED'
+    ) {
+      this.latestState = updated
+    }
+    return true
   }
 
   private async persistNotificationGeneration(

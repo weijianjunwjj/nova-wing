@@ -64,6 +64,10 @@ export interface WorkSessionDurableState {
   lastNotificationAttemptGeneration?: number
   /** W006: 最近成功送达通知的 generation。 */
   lastNotifiedHumanRequiredGeneration?: number
+  /** Completion email delivery claim; intentionally independent from HUMAN_REQUIRED generations. */
+  completionNotificationAttempted?: boolean
+  /** Completion email delivery succeeded after the durable attempt claim. */
+  completionNotified?: boolean
   /** W003: 当前 Task 的 recovery checkpoint（仅当 SUSPENDED 时存在） */
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
   /**

@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer'
 
 import {
   projectNameFromNotification,
+  type WorkSessionCompletedNotification,
   type HumanRequiredNotification,
   type WorkSessionNotifier,
 } from './notifier.js'
@@ -55,6 +56,15 @@ export class SmtpWorkSessionNotifier implements WorkSessionNotifier {
       to: this.to,
       subject: renderNotificationSubject(notification),
       text: renderNotificationText(notification),
+    })
+  }
+
+  async notifyCompleted(notification: WorkSessionCompletedNotification): Promise<void> {
+    await this.transport.sendMail({
+      from: this.from,
+      to: this.to,
+      subject: renderCompletedNotificationSubject(notification),
+      text: renderCompletedNotificationText(notification),
     })
   }
 }
@@ -111,6 +121,32 @@ export function renderNotificationText(notification: HumanRequiredNotification):
     'Resume:',
     resumeLocation,
     notification.control.instruction,
+  ].join('\n')
+}
+
+export function renderCompletedNotificationSubject(
+  notification: WorkSessionCompletedNotification,
+): string {
+  return `[NovaWing] 已完成：${singleLine(projectNameFromNotification(notification))}`
+}
+
+export function renderCompletedNotificationText(
+  notification: WorkSessionCompletedNotification,
+): string {
+  const completed = notification.completedTaskIds.length === 0
+    ? 'None'
+    : notification.completedTaskIds.join(', ')
+  return [
+    'NovaWing completed the Work Session.',
+    '',
+    `Project: ${projectNameFromNotification(notification)}`,
+    `Branch: ${notification.session.branch}`,
+    `Session: ${notification.session.id}`,
+    `Completed tasks: ${completed}`,
+    `Completion reason: ${notification.completionReason}`,
+    ...(notification.activeElapsedMs === undefined
+      ? []
+      : [`Active time: ${notification.activeElapsedMs} ms`]),
   ].join('\n')
 }
 

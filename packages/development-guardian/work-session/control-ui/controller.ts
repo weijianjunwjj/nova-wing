@@ -528,6 +528,7 @@ export class WorkSessionControlController {
         notificationId: result.notificationId,
         taskId: result.taskId,
         category: result.category,
+        ...(result.kind === undefined ? {} : { kind: result.kind }),
       },
     })
     this.broadcastSnapshot()

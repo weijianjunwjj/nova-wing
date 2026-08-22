@@ -10,6 +10,7 @@ import {
   createSmtpWorkSessionNotifierFromEnv,
   validateTrustedWorkSessionConfig,
   type HumanRequiredNotification,
+  type WorkSessionCompletedNotification,
   type SmtpMailOptions,
   type SmtpTransportConfig,
   type TrustedWorkSessionConfig,
@@ -18,6 +19,8 @@ import {
 import {
   renderNotificationSubject,
   renderNotificationText,
+  renderCompletedNotificationSubject,
+  renderCompletedNotificationText,
 } from '../packages/development-guardian/work-session/smtp-notifier.js'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { WorkSessionControlServer } from '../packages/development-guardian/work-session/control-ui/server.js'
@@ -55,6 +58,16 @@ function notification(): HumanRequiredNotification {
       localUrl: 'http://127.0.0.1:4317',
       instruction: 'Open the local NovaWing control panel and resolve this item.',
     },
+  }
+}
+
+function completedNotification(): WorkSessionCompletedNotification {
+  return {
+    notificationId: 'session-1:completed',
+    session: { id: 'session-1', targetRepo: 'D:/VSCode/nova-wing', branch: 'feat/work-session-mvp' },
+    completedTaskIds: ['T1', 'T2'],
+    completionReason: 'ALL_TASKS_COMPLETED',
+    activeElapsedMs: 64_000,
   }
 }
 
@@ -121,6 +134,20 @@ await test('W006 SMTP: environment maps to transport and plain-text email conten
   assert.match(sent[0]?.text ?? '', /Completed: T1/u)
   assert.match(sent[0]?.text ?? '', /Current task: T2/u)
   assert.match(sent[0]?.text ?? '', /http:\/\/127\.0\.0\.1:4317/u)
+})
+
+await test('completion SMTP uses the completed-only subject and safe plain text', async () => {
+  const sent: SmtpMailOptions[] = []
+  const notifier = createSmtpWorkSessionNotifierFromEnv({
+    env: SMTP_ENV,
+    createTransport: () => ({ async sendMail(options) { sent.push(options) } }),
+  })
+  await notifier.notifyCompleted(completedNotification())
+  assert.equal(sent[0]?.subject, '[NovaWing] 已完成：nova-wing')
+  assert.equal(sent[0]?.text, renderCompletedNotificationText(completedNotification()))
+  assert.equal(renderCompletedNotificationSubject(completedNotification()), sent[0]?.subject)
+  assert.match(sent[0]?.text ?? '', /Completion reason: ALL_TASKS_COMPLETED/u)
+  assert.doesNotMatch(JSON.stringify(sent[0]), /Bearer|token=|password=|DATABASE_URL|resumeInput|fingerprint|provider URL/u)
 })
 
 await test('W006 production config: enabled fails fast without SMTP env; disabled needs none', async () => {
@@ -218,6 +245,23 @@ await test('W006 config secrecy: credential-like notification keys remain forbid
       validateTrustedWorkSessionConfig(input),
       /credential-like config key is forbidden/u,
     )
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+})
+
+await test('completion notification config is opt-in and rejects enabled=false', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'w006-completed-config-'))
+  try {
+    const enabled = rawConfig(pathToFileURL(join(temp, 'enabled.db')).href, true) as {
+      notification: { email: { enabled: boolean; notifyOnCompleted?: boolean } }
+    }
+    enabled.notification.email.notifyOnCompleted = true
+    assert.equal((await validateTrustedWorkSessionConfig(enabled)).notification?.email.notifyOnCompleted, true)
+
+    const invalid = rawConfig(pathToFileURL(join(temp, 'invalid.db')).href, false) as typeof enabled
+    invalid.notification.email.notifyOnCompleted = true
+    await assert.rejects(validateTrustedWorkSessionConfig(invalid), /notifyOnCompleted requires/u)
   } finally {
     await rm(temp, { recursive: true, force: true })
   }

@@ -69,6 +69,7 @@ const TrustedConfigSchema = z.object({
   notification: z.object({
     email: z.object({
       enabled: z.boolean(),
+      notifyOnCompleted: z.boolean().optional(),
     }).strict(),
   }).strict().optional(),
   storageUrl: z.string().optional(),
@@ -115,6 +116,9 @@ export async function validateTrustedWorkSessionConfig(
 ): Promise<TrustedWorkSessionConfig> {
   assertNoCredentialLikeKeys(input)
   const config = TrustedConfigSchema.parse(input)
+  if (config.notification?.email.enabled === false && config.notification.email.notifyOnCompleted === true) {
+    throw new Error('notification.email.notifyOnCompleted requires notification.email.enabled=true')
+  }
   config.session.id = requireTrimmed(config.session.id, 'session.id')
   config.session.branch = requireTrimmed(config.session.branch, 'session.branch')
   config.session.targetRepo = requireTrimmed(config.session.targetRepo, 'session.targetRepo')
@@ -386,6 +390,7 @@ export async function createProductionWorkSessionUi(
           },
         },
         ...(notifier === undefined ? {} : { notifier }),
+        ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
         notificationObserver: notificationSink,
         localControlUrl: () => localControlUrl,
         ...(dependencies.notificationRetryDelayMs === undefined

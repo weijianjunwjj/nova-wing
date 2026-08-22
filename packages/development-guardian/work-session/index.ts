@@ -15,6 +15,7 @@ export * from './production.js'
 export * from './production-legacy-adoption.js'
 export type {
   HumanRequiredNotification,
+  WorkSessionCompletedNotification,
   WorkSessionNotifier,
   NotificationDeliveryStatus,
   NotificationDeliveryResult,

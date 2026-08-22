@@ -21,8 +21,22 @@ export interface HumanRequiredNotification {
   }
 }
 
+export interface WorkSessionCompletedNotification {
+  notificationId: string
+  session: {
+    id: string
+    targetRepo: string
+    branch: string
+  }
+  completedTaskIds: readonly string[]
+  completionReason: 'ALL_TASKS_COMPLETED'
+  activeElapsedMs?: number
+}
+
 export interface WorkSessionNotifier {
   notifyHumanRequired(notification: HumanRequiredNotification): Promise<void>
+  /** Additive so existing test/local notifiers remain compatible. Production SMTP implements it. */
+  notifyCompleted?(notification: WorkSessionCompletedNotification): Promise<void>
 }
 
 export type NotificationDeliveryStatus = 'SENT' | 'FAILED'
@@ -32,6 +46,7 @@ export interface NotificationDeliveryResult {
   notificationId: string
   taskId: string | null
   category: string
+  kind?: 'HUMAN_REQUIRED' | 'COMPLETED'
 }
 
 export type NotificationDeliveryObserver = (
@@ -70,6 +85,30 @@ export function notificationIdForHumanRequired(
   generation: number,
 ): string {
   return `${sessionId}:${currentTaskId ?? 'none'}:${generation}`
+}
+
+export function notificationIdForCompleted(sessionId: string): string {
+  return `${sessionId}:completed`
+}
+
+export function createWorkSessionCompletedNotification(input: {
+  definition: WorkSessionDefinition
+  state: WorkSessionDurableState
+}): WorkSessionCompletedNotification {
+  if (input.state.state !== 'COMPLETED' || input.state.completionReason !== 'ALL_TASKS_COMPLETED') {
+    throw new Error('completion notification requires ALL_TASKS_COMPLETED state')
+  }
+  return {
+    notificationId: notificationIdForCompleted(input.definition.id),
+    session: {
+      id: input.definition.id,
+      targetRepo: input.definition.targetRepo,
+      branch: input.definition.branch,
+    },
+    completedTaskIds: [...input.state.completedTaskIds],
+    completionReason: 'ALL_TASKS_COMPLETED',
+    ...(input.state.activeElapsedMs === undefined ? {} : { activeElapsedMs: input.state.activeElapsedMs }),
+  }
 }
 
 export function safeNotificationReason(reason: string): string {
@@ -122,7 +161,9 @@ export function createHumanRequiredNotification(input: {
   }
 }
 
-export function projectNameFromNotification(notification: HumanRequiredNotification): string {
+export function projectNameFromNotification(notification: {
+  session: { targetRepo: string }
+}): string {
   return basename(notification.session.targetRepo) || notification.session.targetRepo
 }
 
