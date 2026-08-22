@@ -22,6 +22,9 @@ import type { GuardianTask } from '../model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import { parseGitStatus, computeWorktreeFingerprint } from './worktree-fingerprint.js'
 
+export const LEGACY_PRE_EXISTING_DIRTY_REASON =
+  'target repository has pre-existing changes; MVP requires a clean worktree before autonomous execution'
+
 export interface LegacyRecoveryGitResult {
   exitCode: number
   stdout: string

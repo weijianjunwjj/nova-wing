@@ -12,6 +12,7 @@ export * from './worktree-fingerprint.js'
 export * from './legacy-recovery.js'
 export * from './git-checkpoint.js'
 export * from './production.js'
+export * from './production-legacy-adoption.js'
 export type {
   HumanRequiredNotification,
   WorkSessionNotifier,

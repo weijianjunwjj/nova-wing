@@ -9,6 +9,7 @@ import type {
 } from './model.js'
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { RepositoryCheckpoint, ProviderSessionState } from './work-session/checkpoint.js'
+import { LEGACY_PRE_EXISTING_DIRTY_REASON } from './work-session/legacy-recovery.js'
 
 export interface GuardianCommandRequest {
   executable: string
@@ -670,8 +671,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     // 没有 checkpoint，要求 clean worktree（W002 之前的行为）
     if (hasDirtyFiles) {
       return {
-        blocker:
-          'target repository has pre-existing changes; MVP requires a clean worktree before autonomous execution',
+        blocker: LEGACY_PRE_EXISTING_DIRTY_REASON,
         continuation: false,
       }
     }
