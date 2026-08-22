@@ -373,6 +373,9 @@ export async function createProductionWorkSessionUi(
     },
   })
   if (runtime === undefined) throw new Error('Work Session runtime factory was not initialized')
+  // Durability closure: restore the configured run before any HTTP request can
+  // observe or mutate the control surface. This does not auto-resume the run.
+  await controller.loadPersistedState()
   const server = new WorkSessionControlServer({
     controller,
     ...(dependencies.serverPort === undefined ? {} : { port: dependencies.serverPort }),

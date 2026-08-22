@@ -83,6 +83,8 @@ export interface WorkSessionDurableState {
   suspensionReason?: WorkSessionSuspensionReason
   /** W005-B: only present when an explicit stop-after-task ends the session. */
   cancellationReason?: WorkSessionCancellationReason
+  /** W005-B durability closure: pending stop intent survives a suspended process restart. */
+  stopAfterTaskRequested?: boolean
   /** W004-A FINAL: Git checkpoint/finalization 失败时的明确错误原因（仅 FAILED 时存在） */
   failureReason?: string
   createdAt: Date

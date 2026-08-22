@@ -46,6 +46,7 @@ export function makeState(
 export class FakeRuntime implements WorkSessionControlRuntime {
   definition: WorkSessionDefinition
   state: WorkSessionDurableState | undefined
+  loadPersistedStateCalls = 0
   startCalls = 0
   resumeCalls = 0
   resumeInputs: Array<{ decision?: string; approval?: boolean }> = []
@@ -68,6 +69,11 @@ export class FakeRuntime implements WorkSessionControlRuntime {
 
   constructor(definition: WorkSessionDefinition) {
     this.definition = definition
+  }
+
+  async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
+    this.loadPersistedStateCalls++
+    return this.state
   }
 
   async start(): Promise<WorkSessionDurableState> {

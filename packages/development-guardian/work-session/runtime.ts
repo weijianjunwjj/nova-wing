@@ -79,6 +79,7 @@ const WorkflowStateSchema = z.object({
     .optional(), // W004-B
   suspensionReason: z.enum(['USER_PAUSED']).optional(), // W005-B
   cancellationReason: z.enum(['STOP_AFTER_TASK']).optional(), // W005-B
+  stopAfterTaskRequested: z.boolean().optional(), // W005-B durability closure
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -185,6 +186,43 @@ export class WorkSessionRuntime {
     const accumulated = state.activeElapsedMs ?? 0
     const segmentStart = state.activeSegmentStartedAt ?? this.now()
     return segmentStart + hardMs - accumulated
+  }
+
+  /**
+   * Restore the configured run's durable domain state without starting or
+   * resuming the workflow. Missing sessions remain absent rather than becoming
+   * a fabricated READY state.
+   */
+  async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
+    const workflow = this.mastra.getWorkflow(this.workflowId)
+    if (!workflow) {
+      throw new Error(`Workflow ${this.workflowId} not found after registration`)
+    }
+
+    const persisted = await workflow.getWorkflowRunById(this.config.definition.id, {
+      withNestedWorkflows: false,
+    })
+    if (persisted === null) {
+      return undefined
+    }
+    if (persisted.initialState === undefined) {
+      throw new Error(`Persisted work session ${this.config.definition.id} has no workflow state`)
+    }
+
+    const parsed = WorkflowStateSchema.safeParse(persisted.initialState)
+    if (!parsed.success) {
+      throw new Error(`Persisted work session ${this.config.definition.id} has invalid workflow state`)
+    }
+    if (parsed.data.sessionId !== this.config.definition.id) {
+      throw new Error(
+        `Persisted work session identity mismatch: expected ${this.config.definition.id}, got ${parsed.data.sessionId}`,
+      )
+    }
+
+    this.latestState = parsed.data
+    this.pauseRequested = false
+    this.stopAfterTaskRequested = parsed.data.stopAfterTaskRequested === true
+    return this.convertWorkflowStateToDurableState(parsed.data)
   }
 
   async start(): Promise<WorkSessionDurableState> {
@@ -435,6 +473,7 @@ export class WorkSessionRuntime {
                 state: 'SUSPENDED',
                 humanRequired: undefined,
                 suspensionReason: 'USER_PAUSED',
+                stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
                 ...self.settleActiveTime(currentState),
                 updatedAt: new Date().toISOString(),
               }
@@ -448,6 +487,7 @@ export class WorkSessionRuntime {
 
             const limitReason = self.checkClaimLimits(currentState)
             if (limitReason !== undefined) {
+              self.stopAfterTaskRequested = false
               const limitState: WorkflowState = {
                 ...currentState,
                 state: 'COMPLETED',
@@ -455,6 +495,7 @@ export class WorkSessionRuntime {
                 completionReason: limitReason,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(currentState),
                 updatedAt: new Date().toISOString(),
               }
@@ -606,6 +647,7 @@ export class WorkSessionRuntime {
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               currentTaskBaseHeadSha: undefined,
+              stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               updatedAt: new Date().toISOString(),
             }
             await setState(completedState)
@@ -628,6 +670,7 @@ export class WorkSessionRuntime {
                 suspensionReason: undefined,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(completedState),
                 updatedAt: new Date().toISOString(),
               }
@@ -646,6 +689,7 @@ export class WorkSessionRuntime {
               humanRequired: undefined,
               suspensionReason: 'USER_PAUSED',
               currentTaskCheckpoint: result.checkpoint,
+              stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               ...self.settleActiveTime(currentState),
               updatedAt: new Date().toISOString(),
             }
@@ -665,6 +709,7 @@ export class WorkSessionRuntime {
               humanRequired: result.humanRequired,
               suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
+              stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
             }
@@ -695,6 +740,7 @@ export class WorkSessionRuntime {
         }
 
         // 所有任务完成
+        self.stopAfterTaskRequested = false
         const finalState: WorkflowState = {
           ...currentState,
           state: 'COMPLETED',
@@ -704,6 +750,7 @@ export class WorkSessionRuntime {
           cancellationReason: undefined,
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
+          stopAfterTaskRequested: undefined,
           ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
           updatedAt: new Date().toISOString(),
         }
@@ -765,6 +812,9 @@ export class WorkSessionRuntime {
     }
     if (wfState.cancellationReason !== undefined) {
       result.cancellationReason = wfState.cancellationReason
+    }
+    if (wfState.stopAfterTaskRequested !== undefined) {
+      result.stopAfterTaskRequested = wfState.stopAfterTaskRequested
     }
     if (wfState.activeElapsedMs !== undefined) {
       result.activeElapsedMs = wfState.activeElapsedMs

@@ -129,6 +129,22 @@ export class WorkSessionControlController {
   }
 
   /**
+   * Restore an existing durable session before the production HTTP listener opens.
+   * Hydration is read-only and never starts or resumes autonomous work.
+   */
+  async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
+    const state = await this.runtime.loadPersistedState()
+    if (state === undefined) {
+      return undefined
+    }
+    this.started = true
+    this.prevState = state
+    this.prevSignature = this.signatureOf(state)
+    this.prevElapsedSecond = this.elapsedSecondOf(state)
+    return state
+  }
+
+  /**
    * 启动 Session。防 duplicate：第二次调用返回 started=false。
    * runtime.start() 异步 fire-and-forget，不阻塞调用方（HTTP 202）。
    */

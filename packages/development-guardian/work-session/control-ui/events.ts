@@ -106,6 +106,7 @@ export interface WorkSessionControlSnapshot {
  * 测试注入 deterministic fake runtime。
  */
 export interface WorkSessionControlRuntime {
+  loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
   resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
   requestPause(): { accepted: boolean; reason?: string }

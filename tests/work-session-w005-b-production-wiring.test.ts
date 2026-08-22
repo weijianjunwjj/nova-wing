@@ -78,6 +78,7 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     const storageUrl = pathToFileURL(join(temp, 'session.db')).href
     const config = await validateTrustedWorkSessionConfig(rawConfig(storageUrl))
     let runtimeConfig: WorkSessionRuntimeConfig | undefined
+    let productionRuntime: FakeRuntime | undefined
     const reviewedTasks: GuardianTask[] = []
     const executorOptions: ClaudeCodeExecutorOptions[] = []
     const gitCalls: Array<{ executable: string; args: readonly string[]; cwd: string }> = []
@@ -120,7 +121,8 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       },
       createRuntime(input) {
         runtimeConfig = input
-        return new FakeRuntime(input.definition)
+        productionRuntime = new FakeRuntime(input.definition)
+        return productionRuntime
       },
       gitProcessRunner,
     })
@@ -136,6 +138,7 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     assert.equal(runtimeConfig?.storageUrl, storageUrl)
     assert.equal(runtimeConfig?.gitCheckpoint?.policy.autoCommit, true)
     assert.equal(runtimeConfig?.gitCheckpoint?.policy.autoPush, false)
+    assert.equal(productionRuntime?.loadPersistedStateCalls, 1)
 
     await runtimeConfig!.taskRunner.run(app.definition.tasks[0]!)
     await runtimeConfig!.taskRunner.run(app.definition.tasks[1]!)
