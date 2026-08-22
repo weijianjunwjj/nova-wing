@@ -615,6 +615,8 @@ function validateResumeForState(
       return { accepted: false, reason: 'repository drift requires recovery or adoption' }
     case 'BUDGET_EXHAUSTED':
       return { accepted: false, reason: 'session limits are exhausted' }
+    case 'REVIEWER_PROTOCOL_FAILURE':
+      return { accepted: false, reason: 'reviewer protocol failure requires a new session' }
     default:
       return { accepted: false, reason: 'unsupported suspension category' }
   }

@@ -13,7 +13,10 @@ export interface TenXChatBrainOptions {
 }
 
 export class TenXChatBrainProtocolError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    public readonly kind: 'format' | 'contract' = 'contract',
+  ) {
     super(message)
     this.name = 'TenXChatBrainProtocolError'
   }
@@ -39,10 +42,11 @@ function extractJson(text: string): unknown {
   const payload = fenced?.[1]?.trim() ?? trimmed
   try {
     return JSON.parse(payload) as unknown
-  } catch (error) {
-    throw new TenXChatBrainProtocolError(
-      `brain response is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    )
+  } catch {
+    // Keep JSON-decoding failure structurally distinct from valid JSON that
+    // violates the Guardian packet contract. Callers may safely recover only
+    // from this narrow protocol-format failure.
+    throw new TenXChatBrainProtocolError('reviewer returned malformed Guardian JSON', 'format')
   }
 }
 

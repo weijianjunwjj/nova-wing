@@ -184,6 +184,10 @@ function isPureReviewerTimeout(reason: string): boolean {
   )
 }
 
+function isReviewerProtocolFailure(reason: string): boolean {
+  return reason === 'brain review failed: reviewer returned malformed Guardian JSON'
+}
+
 /**
  * 分类 HumanRequired 类别
  */
@@ -256,6 +260,14 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
     return {
       category: 'ENVIRONMENT_REQUIRED',
       reason: `${reason}; ${environmentBlock}`,
+    }
+  }
+
+  // This is a bounded recovery exhaustion, not a user product decision.
+  if (isReviewerProtocolFailure(reason)) {
+    return {
+      category: 'REVIEWER_PROTOCOL_FAILURE',
+      reason,
     }
   }
 

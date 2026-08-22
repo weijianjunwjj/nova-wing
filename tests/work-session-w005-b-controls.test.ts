@@ -160,6 +160,30 @@ await test('exhausted reviewer timeout retry remains HUMAN_REQUIRED and STALLED'
   assert.equal(executor.calls, 0)
 })
 
+await test('exhausted malformed Reviewer protocol recovery is HUMAN_REQUIRED but never DECISION_REQUIRED', async () => {
+  let reviews = 0
+  let rotations = 0
+  const executor = new RecordingExecutor()
+  const runner = adapter({
+    brain: {
+      async review() {
+        reviews += 1
+        throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
+      },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    executor,
+  })
+
+  const result = await runner.run({ id: 'T1', goal: 'one' })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'REVIEWER_PROTOCOL_FAILURE')
+  assert.notEqual(result.humanRequired?.category, 'DECISION_REQUIRED')
+  assert.equal(reviews, 3)
+  assert.equal(rotations, 1)
+  assert.equal(executor.calls, 0)
+})
+
 await test('W003 rotation replaces only the restored Brain URL and preserves checkpoint truth', async () => {
   const oldUrl = 'https://chatgpt.com/c/old-task-session'
   const newUrl = 'https://chatgpt.com/c/new-task-session'

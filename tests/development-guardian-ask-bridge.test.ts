@@ -209,6 +209,35 @@ test('ask-bridge brain marks only command-runner timeout as retryable', async ()
   )
 })
 
+test('ask-bridge brain marks only malformed JSON after a successful transport as retryable protocol failure', async () => {
+  const rawResponse = '{"verdict":"proceed","goal":"contains a secret-looking value: do-not-log"'
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: 0, stdout: rawResponse, stderr: '' }),
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'protocol' &&
+      error.message === 'reviewer returned malformed Guardian JSON' &&
+      !error.message.includes('do-not-log'),
+  )
+})
+
+test('ask-bridge brain does not make valid JSON packet-contract failures retryable', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: 0, stdout: '{"verdict":"proceed"}', stderr: '' }),
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) => !(error instanceof RetryableGuardianBrainError),
+  )
+})
+
 test('ask-bridge rotation resets only one Task and records the fresh conversation', async () => {
   const requests: AskBridgeCommandRequest[] = []
   const newUrl = 'https://chatgpt.com/c/new-task-session'

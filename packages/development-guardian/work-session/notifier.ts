@@ -70,6 +70,8 @@ const RECOMMENDATIONS: Readonly<Record<string, string>> = {
     'Review the current blocker and provide a concrete continuation decision.',
   BUDGET_EXHAUSTED:
     'Start a new Session or explicitly approve new limits before continuing.',
+  REVIEWER_PROTOCOL_FAILURE:
+    'The Reviewer returned malformed protocol data after bounded recovery. Check the Reviewer service, then start a new Session.',
 }
 
 const DEFAULT_RECOMMENDATION =

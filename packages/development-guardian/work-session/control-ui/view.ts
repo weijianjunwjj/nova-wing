@@ -331,6 +331,8 @@ function renderDecision(rt) {
       setText('decision-guidance', 'Repository recovery or explicit adoption is required.')
     } else if (category === 'SAFETY_BLOCKED') {
       setText('decision-guidance', 'This safety block cannot be resumed generically.')
+    } else if (category === 'REVIEWER_PROTOCOL_FAILURE') {
+      setText('decision-guidance', 'The Reviewer returned malformed protocol data after bounded recovery. Start a new Session after checking the Reviewer service.')
     } else {
       setText('decision-guidance', '')
     }

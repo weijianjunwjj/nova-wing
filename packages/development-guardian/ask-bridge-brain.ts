@@ -7,7 +7,11 @@ import { join } from 'node:path'
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianBrain } from './ports.js'
 import { RetryableGuardianBrainError } from './brain-error.js'
-import { buildGuardianBrainPrompt, parseDelegationPacket } from './tenx-chat-brain.js'
+import {
+  buildGuardianBrainPrompt,
+  parseDelegationPacket,
+  TenXChatBrainProtocolError,
+} from './tenx-chat-brain.js'
 
 export type AskBridgeReasoning = 'auto' | 'instant' | 'medium' | 'high'
 
@@ -343,7 +347,17 @@ export class AskBridgeBrain implements GuardianBrain {
         throw new Error(`ask-bridge returned empty response: ${failureDetails(result)}`)
       }
 
-      const packet = parseDelegationPacket(response)
+      let packet: DelegationPacket
+      try {
+        packet = parseDelegationPacket(response)
+      } catch (error) {
+        if (error instanceof TenXChatBrainProtocolError && error.kind === 'format') {
+          // The bridge transport succeeded, but the Reviewer did not honor the
+          // strict JSON wire format. Never retain or surface the raw response.
+          throw new RetryableGuardianBrainError(error.message, 'protocol')
+        }
+        throw error
+      }
       this.reviewedTaskIds.add(taskId)
       return packet
     } finally {

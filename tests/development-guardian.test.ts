@@ -90,6 +90,47 @@ test('guardian retries one typed transient Brain timeout without adding an execu
   assert.equal(result.task.iteration, 1)
 })
 
+test('guardian retries one malformed Reviewer protocol response in the same session then completes', async () => {
+  let reviews = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: {
+      async review() {
+        reviews += 1
+        if (reviews === 1) throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
+        return reviews === 2 ? packet('proceed') : packet('done')
+      },
+    },
+    executor: { async execute() { return report() } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(reviews, 3)
+})
+
+test('guardian rotates after a second malformed Reviewer protocol response and completes fresh review', async () => {
+  let reviews = 0
+  let rotations = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: {
+      async review() {
+        reviews += 1
+        if (reviews <= 2) throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
+        return reviews === 3 ? packet('proceed') : packet('done')
+      },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    executor: { async execute() { return report() } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(reviews, 4)
+  assert.equal(rotations, 1)
+})
+
 test('guardian stops after consecutive retryable Brain timeouts', async () => {
   let reviews = 0
   const result = await runGuardianTask({
@@ -141,6 +182,46 @@ test('guardian checks pause again before retrying a transient Brain timeout', as
   })
   assert.equal(reviews, 1)
   assert.equal(result.task.stopReason, 'WORK_SESSION_USER_PAUSE_REQUESTED')
+})
+
+test('guardian checks hard limit and pause before retrying malformed Reviewer protocol responses', async () => {
+  for (const boundary of ['hard-limit', 'pause'] as const) {
+    let reviews = 0
+    let blocked = false
+    const result = await runGuardianTask({
+      task: baseTask(),
+      brain: {
+        async review() {
+          reviews += 1
+          blocked = true
+          throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
+        },
+      },
+      executor: { async execute() { throw new Error('must not execute') } },
+      maxBrainReviewRetries: 1,
+      ...(boundary === 'hard-limit'
+        ? { shouldStopAutonomousWork: () => blocked }
+        : { shouldPauseAutonomousWork: () => blocked }),
+    })
+    assert.equal(reviews, 1)
+    assert.equal(
+      result.task.stopReason,
+      boundary === 'hard-limit' ? 'WORK_SESSION_HARD_LIMIT_REACHED' : 'WORK_SESSION_USER_PAUSE_REQUESTED',
+    )
+  }
+})
+
+test('guardian does not retry a valid blocked Reviewer packet', async () => {
+  let reviews = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: { async review() { reviews += 1; return packet('blocked') } },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+  assert.equal(reviews, 1)
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
 })
 
 test('guardian rotates one stuck Brain session and completes with preserved task evidence', async () => {
