@@ -265,9 +265,9 @@ export class WorkSessionControlServer {
   }
 
   private authorizeMutation(req: IncomingMessage, res: ServerResponse): boolean {
-    // 1. Origin 校验：同源或非浏览器（无 Origin）放行，其余拒绝。
+    // 1. Origin 校验：同源、或 Chromium loopback 端口省略兼容；无 Origin 的非浏览器请求放行。
     const origin = req.headers.origin
-    if (origin !== undefined && origin !== this.origin()) {
+    if (origin !== undefined && !this.originMatchesRequest(req)) {
       this.respondJson(res, 403, { error: 'forbidden origin' })
       return false
     }
@@ -279,6 +279,37 @@ export class WorkSessionControlServer {
       return false
     }
     return true
+  }
+
+  /**
+   * Chromium may omit the port from a loopback Origin. Accept that one form only
+   * when the already strict Host, a same-origin Referer, and fetch metadata all
+   * bind the request back to this exact listener origin.
+   */
+  private originMatchesRequest(req: IncomingMessage): boolean {
+    const origin = req.headers.origin
+    if (origin === this.origin()) {
+      return true
+    }
+
+    if (
+      origin !== 'http://127.0.0.1' ||
+      req.headers.host !== this.expectedHost() ||
+      req.headers['sec-fetch-site'] !== 'same-origin'
+    ) {
+      return false
+    }
+
+    const referer = req.headers.referer
+    if (typeof referer !== 'string') {
+      return false
+    }
+
+    try {
+      return new URL(referer).origin === this.origin()
+    } catch {
+      return false
+    }
   }
 
   private readBodyWithLimit(

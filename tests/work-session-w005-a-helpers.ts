@@ -200,11 +200,19 @@ export async function startServer(
 /** POST /api/session/start，可注入 Origin / token / 请求超时。 */
 export async function postStart(
   s: StartedServer,
-  options: { token?: string; origin?: string; timeoutMs?: number } = {},
+  options: {
+    token?: string
+    origin?: string
+    referer?: string
+    secFetchSite?: string
+    timeoutMs?: number
+  } = {},
 ): Promise<{ status: number; body: string }> {
   const headers: Record<string, string> = {}
   if (options.token !== undefined) headers['X-NovaWing-Control-Token'] = options.token
   if (options.origin !== undefined) headers['Origin'] = options.origin
+  if (options.referer !== undefined) headers.Referer = options.referer
+  if (options.secFetchSite !== undefined) headers['Sec-Fetch-Site'] = options.secFetchSite
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 5000)

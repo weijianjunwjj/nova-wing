@@ -78,6 +78,91 @@ await test('W005-A CASE E: same-origin + valid token → 202, start count = 1', 
   }
 })
 
+await test('W005-A CHROME-LOOPBACK-A: portless Origin with exact Referer and same-origin metadata → 202', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, {
+      token: s.token,
+      origin: 'http://127.0.0.1',
+      referer: `${s.address.url}/`,
+      secFetchSite: 'same-origin',
+    })
+    assert.equal(res.status, 202)
+    assert.equal(s.runtime.startCalls, 1)
+  } finally {
+    await s.server.close()
+  }
+})
+
+await test('W005-A CHROME-LOOPBACK-B: portless Origin without Referer → 403', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, {
+      token: s.token,
+      origin: 'http://127.0.0.1',
+      secFetchSite: 'same-origin',
+    })
+    assert.equal(res.status, 403)
+    assert.equal(s.runtime.startCalls, 0)
+  } finally {
+    await s.server.close()
+  }
+})
+
+await test('W005-A CHROME-LOOPBACK-C: portless Origin with wrong Referer port → 403', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, {
+      token: s.token,
+      origin: 'http://127.0.0.1',
+      referer: 'http://127.0.0.1:9999/',
+      secFetchSite: 'same-origin',
+    })
+    assert.equal(res.status, 403)
+    assert.equal(s.runtime.startCalls, 0)
+  } finally {
+    await s.server.close()
+  }
+})
+
+await test('W005-A CHROME-LOOPBACK-D: portless Origin with cross-site metadata → 403', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, {
+      token: s.token,
+      origin: 'http://127.0.0.1',
+      referer: `${s.address.url}/`,
+      secFetchSite: 'cross-site',
+    })
+    assert.equal(res.status, 403)
+    assert.equal(s.runtime.startCalls, 0)
+  } finally {
+    await s.server.close()
+  }
+})
+
+await test('W005-A CHROME-LOOPBACK-E: foreign Origin remains rejected with a valid token → 403', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, { token: s.token, origin: 'http://evil.example' })
+    assert.equal(res.status, 403)
+    assert.equal(s.runtime.startCalls, 0)
+  } finally {
+    await s.server.close()
+  }
+})
+
+await test('W005-A CHROME-LOOPBACK-F: Origin null remains rejected → 403', async () => {
+  const s = await startServer()
+  try {
+    const res = await postStart(s, { token: s.token, origin: 'null' })
+    assert.equal(res.status, 403)
+    assert.equal(s.runtime.startCalls, 0)
+  } finally {
+    await s.server.close()
+  }
+})
+
 await test('W005-A CASE F: duplicate start → 409, start count stays 1', async () => {
   const s = await startServer()
   try {
@@ -199,7 +284,9 @@ await test('W005-A CASE P: DNS rebinding Host rejected with 403 on every route',
 
     const post = await requestWithHost(s.address.port, '/api/session/start', 'POST', hostileHost, {
       'X-NovaWing-Control-Token': s.token,
-      Origin: `http://attacker.example:${s.address.port}`,
+      Origin: 'http://127.0.0.1',
+      Referer: `${s.address.url}/`,
+      'Sec-Fetch-Site': 'same-origin',
     })
     assert.equal(post.status, 403)
     assert.equal(s.runtime.startCalls, 0)
