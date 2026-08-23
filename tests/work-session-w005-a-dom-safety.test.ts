@@ -144,8 +144,8 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   const recentList = elements.get('recent-list') as unknown as {
     children: Array<{ children: Array<{ textContent: string }> }>
   }
-  const recentData = recentList.children[0]!.children[2]!
-  assert.equal(recentData.textContent, `message=${MALICIOUS_MESSAGE}`)
+  const recentData = recentList.children[0]!.children[1]!
+  assert.equal(recentData.textContent, `Task 已开始 · ${MALICIOUS_MESSAGE}`)
 
   // 4. 未创建任何可执行节点
   assert.ok(!createdTags.includes('img'), 'must not create <img>')
