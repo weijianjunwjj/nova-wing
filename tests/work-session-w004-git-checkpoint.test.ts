@@ -518,6 +518,129 @@ await test('W004 git-checkpoint rollback: cached whitespace failure restores onl
   }
 })
 
+// ============ Finding #7 scripted rollback closure ============
+
+const ROLLBACK_BASE_HEAD = '1111111111111111111111111111111111111111'
+const CHANGED_AFTER_FAILED_COMMIT = '2222222222222222222222222222222222222222'
+
+function rollbackGateHandlers(diff: (args: readonly string[]) => CmdResult): Record<string, (args: readonly string[]) => CmdResult> {
+  return {
+    branch: () => ({ exitCode: 0, stdout: 'feat/test\n', stderr: '' }),
+    status: () => ({ exitCode: 0, stdout: ' M src/a.ts\n', stderr: '' }),
+    add: () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    diff,
+    'rev-parse': () => ({ exitCode: 0, stdout: `${ROLLBACK_BASE_HEAD}\n`, stderr: '' }),
+    'read-tree': () => ({ exitCode: 0, stdout: '', stderr: '' }),
+  }
+}
+
+await test('W004 git-checkpoint R1: staged-set mismatch restores index before commit', async () => {
+  let cachedNameCalls = 0
+  const { run, commands } = scriptedRunner(rollbackGateHandlers((args) => {
+    if (args.includes('--check')) return { exitCode: 0, stdout: '', stderr: '' }
+    cachedNameCalls += 1
+    return {
+      exitCode: 0,
+      stdout: cachedNameCalls === 1 ? '' : 'src/other.ts\n',
+      stderr: '',
+    }
+  }))
+
+  await assert.rejects(
+    finalizeCompletedTask({
+      repoPath: '/tmp/repo', expectedBranch: 'feat/test', task: TASK,
+      completionEvidence: evidence(), policy: autoCommitPolicy(), commandRunner: run,
+      expectedBaseHeadSha: ROLLBACK_BASE_HEAD,
+    }),
+    (error: unknown) => error instanceof GitCheckpointError
+      && /staged files do not match/.test(error.message)
+      && /restored index to pre-checkpoint HEAD/.test(error.message),
+  )
+  assert.ok(commands.some((args) => args.join(' ') === 'rev-parse HEAD'))
+  assert.ok(commands.some((args) => args.join(' ') === 'read-tree HEAD'))
+  assert.ok(!commands.some((args) => args[0] === 'commit'))
+})
+
+await test('W004 git-checkpoint R2: failed commit with unchanged HEAD restores index', async () => {
+  let cachedNameCalls = 0
+  const handlers = rollbackGateHandlers((args) => {
+    if (args.includes('--check')) return { exitCode: 0, stdout: '', stderr: '' }
+    cachedNameCalls += 1
+    return { exitCode: 0, stdout: cachedNameCalls === 1 ? '' : 'src/a.ts\n', stderr: '' }
+  })
+  handlers.commit = () => ({ exitCode: 1, stdout: '', stderr: 'commit hook rejected' })
+  const { run, commands } = scriptedRunner(handlers)
+
+  await assert.rejects(
+    finalizeCompletedTask({
+      repoPath: '/tmp/repo', expectedBranch: 'feat/test', task: TASK,
+      completionEvidence: evidence(), policy: autoCommitPolicy(), commandRunner: run,
+      expectedBaseHeadSha: ROLLBACK_BASE_HEAD,
+    }),
+    (error: unknown) => error instanceof GitCheckpointError
+      && /git commit failed: commit hook rejected/.test(error.message)
+      && /restored index to pre-checkpoint HEAD/.test(error.message),
+  )
+  assert.ok(commands.some((args) => args.join(' ') === 'read-tree HEAD'))
+  assert.ok(!commands.some((args) => args[0] === 'push'))
+})
+
+await test('W004 git-checkpoint R3: failed commit with changed HEAD is ambiguous and never restores index', async () => {
+  let cachedNameCalls = 0
+  const handlers = rollbackGateHandlers((args) => {
+    if (args.includes('--check')) return { exitCode: 0, stdout: '', stderr: '' }
+    cachedNameCalls += 1
+    return { exitCode: 0, stdout: cachedNameCalls === 1 ? '' : 'src/a.ts\n', stderr: '' }
+  })
+  handlers.commit = () => ({ exitCode: 1, stdout: '', stderr: 'commit transport failed' })
+  let revParseCalls = 0
+  handlers['rev-parse'] = () => {
+    revParseCalls += 1
+    return {
+      exitCode: 0,
+      stdout: `${revParseCalls === 1 ? ROLLBACK_BASE_HEAD : CHANGED_AFTER_FAILED_COMMIT}\n`,
+      stderr: '',
+    }
+  }
+  const { run, commands } = scriptedRunner(handlers)
+
+  await assert.rejects(
+    finalizeCompletedTask({
+      repoPath: '/tmp/repo', expectedBranch: 'feat/test', task: TASK,
+      completionEvidence: evidence(), policy: autoCommitPolicy(), commandRunner: run,
+      expectedBaseHeadSha: ROLLBACK_BASE_HEAD,
+    }),
+    /ambiguous partial commit state/,
+  )
+  assert.ok(!commands.some((args) => args[0] === 'read-tree'))
+  assert.ok(!commands.some((args) => args[0] === 'push'))
+})
+
+await test('W004 git-checkpoint R4: rollback failure retains original failure without claiming recovery', async () => {
+  let cachedNameCalls = 0
+  const handlers = rollbackGateHandlers((args) => {
+    if (args.includes('--check')) return { exitCode: 0, stdout: '', stderr: '' }
+    cachedNameCalls += 1
+    return { exitCode: 0, stdout: cachedNameCalls === 1 ? '' : 'src/a.ts\n', stderr: '' }
+  })
+  handlers.commit = () => ({ exitCode: 1, stdout: '', stderr: 'commit hook rejected' })
+  handlers['read-tree'] = () => ({ exitCode: 1, stdout: '', stderr: 'index lock unavailable' })
+  const { run, commands } = scriptedRunner(handlers)
+
+  await assert.rejects(
+    finalizeCompletedTask({
+      repoPath: '/tmp/repo', expectedBranch: 'feat/test', task: TASK,
+      completionEvidence: evidence(), policy: autoCommitPolicy(), commandRunner: run,
+      expectedBaseHeadSha: ROLLBACK_BASE_HEAD,
+    }),
+    (error: unknown) => error instanceof GitCheckpointError
+      && /git commit failed: commit hook rejected/.test(error.message)
+      && /index rollback failed/.test(error.message)
+      && !/restored index to pre-checkpoint HEAD/.test(error.message),
+  )
+  assert.ok(commands.some((args) => args.join(' ') === 'read-tree HEAD'))
+})
+
 // ============ 安全：git writer 命令集合（forbidden 命令证明） ============
 
 await test('W004 git-checkpoint safety: no forbidden git writer commands', async () => {
