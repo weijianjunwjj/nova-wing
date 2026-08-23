@@ -222,6 +222,19 @@ function providerFailureEvidence(task: GuardianTask, reason: string): string {
     .join('\n')
 }
 
+function hasProviderCredentialPrerequisite(evidence: string): boolean {
+  const hasProviderAccountPrerequisite =
+    /\binsufficient (?:account )?balance\b/iu.test(evidence) ||
+    /\binsufficient (?:account )?credits?\b/iu.test(evidence) ||
+    /\b(?:billing|account) quota (?:is )?(?:unavailable|exhausted)\b/iu.test(evidence)
+  const hasProviderAuthPrerequisite =
+    /\b(?:authentication required|provider credentials? required|unauthorized due to provider (?:credential|account) setup)\b/iu.test(
+      evidence,
+    )
+
+  return hasProviderAccountPrerequisite || hasProviderAuthPrerequisite
+}
+
 /**
  * Narrow external Provider credential/account/billing prerequisite evidence.
  * A bare HTTP status, application permission denial, or repository permission
@@ -233,16 +246,27 @@ function isProviderCredentialRequired(task: GuardianTask, reason: string): boole
     /\b(?:claude code|executor provider|model provider|external provider|ask[- ]?bridge|chatgpt)\b/iu.test(
       evidence,
     )
-  const hasProviderAccountPrerequisite =
-    /\binsufficient (?:account )?balance\b/iu.test(evidence) ||
-    /\binsufficient (?:account )?credits?\b/iu.test(evidence) ||
-    /\b(?:billing|account) quota (?:is )?(?:unavailable|exhausted)\b/iu.test(evidence)
-  const hasProviderAuthPrerequisite =
-    /\b(?:authentication required|provider credentials? required|unauthorized due to provider (?:credential|account) setup)\b/iu.test(
-      evidence,
-    )
 
-  return hasProviderContext && (hasProviderAccountPrerequisite || hasProviderAuthPrerequisite)
+  return hasProviderContext && hasProviderCredentialPrerequisite(evidence)
+}
+
+/**
+ * Finding #9: only an Executor Provider credential/account/billing recovery
+ * invalidates the checkpoint's Claude session. Brain-only credential recovery,
+ * product decisions, repository drift, and other HUMAN_REQUIRED causes keep the
+ * Executor session eligible for Exact Resume.
+ */
+function isExecutorProviderCredentialRecovery(task: GuardianTask): boolean {
+  const reason = task.stopReason ?? 'unknown'
+  const evidence = providerFailureEvidence(task, reason)
+
+  // Require the Executor context and credential prerequisite to occur in the
+  // same structured evidence item. This avoids combining an unrelated Claude
+  // mention in one field with an AskBridge credential failure in another.
+  return evidence.split('\n').some((item) =>
+    /\b(?:claude code|executor provider|model provider)\b/iu.test(item) &&
+    hasProviderCredentialPrerequisite(item),
+  )
 }
 
 /**
@@ -490,6 +514,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     checkpoint: GuardianTaskRecoveryCheckpoint,
     brain: GuardianBrain,
     executor: GuardianRecoverableExecutor,
+    restoreExecutorSession: boolean,
   ): void {
     const providerState = checkpoint.provider
 
@@ -511,6 +536,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
     // 恢复 executor state（如 Claude sessionId）
     if (
+      restoreExecutorSession &&
       providerState.claudeSessionId !== undefined &&
       typeof executor.restoreProviderState === 'function'
     ) {
@@ -635,7 +661,18 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         }
       }
 
-      this.restoreProviderState(checkpoint, this.options.brain, executor)
+      // Finding #9: credential/account/billing recovery for the Executor may
+      // mean that an externally selected Provider/account has changed. Keep
+      // the independently healthy Brain session, but do not inject the stale
+      // Claude session into the new Executor instance. Repository recovery is
+      // still authorized solely by the already-passed fail-closed gate above.
+      const restoreExecutorSession = !isExecutorProviderCredentialRecovery(checkpoint.task)
+      this.restoreProviderState(
+        checkpoint,
+        this.options.brain,
+        executor,
+        restoreExecutorSession,
+      )
 
       // W003: recovery continuation 只取决于"本次 run() 携带并成功验证了 checkpoint"。
       // 通过 task identity gate（run 顶部）与 RepositoryCheckpoint gate（上方）之后即视为延续，
