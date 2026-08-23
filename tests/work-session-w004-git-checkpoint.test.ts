@@ -491,6 +491,33 @@ await test('W004 git-checkpoint happy path: modified + new + deleted committed e
   }
 })
 
+await test('W004 git-checkpoint rollback: cached whitespace failure restores only the index', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 'w004-rollback-'))
+  const { repoPath } = await setupRealRepo(tempBase)
+  try {
+    const changed = 'export const keep = "broken"\n\n'
+    await writeFile(join(repoPath, 'src/keep.ts'), changed)
+    const beforeHead = (await gitOk(repoPath, ['rev-parse', 'HEAD'])).stdout.trim()
+
+    await assert.rejects(
+      finalizeCompletedTask({
+        repoPath,
+        expectedBranch: 'feat/test',
+        task: TASK,
+        completionEvidence: evidence({ changedFiles: ['src/keep.ts'] }),
+        policy: autoCommitPolicy(),
+      }),
+      /restored index to pre-checkpoint HEAD/,
+    )
+
+    assert.equal((await gitOk(repoPath, ['rev-parse', 'HEAD'])).stdout.trim(), beforeHead)
+    assert.equal((await gitOk(repoPath, ['diff', '--cached', '--name-only'])).stdout.trim(), '')
+    assert.equal(await (await import('node:fs/promises')).readFile(join(repoPath, 'src/keep.ts'), 'utf8'), changed)
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
 // ============ 安全：git writer 命令集合（forbidden 命令证明） ============
 
 await test('W004 git-checkpoint safety: no forbidden git writer commands', async () => {

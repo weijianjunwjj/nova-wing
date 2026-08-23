@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import type {
   DelegationPacket,
@@ -16,6 +19,8 @@ export interface GuardianCommandRequest {
   args: readonly string[]
   cwd: string
   timeoutMs: number
+  /** Internal-only process environment additions. Executor/Claude never supplies this. */
+  env?: NodeJS.ProcessEnv
 }
 
 export interface GuardianCommandResult {
@@ -267,7 +272,7 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
   return new Promise((resolve, reject) => {
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
-      env: process.env,
+      env: request.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
     })
@@ -475,6 +480,80 @@ function commandFailureDetails(result: GuardianCommandResult): string {
     return details.slice(-4_000)
   }
   return `exit=${String(result.exitCode)} signal=${String(result.signal)}`
+}
+
+/**
+ * Runs the public `git diff --check` verification with staging-equivalent
+ * semantics without ever opening the repository's real index for writing.
+ *
+ * The temporary index starts at HEAD, receives exactly the meaningful status
+ * paths, then uses `diff --cached --check`.  Its directory is private to
+ * NovaWing and is removed on every exit path.
+ */
+export async function runStagedEquivalentDiffCheck(cwd: string, timeoutMs: number): Promise<GuardianCommandResult> {
+  const tempDir = await mkdtemp(join(tmpdir(), 'novawing-guardian-index-'))
+  const indexPath = join(tempDir, 'index')
+  const env = { ...process.env, GIT_INDEX_FILE: indexPath }
+  let stdout = ''
+  let stderr = ''
+
+  const runGit = (args: readonly string[]): Promise<GuardianCommandResult> => new Promise((resolve) => {
+    const child = spawn('git', [...args], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    let commandStdout = ''
+    let commandStderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => { commandStdout += chunk })
+    child.stderr.on('data', (chunk: string) => { commandStderr += chunk })
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve({ exitCode: null, signal: 'SIGTERM', stdout: commandStdout, stderr: `${commandStderr}\ncommand timed out after ${timeoutMs}ms`.trim() })
+    }, timeoutMs)
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      resolve({ exitCode: 1, signal: null, stdout: commandStdout, stderr: `${commandStderr}${error.message}` })
+    })
+    child.once('exit', (exitCode, signal) => {
+      clearTimeout(timer)
+      resolve({ exitCode, signal, stdout: commandStdout, stderr: commandStderr })
+    })
+  })
+
+  try {
+    for (const args of [
+      ['read-tree', 'HEAD'],
+      ['status', '--porcelain', '--untracked-files=all'],
+    ] as const) {
+      const result = await runGit(args)
+      stdout += result.stdout
+      stderr += result.stderr
+      if (result.exitCode !== 0) {
+        return { ...result, stdout, stderr: `temporary index git ${args[0]} failed: ${stderr}` }
+      }
+      if (args[0] === 'status') {
+        const files = parseChangedFiles(result.stdout)
+        if (files.length > 0) {
+          const add = await runGit(['add', '--', ...files])
+          stdout += add.stdout
+          stderr += add.stderr
+          if (add.exitCode !== 0) {
+            return { ...add, stdout, stderr: `temporary index git add failed: ${stderr}` }
+          }
+        }
+      }
+    }
+    const check = await runGit(['diff', '--cached', '--check'])
+    return { ...check, stdout: `${stdout}${check.stdout}`, stderr: `${stderr}${check.stderr}` }
+  } catch (error) {
+    return { exitCode: 1, signal: null, stdout, stderr: `temporary index verification failed: ${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
@@ -751,7 +830,12 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       commandsRun.push(command)
       this.options.onVerification?.({ command, status: 'running' })
       const startedAt = performance.now()
-      const result = await this.runBash(command)
+      // Preserve the Reviewer-visible command name while upgrading its actual
+      // behavior.  Injected command runners retain the established unit-test
+      // seam; production always uses the isolated index implementation.
+      const result = command === 'git diff --check' && this.options.commandRunner === undefined
+        ? await runStagedEquivalentDiffCheck(this.options.cwd, this.timeoutMs)
+        : await this.runBash(command)
       const durationMs = performance.now() - startedAt
       this.emitTiming(task, 'verification', durationMs, { command })
       const status = result.exitCode === 0 ? 'passed' : 'failed'

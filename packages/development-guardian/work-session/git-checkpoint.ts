@@ -164,6 +164,25 @@ async function runGitString(
   return result.stdout.trimEnd()
 }
 
+async function restoreIndexAfterFailedCheckpoint(
+  runGit: GitCheckpointCommandRunner,
+  preCommitHead: string,
+): Promise<string | undefined> {
+  try {
+    // This is deliberately index-only: with the existing empty-index gate,
+    // read-tree HEAD restores exactly the index state present at checkpoint
+    // entry and never writes the worktree, branch, or HEAD.
+    const currentHead = await runGitString(runGit, ['rev-parse', 'HEAD'])
+    if (currentHead !== preCommitHead) {
+      return 'index was not restored because HEAD changed during a failed commit (ambiguous partial commit state)'
+    }
+    await runGitChecked(runGit, ['read-tree', 'HEAD'])
+    return undefined
+  } catch (error) {
+    return `index rollback failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 /**
  * W004-A FINAL: 读取当前 HEAD SHA。
  * 供 WorkSession Runtime 在 Task 开始前捕获 base HEAD（autoCommit=true）。
@@ -431,25 +450,48 @@ export async function finalizeCompletedTask(
     throw new GitCheckpointError(`no meaningful files to commit for task ${task.id}`)
   }
 
-  // 精确 staging：只 stage evidence 列出的文件，绝不 `git add -A` / `.` / `--all`
-  await runGitChecked(runGit, ['add', '--', ...evidenceFiles])
+  // Capture the HEAD which authorizes rollback immediately before NovaWing
+  // starts touching the real index.  expectedBaseHeadSha was already gated;
+  // otherwise read it now to make a commit failure unambiguous.
+  const preCommitHead = options.expectedBaseHeadSha
+    ?? await runGitString(runGit, ['rev-parse', 'HEAD'])
+  let stagingStarted = false
+  let commitSucceeded = false
 
-  // whitespace/check 必须 PASS
-  await runGitChecked(runGit, ['diff', '--cached', '--check'])
+  try {
+    // 精确 staging：只 stage evidence 列出的文件，绝不 `git add -A` / `.` / `--all`
+    stagingStarted = true
+    await runGitChecked(runGit, ['add', '--', ...evidenceFiles])
 
-  // 确认 staged 集合 === evidence 集合；不一致则 fail closed
-  const stagedFiles = parseNameOnlyLines(
-    await runGitString(runGit, ['diff', '--cached', '--name-only']),
-  )
-  if (!samePathSet(stagedFiles, evidenceFiles)) {
+    // whitespace/check 必须 PASS
+    await runGitChecked(runGit, ['diff', '--cached', '--check'])
+
+    // 确认 staged 集合 === evidence 集合；不一致则 fail closed
+    const stagedFiles = parseNameOnlyLines(
+      await runGitString(runGit, ['diff', '--cached', '--name-only']),
+    )
+    if (!samePathSet(stagedFiles, evidenceFiles)) {
+      throw new GitCheckpointError(
+        'staged files do not match task changed files; refusing to commit',
+      )
+    }
+
+    // deterministic commit message（不让 LLM 生成）
+    const message = `完成 ${task.id}: ${task.goal}`
+    await runGitChecked(runGit, ['commit', '-m', message])
+    commitSucceeded = true
+  } catch (error) {
+    if (!stagingStarted || commitSucceeded) {
+      throw error
+    }
+    const rollbackFailure = await restoreIndexAfterFailedCheckpoint(runGit, preCommitHead)
+    const original = error instanceof Error ? error.message : String(error)
     throw new GitCheckpointError(
-      'staged files do not match task changed files; refusing to commit',
+      rollbackFailure === undefined
+        ? `${original}; restored index to pre-checkpoint HEAD`
+        : `${original}; ${rollbackFailure}`,
     )
   }
-
-  // deterministic commit message（不让 LLM 生成）
-  const message = `完成 ${task.id}: ${task.goal}`
-  await runGitChecked(runGit, ['commit', '-m', message])
 
   // 记录 commit SHA
   const commitSha = await runGitString(runGit, ['rev-parse', 'HEAD'])
