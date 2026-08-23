@@ -229,24 +229,20 @@ function providerFailureEvidence(task: GuardianTask, reason: string): string {
  */
 function isProviderCredentialRequired(task: GuardianTask, reason: string): boolean {
   const evidence = providerFailureEvidence(task, reason)
-  if (
+  const hasProviderContext =
+    /\b(?:claude code|executor provider|model provider|external provider|ask[- ]?bridge|chatgpt)\b/iu.test(
+      evidence,
+    )
+  const hasProviderAccountPrerequisite =
     /\binsufficient (?:account )?balance\b/iu.test(evidence) ||
     /\binsufficient (?:account )?credits?\b/iu.test(evidence) ||
     /\b(?:billing|account) quota (?:is )?(?:unavailable|exhausted)\b/iu.test(evidence)
-  ) {
-    return true
-  }
-
-  const hasProviderContext =
-    /\b(?:claude code|executor provider|model provider|external provider|ask-bridge|chatgpt)\b/iu.test(
-      evidence,
-    )
   const hasProviderAuthPrerequisite =
     /\b(?:authentication required|provider credentials? required|unauthorized due to provider (?:credential|account) setup)\b/iu.test(
       evidence,
     )
 
-  return hasProviderContext && hasProviderAuthPrerequisite
+  return hasProviderContext && (hasProviderAccountPrerequisite || hasProviderAuthPrerequisite)
 }
 
 /**

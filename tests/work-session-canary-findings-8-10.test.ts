@@ -45,6 +45,8 @@ test('Finding #8: ordinary business decisions and bare HTTP failures remain deci
     'Choose whether the public API should preserve the legacy response shape',
     'application request failed with HTTP 403',
     'ordinary API request failed with HTTP 500',
+    'checkout rejected because customer has insufficient balance',
+    'business account has insufficient account balance',
   ]) {
     assert.equal(classifyHumanRequired(task({ stopReason })).category, 'DECISION_REQUIRED')
   }
