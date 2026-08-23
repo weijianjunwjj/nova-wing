@@ -23,11 +23,11 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
   // 防御：JSON 内容不得包含 "</script>" 截断标签（token/origin 均受控，仍转义 <）。
   const bootstrapJson = JSON.stringify(bootstrap).replace(/</g, '\\u003c')
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NovaWing — Development Guardian</title>
+<title>NovaWing Work Session 控制台</title>
 <link rel="stylesheet" href="/styles.css">
 <script type="application/json" id="novawing-bootstrap">${bootstrapJson}</script>
 </head>
@@ -35,69 +35,69 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
 <header class="topbar">
   <div class="brand">
     <h1>NovaWing</h1>
-    <span class="subtitle">Development Guardian</span>
+    <span class="subtitle">Work Session 控制台</span>
   </div>
-  <div id="state-badge" class="badge badge-ready">READY</div>
+  <div id="state-badge" class="badge badge-ready">就绪</div>
 </header>
 
 <main>
   <section class="meta-grid">
     <div class="meta">
-      <span class="label">Project</span>
+      <span class="label">项目</span>
       <span id="project" class="value">—</span>
     </div>
     <div class="meta">
-      <span class="label">Branch</span>
+      <span class="label">分支</span>
       <span id="branch" class="value">—</span>
     </div>
     <div class="meta">
-      <span class="label">Active time</span>
+      <span class="label">已运行时间</span>
       <span id="active-time" class="value">00:00</span>
     </div>
     <div class="meta">
-      <span class="label">Limits</span>
+      <span class="label">限制</span>
       <span id="limits" class="value">—</span>
     </div>
   </section>
 
   <section id="decision-card" class="card decision" hidden>
-    <h2 id="decision-title">Needs your decision</h2>
+    <h2 id="decision-title">需要人工决策</h2>
     <div class="row">
-      <span class="label">Category</span>
+      <span class="label">类别</span>
       <span id="decision-category" class="value">—</span>
     </div>
     <div class="row">
-      <span class="label">Reason</span>
+      <span class="label">原因</span>
       <span id="decision-reason" class="value">—</span>
     </div>
     <p id="decision-guidance" class="note"></p>
     <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
-    <button id="resume-decision-btn" type="button" class="primary" hidden>Resume with decision</button>
-    <button id="resume-resolved-btn" type="button" class="primary" hidden>I've resolved it — Resume</button>
-    <button id="resume-paused-btn" type="button" class="primary" hidden>Resume</button>
+    <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
+    <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
+    <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
     <span id="resume-note" class="note"></span>
   </section>
 
   <section class="card">
-    <h2>Tasks</h2>
+    <h2>Task</h2>
     <ol id="task-list" class="task-list"></ol>
   </section>
 
   <section class="card">
-    <h2>Current Activity</h2>
+    <h2>当前活动</h2>
     <div class="row">
       <span class="label">Guardian</span>
       <span id="guardian-phase" class="value">—</span>
     </div>
     <div class="row">
-      <span class="label">Iteration</span>
+      <span class="label">轮次</span>
       <span id="guardian-iteration" class="value">—</span>
     </div>
     <p id="guardian-detail" class="detail">—</p>
   </section>
 
   <section class="card">
-    <h2>Recent Activity</h2>
+    <h2>最近活动</h2>
     <ul id="recent-list" class="recent-list"></ul>
   </section>
 
@@ -108,9 +108,9 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
 </main>
 
 <footer class="footer">
-  <button id="start-btn" type="button" class="primary">Start</button>
-  <button id="pause-btn" type="button" hidden>Pause</button>
-  <button id="stop-btn" type="button" hidden>Stop after task</button>
+  <button id="start-btn" type="button" class="primary">开始</button>
+  <button id="pause-btn" type="button" hidden>暂停</button>
+  <button id="stop-btn" type="button" hidden>当前 Task 完成后停止</button>
   <span id="start-note" class="note"></span>
 </footer>
 
@@ -171,6 +171,50 @@ var BADGE_CLASS = {
   CANCELLED: 'badge-cancelled'
 }
 
+var STATE_LABELS = {
+  READY: '就绪',
+  RUNNING: '运行中',
+  SUSPENDED: '已暂停',
+  COMPLETED: '已完成',
+  FAILED: '失败',
+  CANCELLED: '已取消'
+}
+
+var HUMAN_REQUIRED_LABELS = {
+  DECISION_REQUIRED: '需要人工决策',
+  REPO_DRIFT: 'Repository 状态漂移',
+  PERMISSION_REQUIRED: '需要授权',
+  CREDENTIAL_REQUIRED: '需要完成凭据或登录设置',
+  ENVIRONMENT_REQUIRED: '需要处理运行环境',
+  SAFETY_BLOCKED: '被安全策略阻止',
+  BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
+  REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
+  STALLED: '执行停滞',
+  USER_PAUSED: '用户已暂停'
+}
+
+var GUARDIAN_PHASE_LABELS = {
+  EXECUTING: 'Executor 执行中',
+  VERIFYING: '正在验证',
+  RECOVERING: '正在恢复',
+  REVIEWING: 'Reviewer 审查',
+  FINAL_REVIEW: 'Final Review',
+  COMPLETED: '已完成',
+  HUMAN_REQUIRED: '需要人工处理'
+}
+
+var GUARDIAN_STATUS_LABELS = {
+  active: '进行中',
+  completed: '已完成',
+  failed: '失败',
+  suspended: '已暂停'
+}
+
+function displayValue(value, labels) {
+  if (value === undefined || value === null || value === '') return '—'
+  return (labels && labels[value]) || String(value)
+}
+
 function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
@@ -180,13 +224,13 @@ function render(snapshot) {
   setText('branch', cfg.branch)
   setText('active-time', formatDuration(rt.activeElapsedMs))
   setText('limits',
-    'Soft ' + cfg.limits.softMinutes + 'm · Hard ' + cfg.limits.hardMinutes +
-    'm · Max Tasks ' + cfg.limits.maxTasks)
+    '软限制 ' + cfg.limits.softMinutes + ' 分钟 · 硬限制 ' + cfg.limits.hardMinutes +
+    ' 分钟 · 最多 ' + cfg.limits.maxTasks + ' 个 Task')
 
   var state = rt.state || 'READY'
   var badge = el('state-badge')
   if (badge) {
-    badge.textContent = state
+    badge.textContent = displayValue(state, STATE_LABELS)
     badge.className = 'badge ' + (BADGE_CLASS[state] || 'badge-ready')
   }
 
@@ -208,17 +252,17 @@ function renderControls(rt, controls) {
   if (pauseBtn) {
     pauseBtn.hidden = state !== 'RUNNING'
     pauseBtn.disabled = controls.pauseRequested === true
-    pauseBtn.textContent = controls.pauseRequested === true ? 'Pause requested' : 'Pause'
+    pauseBtn.textContent = controls.pauseRequested === true ? '已请求暂停' : '暂停'
   }
   if (stopBtn) {
     stopBtn.hidden = state !== 'RUNNING'
     stopBtn.disabled = controls.stopAfterTaskRequested === true
     stopBtn.textContent = controls.stopAfterTaskRequested === true
-      ? 'Stop requested'
-      : 'Stop after task'
+      ? '已请求停止'
+      : '当前 Task 完成后停止'
   }
   if (state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED') {
-    setText('start-note', 'Paused by you')
+    setText('start-note', '已由你暂停')
   }
 }
 
@@ -249,22 +293,44 @@ function renderTasks(cfg, rt) {
 }
 
 function renderGuardian(guardian) {
-  setText('guardian-phase', guardian.phase || '—')
+  setText('guardian-phase', displayValue(guardian.phase, GUARDIAN_PHASE_LABELS))
   setText('guardian-iteration',
     guardian.iteration === undefined ? '—' : String(guardian.iteration))
-  setText('guardian-detail', guardian.status || '—')
+  setText('guardian-detail', displayValue(guardian.status, GUARDIAN_STATUS_LABELS))
 }
 
-function summarize(data) {
-  if (!data || typeof data !== 'object') return ''
-  var keys = Object.keys(data)
-  if (keys.length === 0) return ''
-  var parts = []
-  for (var i = 0; i < keys.length; i++) {
-    var k = keys[i]
-    parts.push(k + '=' + data[k])
+function formatElapsed(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms)) return ''
+  return ms < 1000 ? ms + ' 毫秒' : (Math.round(ms / 100) / 10) + ' 秒'
+}
+
+function summarizeEvent(ev) {
+  var data = ev.data && typeof ev.data === 'object' ? ev.data : {}
+  if (ev.type === 'GUARDIAN_PHASE') {
+    var parts = [displayValue(data.phase, GUARDIAN_PHASE_LABELS)]
+    if (data.status !== undefined) parts.push(displayValue(data.status, GUARDIAN_STATUS_LABELS))
+    if (data.iteration !== undefined) parts.push('第 ' + data.iteration + ' 轮')
+    var elapsed = formatElapsed(data.elapsedMs)
+    if (elapsed) parts.push(elapsed)
+    return parts.join(' · ')
   }
-  return parts.join(' ')
+  var eventLabels = {
+    SESSION_STARTED: 'Work Session 已开始', SESSION_STATE_CHANGED: 'Work Session 状态已更新',
+    TASK_STARTED: 'Task 已开始', TASK_COMPLETED: 'Task 已完成',
+    CHECKPOINT_COMMITTED: 'Git checkpoint 已提交', CHECKPOINT_PUSHED: 'Git checkpoint 已推送',
+    HUMAN_REQUIRED: '需要人工处理', SESSION_COMPLETED: 'Work Session 已完成',
+    SESSION_FAILED: 'Work Session 失败', PAUSE_REQUESTED: '已请求暂停',
+    SESSION_PAUSED: 'Work Session 已暂停', STOP_AFTER_TASK_REQUESTED: '当前 Task 完成后停止已请求',
+    SESSION_RESUME_REQUESTED: '已请求恢复', SESSION_RESUMED: 'Work Session 已恢复',
+    NOTIFICATION_SENT: '通知已发送', NOTIFICATION_FAILED: '通知发送失败'
+  }
+  var summary = eventLabels[ev.type] || String(ev.type || '')
+  var details = []
+  if (data.taskId !== undefined && data.taskId !== null) details.push('Task：' + data.taskId)
+  if (data.category !== undefined) details.push('类别：' + displayValue(data.category, HUMAN_REQUIRED_LABELS))
+  if (data.state !== undefined) details.push('状态：' + displayValue(data.state, STATE_LABELS))
+  if (data.message !== undefined) details.push(String(data.message))
+  return details.length === 0 ? summary : summary + ' · ' + details.join(' · ')
 }
 
 function renderRecent(events) {
@@ -280,16 +346,11 @@ function renderRecent(events) {
     time.className = 'time'
     time.textContent = formatTime(ev.timestamp)
 
-    var type = document.createElement('span')
-    type.className = 'event-type'
-    type.textContent = ev.type
-
     var data = document.createElement('span')
     data.className = 'event-data'
-    data.textContent = summarize(ev.data)
+    data.textContent = summarizeEvent(ev)
 
     li.appendChild(time)
-    li.appendChild(type)
     li.appendChild(data)
     list.appendChild(li)
   }
@@ -306,9 +367,9 @@ function renderDecision(rt) {
   var userPaused = rt.state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED'
   if (rt.state === 'SUSPENDED' && (hr || userPaused)) {
     card.hidden = false
-    setText('decision-title', userPaused ? 'Paused by you' : 'Needs your decision')
-    setText('decision-category', userPaused ? 'USER_PAUSED' : (category || '—'))
-    setText('decision-reason', userPaused ? 'Resume from the saved checkpoint when ready.' : (hr.reason || '—'))
+    setText('decision-title', userPaused ? '已由你暂停' : '需要人工处理')
+    setText('decision-category', displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
+    setText('decision-reason', userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—'))
 
     var input = el('decision-input')
     var decisionBtn = el('resume-decision-btn')
@@ -322,17 +383,17 @@ function renderDecision(rt) {
     if (pausedBtn) pausedBtn.hidden = !userPaused
 
     if (resolvedAck) {
-      setText('decision-guidance', 'Complete the required action outside NovaWing. Do not enter credentials here.')
+      setText('decision-guidance', '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
     } else if (category === 'PERMISSION_REQUIRED') {
-      setText('decision-guidance', 'Update trusted project permissions first.')
+      setText('decision-guidance', '请先更新受信任的项目权限。')
     } else if (category === 'BUDGET_EXHAUSTED') {
-      setText('decision-guidance', 'Start a new Session with newly approved limits.')
+      setText('decision-guidance', '请以新批准的限制启动新的 Work Session。')
     } else if (category === 'REPO_DRIFT') {
-      setText('decision-guidance', 'Repository recovery or explicit adoption is required.')
+      setText('decision-guidance', '需要执行 Repository 恢复或显式采纳。')
     } else if (category === 'SAFETY_BLOCKED') {
-      setText('decision-guidance', 'This safety block cannot be resumed generically.')
+      setText('decision-guidance', '此安全阻止无法通过通用方式恢复。')
     } else if (category === 'REVIEWER_PROTOCOL_FAILURE') {
-      setText('decision-guidance', 'The Reviewer returned malformed protocol data after bounded recovery. Start a new Session after checking the Reviewer service.')
+      setText('decision-guidance', 'Reviewer 在有限恢复后仍返回格式错误的协议数据。检查 Reviewer 服务后启动新的 Work Session。')
     } else {
       setText('decision-guidance', '')
     }
@@ -362,13 +423,13 @@ async function start() {
     })
     var note = el('start-note')
     if (res.status === 202) {
-      if (note) note.textContent = 'Session started'
+      if (note) note.textContent = 'Work Session 已开始'
     } else if (res.status === 409) {
-      if (note) note.textContent = 'Session already started'
+      if (note) note.textContent = 'Work Session 已开始'
     } else if (res.status === 403) {
-      if (note) note.textContent = 'Start rejected (forbidden)'
+      if (note) note.textContent = '开始被拒绝（无权限）'
     } else if (note) {
-      note.textContent = 'Start failed: ' + res.status
+      note.textContent = '开始失败：' + res.status
     }
   } finally {
     if (btn) btn.disabled = false
@@ -398,7 +459,7 @@ async function resumeSession(payload) {
       },
       body: JSON.stringify(payload)
     })
-    if (note) note.textContent = res.status === 202 ? 'Resume requested' : 'Resume rejected'
+    if (note) note.textContent = res.status === 202 ? '已请求恢复' : '恢复被拒绝'
   } finally {
     refresh()
   }

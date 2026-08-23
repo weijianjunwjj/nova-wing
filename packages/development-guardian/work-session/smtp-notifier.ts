@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer'
 
 import {
+  presentHumanRequiredCategory,
   projectNameFromNotification,
   type WorkSessionCompletedNotification,
   type HumanRequiredNotification,
@@ -91,34 +92,36 @@ export function createSmtpWorkSessionNotifierFromEnv(
 }
 
 export function renderNotificationSubject(notification: HumanRequiredNotification): string {
-  const project = singleLine(projectNameFromNotification(notification))
-  const category = singleLine(notification.humanRequired.category)
-  return `[NovaWing] 需要你处理：${project} / ${category}`
+  const task = notification.progress.currentTaskId ?? '未知 Task'
+  return `[NovaWing] 需要人工处理：${singleLine(task)}`
 }
 
 export function renderNotificationText(notification: HumanRequiredNotification): string {
   const completed = notification.progress.completedTaskIds.length === 0
-    ? 'None'
+    ? '无'
     : notification.progress.completedTaskIds.join(', ')
-  const currentTask = notification.progress.currentTaskId ?? 'None'
+  const currentTask = notification.progress.currentTaskId ?? '无'
   const resumeLocation = notification.control.localUrl === undefined
-    ? 'Open the NovaWing local control panel on this machine.'
+    ? '请在此机器上打开本地 NovaWing Work Session 控制台。'
     : notification.control.localUrl
   return [
-    'NovaWing paused because human input is required.',
+    'NovaWing Work Session 需要人工处理。',
     '',
-    `Project: ${projectNameFromNotification(notification)}`,
-    `Branch: ${notification.session.branch}`,
-    `Session: ${notification.session.id}`,
-    `Completed: ${completed}`,
-    `Current task: ${currentTask}`,
-    `Category: ${notification.humanRequired.category}`,
-    `Reason: ${notification.humanRequired.reason}`,
+    `项目：${projectNameFromNotification(notification)}`,
+    `分支：${notification.session.branch}`,
+    `Work Session：${notification.session.id}`,
+    `已完成 Task：${completed}`,
+    `当前 Task：${currentTask}`,
+    '状态：已暂停',
+    `类别：${presentHumanRequiredCategory(notification.humanRequired.category)}`,
     '',
-    'Recommended action:',
-    notification.recommendation ?? 'Review the current blocker in the NovaWing control panel.',
+    '原因：',
+    notification.humanRequired.reason,
     '',
-    'Resume:',
+    '建议操作：',
+    notification.recommendation ?? '请在 NovaWing Work Session 控制台检查当前阻塞原因。',
+    '',
+    '控制台：',
     resumeLocation,
     notification.control.instruction,
   ].join('\n')
@@ -127,26 +130,27 @@ export function renderNotificationText(notification: HumanRequiredNotification):
 export function renderCompletedNotificationSubject(
   notification: WorkSessionCompletedNotification,
 ): string {
-  return `[NovaWing] 已完成：${singleLine(projectNameFromNotification(notification))}`
+  void notification
+  return '[NovaWing] Work Session 已完成'
 }
 
 export function renderCompletedNotificationText(
   notification: WorkSessionCompletedNotification,
 ): string {
   const completed = notification.completedTaskIds.length === 0
-    ? 'None'
+    ? '无'
     : notification.completedTaskIds.join(', ')
   return [
-    'NovaWing completed the Work Session.',
+    'NovaWing Work Session 已完成。',
     '',
-    `Project: ${projectNameFromNotification(notification)}`,
-    `Branch: ${notification.session.branch}`,
-    `Session: ${notification.session.id}`,
-    `Completed tasks: ${completed}`,
-    `Completion reason: ${notification.completionReason}`,
+    `项目：${projectNameFromNotification(notification)}`,
+    `分支：${notification.session.branch}`,
+    `Work Session：${notification.session.id}`,
+    `已完成 Task：${completed}`,
+    '状态：已完成',
     ...(notification.activeElapsedMs === undefined
       ? []
-      : [`Active time: ${notification.activeElapsedMs} ms`]),
+      : [`已运行时间：${formatDuration(notification.activeElapsedMs)}`]),
   ].join('\n')
 }
 
@@ -182,4 +186,11 @@ function parseSecure(value: string): boolean {
 
 function singleLine(value: string): string {
   return value.replace(/[\r\n]+/gu, ' ').trim()
+}
+
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.floor(milliseconds / 1_000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes === 0 ? `${seconds} 秒` : `${minutes} 分 ${seconds} 秒`
 }

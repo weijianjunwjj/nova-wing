@@ -50,7 +50,7 @@ export interface WorkSessionControlControllerOptions {
 const DEFAULT_POLL_INTERVAL_MS = 250
 const DEFAULT_MAX_RECENT_EVENTS = 100
 const SAFE_SESSION_FAILED_MESSAGE = 'Session failed. Check local diagnostics.'
-const SAFE_POST_RESUME_HUMAN_REASON = 'Additional input is required. Check local diagnostics.'
+const SAFE_POST_RESUME_HUMAN_REASON = '需要补充信息。请检查本地诊断信息。'
 
 export interface ControlResumeInput {
   decision?: string

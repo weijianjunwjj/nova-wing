@@ -22,6 +22,7 @@ import {
   renderCompletedNotificationSubject,
   renderCompletedNotificationText,
 } from '../packages/development-guardian/work-session/smtp-notifier.js'
+import { safeNotificationReason } from '../packages/development-guardian/work-session/notifier.js'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { WorkSessionControlServer } from '../packages/development-guardian/work-session/control-ui/server.js'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
@@ -52,11 +53,10 @@ function notification(): HumanRequiredNotification {
       category: 'DECISION_REQUIRED',
       reason: 'choose database mode',
     },
-    recommendation:
-      'Review the decision in the NovaWing control panel and choose the intended option.',
+    recommendation: '打开本地 NovaWing Work Session 控制台查看决策，并选择预期选项。',
     control: {
       localUrl: 'http://127.0.0.1:4317',
-      instruction: 'Open the local NovaWing control panel and resolve this item.',
+      instruction: '打开本地 NovaWing Work Session 控制台查看详情，并在确认后恢复任务。',
     },
   }
 }
@@ -126,13 +126,14 @@ await test('W006 SMTP: environment maps to transport and plain-text email conten
   assert.deepEqual(sent, [{
     from: 'novawing@example.test',
     to: 'owner@example.test',
-    subject: '[NovaWing] 需要你处理：nova-wing / DECISION_REQUIRED',
+    subject: '[NovaWing] 需要人工处理：T2',
     text: renderNotificationText(notification()),
   }])
   assert.equal(renderNotificationSubject(notification()), sent[0]?.subject)
-  assert.match(sent[0]?.text ?? '', /Project: nova-wing/u)
-  assert.match(sent[0]?.text ?? '', /Completed: T1/u)
-  assert.match(sent[0]?.text ?? '', /Current task: T2/u)
+  assert.match(sent[0]?.text ?? '', /项目：nova-wing/u)
+  assert.match(sent[0]?.text ?? '', /已完成 Task：T1/u)
+  assert.match(sent[0]?.text ?? '', /当前 Task：T2/u)
+  assert.match(sent[0]?.text ?? '', /类别：需要人工决策/u)
   assert.match(sent[0]?.text ?? '', /http:\/\/127\.0\.0\.1:4317/u)
 })
 
@@ -143,11 +144,34 @@ await test('completion SMTP uses the completed-only subject and safe plain text'
     createTransport: () => ({ async sendMail(options) { sent.push(options) } }),
   })
   await notifier.notifyCompleted(completedNotification())
-  assert.equal(sent[0]?.subject, '[NovaWing] 已完成：nova-wing')
+  assert.equal(sent[0]?.subject, '[NovaWing] Work Session 已完成')
   assert.equal(sent[0]?.text, renderCompletedNotificationText(completedNotification()))
   assert.equal(renderCompletedNotificationSubject(completedNotification()), sent[0]?.subject)
-  assert.match(sent[0]?.text ?? '', /Completion reason: ALL_TASKS_COMPLETED/u)
+  assert.match(sent[0]?.text ?? '', /状态：已完成/u)
   assert.doesNotMatch(JSON.stringify(sent[0]), /Bearer|token=|password=|DATABASE_URL|resumeInput|fingerprint|provider URL/u)
+})
+
+await test('notification reasons are localized, bounded, and redact credential-like values', () => {
+  assert.equal(
+    safeNotificationReason('403 insufficient balance'),
+    'Executor Provider 账户余额不足，无法继续调用模型。',
+  )
+  assert.equal(
+    safeNotificationReason('DATABASE_URL missing; pytest failed'),
+    'PostgreSQL DATABASE_URL 未配置，pytest 无法完成验证。',
+  )
+  assert.equal(
+    safeNotificationReason('AskBridge tab identification failure'),
+    'Reviewer 浏览器会话打开失败。',
+  )
+  assert.doesNotMatch(
+    safeNotificationReason('provider error token=SUPER_SECRET cookie=SESSION_SECRET'),
+    /SUPER_SECRET|SESSION_SECRET/u,
+  )
+  assert.equal(
+    safeNotificationReason('{"token":"SUPER_SECRET","usage":{"raw":true}}'),
+    '发生未知错误。请在本地控制台查看安全诊断信息。',
+  )
 })
 
 await test('W006 production config: enabled fails fast without SMTP env; disabled needs none', async () => {

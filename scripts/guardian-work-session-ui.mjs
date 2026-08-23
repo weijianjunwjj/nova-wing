@@ -28,10 +28,10 @@ try {
   })
   const address = await app.start()
 
-  console.log('NovaWing Work Session UI')
-  console.log(`Project: ${app.definition.targetRepo}`)
-  console.log(`Branch: ${app.definition.branch}`)
-  console.log(`URL: ${address.url}`)
+  console.log('NovaWing Work Session 控制台')
+  console.log(`项目：${app.definition.targetRepo}`)
+  console.log(`分支：${app.definition.branch}`)
+  console.log(`地址：${address.url}`)
 
   let closing = false
   const close = async () => {
