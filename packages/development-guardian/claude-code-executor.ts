@@ -85,8 +85,20 @@ export interface ClaudeCodeExecutorOptions {
   allowPythonBootstrap?: boolean
   commandRunner?: GuardianCommandRunner
   onTiming?: (event: ClaudeCodeTimingEvent) => void
-  onVerification?: (result: { command: string; status: 'running' | 'passed' | 'failed'; durationMs?: number }) => void
-  onRecovery?: (recovery: { reason: 'max_turns'; sessionId: string; bounded: true }) => void
+  onVerification?: (result: {
+    command: string
+    status: 'running' | 'passed' | 'failed'
+    /** Internal Guardian iteration of the Executor that ran this verification. */
+    iteration: number
+    durationMs?: number
+  }) => void
+  onRecovery?: (recovery: {
+    reason: 'max_turns'
+    sessionId: string
+    bounded: true
+    /** Internal Guardian iteration of the Executor being recovered. */
+    iteration: number
+  }) => void
   /** W003: 允许的 worktree checkpoint（用于 resume 验证） */
   allowedWorktreeCheckpoint?: {
     taskId: string
@@ -828,7 +840,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       }
 
       commandsRun.push(command)
-      this.options.onVerification?.({ command, status: 'running' })
+      this.options.onVerification?.({ command, status: 'running', iteration: task.iteration })
       const startedAt = performance.now()
       // Preserve the Reviewer-visible command name while upgrading its actual
       // behavior.  Injected command runners retain the established unit-test
@@ -839,7 +851,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       const durationMs = performance.now() - startedAt
       this.emitTiming(task, 'verification', durationMs, { command })
       const status = result.exitCode === 0 ? 'passed' : 'failed'
-      this.options.onVerification?.({ command, status, durationMs })
+      this.options.onVerification?.({ command, status, iteration: task.iteration, durationMs })
       results.push({
         name: command,
         status,
@@ -1126,6 +1138,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
           reason: 'max_turns',
           sessionId: firstAttempt.parsed.session_id ?? '',
           bounded: true,
+          iteration: input.task.iteration,
         })
 
         // 输出诊断：恢复触发

@@ -90,6 +90,8 @@ export class WorkSessionControlController {
   private resumeInputRedactionTaskId: string | undefined
 
   private guardianPhase: GuardianPhaseSnapshot | undefined
+  /** Last event identity after applying the same safe presentation rules as Recent Activity. */
+  private lastGuardianPresentationKey: string | undefined
   private serverInfo: WorkSessionControlSnapshot['server'] = {
     host: '127.0.0.1',
     port: 0,
@@ -509,15 +511,20 @@ export class WorkSessionControlController {
       iteration: event.iteration,
       elapsedMs: event.elapsedMs,
     }
-    this.emit({
-      type: 'GUARDIAN_PHASE',
-      data: {
-        phase: event.phase,
-        status: event.status,
-        iteration: event.iteration,
-        elapsedMs: event.elapsedMs,
-      },
-    })
+    const data = {
+      phase: event.phase,
+      status: event.status,
+      iteration: event.iteration,
+      elapsedMs: event.elapsedMs,
+    }
+    // Guardian deliberately emits a second EXECUTING/completed event when an
+    // incompleteReason is present. Detail is intentionally not web-visible;
+    // fold only consecutive events whose safe rendered fields are identical.
+    const presentationKey = guardianPresentationKey(data)
+    if (presentationKey !== this.lastGuardianPresentationKey) {
+      this.emit({ type: 'GUARDIAN_PHASE', data })
+      this.lastGuardianPresentationKey = presentationKey
+    }
     this.broadcastSnapshot()
   }
 
@@ -552,6 +559,9 @@ export class WorkSessionControlController {
   }
 
   private emit(input: ControlEventInput): void {
+    if (input.type !== 'GUARDIAN_PHASE') {
+      this.lastGuardianPresentationKey = undefined
+    }
     const event: ControlEvent = {
       id: ++this.eventId,
       timestamp: new Date().toISOString(),
@@ -577,6 +587,30 @@ export class WorkSessionControlController {
 
 function humanRequiredData(hr: HumanRequired): Record<string, unknown> {
   return { category: hr.category, reason: hr.reason }
+}
+
+function guardianPresentationKey(data: GuardianPhaseSnapshot): string {
+  return JSON.stringify([
+    data.phase,
+    data.status,
+    displayIterationForGuardianPhase(data.phase, data.iteration),
+    elapsedPresentationBucket(data.elapsedMs),
+  ])
+}
+
+/** Must stay aligned with the browser formatter: this is a display identity, not timing logic. */
+function elapsedPresentationBucket(ms: number): string {
+  if (!Number.isFinite(ms)) return ''
+  const value = ms < 1_000 ? ms : ms < 60_000 ? ms / 1_000 : ms / 60_000
+  const unit = ms < 1_000 ? '毫秒' : ms < 60_000 ? '秒' : '分钟'
+  return `${Number((Math.round(value * 100) / 100).toFixed(2))} ${unit}`
+}
+
+/** Internal Reviewer starts at 0; Executor and its follow-on phases start at 1. */
+function displayIterationForGuardianPhase(phase: string, iteration: number): number | undefined {
+  if (phase === 'PREPARING') return undefined
+  if (phase === 'REVIEWING') return iteration + 1
+  return iteration > 0 ? iteration : undefined
 }
 
 function validateResumeForState(

@@ -359,7 +359,7 @@ export async function createProductionWorkSessionUi(
                 status: verification.status === 'running'
                   ? 'active'
                   : verification.status === 'passed' ? 'completed' : 'failed',
-                iteration: 0,
+                iteration: verification.iteration,
                 elapsedMs: verification.durationMs ?? 0,
                 verification,
               })
@@ -368,7 +368,7 @@ export async function createProductionWorkSessionUi(
               eventSink({
                 phase: 'RECOVERING',
                 status: 'active',
-                iteration: 0,
+                iteration: recovery.iteration,
                 elapsedMs: 0,
                 recovery,
               })

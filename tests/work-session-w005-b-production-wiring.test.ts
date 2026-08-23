@@ -175,6 +175,22 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       options.allowNpmInstall === false &&
       options.allowPythonBootstrap === false,
     ))
+    executorOptions[0]?.onVerification?.({
+      command: 'npm test', status: 'passed', iteration: 1, durationMs: 100,
+    })
+    executorOptions[1]?.onVerification?.({
+      command: 'npm test', status: 'passed', iteration: 2, durationMs: 100,
+    })
+    executorOptions[1]?.onRecovery?.({
+      reason: 'max_turns', sessionId: 'provider-session', bounded: true, iteration: 2,
+    })
+    const phaseEvents = app.controller.getRecentEvents().filter((event) =>
+      event.type === 'GUARDIAN_PHASE' &&
+      (event.data.phase === 'VERIFYING' || event.data.phase === 'RECOVERING'),
+    )
+    assert.deepEqual(phaseEvents.map((event) => [event.data.phase, event.data.iteration]), [
+      ['VERIFYING', 1], ['VERIFYING', 2], ['RECOVERING', 2],
+    ])
     assert.ok(gitCalls.every((call) => call.executable === 'git'))
     assert.ok(gitCalls.every((call) => call.cwd === process.cwd()))
     assert.ok(gitCalls.every((call) => call.args[0] !== '-lc'))

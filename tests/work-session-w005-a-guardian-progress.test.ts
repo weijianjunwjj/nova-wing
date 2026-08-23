@@ -92,6 +92,26 @@ await test('W005-A guardian progress: onProgress reaches controller as GUARDIAN_
   assert.equal(controller.getSnapshot().guardian.phase, 'COMPLETED')
 })
 
+test('Recent Activity folds only consecutive Guardian events with identical safe presentation fields', () => {
+  const runtime = new FakeRuntime(makeDefinition())
+  let progressSink: GuardianProgressObserver | undefined
+  const controller = new WorkSessionControlController({
+    createRuntime: (eventSink) => {
+      progressSink = eventSink
+      return runtime
+    },
+  })
+
+  progressSink?.({ phase: 'EXECUTING', status: 'completed', iteration: 1, elapsedMs: 2_700 })
+  progressSink?.({ phase: 'EXECUTING', status: 'completed', iteration: 1, elapsedMs: 2_700.004 })
+  progressSink?.({ phase: 'EXECUTING', status: 'completed', iteration: 2, elapsedMs: 2_700 })
+
+  const guardianEvents = controller.getRecentEvents().filter((event) => event.type === 'GUARDIAN_PHASE')
+  assert.equal(guardianEvents.length, 2, 'identical rendered consecutive event is folded')
+  assert.equal(guardianEvents[1]?.data.iteration, 2, 'a different iteration must remain visible')
+  controller.close()
+})
+
 await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and reason', async () => {
   // 1. HTML 静态包含 decision card 标题与占位元素。
   const html = renderHtml({ controlToken: 'tok', serverOrigin: 'http://127.0.0.1:4317' })

@@ -79,7 +79,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
   </section>
 
   <section class="card">
-    <h2>Task</h2>
+    <h2>任务（Task）</h2>
     <ol id="task-list" class="task-list"></ol>
   </section>
 
@@ -295,13 +295,21 @@ function renderTasks(cfg, rt) {
 function renderGuardian(guardian) {
   setText('guardian-phase', displayValue(guardian.phase, GUARDIAN_PHASE_LABELS))
   setText('guardian-iteration',
-    guardian.iteration === undefined ? '—' : String(guardian.iteration))
+    displayIteration(guardian.phase, guardian.iteration))
   setText('guardian-detail', displayValue(guardian.status, GUARDIAN_STATUS_LABELS))
+}
+
+function displayIteration(phase, iteration) {
+  if (typeof iteration !== 'number' || phase === 'PREPARING') return '—'
+  if (phase === 'REVIEWING') return '第 ' + (iteration + 1) + ' 轮'
+  return iteration > 0 ? '第 ' + iteration + ' 轮' : '—'
 }
 
 function formatElapsed(ms) {
   if (typeof ms !== 'number' || !isFinite(ms)) return ''
-  return ms < 1000 ? ms + ' 毫秒' : (Math.round(ms / 100) / 10) + ' 秒'
+  var value = ms < 1000 ? ms : (ms < 60000 ? ms / 1000 : ms / 60000)
+  var unit = ms < 1000 ? '毫秒' : (ms < 60000 ? '秒' : '分钟')
+  return String(Number((Math.round(value * 100) / 100).toFixed(2))) + ' ' + unit
 }
 
 function summarizeEvent(ev) {
@@ -309,7 +317,8 @@ function summarizeEvent(ev) {
   if (ev.type === 'GUARDIAN_PHASE') {
     var parts = [displayValue(data.phase, GUARDIAN_PHASE_LABELS)]
     if (data.status !== undefined) parts.push(displayValue(data.status, GUARDIAN_STATUS_LABELS))
-    if (data.iteration !== undefined) parts.push('第 ' + data.iteration + ' 轮')
+    var iteration = displayIteration(data.phase, data.iteration)
+    if (iteration !== '—') parts.push(iteration)
     var elapsed = formatElapsed(data.elapsedMs)
     if (elapsed) parts.push(elapsed)
     return parts.join(' · ')

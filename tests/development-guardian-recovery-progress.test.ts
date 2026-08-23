@@ -52,13 +52,17 @@ test('executor triggers onRecovery callback on max_turns bounded recovery', asyn
     result('tests passed'),
   ])
 
-  const recoveries: Array<{ reason: string; sessionId: string; bounded: boolean }> = []
+  const recoveries: Array<{ reason: string; sessionId: string; bounded: boolean; iteration: number }> = []
+  const verifications: Array<{ command: string; status: string; iteration: number }> = []
 
   const executor = new ClaudeCodeExecutor({
     cwd: 'D:/repo',
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)
+    },
+    onVerification: (verification) => {
+      verifications.push(verification)
     },
   })
 
@@ -85,12 +89,42 @@ test('executor triggers onRecovery callback on max_turns bounded recovery', asyn
   assert.equal(recoveries[0]?.reason, 'max_turns')
   assert.equal(recoveries[0]?.sessionId, 'session-123')
   assert.equal(recoveries[0]?.bounded, true)
+  assert.equal(recoveries[0]?.iteration, 1)
+  assert.ok(verifications.length > 0)
+  assert.ok(verifications.every((verification) => verification.iteration === 1))
 
   const claudeRequests = runner.requests.filter((request) =>
     request.args.some((entry) => entry.includes('claude')),
   )
   assert.equal(claudeRequests.length, 2, 'must call Claude twice')
   assert.ok(claudeRequests[1]?.args.includes('--resume'), 'second call must use --resume')
+})
+
+test('executor verification callback preserves the current Executor iteration', async () => {
+  const runner = new QueueRunner([
+    result(''),
+    result(claudeJson({ result: '完成。' })),
+    result(' M src/a.ts\n'),
+    result('diff clean'),
+    result('tests passed'),
+  ])
+  const verifications: Array<{ iteration: number }> = []
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+    onVerification: (verification) => verifications.push(verification),
+  })
+
+  await executor.execute({
+    task: { id: 'task-iteration-2', goal: 'test', state: 'EXECUTING', iteration: 2, maxIterations: 3 },
+    packet: {
+      verdict: 'proceed', goal: 'test', instructions: ['work'], constraints: [],
+      verification: ['npm test'], doNotDo: [],
+    },
+  })
+
+  assert.ok(verifications.length > 0)
+  assert.ok(verifications.every((verification) => verification.iteration === 2))
 })
 
 test('executor does not trigger onRecovery when recovery is not needed', async () => {

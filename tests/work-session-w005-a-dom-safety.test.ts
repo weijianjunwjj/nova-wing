@@ -117,7 +117,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
       completedTaskIds: [],
       humanRequired: { category: 'DECISION_REQUIRED', reason: MALICIOUS_REASON },
     },
-    guardian: { phase: 'REVIEWING', status: 'active', iteration: 1, elapsedMs: 0 },
+    guardian: { phase: 'REVIEWING', status: 'active', iteration: 0, elapsedMs: 0 },
     recentEvents: [
       {
         id: 1,
@@ -139,6 +139,16 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   const firstLi = taskList.children[0]!
   const label = firstLi.children[1]!
   assert.equal(label.textContent, `T1 ${MALICIOUS_GOAL}`)
+  assert.equal(elements.get('guardian-iteration')?.textContent, '第 1 轮')
+
+  // Presentation mapping and formatting never rewrite the trusted goal or raw elapsed value.
+  assert.equal((context.formatElapsed as (ms: number) => string)(0.0465), '0.05 毫秒')
+  assert.equal((context.formatElapsed as (ms: number) => string)(279.0166), '279.02 毫秒')
+  assert.equal((context.formatElapsed as (ms: number) => string)(2700), '2.7 秒')
+  assert.equal((context.formatElapsed as (ms: number) => string)(60000), '1 分钟')
+  assert.equal((context.formatElapsed as (ms: number) => string)(472200), '7.87 分钟')
+  assert.equal((context.displayIteration as (phase: string, iteration: number) => string)('PREPARING', 0), '—')
+  assert.equal((context.displayIteration as (phase: string, iteration: number) => string)('EXECUTING', 1), '第 1 轮')
 
   // 3. recent event message 原样文本落地
   const recentList = elements.get('recent-list') as unknown as {
