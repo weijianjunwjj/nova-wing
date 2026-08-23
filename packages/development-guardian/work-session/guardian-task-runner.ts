@@ -188,6 +188,67 @@ function isReviewerProtocolFailure(reason: string): boolean {
   return reason === 'brain review failed: reviewer returned malformed Guardian JSON'
 }
 
+const REPO_DRIFT_PATTERNS: readonly RegExp[] = [
+  /\bREPO_DRIFT\b/u,
+  /\bpre-existing changes\b/iu,
+  /\brepository checkpoint mismatch\b/iu,
+  /\bbranch mismatch\b/iu,
+  /\bHEAD mismatch\b/u,
+  /\bworktree fingerprint mismatch\b/iu,
+  /\bchanged[- ]file[- ]set mismatch\b/iu,
+  /\bunexpected (?:repository|worktree) changes?\b/iu,
+]
+
+function isRepoDriftReason(reason: string): boolean {
+  return REPO_DRIFT_PATTERNS.some((pattern) => pattern.test(reason))
+}
+
+function providerFailureEvidence(task: GuardianTask, reason: string): string {
+  const report = task.lastReport
+  if (report === undefined) {
+    return reason
+  }
+
+  return [
+    reason,
+    report.summary,
+    report.incompleteReason,
+    ...report.blockers,
+    ...report.verificationResults
+      .filter((result) => result.status === 'failed')
+      .map((result) => result.details),
+  ]
+    .filter((value): value is string => value !== undefined && value.length > 0)
+    .join('\n')
+}
+
+/**
+ * Narrow external Provider credential/account/billing prerequisite evidence.
+ * A bare HTTP status, application permission denial, or repository permission
+ * problem is intentionally insufficient.
+ */
+function isProviderCredentialRequired(task: GuardianTask, reason: string): boolean {
+  const evidence = providerFailureEvidence(task, reason)
+  if (
+    /\binsufficient (?:account )?balance\b/iu.test(evidence) ||
+    /\binsufficient (?:account )?credits?\b/iu.test(evidence) ||
+    /\b(?:billing|account) quota (?:is )?(?:unavailable|exhausted)\b/iu.test(evidence)
+  ) {
+    return true
+  }
+
+  const hasProviderContext =
+    /\b(?:claude code|executor provider|model provider|external provider|ask-bridge|chatgpt)\b/iu.test(
+      evidence,
+    )
+  const hasProviderAuthPrerequisite =
+    /\b(?:authentication required|provider credentials? required|unauthorized due to provider (?:credential|account) setup)\b/iu.test(
+      evidence,
+    )
+
+  return hasProviderContext && hasProviderAuthPrerequisite
+}
+
 /**
  * 分类 HumanRequired 类别
  */
@@ -211,12 +272,8 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
     }
   }
 
-  // Repo drift（结构化标记 REPO_DRIFT: 或既有关键词）
-  if (
-    reason.includes('REPO_DRIFT') ||
-    reason.includes('pre-existing changes') ||
-    reason.includes('worktree')
-  ) {
+  // Repo drift：只依赖结构化 marker 或明确 mismatch/unexpected-change 语义。
+  if (isRepoDriftReason(reason)) {
     return {
       category: 'REPO_DRIFT',
       reason,
@@ -249,6 +306,14 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   if (reason.includes('verification') && reason.includes('approval')) {
     return {
       category: 'PERMISSION_REQUIRED',
+      reason,
+    }
+  }
+
+  // 外部 Provider credential/account/billing 前置条件不是产品决策。
+  if (isProviderCredentialRequired(task, reason)) {
+    return {
+      category: 'CREDENTIAL_REQUIRED',
       reason,
     }
   }

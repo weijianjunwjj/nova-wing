@@ -185,6 +185,29 @@ function failureDetails(result: AskBridgeCommandResult): string {
   return (result.stderr.trim() || result.stdout.trim() || `exit=${String(result.exitCode)}`).slice(-4_000)
 }
 
+function isTransientBrowserSessionTransportFailure(details: string): boolean {
+  const isNonTransientPrerequisite =
+    /\b(?:credential|authentication|unauthorized|account|billing|balance|credits?|quota)\b/iu.test(
+      details,
+    ) ||
+    /\b(?:permission(?: denied| error)?|access denied|malformed|configuration|config error|ENOENT)\b/iu.test(
+      details,
+    ) ||
+    /\b(?:executable|command)\b.{0,40}\bnot found\b/iu.test(details)
+  if (isNonTransientPrerequisite) {
+    return false
+  }
+
+  return (
+    /\bcould not identify (?:the )?newly opened tab\b/iu.test(details) ||
+    /\bnewly opened tab could not be identified\b/iu.test(details) ||
+    /\b(?:error opening|failed to open) (?:a )?ChatGPT session\b/iu.test(details) ||
+    /\bbrowser\b.{0,80}\b(?:tab|session)\b.{0,80}\btransport\b.{0,80}\btemporarily unavailable\b/iu.test(
+      details,
+    )
+  )
+}
+
 function extractThreadLink(stdout: string): string | undefined {
   const match = /^Thread Link:\s+(https:\/\/chatgpt\.com\/c\/[^\s]+)\s*$/mu.exec(stdout)
   return match?.[1]
@@ -340,7 +363,11 @@ export class AskBridgeBrain implements GuardianBrain {
         if (isTimeout) {
           throw new RetryableGuardianBrainError(`ChatGPT review timed out after ${this.timeoutMs}ms`)
         }
-        throw new Error(`ask-bridge failed: ${failureDetails(result)}`)
+        const details = failureDetails(result)
+        if (isTransientBrowserSessionTransportFailure(details)) {
+          throw new RetryableGuardianBrainError(`ask-bridge failed: ${details}`, 'transport')
+        }
+        throw new Error(`ask-bridge failed: ${details}`)
       }
 
       this.rememberConversation(taskId, result.stdout)

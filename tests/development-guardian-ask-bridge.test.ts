@@ -198,7 +198,7 @@ test('ask-bridge brain fails closed when bridge exits non-zero', async () => {
   await assert.rejects(brain.review({ task }), /Chrome not found/)
 })
 
-test('ask-bridge brain marks only command-runner timeout as retryable', async () => {
+test('ask-bridge brain marks command-runner timeout as retryable', async () => {
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
     timeoutMs: 120_000,
@@ -212,6 +212,143 @@ test('ask-bridge brain marks only command-runner timeout as retryable', async ()
       error.kind === 'timeout' &&
       error.message === 'ChatGPT review timed out after 120000ms',
   )
+})
+
+test('Finding #11: AskBridge newly-opened-tab transport failure is retryable', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({
+      exitCode: 1,
+      stdout: '',
+      stderr:
+        'Error opening ChatGPT session: Could not identify the newly opened tab; existing tabs were preserved',
+    }),
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'transport' &&
+      error.message.includes('Could not identify the newly opened tab'),
+  )
+})
+
+test('Finding #11: unknown and credential AskBridge failures are not transport-retryable', async () => {
+  for (const stderr of [
+    'arbitrary unknown AskBridge failure',
+    'Error opening ChatGPT session: authentication required for provider account',
+    'Error opening ChatGPT session: 403 Insufficient account balance',
+    'browser executable not found',
+  ]) {
+    const brain = new AskBridgeBrain({
+      command: 'ask-bridge.exe',
+      commandRunner: () => Promise.resolve({ exitCode: 1, stdout: '', stderr }),
+    })
+
+    await assert.rejects(
+      brain.review({ task }),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof RetryableGuardianBrainError) &&
+        error.message.includes(stderr),
+    )
+  }
+})
+
+test('Finding #11: real tab failure uses bounded retry then session rotation and completes', async () => {
+  const tabFailure =
+    'Error opening ChatGPT session: Could not identify the newly opened tab; existing tabs were preserved'
+  const donePacket = JSON.stringify({
+    verdict: 'done',
+    goal: '完成最小任务',
+    instructions: [],
+    constraints: ['不得越界'],
+    verification: ['npm test'],
+    do_not_do: ['不要提交'],
+  })
+  const requests: AskBridgeCommandRequest[] = []
+  let calls = 0
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      calls += 1
+      if (calls <= 2) {
+        return { exitCode: 1, stdout: '', stderr: tabFailure }
+      }
+      await writeResponse(request, calls === 3 ? packet : donePacket)
+      return {
+        exitCode: 0,
+        stdout: 'Thread Link: https://chatgpt.com/c/rotated-tab-session',
+        stderr: '',
+      }
+    },
+  })
+  const resetTaskIds: string[] = []
+  const resetTaskReviewSession = brain.resetTaskReviewSession.bind(brain)
+  brain.resetTaskReviewSession = (taskId) => {
+    resetTaskIds.push(taskId)
+    resetTaskReviewSession(taskId)
+  }
+
+  const result = await runGuardianTask({
+    task,
+    brain,
+    executor: {
+      async execute() {
+        return {
+          summary: 'executor completed',
+          changedFiles: [],
+          commandsRun: ['npm test'],
+          verificationResults: [{ name: 'npm test', status: 'passed' as const }],
+          blockers: [],
+        }
+      },
+    },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(requests.length, 4)
+  assert.deepEqual(resetTaskIds, ['task-1'])
+  assert.equal(requests[2]?.args.includes('--new'), true)
+  const finalSessionIndex = requests[3]?.args.indexOf('--session-url') ?? -1
+  assert.ok(finalSessionIndex >= 0)
+  assert.equal(requests[3]?.args[finalSessionIndex + 1], 'https://chatgpt.com/c/rotated-tab-session')
+})
+
+test('Finding #11: tab-failure retry and rotation budgets exhaust without a fourth call', async () => {
+  const tabFailure =
+    'Error opening ChatGPT session: Could not identify the newly opened tab; existing tabs were preserved'
+  let calls = 0
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => {
+      calls += 1
+      return Promise.resolve({ exitCode: 1, stdout: '', stderr: tabFailure })
+    },
+  })
+  const resetTaskIds: string[] = []
+  const resetTaskReviewSession = brain.resetTaskReviewSession.bind(brain)
+  brain.resetTaskReviewSession = (taskId) => {
+    resetTaskIds.push(taskId)
+    resetTaskReviewSession(taskId)
+  }
+
+  const result = await runGuardianTask({
+    task,
+    brain,
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(calls, 3)
+  assert.deepEqual(resetTaskIds, ['task-1'])
+  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.match(result.task.stopReason ?? '', /Could not identify the newly opened tab/)
 })
 
 test('ask-bridge brain marks only malformed JSON after a successful transport as retryable protocol failure', async () => {

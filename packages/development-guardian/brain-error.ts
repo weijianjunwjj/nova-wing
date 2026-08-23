@@ -1,4 +1,4 @@
-export type GuardianBrainRetryKind = 'timeout' | 'protocol'
+export type GuardianBrainRetryKind = 'timeout' | 'protocol' | 'transport'
 
 /**
  * Provider-neutral transient Brain failure that Guardian may retry within the
