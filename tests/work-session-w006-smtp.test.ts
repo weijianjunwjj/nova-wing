@@ -164,10 +164,27 @@ await test('notification reasons are localized, bounded, and redact credential-l
     safeNotificationReason('AskBridge tab identification failure'),
     'Reviewer 浏览器会话打开失败。',
   )
+  assert.equal(
+    safeNotificationReason(
+      'brain review failed: ask-bridge failed: Error opening ChatGPT session: Could not identify the newly opened tab; existing tabs were preserved',
+    ),
+    'Reviewer 浏览器会话打开失败。',
+  )
   assert.doesNotMatch(
     safeNotificationReason('provider error token=SUPER_SECRET cookie=SESSION_SECRET'),
     /SUPER_SECRET|SESSION_SECRET/u,
   )
+  for (const reason of [
+    'ANTHROPIC_AUTH_TOKEN=SUPER_SECRET',
+    'NOVAWING_SMTP_PASS=SUPER_SECRET',
+    'POSTGRES_PASSWORD=SUPER_SECRET',
+    'MY_API_KEY=SUPER_SECRET',
+    'SOME_COOKIE=SUPER_SECRET',
+    'SOME_COOKIE:SUPER_SECRET',
+    'AUTHORIZATION=BearerSecret',
+  ]) {
+    assert.doesNotMatch(safeNotificationReason(reason), /SUPER_SECRET|BearerSecret/u)
+  }
   assert.equal(
     safeNotificationReason('{"token":"SUPER_SECRET","usage":{"raw":true}}'),
     '发生未知错误。请在本地控制台查看安全诊断信息。',

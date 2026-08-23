@@ -138,7 +138,9 @@ export function safeNotificationReason(reason: string): string {
   if (/\bDATABASE_URL\b.*\b(missing|not configured)\b|\bDATABASE_URL\b.*\b未配置\b/iu.test(normalized)) {
     return 'PostgreSQL DATABASE_URL 未配置，pytest 无法完成验证。'
   }
-  if (/\bAskBridge\b.*\b(tab identification failure|tab.*(?:open|identification).*fail)/iu.test(normalized)) {
+  const isAskBridgeTabOpenFailure = /\bask(?:-| )?bridge\b/iu.test(normalized) &&
+    /\bcould not identify (?:the )?newly opened tab\b|\berror opening (?:a )?chatgpt session\b|\btab identification failure\b|\btab\b.{0,80}\b(?:open(?:ing)?|identif(?:y|ication))\b.{0,80}\b(?:fail(?:ed|ure)?|error)\b|\b(?:fail(?:ed|ure)?|error)\b.{0,80}\b(?:open(?:ing)?|identif(?:y|ication))\b.{0,80}\btab\b/iu.test(normalized)
+  if (isAskBridgeTabOpenFailure) {
     return 'Reviewer 浏览器会话打开失败。'
   }
   // Provider 原始 JSON 或异常对象缺乏稳定的用户语义，也可能携带敏感信息。
@@ -148,7 +150,7 @@ export function safeNotificationReason(reason: string): string {
   const redacted = normalized
     .replace(/\bBearer\s+\S+/giu, '[REDACTED]')
     .replace(
-      /\b(authorization|password|secret|token|api[_ -]?key|credential|cookie|smtp[_ -]?pass)\s*[:=]\s*\S+/giu,
+      /(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z0-9-]*[_ -])*(?:authorization|password|secret|token|api[_ -]?key|credential|cookie|smtp[_ -]?pass))\s*[:=]\s*\S+/giu,
       '$1=[REDACTED]',
     )
     .replace(/\s+/gu, ' ')

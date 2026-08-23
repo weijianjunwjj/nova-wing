@@ -49,7 +49,7 @@ await test('W005-A remote closure: raw launch error never reaches Web surfaces',
       s.controller.getRecentEvents().some(
         (event) =>
           event.type === 'SESSION_FAILED' &&
-          event.data.message === 'Session failed. Check local diagnostics.',
+          event.data.message === 'Work Session 失败。请检查本地诊断信息。',
       ),
     )
   } finally {
@@ -84,7 +84,7 @@ await test('W005-A remote closure: durable failureReason never reaches Web surfa
       s.controller.getRecentEvents().some(
         (event) =>
           event.type === 'SESSION_FAILED' &&
-          event.data.message === 'Session failed. Check local diagnostics.',
+          event.data.message === 'Work Session 失败。请检查本地诊断信息。',
       ),
     )
   } finally {

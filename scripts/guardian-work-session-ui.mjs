@@ -9,7 +9,7 @@ import {
 
 function configPathFromArgs(args) {
   if (args.length !== 2 || args[0] !== '--config' || args[1].trim().length === 0) {
-    throw new Error('Usage: npm run guardian:work-session:ui -- --config <path>')
+    throw new Error('用法：npm run guardian:work-session:ui -- --config <path>')
   }
   const value = args[1]
   if (process.platform === 'win32') {
@@ -42,6 +42,6 @@ try {
   process.once('SIGINT', () => { void close() })
   process.once('SIGTERM', () => { void close() })
 } catch (error) {
-  console.error(error instanceof Error ? error.message : 'Work Session UI failed to start')
+  console.error(error instanceof Error ? error.message : 'NovaWing Work Session 控制台启动失败')
   process.exitCode = 1
 }
