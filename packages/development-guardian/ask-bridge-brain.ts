@@ -267,10 +267,13 @@ export class AskBridgeBrain implements GuardianBrain {
     if (this.options.verbose === true) {
       args.push('--verbose')
     }
-    if (isFirstReview && (this.options.conversationUrl === undefined || this.rotatedTaskIds.has(taskId))) {
-      args.push('--new')
-    } else if (conversationUrl !== undefined) {
+    // A successful transport may have already given us a task Thread Link
+    // even when packet parsing failed. Reuse that trusted task URL before
+    // considering --new, so a protocol retry stays in the same session.
+    if (conversationUrl !== undefined) {
       args.push('--session-url', conversationUrl)
+    } else if (isFirstReview) {
+      args.push('--new')
     }
     if (isFirstReview && this.options.model !== undefined) {
       args.push('--model', this.options.model)

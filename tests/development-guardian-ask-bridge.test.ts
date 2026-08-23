@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   AskBridgeBrain,
   RetryableGuardianBrainError,
+  runGuardianTask,
   type AskBridgeCommandRequest,
   type AskBridgeCommandRunner,
   type AskBridgeOutputEvent,
@@ -30,10 +31,14 @@ const task = {
 }
 
 async function writePacket(request: AskBridgeCommandRequest): Promise<void> {
+  await writeResponse(request, packet)
+}
+
+async function writeResponse(request: AskBridgeCommandRequest, response: string): Promise<void> {
   const outputIndex = request.args.indexOf('--output')
   const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : undefined
   assert.ok(outputPath)
-  await writeFile(outputPath, packet, 'utf8')
+  await writeFile(outputPath, response, 'utf8')
 }
 
 test('ask-bridge brain drives fixed ChatGPT session and parses packet from output file', async () => {
@@ -224,6 +229,86 @@ test('ask-bridge brain marks only malformed JSON after a successful transport as
       error.message === 'reviewer returned malformed Guardian JSON' &&
       !error.message.includes('do-not-log'),
   )
+})
+
+test('ask-bridge protocol retry reuses the Thread Link captured before malformed JSON', async () => {
+  const sessionUrl = 'https://chatgpt.com/c/protocol-retry-session'
+  const requests: AskBridgeCommandRequest[] = []
+  let calls = 0
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      calls += 1
+      await writeResponse(request, calls === 1 ? '{"verdict":"proceed"' : packet)
+      return { exitCode: 0, stdout: `Thread Link: ${sessionUrl}`, stderr: '' }
+    },
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) => error instanceof RetryableGuardianBrainError && error.kind === 'protocol',
+  )
+  const result = await brain.review({ task })
+
+  assert.equal(result.verdict, 'proceed')
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  const retrySessionIndex = requests[1]?.args.indexOf('--session-url') ?? -1
+  assert.ok(retrySessionIndex >= 0)
+  assert.equal(requests[1]?.args[retrySessionIndex + 1], sessionUrl)
+  assert.equal(requests[1]?.args.includes('--new'), false)
+})
+
+test('guardian protocol retry keeps the AskBridge Thread Link through final review', async () => {
+  const sessionUrl = 'https://chatgpt.com/c/guardian-protocol-retry-session'
+  const donePacket = JSON.stringify({
+    verdict: 'done',
+    goal: '完成最小任务',
+    instructions: [],
+    constraints: ['不得越界'],
+    verification: ['npm test'],
+    do_not_do: ['不要提交'],
+  })
+  const requests: AskBridgeCommandRequest[] = []
+  const responses = ['{"verdict":"proceed"', packet, donePacket]
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      const response = responses.shift()
+      assert.ok(response)
+      await writeResponse(request, response)
+      return { exitCode: 0, stdout: `Thread Link: ${sessionUrl}`, stderr: '' }
+    },
+  })
+
+  const result = await runGuardianTask({
+    task,
+    brain,
+    executor: {
+      async execute() {
+        return {
+          summary: 'executor completed',
+          changedFiles: [],
+          commandsRun: ['npm test'],
+          verificationResults: [{ name: 'npm test', status: 'passed' as const }],
+          blockers: [],
+        }
+      },
+    },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(requests.length, 3)
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  for (const request of requests.slice(1)) {
+    const sessionIndex = request.args.indexOf('--session-url')
+    assert.ok(sessionIndex >= 0)
+    assert.equal(request.args[sessionIndex + 1], sessionUrl)
+    assert.equal(request.args.includes('--new'), false)
+  }
 })
 
 test('ask-bridge brain does not make valid JSON packet-contract failures retryable', async () => {
