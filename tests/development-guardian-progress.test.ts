@@ -99,7 +99,7 @@ test('CASE B: progress observer is optional', async () => {
   assert.equal(result.task.state, 'COMPLETED')
 })
 
-test('CASE C: brain review failure triggers HUMAN_REQUIRED', async () => {
+test('CASE C: brain review failure triggers infrastructure suspension', async () => {
   const brain: GuardianBrain = {
     async review() {
       throw new Error('ChatGPT review timed out after 180000ms')
@@ -119,11 +119,10 @@ test('CASE C: brain review failure triggers HUMAN_REQUIRED', async () => {
     onProgress: (event) => events.push(event),
   })
 
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
-  assert.ok(result.task.stopReason?.includes('brain review failed'))
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.ok(result.task.stopReason?.includes('timed out'))
 
-  const finalEvent = events.find((e) => e.phase === 'HUMAN_REQUIRED')
+  const finalEvent = events.find((e) => e.phase === 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.ok(finalEvent)
   assert.equal(finalEvent.status, 'completed')
 })

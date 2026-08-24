@@ -23,6 +23,7 @@ export type ControlEventType =
   | 'CHECKPOINT_COMMITTED'
   | 'CHECKPOINT_PUSHED'
   | 'HUMAN_REQUIRED'
+  | 'BRAIN_INFRASTRUCTURE_FAILED'
   | 'SESSION_COMPLETED'
   | 'SESSION_FAILED'
   | 'PAUSE_REQUESTED'
@@ -88,6 +89,17 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    brainFailure?: {
+      stage: 'BRAIN_REVIEW'
+      category: string
+      adapter: string
+      retryable: boolean
+      degraded: boolean
+      fingerprint: string
+      requestedModel?: string
+      requestedReasoning?: string
+      safeMessage: string
+    }
     suspensionReason?: string
     cancellationReason?: string
   }

@@ -140,3 +140,35 @@ await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and re
     await s.server.close()
   }
 })
+
+test('Brain infrastructure suspension is distinct and accepts only checkpoint recovery', () => {
+  const runtime = new FakeRuntime(makeDefinition())
+  runtime.state = makeState({
+    state: 'SUSPENDED',
+    currentTaskId: 'T1',
+    suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
+    brainFailure: {
+      stage: 'BRAIN_REVIEW',
+      category: 'TRANSPORT',
+      rootCause: 'ask-bridge unavailable',
+      adapter: 'ask-bridge/chatgpt',
+      requestedModel: 'GPT-5.6 Sol',
+      requestedReasoning: 'high',
+      retryable: true,
+      degraded: false,
+      fingerprint: 'brain-transport:ask-bridge-unavailable',
+    },
+  })
+  const controller = new WorkSessionControlController({ createRuntime: () => runtime })
+
+  const snapshot = controller.getSnapshot()
+  assert.equal(snapshot.runtime.humanRequired, undefined)
+  assert.equal(snapshot.runtime.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(snapshot.runtime.brainFailure?.stage, 'BRAIN_REVIEW')
+  assert.match(snapshot.runtime.brainFailure?.safeMessage ?? '', /Brain 尚未完成 Review/)
+  assert.equal(controller.resume({ decision: 'pretend this is a decision' }).accepted, false)
+  assert.equal(controller.resume({ approval: true }).accepted, false)
+  assert.equal(controller.resume({}).accepted, true)
+  assert.deepEqual(runtime.resumeInputs, [{}])
+  controller.close()
+})

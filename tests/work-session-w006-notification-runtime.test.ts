@@ -139,7 +139,7 @@ await test('W006 NOTIFY-A/B/C: COMPLETED, FAILED, and USER_PAUSED never notify',
   })
 })
 
-await test('W006 reviewer rotation notifies only when the fresh session also times out', async () => {
+await test('W006 reviewer rotation never notifies for Brain infrastructure failure', async () => {
   await withStorage('w006-rotation-success-', async (storageUrl) => {
     const notifier = new RecordingNotifier()
     let reviews = 0
@@ -184,11 +184,13 @@ await test('W006 reviewer rotation notifies only when the fresh session also tim
 
     const state = await runtime.start()
     assert.equal(state.state, 'SUSPENDED')
-    assert.equal(state.humanRequired?.category, 'STALLED')
+    assert.equal(state.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
+    assert.equal(state.humanRequired, undefined)
+    assert.equal(state.brainFailure?.category, 'TRANSPORT')
     assert.equal(reviews, 3)
     assert.equal(rotations, 1)
     await runtime.getNotificationPromise()
-    assert.equal(notifier.attempts, 1)
+    assert.equal(notifier.attempts, 0)
     await runtime.close()
   })
 })

@@ -78,11 +78,7 @@ test('final review timeout preserves executor report', async () => {
     onProgress: (event) => events.push(event),
   })
 
-  assert.equal(result.task.state, 'HUMAN_REQUIRED', 'must not complete after final review timeout')
-  assert.ok(
-    result.task.stopReason?.includes('brain review failed'),
-    'stopReason must mention brain review failed',
-  )
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED', 'must not complete after final review timeout')
   assert.ok(result.task.stopReason?.includes('timed out'), 'stopReason must mention timeout')
   assert.equal(result.reports.length, 1, 'must preserve executor report')
   assert.deepEqual(result.reports[0]?.changedFiles, ['src/auth.ts', 'src/auth.test.ts'])
@@ -113,7 +109,7 @@ test('initial review timeout has no executor report', async () => {
     executor,
   })
 
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.ok(result.task.stopReason?.includes('timed out'))
   assert.equal(result.reports.length, 0, 'initial review timeout must have no executor report')
 })
@@ -156,8 +152,8 @@ test('timeout stopReason distinguishes initial vs final review', async () => {
 
   assert.equal(initialResult.reports.length, 0)
   assert.equal(finalResult.reports.length, 1)
-  assert.ok(initialResult.task.stopReason?.includes('brain review failed'))
-  assert.ok(finalResult.task.stopReason?.includes('brain review failed'))
+  assert.equal(initialResult.task.brainFailure?.stage, 'BRAIN_REVIEW')
+  assert.equal(finalResult.task.brainFailure?.stage, 'BRAIN_REVIEW')
 })
 
 test('CLI heartbeat timer is cleared after phase completes', async () => {

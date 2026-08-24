@@ -4,7 +4,34 @@ export type GuardianTaskState =
   | 'REVIEWING'
   | 'COMPLETED'
   | 'HUMAN_REQUIRED'
+  | 'BRAIN_INFRASTRUCTURE_FAILED'
   | 'FAILED'
+
+export type GuardianBrainFailureCategory =
+  | 'CONFIGURATION'
+  | 'TRANSPORT'
+  | 'PROTOCOL'
+  | 'RESPONSE'
+
+/**
+ * Provider-neutral Brain infrastructure failure. This is deliberately separate
+ * from HUMAN_REQUIRED: no Reviewer decision exists when transport/configuration
+ * did not complete.
+ */
+export interface GuardianBrainFailure {
+  stage: 'BRAIN_REVIEW'
+  category: GuardianBrainFailureCategory
+  rootCause: string
+  adapter: string
+  requestedModel?: string
+  requestedReasoning?: string
+  availableOptions?: readonly string[]
+  retryable: boolean
+  degraded: boolean
+  fingerprint: string
+  /** Bounded, normalized local diagnostic; never an unbounded stderr dump. */
+  rawError?: string
+}
 
 export type DelegationVerdict = 'proceed' | 'revise' | 'blocked' | 'done'
 
@@ -69,6 +96,8 @@ export interface GuardianTask {
   lastPacket?: DelegationPacket
   lastReport?: ExecutionReport
   stopReason?: string
+  /** Present only when Brain infrastructure failed before a valid verdict. */
+  brainFailure?: GuardianBrainFailure
   /**
    * W003: 本次 run() 是否携带并成功验证了 GuardianTaskRecoveryCheckpoint。
    * 这是 recovery continuation 的唯一 source of truth；

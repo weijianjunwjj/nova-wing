@@ -131,6 +131,8 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   // 1. decision reason 原样文本落地
   const decisionReason = elements.get('decision-reason')
   assert.equal(decisionReason?.textContent, MALICIOUS_REASON)
+  assert.equal(elements.get('decision-input')?.hidden, false)
+  assert.equal(elements.get('resume-decision-btn')?.hidden, false)
 
   // 2. task goal 原样文本落地
   const taskList = elements.get('task-list') as unknown as {
@@ -167,6 +169,42 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
 
   // 6. __PWNED__ 未被执行
   assert.notEqual(context.__PWNED__, true)
+
+  // Infrastructure suspension is not a trusted decision flow.
+  render({
+    configuredSession: {
+      id: 's1',
+      targetRepo: '/repo/example',
+      branch: 'feat/x',
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
+      tasks: [{ id: 'T1', goal: 'preserved task' }],
+    },
+    runtime: {
+      started: true,
+      running: false,
+      state: 'SUSPENDED',
+      currentTaskId: 'T1',
+      completedTaskIds: [],
+      suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
+      brainFailure: {
+        stage: 'BRAIN_REVIEW',
+        category: 'TRANSPORT',
+        adapter: 'ask-bridge/chatgpt',
+        retryable: true,
+        degraded: false,
+        fingerprint: 'brain-transport:test',
+        safeMessage: '无法完成 Brain transport/configuration。Brain 尚未完成 Review。',
+      },
+    },
+    guardian: { phase: 'BRAIN_INFRASTRUCTURE_FAILED', status: 'completed', iteration: 1, elapsedMs: 0 },
+    recentEvents: [],
+  })
+  assert.equal(elements.get('decision-title')?.textContent, 'Brain 暂时不可用')
+  assert.equal(elements.get('decision-input')?.hidden, true)
+  assert.equal(elements.get('resume-decision-btn')?.hidden, true)
+  assert.equal(elements.get('resume-resolved-btn')?.hidden, true)
+  assert.equal(elements.get('resume-paused-btn')?.hidden, false)
+  assert.equal(elements.get('resume-paused-btn')?.textContent, '修复后恢复')
 
   // 7. control token 不出现在任何可见 DOM 文本
   const allText: string[] = []

@@ -6,7 +6,10 @@ import type {
   GuardianTask,
 } from './model.js'
 import type { GuardianProgressObserver, GuardianProgressEvent } from './progress.js'
-import { RetryableGuardianBrainError } from './brain-error.js'
+import {
+  RetryableGuardianBrainError,
+  guardianBrainFailureFrom,
+} from './brain-error.js'
 
 export class GuardianStopError extends Error {
   constructor(
@@ -181,12 +184,14 @@ export async function runGuardianTask(options: {
       emitProgress(reviewPhase, 'completed')
     } catch (error) {
       emitProgress(reviewPhase, 'failed', error instanceof Error ? error.message : String(error))
+      const brainFailure = guardianBrainFailureFrom(error)
       task = {
         ...task,
-        state: 'HUMAN_REQUIRED',
-        stopReason: `brain review failed: ${error instanceof Error ? error.message : String(error)}`,
+        state: 'BRAIN_INFRASTRUCTURE_FAILED',
+        stopReason: brainFailure.rootCause,
+        brainFailure,
       }
-      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+      emitProgress('BRAIN_INFRASTRUCTURE_FAILED', 'completed', task.stopReason)
       return { task, reports }
     }
     task = { ...task, lastPacket: packet }

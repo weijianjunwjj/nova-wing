@@ -6,7 +6,10 @@ import { join } from 'node:path'
 
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianBrain } from './ports.js'
-import { RetryableGuardianBrainError } from './brain-error.js'
+import {
+  GuardianBrainInfrastructureError,
+  RetryableGuardianBrainError,
+} from './brain-error.js'
 import {
   buildGuardianBrainPrompt,
   parseDelegationPacket,
@@ -26,6 +29,21 @@ export interface AskBridgeTimingEvent {
   taskId: string
   iteration: number
   durationMs: number
+}
+
+export interface AskBridgeConfigurationStatus {
+  taskId: string
+  requestedModel?: string
+  requestedReasoning?: AskBridgeReasoning
+  actualModel?: string | 'unknown'
+  actualReasoning?: AskBridgeReasoning | 'unknown'
+  degraded: boolean
+  warning?: {
+    category: 'REASONING_CONFIGURATION'
+    fingerprint: 'reasoning-switch:option-not-found'
+    message: string
+    availableOptions: readonly string[]
+  }
 }
 
 export interface AskBridgeCommandRequest {
@@ -56,6 +74,7 @@ export interface AskBridgeBrainOptions {
   commandRunner?: AskBridgeCommandRunner
   onTiming?: (event: AskBridgeTimingEvent) => void
   onDiagnostic?: (event: AskBridgeOutputEvent) => void
+  onConfiguration?: (status: AskBridgeConfigurationStatus) => void
 }
 
 /**
@@ -181,8 +200,63 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
   })
 }
 
+const PERFORMANCE_ISSUE_MESSAGE = 'No handler registered for issue code PerformanceIssue'
+
+export function normalizeAskBridgeDiagnostics(value: string): string {
+  const lines = value.split(/\r?\n/u)
+  const normalized: string[] = []
+  let performanceIssueCount = 0
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? ''
+    if (line === '[chrome-devtools]' && lines[index + 1]?.trim() === PERFORMANCE_ISSUE_MESSAGE) {
+      performanceIssueCount += 1
+      index += 1
+      continue
+    }
+    if (line === PERFORMANCE_ISSUE_MESSAGE) {
+      performanceIssueCount += 1
+      continue
+    }
+    if (line.length > 0) normalized.push(line)
+  }
+
+  if (performanceIssueCount > 0) {
+    normalized.push(`[chrome-devtools] ${PERFORMANCE_ISSUE_MESSAGE} × ${String(performanceIssueCount)}`)
+  }
+  return normalized.join('\n').slice(-4_000)
+}
+
 function failureDetails(result: AskBridgeCommandResult): string {
-  return (result.stderr.trim() || result.stdout.trim() || `exit=${String(result.exitCode)}`).slice(-4_000)
+  const raw = [result.stderr.trim(), result.stdout.trim()].filter((value) => value.length > 0).join('\n') ||
+    `exit=${String(result.exitCode)}`
+  return normalizeAskBridgeDiagnostics(raw)
+}
+
+function isPerformanceIssueNoise(line: string): boolean {
+  const trimmed = line.trim()
+  return trimmed === '[chrome-devtools]' || trimmed === PERFORMANCE_ISSUE_MESSAGE
+}
+
+function isReasoningOptionFailure(details: string): boolean {
+  return /(?:error switching reasoning|reasoning switch failed)/iu.test(details) &&
+    /option not found/iu.test(details)
+}
+
+function isModelSelectionFailure(details: string): boolean {
+  return /(?:error switching model|model switch failed|model selection failed)/iu.test(details)
+}
+
+function extractAvailableOptions(details: string): string[] {
+  const marker = /available options\s*:\s*/iu.exec(details)
+  if (marker === null) return []
+  return [...new Set(
+    details
+      .slice(marker.index + marker[0].length)
+      .split(/[,\r\n]+/u)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0 && !value.startsWith('[chrome-devtools]')),
+  )].slice(0, 30)
 }
 
 function isTransientBrowserSessionTransportFailure(details: string): boolean {
@@ -232,6 +306,7 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly headless: boolean
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
+  private readonly configurationByTask = new Map<string, AskBridgeConfigurationStatus>()
   /** Tasks whose replaceable state must override the constructor's initial URL. */
   private readonly rotatedTaskIds = new Set<string>()
 
@@ -252,6 +327,18 @@ export class AskBridgeBrain implements GuardianBrain {
     }
   }
 
+  captureConfigurationStatus(taskId: string): AskBridgeConfigurationStatus | undefined {
+    const status = this.configurationByTask.get(taskId)
+    return status === undefined
+      ? undefined
+      : {
+          ...status,
+          ...(status.warning === undefined
+            ? {}
+            : { warning: { ...status.warning, availableOptions: [...status.warning.availableOptions] } }),
+        }
+  }
+
   /**
    * W003: 从持久化 state 恢复
    */
@@ -259,6 +346,7 @@ export class AskBridgeBrain implements GuardianBrain {
     this.taskConversationUrls.clear()
     this.reviewedTaskIds.clear()
     this.rotatedTaskIds.clear()
+    this.configurationByTask.clear()
 
     for (const [taskId, url] of Object.entries(state.taskConversationUrls)) {
       this.taskConversationUrls.set(taskId, url)
@@ -282,7 +370,26 @@ export class AskBridgeBrain implements GuardianBrain {
       : this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
   }
 
-  private buildArgs(taskId: string, prompt: string, outputPath: string): string[] {
+  private failureContext(): {
+    adapter: string
+    requestedModel?: string
+    requestedReasoning?: AskBridgeReasoning
+  } {
+    return {
+      adapter: 'ask-bridge/chatgpt',
+      ...(this.options.model === undefined ? {} : { requestedModel: this.options.model }),
+      ...(this.options.reasoning === undefined
+        ? {}
+        : { requestedReasoning: this.options.reasoning }),
+    }
+  }
+
+  private buildArgs(
+    taskId: string,
+    prompt: string,
+    outputPath: string,
+    omitReasoning = false,
+  ): string[] {
     const args = ['--provider', 'chatgpt', `--headless=${String(this.headless)}`]
     const conversationUrl = this.conversationUrlForTask(taskId)
     const isFirstReview = !this.reviewedTaskIds.has(taskId)
@@ -301,7 +408,13 @@ export class AskBridgeBrain implements GuardianBrain {
     if (isFirstReview && this.options.model !== undefined) {
       args.push('--model', this.options.model)
     }
-    if (isFirstReview && this.options.reasoning !== undefined) {
+    const knownReasoningDegradation = this.configurationByTask.get(taskId)?.degraded === true
+    if (
+      isFirstReview &&
+      this.options.reasoning !== undefined &&
+      !omitReasoning &&
+      !knownReasoningDegradation
+    ) {
       args.push('--reasoning', this.options.reasoning)
     }
 
@@ -344,12 +457,65 @@ export class AskBridgeBrain implements GuardianBrain {
     const startedAt = performance.now()
 
     try {
-      const result = await this.runner({
-        executable: this.command,
-        args: this.buildArgs(taskId, prompt, outputPath),
-        timeoutMs: this.timeoutMs + 15_000,
-        ...(this.options.onDiagnostic === undefined ? {} : { onOutput: this.options.onDiagnostic }),
-      })
+      const runBridge = async (omitReasoning = false): Promise<AskBridgeCommandResult> => {
+        try {
+          return await this.runner({
+            executable: this.command,
+            args: this.buildArgs(taskId, prompt, outputPath, omitReasoning),
+            timeoutMs: this.timeoutMs + 15_000,
+            ...(this.options.onDiagnostic === undefined
+              ? {}
+              : {
+                  onOutput: (event) => {
+                    if (this.options.verbose === true || !isPerformanceIssueNoise(event.line)) {
+                      this.options.onDiagnostic?.(event)
+                    }
+                  },
+                }),
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          throw new GuardianBrainInfrastructureError(`ask-bridge unavailable: ${message}`, {
+            category: 'TRANSPORT',
+            ...this.failureContext(),
+            rawError: message,
+          })
+        }
+      }
+
+      let reasoningDegraded = this.configurationByTask.get(taskId)?.degraded === true
+      let result = await runBridge()
+
+      if (
+        result.exitCode !== 0 &&
+        !this.reviewedTaskIds.has(taskId) &&
+        this.options.reasoning !== undefined
+      ) {
+        const details = failureDetails(result)
+        if (isReasoningOptionFailure(details)) {
+          const availableOptions = extractAvailableOptions(details)
+          const status: AskBridgeConfigurationStatus = {
+            taskId,
+            requestedReasoning: this.options.reasoning,
+            actualReasoning: 'unknown',
+            degraded: true,
+            ...(this.options.model === undefined
+              ? {}
+              : { requestedModel: this.options.model, actualModel: 'unknown' }),
+            warning: {
+              category: 'REASONING_CONFIGURATION',
+              fingerprint: 'reasoning-switch:option-not-found',
+              message: 'Requested reasoning could not be configured; continuing with the current UI setting.',
+              availableOptions,
+            },
+          }
+          this.configurationByTask.set(taskId, status)
+          this.options.onConfiguration?.(status)
+          reasoningDegraded = true
+          await unlink(outputPath).catch(() => {})
+          result = await runBridge(true)
+        }
+      }
 
       this.options.onTiming?.({
         phase: 'bridge-command',
@@ -361,20 +527,49 @@ export class AskBridgeBrain implements GuardianBrain {
       if (result.exitCode !== 0) {
         const isTimeout = result.exitCode === null
         if (isTimeout) {
-          throw new RetryableGuardianBrainError(`ChatGPT review timed out after ${this.timeoutMs}ms`)
+          throw new RetryableGuardianBrainError(
+            `ChatGPT review timed out after ${this.timeoutMs}ms`,
+            'timeout',
+            {
+              ...this.failureContext(),
+              degraded: reasoningDegraded,
+            },
+          )
         }
         const details = failureDetails(result)
         if (isTransientBrowserSessionTransportFailure(details)) {
-          throw new RetryableGuardianBrainError(`ask-bridge failed: ${details}`, 'transport')
+          throw new RetryableGuardianBrainError(`ask-bridge failed: ${details}`, 'transport', {
+            ...this.failureContext(),
+            degraded: reasoningDegraded,
+            rawError: details,
+          })
         }
-        throw new Error(`ask-bridge failed: ${details}`)
+        const configurationFailure = isModelSelectionFailure(details) || isReasoningOptionFailure(details)
+        throw new GuardianBrainInfrastructureError(`ask-bridge failed: ${details}`, {
+          category: configurationFailure ? 'CONFIGURATION' : 'TRANSPORT',
+          ...this.failureContext(),
+          availableOptions: extractAvailableOptions(details),
+          degraded: reasoningDegraded,
+          ...(isModelSelectionFailure(details)
+            ? { fingerprint: 'model-selection:option-not-found' }
+            : isReasoningOptionFailure(details)
+              ? { fingerprint: 'reasoning-switch:option-not-found' }
+              : {}),
+          rawError: details,
+        })
       }
 
       this.rememberConversation(taskId, result.stdout)
 
       const response = await readBridgeOutput(outputPath, result.stdout)
       if (response.length === 0) {
-        throw new Error(`ask-bridge returned empty response: ${failureDetails(result)}`)
+        const details = failureDetails(result)
+        throw new GuardianBrainInfrastructureError(`ask-bridge returned empty response: ${details}`, {
+          category: 'RESPONSE',
+          ...this.failureContext(),
+          degraded: reasoningDegraded,
+          rawError: details,
+        })
       }
 
       let packet: DelegationPacket
@@ -384,11 +579,38 @@ export class AskBridgeBrain implements GuardianBrain {
         if (error instanceof TenXChatBrainProtocolError && error.kind === 'format') {
           // The bridge transport succeeded, but the Reviewer did not honor the
           // strict JSON wire format. Never retain or surface the raw response.
-          throw new RetryableGuardianBrainError(error.message, 'protocol')
+          throw new RetryableGuardianBrainError(error.message, 'protocol', {
+            ...this.failureContext(),
+            degraded: reasoningDegraded,
+          })
+        }
+        if (error instanceof TenXChatBrainProtocolError) {
+          throw new GuardianBrainInfrastructureError(error.message, {
+            category: 'PROTOCOL',
+            ...this.failureContext(),
+            degraded: reasoningDegraded,
+          })
         }
         throw error
       }
       this.reviewedTaskIds.add(taskId)
+      const existingStatus = this.configurationByTask.get(taskId)
+      const successfulStatus: AskBridgeConfigurationStatus = {
+        taskId,
+        degraded: reasoningDegraded,
+        ...(this.options.model === undefined
+          ? {}
+          : { requestedModel: this.options.model, actualModel: this.options.model }),
+        ...(this.options.reasoning === undefined
+          ? {}
+          : {
+              requestedReasoning: this.options.reasoning,
+              actualReasoning: reasoningDegraded ? 'unknown' : this.options.reasoning,
+            }),
+        ...(existingStatus?.warning === undefined ? {} : { warning: existingStatus.warning }),
+      }
+      this.configurationByTask.set(taskId, successfulStatus)
+      this.options.onConfiguration?.(successfulStatus)
       return packet
     } finally {
       await unlink(outputPath).catch(() => {})

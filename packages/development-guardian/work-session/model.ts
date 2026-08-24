@@ -5,6 +5,7 @@
  */
 
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
+import type { GuardianBrainFailure } from '../model.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
@@ -39,7 +40,7 @@ export type WorkSessionCompletionReason =
   | 'HARD_LIMIT'
   | 'MAX_TASKS'
 
-export type WorkSessionSuspensionReason = 'USER_PAUSED'
+export type WorkSessionSuspensionReason = 'USER_PAUSED' | 'BRAIN_INFRASTRUCTURE_FAILED'
 export type WorkSessionCancellationReason = 'STOP_AFTER_TASK'
 
 export interface WorkSessionDefinition {
@@ -62,6 +63,8 @@ export interface WorkSessionDurableState {
   currentTaskId: string | null
   completedTaskIds: readonly string[]
   humanRequired?: HumanRequired
+  /** Brain did not produce a verdict; distinct from a true human decision. */
+  brainFailure?: GuardianBrainFailure
   /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。 */
   humanRequiredGeneration?: number
   /** W006: 已执行过 bounded delivery attempt 的 generation（成功或失败）。 */

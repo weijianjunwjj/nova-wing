@@ -51,6 +51,8 @@ const DEFAULT_POLL_INTERVAL_MS = 250
 const DEFAULT_MAX_RECENT_EVENTS = 100
 const SAFE_SESSION_FAILED_MESSAGE = 'Work Session 失败。请检查本地诊断信息。'
 const SAFE_POST_RESUME_HUMAN_REASON = '需要补充信息。请检查本地诊断信息。'
+const SAFE_BRAIN_FAILURE_MESSAGE =
+  '无法完成 Brain transport/configuration。Brain 尚未完成 Review。当前执行进度已保留。'
 
 export interface ControlResumeInput {
   decision?: string
@@ -221,7 +223,9 @@ export class WorkSessionControlController {
 
     const category = state.suspensionReason === 'USER_PAUSED'
       ? 'USER_PAUSED'
-      : state.humanRequired?.category ?? 'UNKNOWN'
+      : state.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED'
+        ? 'BRAIN_INFRASTRUCTURE_FAILED'
+        : state.humanRequired?.category ?? 'UNKNOWN'
     const safeEventData = {
       taskId: state.currentTaskId,
       category,
@@ -297,6 +301,9 @@ export class WorkSessionControlController {
                 : {}),
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
+                : {}),
+              ...(state.brainFailure !== undefined
+                ? { brainFailure: this.safeBrainFailure(state) }
                 : {}),
               ...(state.suspensionReason !== undefined
                 ? { suspensionReason: state.suspensionReason }
@@ -421,6 +428,9 @@ export class WorkSessionControlController {
       state.humanRequired !== undefined
         ? [state.humanRequired.category, state.humanRequired.reason]
         : null,
+      state.brainFailure !== undefined
+        ? [state.brainFailure.category, state.brainFailure.fingerprint]
+        : null,
       state.checkpointCommits ?? null,
       state.checkpointPushes ?? null,
       state.completionReason ?? null,
@@ -461,6 +471,18 @@ export class WorkSessionControlController {
         events.push({
           type: 'SESSION_PAUSED',
           data: { taskId: curr.currentTaskId, control: 'pause' },
+        })
+      } else if (
+        curr.state === 'SUSPENDED' &&
+        curr.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED'
+      ) {
+        events.push({
+          type: 'BRAIN_INFRASTRUCTURE_FAILED',
+          data: {
+            taskId: curr.currentTaskId,
+            stage: curr.brainFailure?.stage ?? 'BRAIN_REVIEW',
+            category: curr.brainFailure?.category ?? 'TRANSPORT',
+          },
         })
       }
     }
@@ -560,6 +582,27 @@ export class WorkSessionControlController {
     return humanRequired
   }
 
+  private safeBrainFailure(state: WorkSessionDurableState): NonNullable<
+    WorkSessionControlSnapshot['runtime']['brainFailure']
+  > {
+    const failure = state.brainFailure
+    return {
+      stage: 'BRAIN_REVIEW',
+      category: failure?.category ?? 'TRANSPORT',
+      adapter: failure?.adapter ?? 'guardian-brain',
+      retryable: failure?.retryable ?? false,
+      degraded: failure?.degraded ?? false,
+      fingerprint: failure?.fingerprint ?? 'brain-transport:unknown',
+      ...(failure?.requestedModel === undefined
+        ? {}
+        : { requestedModel: failure.requestedModel }),
+      ...(failure?.requestedReasoning === undefined
+        ? {}
+        : { requestedReasoning: failure.requestedReasoning }),
+      safeMessage: SAFE_BRAIN_FAILURE_MESSAGE,
+    }
+  }
+
   private emit(input: ControlEventInput): void {
     if (input.type !== 'GUARDIAN_PHASE') {
       this.lastGuardianPresentationKey = undefined
@@ -626,6 +669,13 @@ function validateResumeForState(
   if (state.suspensionReason === 'USER_PAUSED') {
     if (input.decision !== undefined || input.approval !== undefined) {
       return { accepted: false, reason: 'user pause resume does not accept decision data' }
+    }
+    return { accepted: true, input: {} }
+  }
+
+  if (state.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED') {
+    if (input.decision !== undefined || input.approval !== undefined) {
+      return { accepted: false, reason: 'Brain infrastructure recovery does not accept decision data' }
     }
     return { accepted: true, input: {} }
   }

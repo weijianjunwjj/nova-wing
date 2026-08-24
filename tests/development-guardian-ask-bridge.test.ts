@@ -4,12 +4,15 @@ import test from 'node:test'
 
 import {
   AskBridgeBrain,
+  GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
+  normalizeAskBridgeDiagnostics,
   runGuardianTask,
   type AskBridgeCommandRequest,
   type AskBridgeCommandRunner,
   type AskBridgeOutputEvent,
   type AskBridgeTimingEvent,
+  type AskBridgeConfigurationStatus,
 } from 'nova-wing/development-guardian'
 
 const packet = JSON.stringify({
@@ -347,7 +350,7 @@ test('Finding #11: tab-failure retry and rotation budgets exhaust without a four
 
   assert.equal(calls, 3)
   assert.deepEqual(resetTaskIds, ['task-1'])
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.match(result.task.stopReason ?? '', /Could not identify the newly opened tab/)
 })
 
@@ -542,4 +545,118 @@ test('ask-bridge rotation overrides an initially fixed conversation for that Tas
   assert.equal(requests[0]?.args.includes('--model'), true)
   assert.equal(requests[0]?.args.includes('--reasoning'), true)
   assert.equal(brain.captureProviderState().taskConversationUrls['task-1'], 'https://chatgpt.com/c/fresh-session')
+})
+
+test('reasoning option failure degrades once and still sends the Brain prompt with the required model', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const configurations: AskBridgeConfigurationStatus[] = []
+  const reasoningFailure = [
+    'Error switching reasoning:',
+    'reasoning switch failed:',
+    'error: option not found;',
+    'available options:',
+    '能力, 高级, 模型, 推理强度, GPT-5.6 Sol, GPT-5.5, o3',
+  ].join('\n')
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    onConfiguration: (status) => configurations.push(status),
+    commandRunner: async (request) => {
+      requests.push(request)
+      if (requests.length === 1) {
+        return { exitCode: 1, stdout: '', stderr: reasoningFailure }
+      }
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: 'Thread Link: https://chatgpt.com/c/reasoning-degraded',
+        stderr: '',
+      }
+    },
+  })
+
+  const result = await brain.review({ task })
+
+  assert.equal(result.verdict, 'proceed')
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+  assert.equal(requests[1]?.args.includes('--model'), true)
+  assert.equal(requests[1]?.args[requests[1]!.args.indexOf('--model') + 1], 'GPT-5.6 Sol')
+  assert.equal(requests[0]?.args.at(-1), requests[1]?.args.at(-1), 'the same Brain prompt must be submitted')
+  const status = brain.captureConfigurationStatus('task-1')
+  assert.equal(status?.requestedReasoning, 'high')
+  assert.equal(status?.actualReasoning, 'unknown')
+  assert.equal(status?.actualModel, 'GPT-5.6 Sol')
+  assert.equal(status?.degraded, true)
+  assert.equal(status?.warning?.fingerprint, 'reasoning-switch:option-not-found')
+  assert.ok(status?.warning?.availableOptions.includes('推理强度'))
+  assert.ok(configurations.some((value) => value.degraded && value.actualReasoning === 'unknown'))
+})
+
+test('required model selection failure remains a hard structured Brain configuration failure', async () => {
+  let calls = 0
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: () => {
+      calls += 1
+      return Promise.resolve({
+        exitCode: 1,
+        stdout: '',
+        stderr: 'Error switching model: model selection failed: option not found; available options: GPT-5.5, o3',
+      })
+    },
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof GuardianBrainInfrastructureError &&
+      error.failure.category === 'CONFIGURATION' &&
+      error.failure.fingerprint === 'model-selection:option-not-found' &&
+      error.failure.requestedModel === 'GPT-5.6 Sol',
+  )
+  assert.equal(calls, 1, 'model failure must not silently retry without the required model')
+})
+
+test('stderr DevTools noise cannot hide a structured root cause written to stdout', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    commandRunner: () => Promise.resolve({
+      exitCode: 1,
+      stdout: 'Error switching model: option not found; available options: GPT-5.5, o3',
+      stderr: Array.from(
+        { length: 12 },
+        () => '[chrome-devtools]\nNo handler registered for issue code PerformanceIssue',
+      ).join('\n'),
+    }),
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof GuardianBrainInfrastructureError &&
+      error.failure.category === 'CONFIGURATION' &&
+      error.failure.fingerprint === 'model-selection:option-not-found' &&
+      error.failure.rawError?.includes('PerformanceIssue × 12') === true &&
+      error.failure.rawError.includes('Error switching model: option not found'),
+  )
+})
+
+test('PerformanceIssue noise is collapsed while the real root cause is preserved', () => {
+  const noisy = [
+    'reasoning switch failed: option not found',
+    ...Array.from({ length: 87 }, () => '[chrome-devtools]\nNo handler registered for issue code PerformanceIssue'),
+  ].join('\n')
+
+  const normalized = normalizeAskBridgeDiagnostics(noisy)
+
+  assert.match(normalized, /reasoning switch failed: option not found/)
+  assert.match(normalized, /PerformanceIssue × 87/)
+  assert.equal(normalized.match(/No handler registered/gu)?.length, 1)
+  assert.ok(normalized.length < 500)
 })

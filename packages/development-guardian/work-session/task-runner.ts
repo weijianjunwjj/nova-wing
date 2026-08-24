@@ -5,14 +5,23 @@
 
 import type { WorkSessionTask, HumanRequired } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
-import type { DelegationVerdict, VerificationResult } from '../model.js'
+import type {
+  DelegationVerdict,
+  GuardianBrainFailure,
+  VerificationResult,
+} from '../model.js'
 import type { GuardianProgressObserver } from '../progress.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
 } from './failure-classification.js'
 
-export type WorkSessionTaskResultStatus = 'COMPLETED' | 'HUMAN_REQUIRED' | 'FAILED' | 'PAUSED'
+export type WorkSessionTaskResultStatus =
+  | 'COMPLETED'
+  | 'HUMAN_REQUIRED'
+  | 'BRAIN_INFRASTRUCTURE_FAILED'
+  | 'FAILED'
+  | 'PAUSED'
 
 /**
  * W004-A: Task 完成的结构化证据。
@@ -42,10 +51,11 @@ export interface WorkSessionTaskResult {
   status: WorkSessionTaskResultStatus
   summary?: string
   humanRequired?: HumanRequired
+  brainFailure?: GuardianBrainFailure
   error?: string
   failureStage?: WorkSessionFailureStage
   failureCategory?: WorkSessionFailureCategory
-  /** W003: HUMAN_REQUIRED 时可选的恢复 checkpoint */
+  /** W003: suspended result 可选的恢复 checkpoint */
   checkpoint?: GuardianTaskRecoveryCheckpoint
   /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
   completionEvidence?: TaskCompletionEvidence

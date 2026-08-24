@@ -787,6 +787,24 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       }
     }
 
+    if (result.task.state === 'BRAIN_INFRASTRUCTURE_FAILED') {
+      const capturedCheckpoint = await this.captureTaskCheckpoint(
+        result.task,
+        workSessionTask,
+        executor,
+      )
+      return {
+        status: 'BRAIN_INFRASTRUCTURE_FAILED',
+        ...(result.task.lastReport?.summary === undefined
+          ? {}
+          : { summary: result.task.lastReport.summary }),
+        ...(result.task.brainFailure === undefined
+          ? {}
+          : { brainFailure: result.task.brainFailure }),
+        ...(capturedCheckpoint === undefined ? {} : { checkpoint: capturedCheckpoint }),
+      }
+    }
+
     if (result.task.stopReason === 'WORK_SESSION_USER_PAUSE_REQUESTED') {
       const capturedCheckpoint = await this.captureTaskCheckpoint(
         result.task,

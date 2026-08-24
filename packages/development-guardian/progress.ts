@@ -7,6 +7,7 @@ export type GuardianPhase =
   | 'FINAL_REVIEW'
   | 'COMPLETED'
   | 'HUMAN_REQUIRED'
+  | 'BRAIN_INFRASTRUCTURE_FAILED'
   | 'FAILED'
 
 export type GuardianProgressStatus = 'pending' | 'active' | 'completed' | 'failed'

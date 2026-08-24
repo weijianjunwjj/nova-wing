@@ -301,6 +301,13 @@ When suspended for a human decision, resume accepts explicit decision data. The 
 
 A Work Session MUST NOT equate “any error” with `HUMAN_REQUIRED`.
 
+Brain adapter configuration, transport, protocol, and response failures are represented as
+`BRAIN_INFRASTRUCTURE_FAILED`. They suspend the current task at its durable Brain Review
+checkpoint without creating a trusted-decision input. Recovery retries the saved review stage;
+it MUST NOT restart already-completed Executor work. A requested model remains a hard
+configuration requirement, while an unavailable reasoning option may degrade once to the
+current UI setting with `actualReasoning=unknown` and a structured warning.
+
 The intended final MVP classification is:
 
 1. `DECISION_REQUIRED` — spec/product/architecture has multiple materially different valid choices and NovaWing cannot safely choose.

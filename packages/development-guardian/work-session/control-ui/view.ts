@@ -194,6 +194,7 @@ var HUMAN_REQUIRED_LABELS = {
   SAFETY_BLOCKED: '被安全策略阻止',
   BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
+  BRAIN_INFRASTRUCTURE_FAILED: 'Brain 基础设施故障',
   STALLED: '执行停滞',
   USER_PAUSED: '用户已暂停'
 }
@@ -205,7 +206,8 @@ var GUARDIAN_PHASE_LABELS = {
   REVIEWING: 'Reviewer 审查',
   FINAL_REVIEW: 'Final Review',
   COMPLETED: '已完成',
-  HUMAN_REQUIRED: '需要人工处理'
+  HUMAN_REQUIRED: '需要人工处理',
+  BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用'
 }
 
 var GUARDIAN_STATUS_LABELS = {
@@ -334,6 +336,7 @@ function summarizeEvent(ev) {
     TASK_STARTED: 'Task 已开始', TASK_COMPLETED: 'Task 已完成',
     CHECKPOINT_COMMITTED: 'Git checkpoint 已提交', CHECKPOINT_PUSHED: 'Git checkpoint 已推送',
     HUMAN_REQUIRED: '需要人工处理', SESSION_COMPLETED: 'Work Session 已完成',
+    BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用',
     SESSION_FAILED: 'Work Session 失败', PAUSE_REQUESTED: '已请求暂停',
     SESSION_PAUSED: 'Work Session 已暂停', STOP_AFTER_TASK_REQUESTED: '当前 Task 完成后停止已请求',
     SESSION_RESUME_REQUESTED: '已请求恢复', SESSION_RESUMED: 'Work Session 已恢复',
@@ -430,13 +433,22 @@ function renderDecision(rt) {
   var card = el('decision-card')
   if (!card) return
   var hr = rt.humanRequired
+  var brainFailure = rt.brainFailure
   var category = hr ? hr.category : ''
   var userPaused = rt.state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED'
-  if (rt.state === 'SUSPENDED' && (hr || userPaused)) {
+  var brainUnavailable = rt.state === 'SUSPENDED' &&
+    rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
+  if (rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) {
     card.hidden = false
-    setText('decision-title', userPaused ? '已由你暂停' : '需要人工处理')
-    setText('decision-category', displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
-    setText('decision-reason', userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—'))
+    setText('decision-title', brainUnavailable
+      ? 'Brain 暂时不可用'
+      : (userPaused ? '已由你暂停' : '需要人工处理'))
+    setText('decision-category', brainUnavailable
+      ? 'Brain Review · ' + displayValue(brainFailure.category)
+      : displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
+    setText('decision-reason', brainUnavailable
+      ? brainFailure.safeMessage
+      : (userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—')))
 
     var input = el('decision-input')
     var decisionBtn = el('resume-decision-btn')
@@ -447,9 +459,14 @@ function renderDecision(rt) {
     if (input) input.hidden = !needsDecision
     if (decisionBtn) decisionBtn.hidden = !needsDecision
     if (resolvedBtn) resolvedBtn.hidden = !resolvedAck
-    if (pausedBtn) pausedBtn.hidden = !userPaused
+    if (pausedBtn) {
+      pausedBtn.hidden = !userPaused && !brainUnavailable
+      pausedBtn.textContent = brainUnavailable ? '修复后恢复' : '恢复'
+    }
 
-    if (resolvedAck) {
+    if (brainUnavailable) {
+      setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
+    } else if (resolvedAck) {
       setText('decision-guidance', '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
     } else if (category === 'PERMISSION_REQUIRED') {
       setText('decision-guidance', '请先更新受信任的项目权限。')

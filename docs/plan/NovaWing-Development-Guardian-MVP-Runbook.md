@@ -81,7 +81,7 @@ Guardian 不允许同一个 task 的每次 review 都新建 ChatGPT 会话。
 
 当没有显式配置 `NOVAWING_CHATGPT_CONVERSATION_URL` 时，第一次 review 使用 `--new` 创建该 task 的独立 ChatGPT 会话；NovaWing 会从 ask-bridge stdout 的 `Thread Link` 捕获真实 ChatGPT conversation URL，并绑定到当前 task。之后同一进程内该 task 的所有 review 都必须带 `--session-url` 回到同一会话。
 
-模型与 reasoning 只在首轮创建 task 会话时设置；后续 `--session-url` review 不重复切换这些 UI 选项，以减少不必要的 Browser Bridge 开销。
+模型与 reasoning 只在首轮创建 task 会话时设置；后续 `--session-url` review 不重复切换这些 UI 选项，以减少不必要的 Browser Bridge 开销。模型选择是硬约束：切换失败时不得提交 prompt。reasoning 是 best-effort 软约束：若 Bridge 明确报告 reasoning option 不存在，Guardian 保留模型要求、移除 reasoning 参数并有界重试一次；成功后记录 `actualReasoning=unknown` 与 degraded warning，不伪装成已成功配置。
 
 如果已绑定 task 的后续调用返回了不同的 Thread Link，Guardian fail-closed；如果第一次 review 没有获得 Thread Link，那么第二次 review 也不会静默新建会话，而是停止。
 
@@ -201,7 +201,9 @@ export NOVAWING_GUARDIAN_TIMEOUT_MS='1200000'
 
 自动允许：GPT Web 生成 `proceed / revise / blocked / done`；Claude Code 在允许工具范围内读取、搜索、编辑；Guardian 独立执行白名单验证；同一任务 ChatGPT conversation 复用；同一任务 Claude session resume；最多按 `maxIterations` 循环。
 
-以下立即进入 HUMAN_REQUIRED：目标仓库启动时已有未提交改动；Bridge 失败或协议非法；同 task ChatGPT 会话发生漂移；Claude Code blocker / 异常；修改文件越过 allowedPaths 或进入 forbiddenPaths；非白名单验证命令；达到最大循环数；GPT 无执行证据直接 done；deterministic verification 缺失、failed 或 skipped。
+以下立即进入 HUMAN_REQUIRED：目标仓库启动时已有未提交改动；同 task ChatGPT 会话发生漂移；Claude Code blocker / 异常；修改文件越过 allowedPaths 或进入 forbiddenPaths；非白名单验证命令；达到最大循环数；GPT 无执行证据直接 done；deterministic verification 缺失、failed 或 skipped。
+
+Bridge 的 configuration / transport / protocol / response failure 属于 `BRAIN_INFRASTRUCTURE_FAILED`，不是人工决策。Work Session 会保留当前 task checkpoint 并暂停在 Brain Review；控制 UI 不显示 decision textarea，也不接受 decision/approval payload。修复浏览器或 Bridge 后执行普通恢复，会从保存的 checkpoint 继续 review，不重新运行已经完成的 Executor 工作。只有 Reviewer 有效返回 `blocked` 且确实需要产品选择、权限、凭据或外部人工动作时，才进入相应的 `HUMAN_REQUIRED`。
 
 ## 6. 验证命令白名单
 

@@ -140,8 +140,8 @@ test('guardian stops after consecutive retryable Brain timeouts', async () => {
     maxBrainReviewRetries: 1,
   })
   assert.equal(reviews, 2)
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
-  assert.match(result.task.stopReason ?? '', /brain review failed: timeout/)
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.fingerprint, 'brain-transport:timeout')
 })
 
 test('guardian does not retry ordinary Brain errors', async () => {
@@ -283,7 +283,7 @@ test('guardian permits no fourth call after a rotated session also times out', a
   })
   assert.equal(reviews, 3)
   assert.equal(rotations, 1)
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
 })
 
 test('guardian preserves two-attempt behavior when Brain cannot rotate sessions', async () => {
@@ -296,7 +296,7 @@ test('guardian preserves two-attempt behavior when Brain cannot rotate sessions'
     maxBrainReviewSessionRotations: 1,
   })
   assert.equal(reviews, 2)
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
 })
 
 test('guardian checks hard limit before rotating a stuck Brain session', async () => {
@@ -529,7 +529,7 @@ test('max iterations stops autonomous loop', async () => {
   assert.match(result.task.stopReason ?? '', /max iterations reached/)
 })
 
-test('brain failure moves task to human required instead of crashing loop', async () => {
+test('brain failure becomes infrastructure failure instead of a human decision', async () => {
   const brain: GuardianBrain = {
     async review() {
       throw new Error('ChatGPT Web bridge unavailable')
@@ -542,7 +542,7 @@ test('brain failure moves task to human required instead of crashing loop', asyn
   }
 
   const result = await runGuardianTask({ task: baseTask(), brain, executor })
-  assert.equal(result.task.state, 'HUMAN_REQUIRED')
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.match(result.task.stopReason ?? '', /ChatGPT Web bridge unavailable/)
   assert.equal(result.task.iteration, 0)
 })

@@ -140,7 +140,7 @@ await test('reviewer timeout is retried once by the Work Session adapter default
   assert.equal(executor.calls, 1)
 })
 
-await test('exhausted reviewer timeout retry remains HUMAN_REQUIRED and STALLED', async () => {
+await test('exhausted reviewer timeout becomes Brain infrastructure failure', async () => {
   let reviews = 0
   const executor = new RecordingExecutor()
   const runner = adapter({
@@ -154,13 +154,13 @@ await test('exhausted reviewer timeout retry remains HUMAN_REQUIRED and STALLED'
   })
 
   const result = await runner.run({ id: 'T1', goal: 'one' })
-  assert.equal(result.status, 'HUMAN_REQUIRED')
-  assert.equal(result.humanRequired?.category, 'STALLED')
+  assert.equal(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.brainFailure?.category, 'TRANSPORT')
   assert.equal(reviews, 2)
   assert.equal(executor.calls, 0)
 })
 
-await test('exhausted malformed Reviewer protocol recovery is HUMAN_REQUIRED but never DECISION_REQUIRED', async () => {
+await test('exhausted malformed Reviewer protocol recovery is infrastructure failure', async () => {
   let reviews = 0
   let rotations = 0
   const executor = new RecordingExecutor()
@@ -176,9 +176,9 @@ await test('exhausted malformed Reviewer protocol recovery is HUMAN_REQUIRED but
   })
 
   const result = await runner.run({ id: 'T1', goal: 'one' })
-  assert.equal(result.status, 'HUMAN_REQUIRED')
-  assert.equal(result.humanRequired?.category, 'REVIEWER_PROTOCOL_FAILURE')
-  assert.notEqual(result.humanRequired?.category, 'DECISION_REQUIRED')
+  assert.equal(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.brainFailure?.category, 'PROTOCOL')
+  assert.equal(result.humanRequired, undefined)
   assert.equal(reviews, 3)
   assert.equal(rotations, 1)
   assert.equal(executor.calls, 0)
@@ -282,8 +282,8 @@ await test('W003 fresh-session timeout checkpoint never restores the discarded U
 
   const result = await runner.run({ id: 'T1', goal: 'one' }, undefined, checkpoint)
 
-  assert.equal(result.status, 'HUMAN_REQUIRED')
-  assert.equal(result.humanRequired?.category, 'STALLED')
+  assert.equal(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.brainFailure?.category, 'TRANSPORT')
   assert.equal(reviews, 3)
   assert.equal(result.checkpoint?.provider.chatgptConversationUrl, undefined)
   assert.equal(result.checkpoint?.provider.claudeSessionId, 'claude-session')
@@ -304,7 +304,7 @@ await test('Work Session adapter allows session rotation to be disabled for test
   })
 
   const result = await runner.run({ id: 'T1', goal: 'one' })
-  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.equal(reviews, 2)
   assert.equal(rotations, 0)
 })

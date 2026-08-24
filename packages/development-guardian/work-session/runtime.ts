@@ -96,6 +96,19 @@ const WorkflowStateSchema = z.object({
     category: z.string(),
     reason: z.string(),
   }).optional(),
+  brainFailure: z.object({
+    stage: z.literal('BRAIN_REVIEW'),
+    category: z.enum(['CONFIGURATION', 'TRANSPORT', 'PROTOCOL', 'RESPONSE']),
+    rootCause: z.string(),
+    adapter: z.string(),
+    requestedModel: z.string().optional(),
+    requestedReasoning: z.string().optional(),
+    availableOptions: z.array(z.string()).optional(),
+    retryable: z.boolean(),
+    degraded: z.boolean(),
+    fingerprint: z.string(),
+    rawError: z.string().optional(),
+  }).optional(),
   humanRequiredGeneration: z.number().int().nonnegative().optional(),
   lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
   lastNotifiedHumanRequiredGeneration: z.number().int().nonnegative().optional(),
@@ -123,7 +136,7 @@ const WorkflowStateSchema = z.object({
   completionReason: z
     .enum(['ALL_TASKS_COMPLETED', 'SOFT_LIMIT', 'HARD_LIMIT', 'MAX_TASKS'])
     .optional(), // W004-B
-  suspensionReason: z.enum(['USER_PAUSED']).optional(), // W005-B
+  suspensionReason: z.enum(['USER_PAUSED', 'BRAIN_INFRASTRUCTURE_FAILED']).optional(),
   cancellationReason: z.enum(['STOP_AFTER_TASK']).optional(), // W005-B
   stopAfterTaskRequested: z.boolean().optional(), // W005-B durability closure
   createdAt: z.string(),
@@ -558,6 +571,7 @@ export class WorkSessionRuntime {
             ...currentState,
             state: 'RUNNING',
             humanRequired: undefined,
+            brainFailure: undefined,
             suspensionReason: undefined,
             activeSegmentStartedAt: self.now(),
             updatedAt: new Date().toISOString(),
@@ -843,12 +857,57 @@ export class WorkSessionRuntime {
             continue
           }
 
+          if (result.status === 'BRAIN_INFRASTRUCTURE_FAILED') {
+            const brainFailure = result.brainFailure
+            if (brainFailure === undefined) {
+              throw new Error('Brain infrastructure suspension requires structured failure data')
+            }
+            const suspendedState: WorkflowState = {
+              ...currentState,
+              state: 'SUSPENDED',
+              humanRequired: undefined,
+              brainFailure: {
+                stage: brainFailure.stage,
+                category: brainFailure.category,
+                rootCause: brainFailure.rootCause,
+                adapter: brainFailure.adapter,
+                retryable: brainFailure.retryable,
+                degraded: brainFailure.degraded,
+                fingerprint: brainFailure.fingerprint,
+                ...(brainFailure.requestedModel === undefined
+                  ? {}
+                  : { requestedModel: brainFailure.requestedModel }),
+                ...(brainFailure.requestedReasoning === undefined
+                  ? {}
+                  : { requestedReasoning: brainFailure.requestedReasoning }),
+                ...(brainFailure.availableOptions === undefined
+                  ? {}
+                  : { availableOptions: [...brainFailure.availableOptions] }),
+                ...(brainFailure.rawError === undefined
+                  ? {}
+                  : { rawError: brainFailure.rawError }),
+              },
+              suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
+              currentTaskCheckpoint: result.checkpoint,
+              stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
+              ...self.settleActiveTime(currentState),
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(suspendedState)
+            self.latestState = suspendedState
+            return await suspend(
+              { reason: 'BRAIN_INFRASTRUCTURE_FAILED' },
+              { resumeLabel: 'brain-infrastructure-recovery' },
+            )
+          }
+
           if (result.status === 'PAUSED') {
             self.pauseRequested = false
             const pausedState: WorkflowState = {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: undefined,
+              brainFailure: undefined,
               suspensionReason: 'USER_PAUSED',
               currentTaskCheckpoint: result.checkpoint,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
@@ -869,6 +928,7 @@ export class WorkSessionRuntime {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
+              brainFailure: undefined,
               humanRequiredGeneration: (currentState.humanRequiredGeneration ?? 0) + 1,
               suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
@@ -976,6 +1036,29 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.brainFailure) {
+      result.brainFailure = {
+        stage: wfState.brainFailure.stage,
+        category: wfState.brainFailure.category,
+        rootCause: wfState.brainFailure.rootCause,
+        adapter: wfState.brainFailure.adapter,
+        retryable: wfState.brainFailure.retryable,
+        degraded: wfState.brainFailure.degraded,
+        fingerprint: wfState.brainFailure.fingerprint,
+        ...(wfState.brainFailure.requestedModel === undefined
+          ? {}
+          : { requestedModel: wfState.brainFailure.requestedModel }),
+        ...(wfState.brainFailure.requestedReasoning === undefined
+          ? {}
+          : { requestedReasoning: wfState.brainFailure.requestedReasoning }),
+        ...(wfState.brainFailure.availableOptions === undefined
+          ? {}
+          : { availableOptions: wfState.brainFailure.availableOptions }),
+        ...(wfState.brainFailure.rawError === undefined
+          ? {}
+          : { rawError: wfState.brainFailure.rawError }),
+      }
     }
     if (wfState.humanRequiredGeneration !== undefined) {
       result.humanRequiredGeneration = wfState.humanRequiredGeneration
