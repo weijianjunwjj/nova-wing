@@ -7,7 +7,6 @@ import {
   guardianShellCommand,
   NativeGitBashUnavailableError,
   resolveWindowsGitBashExecutable,
-  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
   type ClaudeCodeTimingEvent,
   type DelegationPacket,
   type GuardianCommandRequest,
@@ -15,6 +14,7 @@ import {
   type GuardianCommandRunner,
   type GuardianTask,
 } from 'nova-wing/development-guardian'
+import { guardianShellTestCommand } from './guardian-shell-fixture.js'
 
 function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
   return {
@@ -118,13 +118,13 @@ test('Windows shell contract rejects bare Bash and Windows/WSL shim routes', () 
 test('non-Windows shell commands retain Bash compatibility without Windows executable', () => {
   const command = guardianShellCommand('git status --porcelain', {
     platform: 'linux',
-    gitBashPath: 'D:/Git/bin/bash.exe',
+    gitBashPath: 'E:/Tools/Git/bin/bash.exe',
   })
   const tenX = createDefaultTenXChatCommand(12_345, { platform: 'darwin' })
 
   assert.deepEqual(command, { executable: 'bash', args: ['-lc', 'git status --porcelain'] })
   assert.equal(tenX.command, 'npx')
-  assert.ok(!tenX.args.join(' ').includes('D:/Git/bin/bash.exe'))
+  assert.ok(!tenX.args.join(' ').includes('E:/Tools/Git/bin/bash.exe'))
 })
 
 test('Claude invocation forwards argv through the Git Bash -- delimiter', async () => {
@@ -186,7 +186,7 @@ test('executor runs Claude Code then deterministic verification', async () => {
   assert.equal(runner.requests[3]?.args.join(' '), '-lc git diff --check')
   assert.equal(runner.requests[4]?.args.join(' '), '-lc npm test')
   assert.ok(
-    runner.requests.every((request) => request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE),
+    runner.requests.every((request) => request.executable === guardianShellTestCommand('').executable),
     'initial execution and deterministic verification must use the native Git Bash contract',
   )
   assert.deepEqual(

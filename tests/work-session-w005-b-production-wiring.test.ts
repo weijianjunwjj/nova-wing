@@ -98,6 +98,7 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       env: {
         NOVAWING_CHATGPT_MODEL: 'gpt-test',
         NOVAWING_CHATGPT_REASONING: 'high',
+        NOVAWING_GIT_BASH_PATH: 'C:/Program Files/Git/bin/bash.exe',
       },
       createBrain(options) {
         assert.equal(options.model, 'gpt-test')
@@ -179,7 +180,8 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       options.model === 'sonnet' &&
       options.maxTurns === 10 &&
       options.allowNpmInstall === false &&
-      options.allowPythonBootstrap === false,
+      options.allowPythonBootstrap === false &&
+      options.gitBashPath === 'C:/Program Files/Git/bin/bash.exe',
     ))
     executorOptions[0]?.onVerification?.({
       command: 'npm test', status: 'passed', iteration: 1, durationMs: 100,

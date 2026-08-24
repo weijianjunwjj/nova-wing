@@ -29,8 +29,6 @@ export {
   guardianShellCommand,
   NativeGitBashUnavailableError,
   resolveWindowsGitBashExecutable,
-  WINDOWS_GIT_BASH_SHELL_CONTRACT,
-  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
   windowsGitBashShellContract,
   windowsGitBashCommand,
 } from './shell-contract.js'

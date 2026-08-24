@@ -7,13 +7,13 @@ import test from 'node:test'
 
 import {
   ClaudeCodeExecutor,
-  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
   type DelegationPacket,
   type ExecutionReport,
   type GuardianBrain,
   type GuardianCommandRequest,
   type GuardianTask,
 } from 'nova-wing/development-guardian'
+import { guardianShellTestCommand, isClaudeShellRequest, isGuardianShellRequest } from './guardian-shell-fixture.js'
 import type {
   GuardianTaskRecoveryCheckpoint,
   ProviderSessionState,
@@ -45,7 +45,8 @@ async function setupRepository(): Promise<{
 
   const gitRunner: GitRunner = async (command) =>
     new Promise((resolve) => {
-      const child = spawn('D:/Git/bin/bash.exe', ['-lc', command], {
+      const shell = guardianShellTestCommand(command)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -192,7 +193,7 @@ function createExecutorFixture(
     maxTurns: 4,
     timeoutMs: 10_000,
     commandRunner: async (request) => {
-      if (request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE && request.args[1] === 'exec claude "$@"') {
+      if (isClaudeShellRequest(request) && request.args[1] === 'exec claude "$@"') {
         claudeRequests.push(request)
         return {
           exitCode: 0,
@@ -205,7 +206,7 @@ function createExecutorFixture(
           stderr: '',
         }
       }
-      if (request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE && request.args[0] === '-lc' && request.args[1] !== undefined) {
+      if (isGuardianShellRequest(request) && request.args[1] !== undefined) {
         return gitRunner(request.args[1])
       }
       return { exitCode: 1, signal: null, stdout: '', stderr: 'unexpected command' }

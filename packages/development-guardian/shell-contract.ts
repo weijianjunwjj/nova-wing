@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
  * Windows Guardian commands must use a native Git for Windows Bash executable.
  * Never resolve `bash` through PATH: on Windows it may be a WSL or System32 shim.
  */
-export const WINDOWS_NATIVE_GIT_BASH_EXECUTABLE = 'D:\\Git\\bin\\bash.exe'
+const WINDOWS_NATIVE_GIT_BASH_FALLBACK_ROOT = 'D:\\Git'
 
 export interface WindowsGitBashShellContract {
   platform: 'win32'
@@ -58,7 +58,7 @@ export function resolveWindowsGitBashExecutable(options: GuardianShellContractOp
   }
 
   const pathExists = options.pathExists ?? existsSync
-  const roots = [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)'], 'D:\\Git']
+  const roots = [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)'], WINDOWS_NATIVE_GIT_BASH_FALLBACK_ROOT]
     .filter((root): root is string => typeof root === 'string' && root.length > 0)
   const candidate = roots
     .map((root) => root.endsWith('Git') ? `${root}\\bin\\bash.exe` : `${root}\\Git\\bin\\bash.exe`)
@@ -76,13 +76,6 @@ export function windowsGitBashShellContract(options: GuardianShellContractOption
     mode: 'git-bash-only',
     executable: resolveWindowsGitBashExecutable(options),
   }
-}
-
-/** Backwards-compatible default contract for the verified Canary installation. */
-export const WINDOWS_GIT_BASH_SHELL_CONTRACT: WindowsGitBashShellContract = {
-  platform: 'win32',
-  mode: 'git-bash-only',
-  executable: WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
 }
 
 /**

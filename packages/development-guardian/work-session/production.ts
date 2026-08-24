@@ -353,6 +353,9 @@ export async function createProductionWorkSessionUi(
             maxTurns: trusted.executor.maxTurns,
             allowNpmInstall: trusted.executor.allowNpmInstall,
             allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
+            ...(env.NOVAWING_GIT_BASH_PATH?.trim()
+              ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() }
+              : {}),
             onVerification(verification) {
               onProgress?.({
                 phase: 'VERIFYING',

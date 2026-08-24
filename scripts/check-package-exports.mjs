@@ -48,8 +48,6 @@ const expectedRuntimeExports = {
     'TEN_X_CHAT_PINNED_VERSION',
     'TenXChatBrain',
     'TenXChatBrainProtocolError',
-    'WINDOWS_GIT_BASH_SHELL_CONTRACT',
-    'WINDOWS_NATIVE_GIT_BASH_EXECUTABLE',
     'WorkSessionRuntime',
     'adoptLegacyRecoveryCheckpoint',
     'adoptProductionLegacyWorkSession',
