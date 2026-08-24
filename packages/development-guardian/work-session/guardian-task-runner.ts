@@ -379,7 +379,11 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
 
 export interface GuardianWorkSessionTaskRunnerOptions {
   brain: GuardianBrain
-  createExecutor: (task: WorkSessionTask, resumeData?: unknown) => GuardianRecoverableExecutor
+  createExecutor: (
+    task: WorkSessionTask,
+    resumeData?: unknown,
+    onProgress?: GuardianProgressObserver,
+  ) => GuardianRecoverableExecutor
   createGuardianTask?: (task: WorkSessionTask, resumeData?: unknown) => GuardianTask
   taskBuilder?: GuardianTaskBuilderOptions
   /** W003: Repository 信息（用于 checkpoint） */
@@ -645,8 +649,23 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         : createGuardianTask(workSessionTask, this.options.taskBuilder)
     )
 
-    // 为每个 Work Session Task 创建新的 Executor instance
-    const executor = this.options.createExecutor(workSessionTask, sanitizedResumeInput)
+    const onProgress: GuardianProgressObserver | undefined =
+      this.options.onProgress !== undefined || context?.onProgress !== undefined
+        ? (event) => {
+            // Both sinks are observability-only. One consumer must not prevent
+            // the other or alter Guardian execution.
+            try { this.options.onProgress?.(event) } catch {}
+            try { context?.onProgress?.(event) } catch {}
+          }
+        : undefined
+
+    // 为每个 Work Session Task 创建新的 Executor instance. Production hook
+    // events use this same merged sink, so UI and durable Ledger see identical facts.
+    const executor = this.options.createExecutor(
+      workSessionTask,
+      sanitizedResumeInput,
+      onProgress,
+    )
 
     // W003: 如果有 checkpoint，先做 repo gate —— 任何 provider execution 之前
     if (checkpoint !== undefined) {
@@ -717,16 +736,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       ...(context?.shouldPauseAutonomousWork !== undefined
         ? { shouldPauseAutonomousWork: context.shouldPauseAutonomousWork }
         : {}),
-      ...(this.options.onProgress !== undefined || context?.onProgress !== undefined
-        ? {
-            onProgress: (event) => {
-              // Both sinks are observability-only. One consumer must not prevent
-              // the other or alter Guardian execution.
-              try { this.options.onProgress?.(event) } catch {}
-              try { context?.onProgress?.(event) } catch {}
-            },
-          }
-        : {}),
+      ...(onProgress === undefined ? {} : { onProgress }),
       maxBrainReviewRetries: this.options.maxBrainReviewRetries ?? 1,
       maxBrainReviewSessionRotations: this.options.maxBrainReviewSessionRotations ?? 1,
     })
@@ -763,7 +773,10 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     }
 
     if (result.task.state === 'FAILED') {
-      const failure = classifyWorkSessionFailure(result.task.stopReason ?? 'Guardian task failed')
+      const failure = classifyWorkSessionFailure(
+        result.task.stopReason ?? 'Guardian task failed',
+        result.failureStage === undefined ? {} : { failureStage: result.failureStage },
+      )
       return {
         status: 'FAILED',
         ...(result.task.stopReason !== undefined

@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   ExecutionLedgerStore,
+  GuardianWorkSessionTaskRunner,
   GitCheckpointError,
   GitPushError,
   SmtpWorkSessionNotifier,
@@ -35,6 +36,10 @@ const SECRET_INPUT = [
   'cookie=SECRET_COOKIE',
   '{"provider":"raw","token":"PROVIDER_SECRET"}',
 ].join('\n')
+
+type PhaseLedgerEvent = Extract<ExecutionLedgerEvent, {
+  eventType: 'PHASE_STARTED' | 'PHASE_COMPLETED' | 'PHASE_FAILED'
+}>
 
 function definition(id: string, repoPath = process.cwd()): WorkSessionDefinition {
   return {
@@ -163,6 +168,28 @@ await test('Execution Ledger is append-only, ordered, restart durable and dedupe
   })
 })
 
+await test('Execution Ledger preserves fractional cumulative elapsed and real duration across restart', async () => {
+  await withTemp('ledger-fractional-', async ({ storageUrl }) => {
+    const ledger = new ExecutionLedgerStore(storageUrl)
+    ledger.append({
+      eventType: 'PHASE_COMPLETED', sessionId: 'fractional', taskId: 'T009',
+      timestamp: '2026-08-24T00:00:00.000Z', phase: 'VERIFYING',
+      status: 'completed', iteration: 1, cumulativeElapsedMs: 48_233.37,
+      durationMs: 0.44, activeElapsedMs: 48_233.37,
+      verificationCommand: 'npm test', verificationStatus: 'passed', verificationIndex: 0,
+    }, 'verification:T009:1:0:passed')
+    ledger.close()
+
+    const [event] = readExecutionLedger(storageUrl, 'fractional')
+    assert.equal(event?.eventType, 'PHASE_COMPLETED')
+    if (event?.eventType === 'PHASE_COMPLETED') {
+      assert.equal(event.cumulativeElapsedMs, 48_233.37)
+      assert.equal(event.durationMs, 0.44)
+      assert.equal(event.activeElapsedMs, 48_233.37)
+    }
+  })
+})
+
 await test('runtime records session, task, Guardian phase and completion facts', async () => {
   await withTemp('ledger-runtime-', async ({ storageUrl }) => {
     const runtime = new WorkSessionRuntime({
@@ -190,8 +217,109 @@ await test('runtime records session, task, Guardian phase and completion facts',
     ])
     const phaseStarted = events.find((event) => event.eventType === 'PHASE_STARTED')
     assert.equal(phaseStarted?.eventType, 'PHASE_STARTED')
-    if (phaseStarted?.eventType === 'PHASE_STARTED') assert.equal(phaseStarted.iteration, 0)
+    if (phaseStarted?.eventType === 'PHASE_STARTED') {
+      assert.equal(phaseStarted.iteration, 0)
+      assert.equal(phaseStarted.cumulativeElapsedMs, 10)
+      assert.equal(phaseStarted.durationMs, undefined)
+    }
+    const phaseCompleted = events.find((event) => event.eventType === 'PHASE_COMPLETED')
+    assert.equal(phaseCompleted?.eventType, 'PHASE_COMPLETED')
+    if (phaseCompleted?.eventType === 'PHASE_COMPLETED') {
+      assert.equal(phaseCompleted.cumulativeElapsedMs, 25)
+      assert.equal(phaseCompleted.durationMs, undefined)
+    }
     assert.doesNotMatch(JSON.stringify(events), /SECRET_TOKEN|PROVIDER_SECRET/u)
+    await runtime.close()
+  })
+})
+
+await test('same-iteration verification commands and recovery remain independent durable facts', async () => {
+  await withTemp('ledger-verification-facts-', async ({ storageUrl }) => {
+    const commands = ['npm run typecheck', 'npm test', 'npm run build'] as const
+    const runtime = new WorkSessionRuntime({
+      definition: definition('ledger-verification-facts'),
+      storageUrl,
+      taskRunner: {
+        async run(_task, _resume, _checkpoint, context): Promise<WorkSessionTaskResult> {
+          const statuses = ['passed', 'failed', 'passed'] as const
+          commands.forEach((command, index) => context?.onProgress?.({
+            phase: 'VERIFYING',
+            status: statuses[index] === 'failed' ? 'failed' : 'completed',
+            iteration: 1,
+            elapsedMs: 48_233.37,
+            verification: {
+              command,
+              status: statuses[index]!,
+              index,
+              durationMs: 0.44 + index,
+            },
+          }))
+          context?.onProgress?.({
+            phase: 'RECOVERING', status: 'active', iteration: 1, elapsedMs: 48_233.37,
+            recovery: { reason: 'max_turns', sessionId: 'provider-session', bounded: true },
+          })
+          return {
+            status: 'FAILED', error: 'verification command failed',
+            failureStage: 'VERIFICATION', failureCategory: 'VERIFICATION_FAILED',
+          }
+        },
+      },
+    })
+
+    await assert.rejects(runtime.start(), /verification command failed/u)
+    const verificationEvents = runtime.readExecutionLedger().filter((event): event is PhaseLedgerEvent =>
+      (event.eventType === 'PHASE_COMPLETED' || event.eventType === 'PHASE_FAILED') &&
+      event.phase === 'VERIFYING',
+    )
+    assert.equal(verificationEvents.length, 3)
+    assert.deepEqual(verificationEvents.map((event) => ({
+      command: event.verificationCommand,
+      status: event.verificationStatus,
+      durationMs: event.durationMs,
+      index: event.verificationIndex,
+    })), [
+      { command: commands[0], status: 'passed', durationMs: 0.44, index: 0 },
+      { command: commands[1], status: 'failed', durationMs: 1.44, index: 1 },
+      { command: commands[2], status: 'passed', durationMs: 2.44, index: 2 },
+    ])
+    assert.equal(verificationEvents.filter((event) => event.verificationStatus === 'failed').length, 1)
+    const recovery = runtime.readExecutionLedger().find((event) =>
+      event.eventType === 'PHASE_STARTED' && event.phase === 'RECOVERING')
+    assert.equal(recovery?.eventType, 'PHASE_STARTED')
+    if (recovery?.eventType === 'PHASE_STARTED') {
+      assert.equal(recovery.recoveryReason, 'max_turns')
+      assert.equal(recovery.recoveryBounded, true)
+    }
+    await runtime.close()
+
+    assert.equal(readExecutionLedger(storageUrl, 'ledger-verification-facts').filter((event) =>
+      (event.eventType === 'PHASE_COMPLETED' || event.eventType === 'PHASE_FAILED') &&
+      event.phase === 'VERIFYING').length, 3)
+  })
+})
+
+await test('generic executor errors retain the structured EXECUTOR failure boundary', async () => {
+  await withTemp('ledger-executor-stage-', async ({ storageUrl }) => {
+    const runner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review({ task }) {
+          return {
+            verdict: 'proceed', goal: task.goal, instructions: ['execute'],
+            constraints: [], verification: [], doNotDo: [],
+          }
+        },
+      },
+      createExecutor() {
+        return { async execute() { throw new Error('spawn EACCES') } }
+      },
+    })
+    const runtime = new WorkSessionRuntime({
+      definition: definition('ledger-executor-stage'), storageUrl, taskRunner: runner,
+    })
+    await assert.rejects(runtime.start(), /spawn EACCES/u)
+    assert.equal(runtime.getDurableState()?.failureStage, 'EXECUTOR')
+    const failed = runtime.readExecutionLedger().find((event) => event.eventType === 'SESSION_FAILED')
+    assert.equal(failed?.failureStage, 'EXECUTOR')
     await runtime.close()
   })
 })
@@ -314,6 +442,42 @@ await test('two FAILED notification delivery failures do not mutate terminal sta
     assert.ok(runtime.readExecutionLedger().some((event) =>
       event.eventType === 'NOTIFICATION_FAILED' && event.notificationKind === 'FAILED'))
     await runtime.close()
+  })
+})
+
+await test('restart delivers a persisted FAILED state that crashed before its first SMTP attempt', async () => {
+  await withTemp('ledger-failed-before-smtp-', async ({ storageUrl }) => {
+    const firstProcess = new WorkSessionRuntime({
+      definition: definition('ledger-failed-before-smtp'), storageUrl,
+      taskRunner: {
+        async run() {
+          return {
+            status: 'FAILED' as const,
+            error: 'spawn EACCES',
+            failureStage: 'EXECUTOR' as const,
+            failureCategory: 'PROVIDER_ERROR' as const,
+          }
+        },
+      },
+    })
+    await assert.rejects(firstProcess.start(), /spawn EACCES/u)
+    assert.equal(firstProcess.getDurableState()?.failureNotificationAttempted, undefined)
+    await firstProcess.close()
+
+    const notifier = new FailedNotifier()
+    const restarted = new WorkSessionRuntime({
+      definition: definition('ledger-failed-before-smtp'), storageUrl, notifier,
+      notificationRetryDelayMs: 0,
+      taskRunner: { async run() { throw new Error('persisted FAILED must not execute task') } },
+    })
+    assert.equal((await restarted.loadPersistedState())?.state, 'FAILED')
+    await restarted.getNotificationPromise()
+    assert.equal(notifier.attempts, 1)
+    assert.equal(restarted.getDurableState()?.failureNotificationAttempted, true)
+    assert.equal(restarted.getDurableState()?.failureNotified, true)
+    assert.ok(restarted.readExecutionLedger().some((event) =>
+      event.eventType === 'NOTIFICATION_SENT' && event.notificationKind === 'FAILED'))
+    await restarted.close()
   })
 })
 

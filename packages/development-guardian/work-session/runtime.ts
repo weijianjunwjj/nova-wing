@@ -284,20 +284,21 @@ export class WorkSessionRuntime {
           (event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED') &&
           event.notificationKind === 'FAILED',
       )
-      if (failedDeliveries.length > 0) {
-        hydratedState = {
-          ...parsed.data,
-          failureNotificationAttempted: true,
-          ...(failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT')
-            ? { failureNotified: true }
-            : {}),
-        }
+      // Ledger delivery facts repair states written by the old pre-delivery
+      // claim path. With no delivery fact, FAILED is still eligible on restart.
+      hydratedState = {
+        ...parsed.data,
+        failureNotificationAttempted: failedDeliveries.length > 0 || undefined,
+        failureNotified:
+          failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT') || undefined,
       }
     }
     this.latestState = hydratedState
     this.pauseRequested = false
     this.stopAfterTaskRequested = hydratedState.stopAfterTaskRequested === true
-    return this.convertWorkflowStateToDurableState(hydratedState)
+    const durableState = this.convertWorkflowStateToDurableState(hydratedState)
+    if (durableState.state === 'FAILED') this.scheduleFailedNotification(durableState)
+    return durableState
   }
 
   async start(): Promise<WorkSessionDurableState> {
@@ -688,9 +689,6 @@ export class WorkSessionRuntime {
                 failureStage: failure.failureStage,
                 failureCategory: failure.failureCategory,
                 safeFailureMessage: failure.safeMessage,
-                ...(self.config.notifier?.notifyFailed === undefined
-                  ? {}
-                  : { failureNotificationAttempted: true }),
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
                 ...self.settleActiveTime(currentState),
@@ -753,9 +751,6 @@ export class WorkSessionRuntime {
                   failureStage: failure.failureStage,
                   failureCategory: failure.failureCategory,
                   safeFailureMessage: failure.safeMessage,
-                  ...(self.config.notifier?.notifyFailed === undefined
-                    ? {}
-                    : { failureNotificationAttempted: true }),
                   humanRequired: undefined,
                   currentTaskCheckpoint: undefined,
                   ...(partialCommitSha !== undefined
@@ -910,9 +905,6 @@ export class WorkSessionRuntime {
               failureStage: failure.failureStage,
               failureCategory: failure.failureCategory,
               safeFailureMessage: failure.safeMessage,
-              ...(self.config.notifier?.notifyFailed === undefined
-                ? {}
-                : { failureNotificationAttempted: true }),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               ...self.settleActiveTime(currentState), // W004-B
@@ -1159,6 +1151,9 @@ export class WorkSessionRuntime {
     const eventType = event.status === 'active'
       ? 'PHASE_STARTED'
       : event.status === 'completed' ? 'PHASE_COMPLETED' : 'PHASE_FAILED'
+    const verificationCommand = event.verification === undefined
+      ? undefined
+      : safeFailureMessage(event.verification.command)
     this.recordLedger({
       eventType,
       sessionId: this.config.definition.id,
@@ -1167,11 +1162,37 @@ export class WorkSessionRuntime {
       phase: event.phase,
       status: event.status,
       iteration: event.iteration,
-      ...(Number.isFinite(event.elapsedMs) ? { durationMs: event.elapsedMs } : {}),
+      ...(event.verification === undefined && event.recovery === undefined && Number.isFinite(event.elapsedMs)
+        ? { cumulativeElapsedMs: event.elapsedMs }
+        : {}),
+      ...(event.verification?.durationMs !== undefined && Number.isFinite(event.verification.durationMs)
+        ? { durationMs: event.verification.durationMs }
+        : {}),
+      ...(verificationCommand === undefined
+        ? {}
+        : {
+            verificationCommand,
+            verificationStatus: event.verification!.status,
+            ...(event.verification!.index === undefined
+              ? {}
+              : { verificationIndex: event.verification!.index }),
+          }),
+      ...(event.recovery === undefined
+        ? {}
+        : {
+            recoveryReason: event.recovery.reason,
+            recoveryBounded: event.recovery.bounded,
+          }),
       ...(this.latestState === undefined
         ? {}
         : { activeElapsedMs: this.activeElapsedMs(this.latestState) }),
-    }, `phase:${taskId}:${event.phase}:${event.status}:${event.iteration}`)
+    }, event.verification !== undefined
+      ? `verification:${taskId}:${event.iteration}:${
+        event.verification.index ?? verificationCommand
+      }:${event.verification.status}`
+      : event.recovery !== undefined
+        ? `recovery:${taskId}:${event.iteration}:${safeFailureMessage(event.recovery.reason)}`
+        : `phase:${taskId}:${event.phase}:${event.status}:${event.iteration}`)
   }
 
   private recordGitCommitCompleted(
@@ -1429,6 +1450,7 @@ export class WorkSessionRuntime {
       state.state !== 'FAILED' ||
       state.failureStage === undefined ||
       state.failureCategory === undefined ||
+      state.failureNotificationAttempted === true ||
       state.failureNotified === true ||
       this.failureNotificationScheduled
     ) {
@@ -1446,7 +1468,7 @@ export class WorkSessionRuntime {
   private async deliverFailedNotification(): Promise<void> {
     const notifier = this.config.notifier
     if (notifier?.notifyFailed === undefined) return
-    let state = this.getDurableState()
+    const state = this.getDurableState()
     if (
       state === undefined ||
       state.state !== 'FAILED' ||
@@ -1454,12 +1476,6 @@ export class WorkSessionRuntime {
       state.failureCategory === undefined
     ) {
       return
-    }
-    if (state.failureNotificationAttempted !== true) {
-      const claimed = await this.persistFailureNotificationFlag('failureNotificationAttempted')
-      if (!claimed) return
-      state = this.getDurableState()
-      if (state === undefined || state.state !== 'FAILED') return
     }
     const localControlUrl = this.config.localControlUrl?.()
     const notification = createWorkSessionFailedNotification({
@@ -1469,16 +1485,26 @@ export class WorkSessionRuntime {
     })
     let sent = false
     for (let attempt = 0; attempt < 2; attempt++) {
+      let shouldRetry = false
       try {
         await notifier.notifyFailed(notification)
         sent = true
         break
       } catch {
+        shouldRetry = attempt === 0
+      } finally {
         if (attempt === 0) {
-          await (this.config.notificationWait ?? defaultNotificationWait)(
-            this.config.notificationRetryDelayMs ?? 1_000,
-          )
+          try {
+            await this.persistFailureNotificationFlag('failureNotificationAttempted')
+          } catch {
+            // Delivery has already begun. Persist failure must not interrupt the bounded retry.
+          }
         }
+      }
+      if (shouldRetry) {
+        await (this.config.notificationWait ?? defaultNotificationWait)(
+          this.config.notificationRetryDelayMs ?? 1_000,
+        )
       }
     }
     if (sent) {

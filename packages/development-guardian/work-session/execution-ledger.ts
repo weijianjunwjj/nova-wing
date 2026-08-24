@@ -11,7 +11,7 @@ import type {
 } from './failure-classification.js'
 import { safeFailureMessage } from './failure-classification.js'
 
-export const EXECUTION_LEDGER_SCHEMA_VERSION = 1 as const
+export const EXECUTION_LEDGER_SCHEMA_VERSION = 2 as const
 
 export type ExecutionLedgerEventType =
   | 'SESSION_STARTED'
@@ -46,7 +46,14 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       phase: GuardianPhase
       status: GuardianProgressStatus
       iteration: number
+      /** Guardian cumulative elapsed time at observation; never a phase duration. */
+      cumulativeElapsedMs?: number
       durationMs?: number
+      verificationCommand?: string
+      verificationStatus?: 'running' | 'passed' | 'failed'
+      verificationIndex?: number
+      recoveryReason?: string
+      recoveryBounded?: boolean
     }
   | { eventType: 'TASK_COMPLETED'; taskId: string; status: 'COMPLETED' }
   | { eventType: 'GIT_COMMIT_COMPLETED'; taskId: string; status: 'COMPLETED'; commitSha: string }
@@ -95,6 +102,44 @@ export function executionLedgerPathFromStorageUrl(storageUrl: string): string {
   return `${fileURLToPath(storageUrl)}.execution-ledger.sqlite`
 }
 
+/*
+ * REAL is intentional for measured time: performance.now() produces fractions.
+ * INTEGER remains reserved for identities, iteration and boolean facts.
+ */
+function executionLedgerTableSql(tableName: string): string {
+  return `
+    CREATE TABLE IF NOT EXISTS ${tableName} (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      schema_version INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      task_id TEXT,
+      timestamp TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      status TEXT,
+      phase TEXT,
+      iteration INTEGER,
+      cumulative_elapsed_ms REAL,
+      duration_ms REAL,
+      active_elapsed_ms REAL,
+      verification_command TEXT,
+      verification_status TEXT,
+      verification_index INTEGER,
+      recovery_reason TEXT,
+      recovery_bounded INTEGER,
+      commit_sha TEXT,
+      push_sha TEXT,
+      completion_reason TEXT,
+      failure_stage TEXT,
+      failure_category TEXT,
+      safe_message TEXT,
+      notification_kind TEXT,
+      notification_id TEXT,
+      UNIQUE(session_id, dedupe_key)
+    ) STRICT
+  `
+}
+
 export class ExecutionLedgerStore {
   readonly #database: DatabaseSync
   #closed = false
@@ -106,35 +151,51 @@ export class ExecutionLedgerStore {
     this.#database.exec('PRAGMA journal_mode = WAL')
     this.#database.exec('PRAGMA synchronous = FULL')
     this.#database.exec('PRAGMA busy_timeout = 250')
-    this.#database.exec(`
-      CREATE TABLE IF NOT EXISTS execution_ledger_events (
-        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        schema_version INTEGER NOT NULL,
-        session_id TEXT NOT NULL,
-        dedupe_key TEXT NOT NULL,
-        task_id TEXT,
-        timestamp TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        status TEXT,
-        phase TEXT,
-        iteration INTEGER,
-        duration_ms INTEGER,
-        active_elapsed_ms INTEGER,
-        commit_sha TEXT,
-        push_sha TEXT,
-        completion_reason TEXT,
-        failure_stage TEXT,
-        failure_category TEXT,
-        safe_message TEXT,
-        notification_kind TEXT,
-        notification_id TEXT,
-        UNIQUE(session_id, dedupe_key)
-      ) STRICT
-    `)
+    this.#database.exec(executionLedgerTableSql('execution_ledger_events'))
+    this.#migrateV1IfNeeded()
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS execution_ledger_session_order
       ON execution_ledger_events(session_id, event_id)
     `)
+  }
+
+  #migrateV1IfNeeded(): void {
+    const columns = this.#database.prepare(
+      'SELECT name, type FROM pragma_table_info(\'execution_ledger_events\')',
+    ).all() as Array<{ name: string; type: string }>
+    const byName = new Map(columns.map((column) => [column.name, column.type.toUpperCase()]))
+    if (
+      byName.get('duration_ms') === 'REAL' &&
+      byName.get('active_elapsed_ms') === 'REAL' &&
+      byName.has('cumulative_elapsed_ms')
+    ) {
+      return
+    }
+
+    this.#database.exec('BEGIN IMMEDIATE')
+    try {
+      this.#database.exec('ALTER TABLE execution_ledger_events RENAME TO execution_ledger_events_v1')
+      this.#database.exec(executionLedgerTableSql('execution_ledger_events'))
+      this.#database.exec(`
+        INSERT INTO execution_ledger_events (
+          event_id, schema_version, session_id, dedupe_key, task_id, timestamp,
+          event_type, status, phase, iteration, duration_ms, active_elapsed_ms,
+          commit_sha, push_sha, completion_reason, failure_stage, failure_category,
+          safe_message, notification_kind, notification_id
+        )
+        SELECT
+          event_id, ${EXECUTION_LEDGER_SCHEMA_VERSION}, session_id, dedupe_key, task_id,
+          timestamp, event_type, status, phase, iteration, duration_ms,
+          active_elapsed_ms, commit_sha, push_sha, completion_reason, failure_stage,
+          failure_category, safe_message, notification_kind, notification_id
+        FROM execution_ledger_events_v1
+      `)
+      this.#database.exec('DROP TABLE execution_ledger_events_v1')
+      this.#database.exec('COMMIT')
+    } catch (error) {
+      this.#database.exec('ROLLBACK')
+      throw error
+    }
   }
 
   append(input: ExecutionLedgerEventInput, dedupeKey: string): ExecutionLedgerEvent {
@@ -142,12 +203,16 @@ export class ExecutionLedgerStore {
     this.#database.prepare(`
       INSERT OR IGNORE INTO execution_ledger_events (
         schema_version, session_id, dedupe_key, task_id, timestamp, event_type,
-        status, phase, iteration, duration_ms, active_elapsed_ms, commit_sha,
+        status, phase, iteration, cumulative_elapsed_ms, duration_ms,
+        active_elapsed_ms, verification_command, verification_status,
+        verification_index, recovery_reason, recovery_bounded, commit_sha,
         push_sha, completion_reason, failure_stage, failure_category, safe_message,
         notification_kind, notification_id
       ) VALUES (
         $schemaVersion, $sessionId, $dedupeKey, $taskId, $timestamp, $eventType,
-        $status, $phase, $iteration, $durationMs, $activeElapsedMs, $commitSha,
+        $status, $phase, $iteration, $cumulativeElapsedMs, $durationMs,
+        $activeElapsedMs, $verificationCommand, $verificationStatus,
+        $verificationIndex, $recoveryReason, $recoveryBounded, $commitSha,
         $pushSha, $completionReason, $failureStage, $failureCategory, $safeMessage,
         $notificationKind, $notificationId
       )
@@ -161,8 +226,28 @@ export class ExecutionLedgerStore {
       status: 'status' in input ? input.status : null,
       phase: 'phase' in input ? input.phase : null,
       iteration: 'iteration' in input ? input.iteration : null,
+      cumulativeElapsedMs: 'cumulativeElapsedMs' in input
+        ? input.cumulativeElapsedMs ?? null
+        : null,
       durationMs: 'durationMs' in input ? input.durationMs ?? null : null,
       activeElapsedMs: input.activeElapsedMs ?? null,
+      verificationCommand: 'verificationCommand' in input
+        ? input.verificationCommand === undefined
+          ? null
+          : safeFailureMessage(input.verificationCommand)
+        : null,
+      verificationStatus: 'verificationStatus' in input
+        ? input.verificationStatus ?? null
+        : null,
+      verificationIndex: 'verificationIndex' in input
+        ? input.verificationIndex ?? null
+        : null,
+      recoveryReason: 'recoveryReason' in input && input.recoveryReason !== undefined
+        ? safeFailureMessage(input.recoveryReason)
+        : null,
+      recoveryBounded: 'recoveryBounded' in input && input.recoveryBounded !== undefined
+        ? Number(input.recoveryBounded)
+        : null,
       commitSha: 'commitSha' in input ? input.commitSha ?? null : null,
       pushSha: 'pushSha' in input ? input.pushSha : null,
       completionReason: 'completionReason' in input ? input.completionReason : null,
@@ -216,21 +301,39 @@ export function readExecutionLedger(
 
 function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
   const base = {
-    eventId: requiredNumber(row, 'event_id'),
-    schemaVersion: requiredNumber(row, 'schema_version') as typeof EXECUTION_LEDGER_SCHEMA_VERSION,
+    eventId: requiredInteger(row, 'event_id'),
+    schemaVersion: requiredInteger(row, 'schema_version') as typeof EXECUTION_LEDGER_SCHEMA_VERSION,
     sessionId: requiredString(row, 'session_id'),
     taskId: optionalString(row, 'task_id'),
     timestamp: requiredString(row, 'timestamp'),
     eventType: requiredString(row, 'event_type') as ExecutionLedgerEventType,
-    ...(optionalNumber(row, 'active_elapsed_ms') === null
+    ...(optionalReal(row, 'active_elapsed_ms') === null
       ? {}
-      : { activeElapsedMs: optionalNumber(row, 'active_elapsed_ms')! }),
+      : { activeElapsedMs: optionalReal(row, 'active_elapsed_ms')! }),
   }
   const optional = {
     ...(optionalString(row, 'status') === null ? {} : { status: optionalString(row, 'status')! }),
     ...(optionalString(row, 'phase') === null ? {} : { phase: optionalString(row, 'phase')! }),
-    ...(optionalNumber(row, 'iteration') === null ? {} : { iteration: optionalNumber(row, 'iteration')! }),
-    ...(optionalNumber(row, 'duration_ms') === null ? {} : { durationMs: optionalNumber(row, 'duration_ms')! }),
+    ...(optionalInteger(row, 'iteration') === null ? {} : { iteration: optionalInteger(row, 'iteration')! }),
+    ...(optionalReal(row, 'cumulative_elapsed_ms') === null
+      ? {}
+      : { cumulativeElapsedMs: optionalReal(row, 'cumulative_elapsed_ms')! }),
+    ...(optionalReal(row, 'duration_ms') === null ? {} : { durationMs: optionalReal(row, 'duration_ms')! }),
+    ...(optionalString(row, 'verification_command') === null
+      ? {}
+      : { verificationCommand: optionalString(row, 'verification_command')! }),
+    ...(optionalString(row, 'verification_status') === null
+      ? {}
+      : { verificationStatus: optionalString(row, 'verification_status')! }),
+    ...(optionalInteger(row, 'verification_index') === null
+      ? {}
+      : { verificationIndex: optionalInteger(row, 'verification_index')! }),
+    ...(optionalString(row, 'recovery_reason') === null
+      ? {}
+      : { recoveryReason: optionalString(row, 'recovery_reason')! }),
+    ...(optionalInteger(row, 'recovery_bounded') === null
+      ? {}
+      : { recoveryBounded: optionalInteger(row, 'recovery_bounded') === 1 }),
     ...(optionalString(row, 'commit_sha') === null ? {} : { commitSha: optionalString(row, 'commit_sha')! }),
     ...(optionalString(row, 'push_sha') === null ? {} : { pushSha: optionalString(row, 'push_sha')! }),
     ...(optionalString(row, 'completion_reason') === null ? {} : { completionReason: optionalString(row, 'completion_reason')! }),
@@ -256,7 +359,7 @@ function optionalString(row: SqlRow, key: string): string | null {
   return value
 }
 
-function requiredNumber(row: SqlRow, key: string): number {
+function requiredInteger(row: SqlRow, key: string): number {
   const value = row[key]
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
     throw new Error(`invalid Execution Ledger integer column ${key}`)
@@ -264,8 +367,17 @@ function requiredNumber(row: SqlRow, key: string): number {
   return value
 }
 
-function optionalNumber(row: SqlRow, key: string): number | null {
+function optionalInteger(row: SqlRow, key: string): number | null {
   const value = row[key]
   if (value === null) return null
-  return requiredNumber(row, key)
+  return requiredInteger(row, key)
+}
+
+function optionalReal(row: SqlRow, key: string): number | null {
+  const value = row[key]
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`invalid Execution Ledger real column ${key}`)
+  }
+  return value
 }

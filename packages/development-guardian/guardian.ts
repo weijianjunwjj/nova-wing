@@ -265,7 +265,7 @@ export async function runGuardianTask(options: {
         stopReason: error instanceof Error ? error.message : 'executor failed',
       }
       emitProgress('FAILED', 'completed', task.stopReason)
-      return { task, reports }
+      return { task, reports, failureStage: 'EXECUTOR' }
     }
 
     reports.push(report)

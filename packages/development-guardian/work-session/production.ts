@@ -346,7 +346,7 @@ export async function createProductionWorkSessionUi(
           if (policy === undefined) throw new Error(`missing Guardian policy for task ${task.id}`)
           return createGuardianTask(task, policy)
         },
-        createExecutor() {
+        createExecutor(_task, _resumeData, onProgress) {
           return createExecutor({
             cwd: definition.targetRepo,
             model: trusted.executor.model,
@@ -354,18 +354,19 @@ export async function createProductionWorkSessionUi(
             allowNpmInstall: trusted.executor.allowNpmInstall,
             allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
             onVerification(verification) {
-              eventSink({
+              onProgress?.({
                 phase: 'VERIFYING',
                 status: verification.status === 'running'
                   ? 'active'
                   : verification.status === 'passed' ? 'completed' : 'failed',
                 iteration: verification.iteration,
-                elapsedMs: verification.durationMs ?? 0,
+                // Executor hook reports a command duration, not Guardian cumulative elapsed.
+                elapsedMs: 0,
                 verification,
               })
             },
             onRecovery(recovery) {
-              eventSink({
+              onProgress?.({
                 phase: 'RECOVERING',
                 status: 'active',
                 iteration: recovery.iteration,

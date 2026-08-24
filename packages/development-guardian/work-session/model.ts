@@ -72,7 +72,7 @@ export interface WorkSessionDurableState {
   completionNotificationAttempted?: boolean
   /** Completion email delivery succeeded after the durable attempt claim. */
   completionNotified?: boolean
-  /** FAILED email delivery claim; set before the bounded delivery attempts. */
+  /** FAILED email delivery claim; set only after the first bounded attempt has begun. */
   failureNotificationAttempted?: boolean
   /** FAILED email delivery succeeded after the durable attempt claim. */
   failureNotified?: boolean

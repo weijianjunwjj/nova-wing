@@ -88,4 +88,6 @@ export interface GuardianTask {
 export interface GuardianRunResult {
   task: GuardianTask
   reports: readonly ExecutionReport[]
+  /** Known failure boundary; avoids reconstructing source from provider text. */
+  failureStage?: 'EXECUTOR'
 }

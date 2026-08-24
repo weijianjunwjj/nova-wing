@@ -90,6 +90,8 @@ export interface ClaudeCodeExecutorOptions {
     status: 'running' | 'passed' | 'failed'
     /** Internal Guardian iteration of the Executor that ran this verification. */
     iteration: number
+    /** Stable position in the verification list for this Executor iteration. */
+    index?: number
     durationMs?: number
   }) => void
   onRecovery?: (recovery: {
@@ -825,7 +827,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     const blockers: string[] = []
     const commandsRun: string[] = []
 
-    for (const command of effectiveCommands) {
+    for (const [index, command] of effectiveCommands.entries()) {
       if (command.length === 0) {
         continue
       }
@@ -840,7 +842,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       }
 
       commandsRun.push(command)
-      this.options.onVerification?.({ command, status: 'running', iteration: task.iteration })
+      this.options.onVerification?.({ command, status: 'running', iteration: task.iteration, index })
       const startedAt = performance.now()
       // Preserve the Reviewer-visible command name while upgrading its actual
       // behavior.  Injected command runners retain the established unit-test
@@ -851,7 +853,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       const durationMs = performance.now() - startedAt
       this.emitTiming(task, 'verification', durationMs, { command })
       const status = result.exitCode === 0 ? 'passed' : 'failed'
-      this.options.onVerification?.({ command, status, iteration: task.iteration, durationMs })
+      this.options.onVerification?.({ command, status, iteration: task.iteration, index, durationMs })
       results.push({
         name: command,
         status,

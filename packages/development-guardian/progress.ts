@@ -26,6 +26,8 @@ export interface GuardianProgressEvent {
   verification?: {
     command: string
     status: 'running' | 'passed' | 'failed'
+    /** Stable position in the Executor verification list for this iteration. */
+    index?: number
     durationMs?: number
   }
 }

@@ -12,6 +12,7 @@ import {
   type ClaudeCodeExecutorOptions,
   type ExecutionReport,
   type GuardianTask,
+  type GuardianProgressEvent,
   type ProductionGitProcessRunner,
   type TrustedWorkSessionConfig,
   type WorkSessionRuntimeConfig,
@@ -82,6 +83,7 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     const reviewedTasks: GuardianTask[] = []
     const executorOptions: ClaudeCodeExecutorOptions[] = []
     const gitCalls: Array<{ executable: string; args: readonly string[]; cwd: string }> = []
+    const durableProgress: GuardianProgressEvent[] = []
     const gitProcessRunner: ProductionGitProcessRunner = async (executable, args, cwd) => {
       gitCalls.push({ executable, args, cwd })
       const stdout = args[0] === 'branch'
@@ -140,8 +142,12 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     assert.equal(runtimeConfig?.gitCheckpoint?.policy.autoPush, false)
     assert.equal(productionRuntime?.loadPersistedStateCalls, 1)
 
-    await runtimeConfig!.taskRunner.run(app.definition.tasks[0]!)
-    await runtimeConfig!.taskRunner.run(app.definition.tasks[1]!)
+    await runtimeConfig!.taskRunner.run(app.definition.tasks[0]!, undefined, undefined, {
+      onProgress: (event) => durableProgress.push(event),
+    })
+    await runtimeConfig!.taskRunner.run(app.definition.tasks[1]!, undefined, undefined, {
+      onProgress: (event) => durableProgress.push(event),
+    })
     assert.deepEqual(reviewedTasks.map((task) => ({
       id: task.id,
       constraints: task.constraints,
@@ -189,6 +195,11 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       (event.data.phase === 'VERIFYING' || event.data.phase === 'RECOVERING'),
     )
     assert.deepEqual(phaseEvents.map((event) => [event.data.phase, event.data.iteration]), [
+      ['VERIFYING', 1], ['VERIFYING', 2], ['RECOVERING', 2],
+    ])
+    assert.deepEqual(durableProgress.filter((event) =>
+      event.phase === 'VERIFYING' || event.phase === 'RECOVERING',
+    ).map((event) => [event.phase, event.iteration]), [
       ['VERIFYING', 1], ['VERIFYING', 2], ['RECOVERING', 2],
     ])
     assert.ok(gitCalls.every((call) => call.executable === 'git'))
