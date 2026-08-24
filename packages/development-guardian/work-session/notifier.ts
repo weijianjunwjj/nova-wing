@@ -1,6 +1,11 @@
 import { basename } from 'node:path'
 
 import type { HumanRequired, WorkSessionDefinition, WorkSessionDurableState } from './model.js'
+import {
+  safeFailureMessage,
+  type WorkSessionFailureCategory,
+  type WorkSessionFailureStage,
+} from './failure-classification.js'
 
 export interface HumanRequiredNotification {
   notificationId: string
@@ -33,10 +38,27 @@ export interface WorkSessionCompletedNotification {
   activeElapsedMs?: number
 }
 
+export interface WorkSessionFailedNotification {
+  notificationId: string
+  session: {
+    id: string
+    targetRepo: string
+    branch: string
+  }
+  currentTaskId: string | null
+  failureStage: WorkSessionFailureStage
+  failureCategory: WorkSessionFailureCategory
+  safeReason: string
+  activeElapsedMs?: number
+  control: { localUrl?: string }
+}
+
 export interface WorkSessionNotifier {
   notifyHumanRequired(notification: HumanRequiredNotification): Promise<void>
   /** Additive so existing test/local notifiers remain compatible. Production SMTP implements it. */
   notifyCompleted?(notification: WorkSessionCompletedNotification): Promise<void>
+  /** Additive FAILED terminal capability; production SMTP implements it. */
+  notifyFailed?(notification: WorkSessionFailedNotification): Promise<void>
 }
 
 export type NotificationDeliveryStatus = 'SENT' | 'FAILED'
@@ -46,7 +68,7 @@ export interface NotificationDeliveryResult {
   notificationId: string
   taskId: string | null
   category: string
-  kind?: 'HUMAN_REQUIRED' | 'COMPLETED'
+  kind?: 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED'
 }
 
 export type NotificationDeliveryObserver = (
@@ -110,6 +132,10 @@ export function notificationIdForCompleted(sessionId: string): string {
   return `${sessionId}:completed`
 }
 
+export function notificationIdForFailed(sessionId: string): string {
+  return `${sessionId}:failed`
+}
+
 export function createWorkSessionCompletedNotification(input: {
   definition: WorkSessionDefinition
   state: WorkSessionDurableState
@@ -130,33 +156,40 @@ export function createWorkSessionCompletedNotification(input: {
   }
 }
 
-export function safeNotificationReason(reason: string): string {
-  const normalized = reason.trim()
-  if (/\b403\b.*\binsufficient balance\b|\binsufficient balance\b/iu.test(normalized)) {
-    return 'Executor Provider 账户余额不足，无法继续调用模型。'
+/** Backward-compatible name for the shared product-data safety boundary. */
+export const safeNotificationReason = safeFailureMessage
+
+export function createWorkSessionFailedNotification(input: {
+  definition: WorkSessionDefinition
+  state: WorkSessionDurableState
+  localControlUrl?: string
+}): WorkSessionFailedNotification {
+  if (
+    input.state.state !== 'FAILED' ||
+    input.state.failureStage === undefined ||
+    input.state.failureCategory === undefined
+  ) {
+    throw new Error('failure notification requires structured FAILED state')
   }
-  if (/\bDATABASE_URL\b.*\b(missing|not configured)\b|\bDATABASE_URL\b.*\b未配置\b/iu.test(normalized)) {
-    return 'PostgreSQL DATABASE_URL 未配置，pytest 无法完成验证。'
+  const localUrl = safeLocalControlUrl(input.localControlUrl)
+  return {
+    notificationId: notificationIdForFailed(input.definition.id),
+    session: {
+      id: input.definition.id,
+      targetRepo: input.definition.targetRepo,
+      branch: input.definition.branch,
+    },
+    currentTaskId: input.state.currentTaskId,
+    failureStage: input.state.failureStage,
+    failureCategory: input.state.failureCategory,
+    safeReason: safeFailureMessage(
+      input.state.safeFailureMessage ?? input.state.failureReason,
+    ),
+    ...(input.state.activeElapsedMs === undefined
+      ? {}
+      : { activeElapsedMs: input.state.activeElapsedMs }),
+    control: { ...(localUrl === undefined ? {} : { localUrl }) },
   }
-  const isAskBridgeTabOpenFailure = /\bask(?:-| )?bridge\b/iu.test(normalized) &&
-    /\bcould not identify (?:the )?newly opened tab\b|\berror opening (?:a )?chatgpt session\b|\btab identification failure\b|\btab\b.{0,80}\b(?:open(?:ing)?|identif(?:y|ication))\b.{0,80}\b(?:fail(?:ed|ure)?|error)\b|\b(?:fail(?:ed|ure)?|error)\b.{0,80}\b(?:open(?:ing)?|identif(?:y|ication))\b.{0,80}\btab\b/iu.test(normalized)
-  if (isAskBridgeTabOpenFailure) {
-    return 'Reviewer 浏览器会话打开失败。'
-  }
-  // Provider 原始 JSON 或异常对象缺乏稳定的用户语义，也可能携带敏感信息。
-  if (/^[{[]/u.test(normalized)) {
-    return '发生未知错误。请在本地控制台查看安全诊断信息。'
-  }
-  const redacted = normalized
-    .replace(/\bBearer\s+\S+/giu, '[REDACTED]')
-    .replace(
-      /(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z0-9-]*[_ -])*(?:authorization|password|secret|token|api[_ -]?key|credential|cookie|smtp[_ -]?pass))\s*[:=]\s*\S+/giu,
-      '$1=[REDACTED]',
-    )
-    .replace(/\s+/gu, ' ')
-    .trim()
-  if (redacted.length === 0) return '发生未知错误。请在本地控制台查看安全诊断信息。'
-  return redacted.slice(0, 500)
 }
 
 export function createHumanRequiredNotification(input: {

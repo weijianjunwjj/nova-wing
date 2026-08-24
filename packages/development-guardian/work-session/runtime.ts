@@ -16,15 +16,26 @@ import type {
   WorkSessionDurableState,
   WorkSessionCompletionReason,
 } from './model.js'
+import type { GuardianProgressEvent } from '../progress.js'
 import type { WorkSessionTaskRunner, WorkSessionTaskRunContext } from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
   createWorkSessionCompletedNotification,
+  createWorkSessionFailedNotification,
   createHumanRequiredNotification,
   type NotificationDeliveryObserver,
   type NotificationDeliveryResult,
   type WorkSessionNotifier,
 } from './notifier.js'
+import {
+  classifyWorkSessionFailure,
+  safeFailureMessage,
+} from './failure-classification.js'
+import {
+  ExecutionLedgerStore,
+  type ExecutionLedgerEvent,
+  type ExecutionLedgerEventInput,
+} from './execution-ledger.js'
 import {
   finalizeCompletedTask,
   readCurrentHeadSha,
@@ -90,10 +101,22 @@ const WorkflowStateSchema = z.object({
   lastNotifiedHumanRequiredGeneration: z.number().int().nonnegative().optional(),
   completionNotificationAttempted: z.boolean().optional(),
   completionNotified: z.boolean().optional(),
+  failureNotificationAttempted: z.boolean().optional(),
+  failureNotified: z.boolean().optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
   checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
   failureReason: z.string().optional(), // W004-A FINAL
+  failureStage: z.enum([
+    'REVIEWER', 'EXECUTOR', 'VERIFICATION', 'FINAL_REVIEW', 'GIT_COMMIT',
+    'GIT_PUSH', 'RUNTIME', 'NOTIFICATION', 'UNKNOWN',
+  ]).optional(),
+  failureCategory: z.enum([
+    'PROVIDER_ERROR', 'VERIFICATION_FAILED', 'GIT_COMMIT_FAILED', 'GIT_PUSH_FAILED',
+    'REPO_DRIFT', 'PERMISSION', 'CREDENTIAL', 'BUDGET', 'PROTOCOL',
+    'RUNTIME_ERROR', 'UNKNOWN',
+  ]).optional(),
+  safeFailureMessage: z.string().optional(),
   currentTaskBaseHeadSha: z.string().optional(), // W004-A FINAL
   activeElapsedMs: z.number().optional(), // W004-B
   activeSegmentStartedAt: z.number().optional(), // W004-B
@@ -137,6 +160,8 @@ export class WorkSessionRuntime {
   private stopAfterTaskRequested = false
   private notificationPromise: Promise<void> | undefined
   private lastNotificationDelivery: NotificationDeliveryResult | undefined
+  private ledger: ExecutionLedgerStore | undefined
+  private failureNotificationScheduled = false
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -144,6 +169,14 @@ export class WorkSessionRuntime {
     this.config = config
     // runId = sessionId，简化 identity 管理
     this.workflowId = `work-session-${config.definition.id}`
+
+    try {
+      this.ledger = new ExecutionLedgerStore(config.storageUrl)
+    } catch {
+      // Execution Ledger is an observability side channel. Failure to open it
+      // must not mutate or fabricate the Work Session business outcome.
+      this.ledger = undefined
+    }
 
     // 初始化 Mastra 和 LibSQL 持久化存储
     const storage = new LibSQLStore({
@@ -244,10 +277,27 @@ export class WorkSessionRuntime {
       )
     }
 
-    this.latestState = parsed.data
+    let hydratedState = parsed.data
+    if (parsed.data.state === 'FAILED') {
+      const failedDeliveries = this.readExecutionLedger().filter(
+        (event) =>
+          (event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED') &&
+          event.notificationKind === 'FAILED',
+      )
+      if (failedDeliveries.length > 0) {
+        hydratedState = {
+          ...parsed.data,
+          failureNotificationAttempted: true,
+          ...(failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT')
+            ? { failureNotified: true }
+            : {}),
+        }
+      }
+    }
+    this.latestState = hydratedState
     this.pauseRequested = false
-    this.stopAfterTaskRequested = parsed.data.stopAfterTaskRequested === true
-    return this.convertWorkflowStateToDurableState(parsed.data)
+    this.stopAfterTaskRequested = hydratedState.stopAfterTaskRequested === true
+    return this.convertWorkflowStateToDurableState(hydratedState)
   }
 
   async start(): Promise<WorkSessionDurableState> {
@@ -297,6 +347,15 @@ export class WorkSessionRuntime {
         runId,
       })
 
+      this.recordLedger({
+        eventType: 'SESSION_STARTED',
+        sessionId: runId,
+        taskId: null,
+        timestamp: this.ledgerTimestamp(),
+        status: 'RUNNING',
+        activeElapsedMs: 0,
+      }, 'session-started')
+
       const result = await run.start({
         inputData: {},
         initialState,
@@ -317,6 +376,15 @@ export class WorkSessionRuntime {
       this.scheduleNotificationsForState(durableState, false)
       return durableState
     } catch (error) {
+      const failedState = this.getDurableState()
+      if (failedState?.state === 'FAILED') {
+        try {
+          await this.persistLatestFailedState()
+        } catch {
+          // Preserve the original Work Session failure if durable storage itself is unavailable.
+        }
+        this.scheduleNotificationsForState(failedState, false)
+      }
       throw error
     }
   }
@@ -371,6 +439,15 @@ export class WorkSessionRuntime {
       )
       return durableState
     } catch (error) {
+      const failedState = this.getDurableState()
+      if (failedState?.state === 'FAILED') {
+        try {
+          await this.persistLatestFailedState()
+        } catch {
+          // Preserve the original Work Session failure if durable storage itself is unavailable.
+        }
+        this.scheduleNotificationsForState(failedState, false)
+      }
       throw error
     }
   }
@@ -494,7 +571,8 @@ export class WorkSessionRuntime {
           }
 
           // W004-B: claim 新 Task 前检查 limits（resume 已 claim 的当前 Task 不截断）。
-          if (currentState.currentTaskId !== task.id) {
+          const isNewTaskClaim = currentState.currentTaskId !== task.id
+          if (isNewTaskClaim) {
             // W005-B: a pause received between Tasks suspends before claiming the next
             // Task. currentTaskId is deliberately left unchanged; no TASK_STARTED is
             // fabricated for work that has not begun.
@@ -533,6 +611,7 @@ export class WorkSessionRuntime {
               }
               await setState(limitState)
               self.latestState = limitState
+              self.recordSessionCompleted(limitState)
               return { final: true }
             }
           }
@@ -547,6 +626,16 @@ export class WorkSessionRuntime {
           await setState(updatedState)
           currentState = updatedState
           self.latestState = updatedState
+          if (isNewTaskClaim) {
+            self.recordLedger({
+              eventType: 'TASK_STARTED',
+              sessionId: updatedState.sessionId,
+              taskId: task.id,
+              timestamp: self.ledgerTimestamp(),
+              status: 'RUNNING',
+              activeElapsedMs: self.activeElapsedMs(updatedState),
+            }, `task-started:${task.id}`)
+          }
 
           // W004-A FINAL: autoCommit=true 时，在第一次真正开始某 Task 前捕获 base HEAD。
           // suspend/resume 同一个 Task 时复用已保存 SHA，禁止重新采样。
@@ -573,6 +662,7 @@ export class WorkSessionRuntime {
           const runContext: WorkSessionTaskRunContext = {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
+            onProgress: (event) => self.recordGuardianProgress(task.id, event),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
 
@@ -587,16 +677,28 @@ export class WorkSessionRuntime {
               completionEvidence === undefined
             ) {
               const failureReason = `completed task ${task.id} missing completion evidence`
+              const failure = classifyWorkSessionFailure(failureReason, {
+                failureStage: 'RUNTIME',
+                failureCategory: 'PROTOCOL',
+              })
               const failedState: WorkflowState = {
                 ...currentState,
                 state: 'FAILED',
                 failureReason,
+                failureStage: failure.failureStage,
+                failureCategory: failure.failureCategory,
+                safeFailureMessage: failure.safeMessage,
+                ...(self.config.notifier?.notifyFailed === undefined
+                  ? {}
+                  : { failureNotificationAttempted: true }),
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                ...self.settleActiveTime(currentState),
                 updatedAt: new Date().toISOString(),
               }
               await setState(failedState)
               self.latestState = failedState
+              self.recordSessionFailed(failedState)
               throw new Error(failureReason)
             }
 
@@ -624,6 +726,15 @@ export class WorkSessionRuntime {
                 })
                 checkpointCommitSha = commitResult.commitSha
                 checkpointPushSha = commitResult.pushSha
+                self.recordGitCommitCompleted(task.id, commitResult.commitSha, currentState)
+                if (commitResult.pushSha !== undefined) {
+                  self.recordGitPushCompleted(
+                    task.id,
+                    commitResult.commitSha,
+                    commitResult.pushSha,
+                    currentState,
+                  )
+                }
               } catch (error) {
                 // Git checkpoint execution failure → Session FAILED，不是 DECISION_REQUIRED
                 const failureReason =
@@ -631,10 +742,20 @@ export class WorkSessionRuntime {
                 // W004-B: push 失败但 local commit 已成功 → 保留 commitSha（partial success 可见），
                 // checkpointPushes 无对应 entry，completedTaskIds 不包含本 Task。
                 const partialCommitSha = error instanceof GitPushError ? error.commitSha : undefined
+                const failure = classifyWorkSessionFailure(error)
+                if (partialCommitSha !== undefined) {
+                  self.recordGitCommitCompleted(task.id, partialCommitSha, currentState)
+                }
                 const failedState: WorkflowState = {
                   ...currentState,
                   state: 'FAILED',
                   failureReason,
+                  failureStage: failure.failureStage,
+                  failureCategory: failure.failureCategory,
+                  safeFailureMessage: failure.safeMessage,
+                  ...(self.config.notifier?.notifyFailed === undefined
+                    ? {}
+                    : { failureNotificationAttempted: true }),
                   humanRequired: undefined,
                   currentTaskCheckpoint: undefined,
                   ...(partialCommitSha !== undefined
@@ -650,6 +771,7 @@ export class WorkSessionRuntime {
                 }
                 await setState(failedState)
                 self.latestState = failedState
+                self.recordSessionFailed(failedState)
                 throw new Error(
                   `Git checkpoint failed for task ${task.id}: ${failureReason}`,
                 )
@@ -685,6 +807,14 @@ export class WorkSessionRuntime {
             await setState(completedState)
             currentState = completedState
             self.latestState = completedState
+            self.recordLedger({
+              eventType: 'TASK_COMPLETED',
+              sessionId: completedState.sessionId,
+              taskId: task.id,
+              timestamp: self.ledgerTimestamp(),
+              status: 'COMPLETED',
+              activeElapsedMs: self.activeElapsedMs(completedState),
+            }, `task-completed:${task.id}`)
 
             // W005-B: stop-after-task is observed only after verification and the
             // full safe commit/push checkpoint path. Real queue completion wins.
@@ -748,6 +878,17 @@ export class WorkSessionRuntime {
             }
             await setState(suspendedState)
             self.latestState = suspendedState
+            self.recordLedger({
+              eventType: 'HUMAN_REQUIRED',
+              sessionId: suspendedState.sessionId,
+              taskId: task.id,
+              timestamp: self.ledgerTimestamp(),
+              status: 'SUSPENDED',
+              ...(suspendedState.activeElapsedMs === undefined
+                ? {}
+                : { activeElapsedMs: suspendedState.activeElapsedMs }),
+              safeMessage: safeFailureMessage(result.humanRequired?.reason ?? 'human required'),
+            }, `human-required:${task.id}:${suspendedState.humanRequiredGeneration ?? 0}`)
 
             // 调用 suspend，Mastra 会持久化当前状态
             return await suspend(
@@ -757,9 +898,21 @@ export class WorkSessionRuntime {
           }
 
           if (result.status === 'FAILED') {
+            const failureReason = result.error ?? `Task ${task.id} failed`
+            const failure = classifyWorkSessionFailure(failureReason, {
+              ...(result.failureStage === undefined ? {} : { failureStage: result.failureStage }),
+              ...(result.failureCategory === undefined ? {} : { failureCategory: result.failureCategory }),
+            })
             const failedState: WorkflowState = {
               ...currentState,
               state: 'FAILED',
+              failureReason,
+              failureStage: failure.failureStage,
+              failureCategory: failure.failureCategory,
+              safeFailureMessage: failure.safeMessage,
+              ...(self.config.notifier?.notifyFailed === undefined
+                ? {}
+                : { failureNotificationAttempted: true }),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               ...self.settleActiveTime(currentState), // W004-B
@@ -767,8 +920,9 @@ export class WorkSessionRuntime {
             }
             await setState(failedState)
             self.latestState = failedState
+            self.recordSessionFailed(failedState)
 
-            throw new Error(`Task ${task.id} failed: ${result.error || 'unknown error'}`)
+            throw new Error(`Task ${task.id} failed: ${failureReason}`)
           }
         }
 
@@ -789,6 +943,7 @@ export class WorkSessionRuntime {
         }
         await setState(finalState)
         self.latestState = finalState
+        self.recordSessionCompleted(finalState)
 
         return { final: true }
       },
@@ -840,6 +995,12 @@ export class WorkSessionRuntime {
     if (wfState.completionNotified !== undefined) {
       result.completionNotified = wfState.completionNotified
     }
+    if (wfState.failureNotificationAttempted !== undefined) {
+      result.failureNotificationAttempted = wfState.failureNotificationAttempted
+    }
+    if (wfState.failureNotified !== undefined) {
+      result.failureNotified = wfState.failureNotified
+    }
     // W003: 传递 checkpoint
     if (wfState.currentTaskCheckpoint) {
       result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
@@ -874,6 +1035,15 @@ export class WorkSessionRuntime {
     if (wfState.failureReason !== undefined) {
       result.failureReason = wfState.failureReason
     }
+    if (wfState.failureStage !== undefined) {
+      result.failureStage = wfState.failureStage
+    }
+    if (wfState.failureCategory !== undefined) {
+      result.failureCategory = wfState.failureCategory
+    }
+    if (wfState.safeFailureMessage !== undefined) {
+      result.safeFailureMessage = wfState.safeFailureMessage
+    }
     if (wfState.currentTaskBaseHeadSha !== undefined) {
       result.currentTaskBaseHeadSha = wfState.currentTaskBaseHeadSha
     }
@@ -882,6 +1052,8 @@ export class WorkSessionRuntime {
 
   async close(): Promise<void> {
     await this.notificationPromise
+    this.ledger?.close()
+    this.ledger = undefined
     const storage = this.mastra.getStorage()
     if (storage) {
       await storage.close()
@@ -901,6 +1073,15 @@ export class WorkSessionRuntime {
    */
   getDefinition(): WorkSessionDefinition {
     return this.config.definition
+  }
+
+  /** Durable, ordered, product-safe history for this configured session. */
+  readExecutionLedger(): readonly ExecutionLedgerEvent[] {
+    try {
+      return this.ledger?.read(this.config.definition.id) ?? []
+    } catch {
+      return []
+    }
   }
 
   requestPause(): { accepted: boolean; reason?: string } {
@@ -961,12 +1142,134 @@ export class WorkSessionRuntime {
       : { ...this.lastNotificationDelivery }
   }
 
+  private ledgerTimestamp(): string {
+    return new Date(this.now()).toISOString()
+  }
+
+  private recordLedger(input: ExecutionLedgerEventInput, dedupeKey: string): void {
+    try {
+      this.ledger?.append(input, dedupeKey)
+    } catch {
+      // Fail open for observability: Ledger cannot change Work Session facts.
+    }
+  }
+
+  private recordGuardianProgress(taskId: string, event: GuardianProgressEvent): void {
+    if (event.status === 'pending') return
+    const eventType = event.status === 'active'
+      ? 'PHASE_STARTED'
+      : event.status === 'completed' ? 'PHASE_COMPLETED' : 'PHASE_FAILED'
+    this.recordLedger({
+      eventType,
+      sessionId: this.config.definition.id,
+      taskId,
+      timestamp: this.ledgerTimestamp(),
+      phase: event.phase,
+      status: event.status,
+      iteration: event.iteration,
+      ...(Number.isFinite(event.elapsedMs) ? { durationMs: event.elapsedMs } : {}),
+      ...(this.latestState === undefined
+        ? {}
+        : { activeElapsedMs: this.activeElapsedMs(this.latestState) }),
+    }, `phase:${taskId}:${event.phase}:${event.status}:${event.iteration}`)
+  }
+
+  private recordGitCommitCompleted(
+    taskId: string,
+    commitSha: string,
+    state: WorkflowState,
+  ): void {
+    this.recordLedger({
+      eventType: 'GIT_COMMIT_COMPLETED',
+      sessionId: state.sessionId,
+      taskId,
+      timestamp: this.ledgerTimestamp(),
+      status: 'COMPLETED',
+      commitSha,
+      activeElapsedMs: this.activeElapsedMs(state),
+    }, `git-commit-completed:${taskId}:${commitSha}`)
+  }
+
+  private recordGitPushCompleted(
+    taskId: string,
+    commitSha: string,
+    pushSha: string,
+    state: WorkflowState,
+  ): void {
+    this.recordLedger({
+      eventType: 'GIT_PUSH_COMPLETED',
+      sessionId: state.sessionId,
+      taskId,
+      timestamp: this.ledgerTimestamp(),
+      status: 'COMPLETED',
+      commitSha,
+      pushSha,
+      activeElapsedMs: this.activeElapsedMs(state),
+    }, `git-push-completed:${taskId}:${pushSha}`)
+  }
+
+  private recordSessionFailed(state: WorkflowState): void {
+    const failure = state.failureStage !== undefined && state.failureCategory !== undefined
+      ? {
+          failureStage: state.failureStage,
+          failureCategory: state.failureCategory,
+          safeMessage: safeFailureMessage(state.safeFailureMessage ?? state.failureReason),
+        }
+      : classifyWorkSessionFailure(state.failureReason ?? 'Work Session failed')
+    const commitSha = state.currentTaskId === null
+      ? undefined
+      : state.checkpointCommits?.[state.currentTaskId]
+    this.recordLedger({
+      eventType: 'SESSION_FAILED',
+      sessionId: state.sessionId,
+      taskId: state.currentTaskId,
+      timestamp: this.ledgerTimestamp(),
+      status: 'FAILED',
+      ...failure,
+      ...(state.activeElapsedMs === undefined ? {} : { activeElapsedMs: state.activeElapsedMs }),
+      ...(commitSha === undefined ? {} : { commitSha }),
+    }, 'session-failed')
+  }
+
+  private recordSessionCompleted(state: WorkflowState): void {
+    if (state.completionReason === undefined) return
+    this.recordLedger({
+      eventType: 'SESSION_COMPLETED',
+      sessionId: state.sessionId,
+      taskId: state.currentTaskId,
+      timestamp: this.ledgerTimestamp(),
+      status: 'COMPLETED',
+      completionReason: state.completionReason,
+      ...(state.activeElapsedMs === undefined ? {} : { activeElapsedMs: state.activeElapsedMs }),
+    }, 'session-completed')
+  }
+
+  /**
+   * Mastra keeps the failed workflow status, but a thrown step may retain the
+   * pre-step state value. Persist NovaWing's already-confirmed FAILED domain
+   * state explicitly so process restart observes the same terminal fact.
+   */
+  private async persistLatestFailedState(): Promise<void> {
+    if (this.latestState?.state !== 'FAILED') return
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return
+    const workflowName = `work-session-${this.config.definition.id}`
+    const runId = this.config.definition.id
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null) return
+    snapshot.value = this.latestState as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+  }
+
   private scheduleNotificationsForState(
     state: WorkSessionDurableState,
     forceSafeReason: boolean,
   ): void {
     this.scheduleHumanRequiredNotification(state, forceSafeReason)
     this.scheduleCompletedNotification(state)
+    this.scheduleFailedNotification(state)
   }
 
   private scheduleHumanRequiredNotification(
@@ -1120,6 +1423,83 @@ export class WorkSessionRuntime {
     })
   }
 
+  private scheduleFailedNotification(state: WorkSessionDurableState): void {
+    if (
+      this.config.notifier?.notifyFailed === undefined ||
+      state.state !== 'FAILED' ||
+      state.failureStage === undefined ||
+      state.failureCategory === undefined ||
+      state.failureNotified === true ||
+      this.failureNotificationScheduled
+    ) {
+      return
+    }
+    this.failureNotificationScheduled = true
+    const previous = this.notificationPromise ?? Promise.resolve()
+    this.notificationPromise = previous
+      .then(() => this.deliverFailedNotification())
+      .catch(() => {
+        // FAILED delivery is an alert side channel and cannot change FAILED.
+      })
+  }
+
+  private async deliverFailedNotification(): Promise<void> {
+    const notifier = this.config.notifier
+    if (notifier?.notifyFailed === undefined) return
+    let state = this.getDurableState()
+    if (
+      state === undefined ||
+      state.state !== 'FAILED' ||
+      state.failureStage === undefined ||
+      state.failureCategory === undefined
+    ) {
+      return
+    }
+    if (state.failureNotificationAttempted !== true) {
+      const claimed = await this.persistFailureNotificationFlag('failureNotificationAttempted')
+      if (!claimed) return
+      state = this.getDurableState()
+      if (state === undefined || state.state !== 'FAILED') return
+    }
+    const localControlUrl = this.config.localControlUrl?.()
+    const notification = createWorkSessionFailedNotification({
+      definition: this.config.definition,
+      state,
+      ...(localControlUrl === undefined ? {} : { localControlUrl }),
+    })
+    let sent = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await notifier.notifyFailed(notification)
+        sent = true
+        break
+      } catch {
+        if (attempt === 0) {
+          await (this.config.notificationWait ?? defaultNotificationWait)(
+            this.config.notificationRetryDelayMs ?? 1_000,
+          )
+        }
+      }
+    }
+    if (sent) {
+      try {
+        await this.persistFailureNotificationFlag('failureNotified')
+      } catch {
+        // The durable attempt claim remains authoritative for restart dedupe.
+      }
+      if (this.latestState?.state === 'FAILED') {
+        this.latestState = { ...this.latestState, failureNotified: true }
+      }
+    }
+    this.observeNotification({
+      status: sent ? 'SENT' : 'FAILED',
+      notificationId: notification.notificationId,
+      taskId: state.currentTaskId,
+      category: notification.failureCategory,
+      kind: 'FAILED',
+    })
+  }
+
   private async persistCompletionNotificationFlag(
     field: 'completionNotificationAttempted' | 'completionNotified',
   ): Promise<boolean> {
@@ -1153,6 +1533,32 @@ export class WorkSessionRuntime {
     ) {
       this.latestState = updated
     }
+    return true
+  }
+
+  private async persistFailureNotificationFlag(
+    field: 'failureNotificationAttempted' | 'failureNotified',
+  ): Promise<boolean> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return false
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return false
+    const workflowName = `work-session-${this.config.definition.id}`
+    const runId = this.config.definition.id
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null) return false
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success || parsed.data.state !== 'FAILED' || parsed.data[field] === true) {
+      return false
+    }
+    const updated: WorkflowState = {
+      ...parsed.data,
+      [field]: true,
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = updated as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+    if (this.latestState?.state === 'FAILED') this.latestState = updated
     return true
   }
 
@@ -1196,6 +1602,17 @@ export class WorkSessionRuntime {
 
   private observeNotification(result: NotificationDeliveryResult): void {
     this.lastNotificationDelivery = result
+    const notificationKind = result.kind ?? 'HUMAN_REQUIRED'
+    this.recordLedger({
+      eventType: result.status === 'SENT' ? 'NOTIFICATION_SENT' : 'NOTIFICATION_FAILED',
+      sessionId: this.config.definition.id,
+      taskId: result.taskId,
+      timestamp: this.ledgerTimestamp(),
+      status: result.status,
+      notificationKind,
+      notificationId: result.notificationId,
+      ...(result.status === 'FAILED' ? { safeMessage: '通知发送失败。' } : {}),
+    }, `notification:${result.notificationId}:${result.status}`)
     try {
       this.config.notificationObserver?.(result)
     } catch {

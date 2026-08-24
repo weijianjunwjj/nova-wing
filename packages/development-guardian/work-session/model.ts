@@ -5,6 +5,10 @@
  */
 
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
+import type {
+  WorkSessionFailureCategory,
+  WorkSessionFailureStage,
+} from './failure-classification.js'
 
 export type WorkSessionState =
   | 'READY'
@@ -68,6 +72,10 @@ export interface WorkSessionDurableState {
   completionNotificationAttempted?: boolean
   /** Completion email delivery succeeded after the durable attempt claim. */
   completionNotified?: boolean
+  /** FAILED email delivery claim; set before the bounded delivery attempts. */
+  failureNotificationAttempted?: boolean
+  /** FAILED email delivery succeeded after the durable attempt claim. */
+  failureNotified?: boolean
   /** W003: 当前 Task 的 recovery checkpoint（仅当 SUSPENDED 时存在） */
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
   /**
@@ -97,6 +105,12 @@ export interface WorkSessionDurableState {
   stopAfterTaskRequested?: boolean
   /** W004-A FINAL: Git checkpoint/finalization 失败时的明确错误原因（仅 FAILED 时存在） */
   failureReason?: string
+  /** Stable product taxonomy for FAILED terminal state. */
+  failureStage?: WorkSessionFailureStage
+  /** Stable product taxonomy for FAILED terminal state. */
+  failureCategory?: WorkSessionFailureCategory
+  /** Sanitized product-safe failure presentation; never raw stderr/provider output. */
+  safeFailureMessage?: string
   createdAt: Date
   updatedAt: Date
 }

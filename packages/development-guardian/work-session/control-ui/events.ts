@@ -8,6 +8,7 @@
  */
 
 import type { WorkSessionDefinition, WorkSessionDurableState } from '../model.js'
+import type { ExecutionLedgerEvent } from '../execution-ledger.js'
 
 /**
  * recent event 类型。SSE 把 GUARDIAN_PHASE 映射为 `event: guardian`，
@@ -101,6 +102,8 @@ export interface WorkSessionControlSnapshot {
     elapsedMs?: number
   }
   recentEvents: ControlEvent[]
+  /** Durable SAFE PRODUCT DATA; never contains raw provider/error detail. */
+  executionLedger?: readonly ExecutionLedgerEvent[]
 }
 
 /**
@@ -116,6 +119,7 @@ export interface WorkSessionControlRuntime {
   getControlIntents(): { pauseRequested: boolean; stopAfterTaskRequested: boolean }
   getDurableState(): WorkSessionDurableState | undefined
   getDefinition(): WorkSessionDefinition
+  readExecutionLedger?(): readonly ExecutionLedgerEvent[]
 }
 
 /** 单个 SSE subscriber 的回调：事件流 + snapshot 变化流。 */

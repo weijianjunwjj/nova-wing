@@ -6,6 +6,11 @@
 import type { WorkSessionTask, HumanRequired } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { DelegationVerdict, VerificationResult } from '../model.js'
+import type { GuardianProgressObserver } from '../progress.js'
+import type {
+  WorkSessionFailureCategory,
+  WorkSessionFailureStage,
+} from './failure-classification.js'
 
 export type WorkSessionTaskResultStatus = 'COMPLETED' | 'HUMAN_REQUIRED' | 'FAILED' | 'PAUSED'
 
@@ -38,6 +43,8 @@ export interface WorkSessionTaskResult {
   summary?: string
   humanRequired?: HumanRequired
   error?: string
+  failureStage?: WorkSessionFailureStage
+  failureCategory?: WorkSessionFailureCategory
   /** W003: HUMAN_REQUIRED 时可选的恢复 checkpoint */
   checkpoint?: GuardianTaskRecoveryCheckpoint
   /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
@@ -53,6 +60,8 @@ export interface WorkSessionTaskRunContext {
   hardDeadlineAtMs?: number
   /** W005-B: checked only at Guardian safe autonomous boundaries. */
   shouldPauseAutonomousWork?: () => boolean
+  /** Additive safe structured progress sink used by the Execution Ledger. */
+  onProgress?: GuardianProgressObserver
 }
 
 export interface WorkSessionTaskRunner {

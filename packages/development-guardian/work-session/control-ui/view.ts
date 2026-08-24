@@ -101,6 +101,11 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <ul id="recent-list" class="recent-list"></ul>
   </section>
 
+  <section class="card">
+    <h2>执行日志</h2>
+    <ul id="ledger-list" class="recent-list"></ul>
+  </section>
+
   <details class="card debug">
     <summary>Debug</summary>
     <pre id="debug-output"></pre>
@@ -237,6 +242,7 @@ function render(snapshot) {
   renderTasks(cfg, rt)
   renderGuardian(guardian)
   renderRecent(snapshot.recentEvents || [])
+  renderLedger(snapshot.executionLedger || [])
   renderDecision(rt)
   renderControls(rt, snapshot.controls || {})
 }
@@ -366,6 +372,58 @@ function renderRecent(events) {
 
   var debug = el('debug-output')
   if (debug) debug.textContent = JSON.stringify(events, null, 2)
+}
+
+var FAILURE_STAGE_LABELS = {
+  REVIEWER: 'Reviewer', EXECUTOR: 'Executor', VERIFICATION: 'Verification',
+  FINAL_REVIEW: 'Final Review', GIT_COMMIT: 'Git Commit', GIT_PUSH: 'Git Push',
+  RUNTIME: 'Runtime', NOTIFICATION: 'Notification', UNKNOWN: 'Unknown'
+}
+
+function summarizeLedgerEvent(ev) {
+  if (ev.eventType === 'SESSION_FAILED') {
+    return [
+      displayValue(ev.failureStage, FAILURE_STAGE_LABELS),
+      '失败',
+      displayValue(ev.failureCategory),
+      displayValue(ev.safeMessage)
+    ].join(' · ')
+  }
+  if (ev.eventType === 'GIT_COMMIT_COMPLETED') {
+    return 'Git Commit 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.commitSha)
+  }
+  if (ev.eventType === 'GIT_PUSH_COMPLETED') {
+    return 'Git Push 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.pushSha)
+  }
+  if (ev.eventType === 'NOTIFICATION_SENT' || ev.eventType === 'NOTIFICATION_FAILED') {
+    return displayValue(ev.notificationKind) + ' 通知' +
+      (ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败')
+  }
+  var parts = [displayValue(ev.eventType)]
+  if (ev.taskId) parts.push('Task：' + ev.taskId)
+  if (ev.phase) parts.push(displayValue(ev.phase, GUARDIAN_PHASE_LABELS))
+  if (ev.status) parts.push(displayValue(ev.status, GUARDIAN_STATUS_LABELS))
+  return parts.join(' · ')
+}
+
+function renderLedger(events) {
+  var list = el('ledger-list')
+  if (!list) return
+  list.textContent = ''
+  var tail = events.slice(-30)
+  for (var i = 0; i < tail.length; i++) {
+    var ev = tail[i]
+    var li = document.createElement('li')
+    var time = document.createElement('span')
+    time.className = 'time'
+    time.textContent = formatTime(ev.timestamp)
+    var data = document.createElement('span')
+    data.className = 'event-data'
+    data.textContent = summarizeLedgerEvent(ev)
+    li.appendChild(time)
+    li.appendChild(data)
+    list.appendChild(li)
+  }
 }
 
 function renderDecision(rt) {

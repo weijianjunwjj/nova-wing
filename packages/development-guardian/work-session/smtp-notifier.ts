@@ -4,6 +4,7 @@ import {
   presentHumanRequiredCategory,
   projectNameFromNotification,
   type WorkSessionCompletedNotification,
+  type WorkSessionFailedNotification,
   type HumanRequiredNotification,
   type WorkSessionNotifier,
 } from './notifier.js'
@@ -66,6 +67,15 @@ export class SmtpWorkSessionNotifier implements WorkSessionNotifier {
       to: this.to,
       subject: renderCompletedNotificationSubject(notification),
       text: renderCompletedNotificationText(notification),
+    })
+  }
+
+  async notifyFailed(notification: WorkSessionFailedNotification): Promise<void> {
+    await this.transport.sendMail({
+      from: this.from,
+      to: this.to,
+      subject: renderFailedNotificationSubject(notification),
+      text: renderFailedNotificationText(notification),
     })
   }
 }
@@ -151,6 +161,39 @@ export function renderCompletedNotificationText(
     ...(notification.activeElapsedMs === undefined
       ? []
       : [`已运行时间：${formatDuration(notification.activeElapsedMs)}`]),
+  ].join('\n')
+}
+
+export function renderFailedNotificationSubject(
+  notification: WorkSessionFailedNotification,
+): string {
+  const task = notification.currentTaskId === null ? '' : `：${singleLine(notification.currentTaskId)}`
+  return `[NovaWing] Work Session 失败${task}`
+}
+
+export function renderFailedNotificationText(
+  notification: WorkSessionFailedNotification,
+): string {
+  const control = notification.control.localUrl ?? '请在此机器上打开本地 NovaWing Work Session 控制台。'
+  return [
+    'NovaWing Work Session 执行失败。',
+    '',
+    `项目：${projectNameFromNotification(notification)}`,
+    `分支：${notification.session.branch}`,
+    `Work Session：${notification.session.id}`,
+    `当前 Task：${notification.currentTaskId ?? '无'}`,
+    '状态：FAILED',
+    `失败阶段：${notification.failureStage}`,
+    `失败类别：${notification.failureCategory}`,
+    ...(notification.activeElapsedMs === undefined
+      ? []
+      : [`已运行时间：${formatDuration(notification.activeElapsedMs)}`]),
+    '',
+    '安全失败原因：',
+    notification.safeReason,
+    '',
+    '控制台：',
+    control,
   ].join('\n')
 }
 

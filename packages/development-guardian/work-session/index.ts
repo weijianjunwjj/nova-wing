@@ -11,6 +11,8 @@ export * from './checkpoint.js'
 export * from './worktree-fingerprint.js'
 export * from './legacy-recovery.js'
 export * from './git-checkpoint.js'
+export * from './failure-classification.js'
+export * from './execution-ledger.js'
 export * from './production.js'
 export {
   defaultLocalSmtpSecretPath,
@@ -25,6 +27,7 @@ export * from './production-legacy-adoption.js'
 export type {
   HumanRequiredNotification,
   WorkSessionCompletedNotification,
+  WorkSessionFailedNotification,
   WorkSessionNotifier,
   NotificationDeliveryStatus,
   NotificationDeliveryResult,

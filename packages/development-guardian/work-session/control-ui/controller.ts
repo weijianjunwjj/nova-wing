@@ -259,6 +259,7 @@ export class WorkSessionControlController {
     const definition = this.runtime.getDefinition()
     const state = this.runtime.getDurableState()
     const controls = this.runtime.getControlIntents()
+    const executionLedger = this.runtime.readExecutionLedger?.().slice(-50)
 
     return {
       server: { ...this.serverInfo },
@@ -311,6 +312,7 @@ export class WorkSessionControlController {
       controls,
       guardian: this.guardianPhase !== undefined ? { ...this.guardianPhase } : {},
       recentEvents: [...this.recentEvents],
+      ...(executionLedger === undefined ? {} : { executionLedger }),
     }
   }
 

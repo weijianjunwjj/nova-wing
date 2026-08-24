@@ -7,6 +7,7 @@
 import type { GuardianTask } from '../model.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
 import type { GuardianProgressObserver } from '../progress.js'
+import { classifyWorkSessionFailure } from './failure-classification.js'
 import { runGuardianTask } from '../guardian.js'
 import type { WorkSessionTask, HumanRequired } from './model.js'
 import type {
@@ -716,8 +717,15 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       ...(context?.shouldPauseAutonomousWork !== undefined
         ? { shouldPauseAutonomousWork: context.shouldPauseAutonomousWork }
         : {}),
-      ...(this.options.onProgress !== undefined
-        ? { onProgress: this.options.onProgress }
+      ...(this.options.onProgress !== undefined || context?.onProgress !== undefined
+        ? {
+            onProgress: (event) => {
+              // Both sinks are observability-only. One consumer must not prevent
+              // the other or alter Guardian execution.
+              try { this.options.onProgress?.(event) } catch {}
+              try { context?.onProgress?.(event) } catch {}
+            },
+          }
         : {}),
       maxBrainReviewRetries: this.options.maxBrainReviewRetries ?? 1,
       maxBrainReviewSessionRotations: this.options.maxBrainReviewSessionRotations ?? 1,
@@ -755,11 +763,14 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     }
 
     if (result.task.state === 'FAILED') {
+      const failure = classifyWorkSessionFailure(result.task.stopReason ?? 'Guardian task failed')
       return {
         status: 'FAILED',
         ...(result.task.stopReason !== undefined
           ? { error: result.task.stopReason }
           : {}),
+        failureStage: failure.failureStage,
+        failureCategory: failure.failureCategory,
       }
     }
 
