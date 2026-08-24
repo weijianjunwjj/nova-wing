@@ -284,13 +284,18 @@ export class WorkSessionRuntime {
           (event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED') &&
           event.notificationKind === 'FAILED',
       )
-      // Ledger delivery facts repair states written by the old pre-delivery
-      // claim path. With no delivery fact, FAILED is still eligible on restart.
+      const ledgerSent = failedDeliveries.some(
+        (event) => event.eventType === 'NOTIFICATION_SENT',
+      )
+      const notificationSent = parsed.data.failureNotified === true || ledgerSent
+      // Durable success is authoritative because the Ledger is fail-open. Ledger
+      // facts may strengthen durable state; their absence only clears an old
+      // attempted-only pre-delivery claim so bounded delivery can resume.
       hydratedState = {
         ...parsed.data,
-        failureNotificationAttempted: failedDeliveries.length > 0 || undefined,
-        failureNotified:
-          failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT') || undefined,
+        failureNotificationAttempted:
+          notificationSent || failedDeliveries.length > 0 || undefined,
+        failureNotified: notificationSent || undefined,
       }
     }
     this.latestState = hydratedState
