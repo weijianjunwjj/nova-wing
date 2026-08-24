@@ -29,6 +29,11 @@ import {
 } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
 import { classifyHumanRequired } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import type { RepositoryCheckpoint } from '../packages/development-guardian/work-session/checkpoint.js'
+import {
+  guardianShellPayload,
+  guardianShellTestCommand,
+  isClaudeShellRequest,
+} from './guardian-shell-fixture.js'
 
 // ============ Git Test Helper ============
 
@@ -66,7 +71,8 @@ async function setupTestGitRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<{ exitCode: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -275,7 +281,7 @@ await test('W003 Repo Drift: executor rejects content drift after checkpoint, ze
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           return {
             exitCode: 0,
@@ -284,8 +290,9 @@ await test('W003 Repo Drift: executor rejects content drift after checkpoint, ze
             stderr: '',
           }
         }
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         return {
           exitCode: 1,

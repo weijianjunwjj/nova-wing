@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { guardianShellCommand } from './shell-contract.js'
 
 export const TEN_X_CHAT_PINNED_VERSION = 'latest'
 
@@ -56,6 +57,10 @@ export interface TenXChatProcessTransportOptions {
   args?: readonly string[]
   cwd?: string
   env?: NodeJS.ProcessEnv
+  /** Deployment override for the Windows native Git Bash executable. */
+  gitBashPath?: string
+  /** Internal platform seam; production defaults to process.platform. */
+  platform?: NodeJS.Platform
 }
 
 interface PendingRequest {
@@ -64,14 +69,19 @@ interface PendingRequest {
   timer: NodeJS.Timeout
 }
 
-function createDefaultCommand(timeoutMs: number): { command: string; args: string[] } {
-  if (process.platform === 'win32') {
+export function createDefaultTenXChatCommand(
+  timeoutMs: number,
+  options: Pick<TenXChatProcessTransportOptions, 'gitBashPath' | 'platform' | 'env'> = {},
+): { command: string; args: string[]; nativeGitBash?: true } {
+  if ((options.platform ?? process.platform) === 'win32') {
+    const command = guardianShellCommand(
+      `exec npx --yes 10x-chat@${TEN_X_CHAT_PINNED_VERSION} delegate chatgpt --headed --timeout ${timeoutMs}`,
+      options,
+    )
     return {
-      command: 'bash',
-      args: [
-        '-lc',
-        `exec npx --yes 10x-chat@${TEN_X_CHAT_PINNED_VERSION} delegate chatgpt --headed --timeout ${timeoutMs}`,
-      ],
+      command: command.executable,
+      args: command.args,
+      ...(command.nativeGitBash === true ? { nativeGitBash: true } : {}),
     }
   }
 
@@ -98,7 +108,7 @@ export function createTenXChatProcessTransport(
   options: TenXChatProcessTransportOptions = {},
 ): TenXChatDelegateTransport {
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000
-  const defaults = createDefaultCommand(timeoutMs)
+  const defaults = createDefaultTenXChatCommand(timeoutMs, options)
   const command = options.command ?? defaults.command
   const args = [...(options.args ?? defaults.args)]
   const child = spawn(command, args, {
@@ -106,6 +116,7 @@ export function createTenXChatProcessTransport(
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: false,
+    shell: false,
   })
 
   const pending = new Map<string, PendingRequest>()

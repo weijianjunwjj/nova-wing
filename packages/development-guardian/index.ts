@@ -1,19 +1,44 @@
 export { GuardianStopError, runGuardianTask } from './guardian.js'
-export { RetryableGuardianBrainError } from './brain-error.js'
+export {
+  GuardianBrainInfrastructureError,
+  RetryableGuardianBrainError,
+  guardianBrainFailureFrom,
+} from './brain-error.js'
+export type {
+  GuardianBrainErrorOptions,
+  GuardianBrainRetryKind,
+} from './brain-error.js'
 export { AskBridgeBrain } from './ask-bridge-brain.js'
+export { normalizeAskBridgeDiagnostics } from './ask-bridge-brain.js'
 export type {
   AskBridgeBrainOptions,
   AskBridgeCommandRequest,
   AskBridgeCommandResult,
   AskBridgeCommandRunner,
+  AskBridgeConfigurationStatus,
   AskBridgeOutputEvent,
   AskBridgeReasoning,
   AskBridgeTimingEvent,
 } from './ask-bridge-brain.js'
 export {
   TEN_X_CHAT_PINNED_VERSION,
+  createDefaultTenXChatCommand,
   createTenXChatProcessTransport,
 } from './delegate-transport.js'
+export {
+  guardianShellCommand,
+  NativeGitBashUnavailableError,
+  resolveWindowsGitBashExecutable,
+  WINDOWS_GIT_BASH_SHELL_CONTRACT,
+  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
+  windowsGitBashShellContract,
+  windowsGitBashCommand,
+} from './shell-contract.js'
+export type {
+  GuardianShellCommand,
+  GuardianShellContractOptions,
+  WindowsGitBashShellContract,
+} from './shell-contract.js'
 export type {
   TenXChatCapturedResponse,
   TenXChatDelegateAction,
@@ -42,6 +67,8 @@ export type {
   DelegationPacket,
   DelegationVerdict,
   ExecutionReport,
+  GuardianBrainFailure,
+  GuardianBrainFailureCategory,
   GuardianRunResult,
   GuardianTask,
   GuardianTaskState,

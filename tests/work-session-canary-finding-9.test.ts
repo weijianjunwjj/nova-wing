@@ -7,6 +7,7 @@ import test from 'node:test'
 
 import {
   ClaudeCodeExecutor,
+  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
   type DelegationPacket,
   type ExecutionReport,
   type GuardianBrain,
@@ -191,7 +192,7 @@ function createExecutorFixture(
     maxTurns: 4,
     timeoutMs: 10_000,
     commandRunner: async (request) => {
-      if (request.executable === 'bash' && request.args[1] === 'exec claude "$@"') {
+      if (request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE && request.args[1] === 'exec claude "$@"') {
         claudeRequests.push(request)
         return {
           exitCode: 0,
@@ -204,7 +205,7 @@ function createExecutorFixture(
           stderr: '',
         }
       }
-      if (request.executable === 'bash' && request.args[0] === '-lc' && request.args[1] !== undefined) {
+      if (request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE && request.args[0] === '-lc' && request.args[1] !== undefined) {
         return gitRunner(request.args[1])
       }
       return { exitCode: 1, signal: null, stdout: '', stderr: 'unexpected command' }

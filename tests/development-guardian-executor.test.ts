@@ -3,6 +3,11 @@ import test from 'node:test'
 
 import {
   ClaudeCodeExecutor,
+  createDefaultTenXChatCommand,
+  guardianShellCommand,
+  NativeGitBashUnavailableError,
+  resolveWindowsGitBashExecutable,
+  WINDOWS_NATIVE_GIT_BASH_EXECUTABLE,
   type ClaudeCodeTimingEvent,
   type DelegationPacket,
   type GuardianCommandRequest,
@@ -75,6 +80,84 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
+test('Windows shell contract resolves native Git Bash from deployment configuration', () => {
+  const command = guardianShellCommand('git status --porcelain', {
+    platform: 'win32',
+    gitBashPath: 'E:/Tools/Git/bin/bash.exe',
+  })
+
+  assert.equal(command.executable, 'E:/Tools/Git/bin/bash.exe')
+  assert.deepEqual(command.args, ['-lc', 'git status --porcelain'])
+  assert.equal(command.nativeGitBash, true)
+  assert.notEqual(command.executable, 'bash')
+})
+
+test('Windows shell resolver uses known Git installations but fails closed without one', () => {
+  assert.equal(
+    resolveWindowsGitBashExecutable({
+      env: { ProgramFiles: 'C:/Program Files' },
+      pathExists: (path) => path === 'C:/Program Files\\Git\\bin\\bash.exe',
+    }),
+    'C:/Program Files\\Git\\bin\\bash.exe',
+  )
+  assert.throws(
+    () => guardianShellCommand('git status', { platform: 'win32', env: {}, pathExists: () => false }),
+    NativeGitBashUnavailableError,
+  )
+})
+
+test('Windows shell contract rejects bare Bash and Windows/WSL shim routes', () => {
+  for (const gitBashPath of ['bash', 'C:/Windows/System32/bash.exe', 'C:/Users/me/AppData/Local/Microsoft/WindowsApps/bash.exe']) {
+    assert.throws(
+      () => guardianShellCommand('git status', { platform: 'win32', gitBashPath }),
+      NativeGitBashUnavailableError,
+    )
+  }
+})
+
+test('non-Windows shell commands retain Bash compatibility without Windows executable', () => {
+  const command = guardianShellCommand('git status --porcelain', {
+    platform: 'linux',
+    gitBashPath: 'D:/Git/bin/bash.exe',
+  })
+  const tenX = createDefaultTenXChatCommand(12_345, { platform: 'darwin' })
+
+  assert.deepEqual(command, { executable: 'bash', args: ['-lc', 'git status --porcelain'] })
+  assert.equal(tenX.command, 'npx')
+  assert.ok(!tenX.args.join(' ').includes('D:/Git/bin/bash.exe'))
+})
+
+test('Claude invocation forwards argv through the Git Bash -- delimiter', async () => {
+  const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('tests passed')])
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    platform: 'win32',
+    gitBashPath: 'E:/Tools/Git/bin/bash.exe',
+    commandRunner: runner.run,
+  })
+
+  await executor.execute({ task: task(), packet: packet() })
+
+  const claude = runner.requests[1]!
+  assert.equal(claude.executable, 'E:/Tools/Git/bin/bash.exe')
+  assert.deepEqual(claude.args.slice(0, 3), ['-lc', 'exec claude "$@"', '--'])
+  assert.equal(claude.args[3], '-p')
+  assert.equal(claude.nativeGitBash, true)
+})
+
+test('missing configured Git Bash fails closed through shell:false process launch', async () => {
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    platform: 'win32',
+    gitBashPath: 'Z:/missing/Git/bin/bash.exe',
+  })
+
+  await assert.rejects(
+    executor.execute({ task: task(), packet: packet() }),
+    /Native Git Bash unavailable: the configured Git for Windows bash\.exe could not be started/,
+  )
+})
+
 test('executor runs Claude Code then deterministic verification', async () => {
   const runner = new QueueRunner([
     result(''),
@@ -102,6 +185,10 @@ test('executor runs Claude Code then deterministic verification', async () => {
   assert.match(runner.requests[1]?.args.join(' ') ?? '', /claude/)
   assert.equal(runner.requests[3]?.args.join(' '), '-lc git diff --check')
   assert.equal(runner.requests[4]?.args.join(' '), '-lc npm test')
+  assert.ok(
+    runner.requests.every((request) => request.executable === WINDOWS_NATIVE_GIT_BASH_EXECUTABLE),
+    'initial execution and deterministic verification must use the native Git Bash contract',
+  )
   assert.deepEqual(
     timings.map((event) => event.phase),
     ['clean-start', 'inspect-changes', 'claude-code', 'verification', 'verification', 'executor-total'],

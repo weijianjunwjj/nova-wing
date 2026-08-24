@@ -32,6 +32,12 @@ import {
   type GuardianCommandResult,
 } from 'nova-wing/development-guardian'
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
+import {
+  guardianShellPayload,
+  guardianShellTestCommand,
+  isClaudeShellRequest,
+  isGuardianShellRequest,
+} from './guardian-shell-fixture.js'
 
 // ============ Git Test Helper ============
 
@@ -52,7 +58,8 @@ async function setupTestGitRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<GitRunResult>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -93,10 +100,7 @@ function createClaudeFixture(
   let claudeCall = 0
   const runner = async (req: GuardianCommandRequest): Promise<GuardianCommandResult> => {
     requests.push(req)
-    const isClaude =
-      req.executable === 'bash' &&
-      req.args.length > 1 &&
-      (req.args[1]?.includes('claude') ?? false)
+    const isClaude = isClaudeShellRequest(req)
     if (isClaude) {
       claudeCall += 1
       if (claudeCall === 1) {
@@ -126,8 +130,9 @@ function createClaudeFixture(
         stderr: '',
       }
     }
-    if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-      const command = req.args[1].trim()
+    const shellCommand = guardianShellPayload(req)
+    if (shellCommand !== undefined) {
+      const command = shellCommand.trim()
       if (VERIFY_OK_COMMANDS.has(command)) {
         // Guardian deterministic verification 独立执行成功
         return { exitCode: 0, signal: null, stdout: 'ok', stderr: '' }
@@ -300,8 +305,7 @@ await test('W003 FINAL D: permission denial in deterministic verification → re
 
     // ===== Executor 独立执行确定性验证 =====
     const verifyRuns = claudeFixture.requests.filter((req) =>
-      req.executable === 'bash' &&
-      req.args[0] === '-lc' &&
+      isGuardianShellRequest(req) &&
       VERIFY_OK_COMMANDS.has((req.args[1] ?? '').trim()),
     )
     assert.ok(

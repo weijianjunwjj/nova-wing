@@ -41,6 +41,11 @@ import {
 } from '../packages/development-guardian/work-session/index.js'
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import {
+  guardianShellPayload,
+  guardianShellTestCommand,
+  isClaudeShellRequest,
+} from './guardian-shell-fixture.js'
+import {
   parseGitStatus,
   computeWorktreeFingerprint,
 } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
@@ -65,7 +70,8 @@ async function setupTestGitRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<GitRunResult>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,12 +134,13 @@ async function captureCheckpoint(
 function createGitDelegatingClaudeFixture(gitRunner: (cmd: string) => Promise<GitRunResult>) {
   const requests: GuardianCommandRequest[] = []
   const runner = async (req: GuardianCommandRequest): Promise<GuardianCommandResult> => {
-    if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+    if (isClaudeShellRequest(req)) {
       requests.push(req)
       return { exitCode: 1, signal: null, stdout: '', stderr: 'unhandled claude call' }
     }
-    if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-      return gitRunner(req.args[1])
+    const command = guardianShellPayload(req)
+    if (command !== undefined) {
+      return gitRunner(command)
     }
     return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
   }
@@ -228,7 +235,7 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeFixture1.requests.push(req)
           // 产生 dirty worktree：tracked 修改 + untracked 新文件
           await writeFile(join(repoPath, 'src/feature.ts'), 'export const a = 2 // P1 recovery\n')
@@ -241,8 +248,9 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
             stderr: '',
           }
         }
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
       },
@@ -321,7 +329,7 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeFixture2.requests.push(req)
           // 在既有 dirty 内容上追加，验证"继续而非 recreate"
           await writeFile(join(repoPath, 'src/feature.ts'), 'export const a = 2 // P1 recovery\n// P2 continue\n')
@@ -332,8 +340,9 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
             stderr: '',
           }
         }
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
       },
@@ -494,7 +503,7 @@ await test('W003 Recovery Resume: repo drift fails closed before any provider ex
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeCalls++
           return {
             exitCode: 0,
@@ -503,8 +512,9 @@ await test('W003 Recovery Resume: repo drift fails closed before any provider ex
             stderr: '',
           }
         }
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
       },

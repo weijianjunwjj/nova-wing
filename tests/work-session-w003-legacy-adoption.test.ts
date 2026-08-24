@@ -35,6 +35,11 @@ import {
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import { adoptLegacyRecoveryCheckpoint } from '../packages/development-guardian/work-session/legacy-recovery.js'
 import type { GuardianTaskRecoveryCheckpoint } from '../packages/development-guardian/work-session/checkpoint.js'
+import {
+  guardianShellPayload,
+  guardianShellTestCommand,
+  isClaudeShellRequest,
+} from './guardian-shell-fixture.js'
 
 // ============ Git Test Helper ============
 
@@ -55,7 +60,8 @@ async function setupLegacyRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<GitRunResult>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,12 +107,13 @@ function createRecordingGitRunner(
 function createGitDelegatingClaudeFixture(gitRunner: (cmd: string) => Promise<GitRunResult>) {
   const requests: GuardianCommandRequest[] = []
   const runner = async (req: GuardianCommandRequest): Promise<GuardianCommandResult> => {
-    if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+    if (isClaudeShellRequest(req)) {
       requests.push(req)
       return { exitCode: 1, signal: null, stdout: '', stderr: 'unhandled claude call' }
     }
-    if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-      return gitRunner(req.args[1])
+    const command = guardianShellPayload(req)
+    if (command !== undefined) {
+      return gitRunner(command)
     }
     return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
   }
@@ -202,7 +209,7 @@ function claudeCountingCommandRunner(
   counters: { claudeCalls: number },
 ): (req: GuardianCommandRequest) => Promise<GuardianCommandResult> {
   return async (req) => {
-    if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+    if (isClaudeShellRequest(req)) {
       counters.claudeCalls++
       return {
         exitCode: 0,
@@ -211,8 +218,9 @@ function claudeCountingCommandRunner(
         stderr: '',
       }
     }
-    if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-      return gitRunner(req.args[1])
+    const command = guardianShellPayload(req)
+    if (command !== undefined) {
+      return gitRunner(command)
     }
     return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
   }
@@ -375,7 +383,7 @@ await test('W003 Legacy Adoption CASE C: adopted checkpoint feeds existing Recov
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeFixture.requests.push(req)
           // 在既有 dirty 内容上追加，验证"继续而非 recreate"
           await writeFile(join(repoPath, 'src/feature.ts'), 'export const a = 2 // legacy partial\n// resumed\n')
@@ -386,8 +394,9 @@ await test('W003 Legacy Adoption CASE C: adopted checkpoint feeds existing Recov
             stderr: '',
           }
         }
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         return { exitCode: 1, signal: null, stdout: '', stderr: 'Unexpected command' }
       },

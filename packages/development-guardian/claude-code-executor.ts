@@ -13,6 +13,10 @@ import type {
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { RepositoryCheckpoint, ProviderSessionState } from './work-session/checkpoint.js'
 import { LEGACY_PRE_EXISTING_DIRTY_REASON } from './work-session/legacy-recovery.js'
+import {
+  guardianShellCommand,
+  type GuardianShellContractOptions,
+} from './shell-contract.js'
 
 export interface GuardianCommandRequest {
   executable: string
@@ -21,6 +25,8 @@ export interface GuardianCommandRequest {
   timeoutMs: number
   /** Internal-only process environment additions. Executor/Claude never supplies this. */
   env?: NodeJS.ProcessEnv
+  /** Internal marker for native Git Bash process errors; never inferred from a path string. */
+  nativeGitBash?: true
 }
 
 export interface GuardianCommandResult {
@@ -84,6 +90,10 @@ export interface ClaudeCodeExecutorOptions {
   allowNpmInstall?: boolean
   allowPythonBootstrap?: boolean
   commandRunner?: GuardianCommandRunner
+  /** Deployment override for the Windows native Git Bash executable. */
+  gitBashPath?: string
+  /** Internal platform seam; production defaults to process.platform. */
+  platform?: NodeJS.Platform
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: {
     command: string
@@ -289,6 +299,7 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
       env: request.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
+      shell: false,
     })
     let stdout = ''
     let stderr = ''
@@ -323,6 +334,15 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
       }
       settled = true
       clearTimeout(timer)
+      if (
+        request.nativeGitBash === true &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
+        reject(new Error(
+          'Native Git Bash unavailable: the configured Git for Windows bash.exe could not be started',
+        ))
+        return
+      }
       reject(error)
     })
 
@@ -337,17 +357,15 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
   })
 }
 
-function bashCommand(command: string): { executable: string; args: string[] } {
+function claudeCommand(
+  args: readonly string[],
+  shellOptions: GuardianShellContractOptions,
+): { executable: string; args: string[]; nativeGitBash?: true } {
+  const command = guardianShellCommand('exec claude "$@"', shellOptions)
   return {
-    executable: 'bash',
-    args: ['-lc', command],
-  }
-}
-
-function claudeCommand(args: readonly string[]): { executable: string; args: string[] } {
-  return {
-    executable: 'bash',
-    args: ['-lc', 'exec claude "$@"', '--', ...args],
+    executable: command.executable,
+    args: [...command.args, '--', ...args],
+    ...(command.nativeGitBash === true ? { nativeGitBash: true } : {}),
   }
 }
 
@@ -617,6 +635,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     this.allowedCheckpoint = checkpoint
   }
 
+  private shellOptions(): GuardianShellContractOptions {
+    return {
+      ...(this.options.gitBashPath === undefined ? {} : { gitBashPath: this.options.gitBashPath }),
+      ...(this.options.platform === undefined ? {} : { platform: this.options.platform }),
+    }
+  }
+
   private emitTiming(
     task: GuardianTask,
     phase: ClaudeCodeTimingPhase,
@@ -633,12 +658,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   }
 
   private async runBash(command: string, timeoutMs = this.timeoutMs): Promise<GuardianCommandResult> {
-    const spec = bashCommand(command)
+    const spec = guardianShellCommand(command, this.shellOptions())
     return this.runner({
       executable: spec.executable,
       args: spec.args,
       cwd: this.options.cwd,
       timeoutMs,
+      ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
     })
   }
 
@@ -979,13 +1005,14 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     claudeDurationMs: number
   }> {
     const args = this.buildClaudeArgs(task, packet, mode)
-    const spec = claudeCommand(args)
+    const spec = claudeCommand(args, this.shellOptions())
     const claudeStartedAt = performance.now()
     const claude = await this.runner({
       executable: spec.executable,
       args: spec.args,
       cwd: this.options.cwd,
       timeoutMs: this.timeoutMs,
+      ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
     })
     const claudeDurationMs = performance.now() - claudeStartedAt
 

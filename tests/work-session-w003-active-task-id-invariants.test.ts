@@ -20,6 +20,11 @@ import {
 
 // 内部类型需要直接 import
 import type { RepositoryCheckpoint } from '../packages/development-guardian/work-session/checkpoint.js'
+import {
+  guardianShellPayload,
+  guardianShellTestCommand,
+  isClaudeShellRequest,
+} from './guardian-shell-fixture.js'
 
 // ============ Test Helpers ============
 
@@ -33,7 +38,8 @@ async function setupTestGitRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<{ exitCode: number; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,8 +107,8 @@ await test('W003 Invariant 1: same executor revise allows dirty worktree', async
       maxTurns: 2,
       timeoutMs: 10_000,
       commandRunner: async (req) => {
-        // Claude 命令 - 格式: bash -lc "exec claude ..."
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        // Claude command uses the production shell contract.
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           // 第一次执行：创建 dirty file
           if (claudeInvocationCount === 1) {
@@ -130,9 +136,10 @@ await test('W003 Invariant 1: same executor revise allows dirty worktree', async
             stderr: '',
           }
         }
-        // Git 命令 - 格式: bash -lc "<git command>"
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        // Git commands use the same resolver-selected shell.
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -202,7 +209,7 @@ await test('W003 Invariant 2: NEW executor + restored sessionId + NO checkpoint 
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           await writeFile(join(repoPath, 'test-dirty.txt'), 'execution 1')
           return {
@@ -217,8 +224,9 @@ await test('W003 Invariant 2: NEW executor + restored sessionId + NO checkpoint 
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -270,7 +278,7 @@ await test('W003 Invariant 2: NEW executor + restored sessionId + NO checkpoint 
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           return {
             exitCode: 0,
@@ -283,8 +291,9 @@ await test('W003 Invariant 2: NEW executor + restored sessionId + NO checkpoint 
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -331,7 +340,7 @@ await test('W003 Invariant 3: NEW executor + valid checkpoint must verify then c
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           await writeFile(join(repoPath, 'test-dirty.txt'), 'execution 1')
           return {
@@ -346,8 +355,9 @@ await test('W003 Invariant 3: NEW executor + valid checkpoint must verify then c
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -398,7 +408,7 @@ await test('W003 Invariant 3: NEW executor + valid checkpoint must verify then c
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           // 检查是否使用了 --resume（可能在任何 arg 中）
           if (req.args.some(arg => arg === '--resume')) {
@@ -429,8 +439,9 @@ await test('W003 Invariant 3: NEW executor + valid checkpoint must verify then c
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -483,7 +494,7 @@ await test('W003 Invariant 4: NEW executor + valid checkpoint + NO sessionId use
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           await writeFile(join(repoPath, 'test-dirty.txt'), 'execution 1')
           // 故意不返回 session_id：模拟 NO sessionId 场景（Recovery Resume）
@@ -498,8 +509,9 @@ await test('W003 Invariant 4: NEW executor + valid checkpoint + NO sessionId use
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -549,7 +561,7 @@ await test('W003 Invariant 4: NEW executor + valid checkpoint + NO sessionId use
       timeoutMs: 10_000,
       commandRunner: async (req) => {
         // Claude 命令
-        if (req.executable === 'bash' && req.args.length > 1 && req.args[1]?.includes('claude')) {
+        if (isClaudeShellRequest(req)) {
           claudeInvocationCount++
           if (req.args.some(arg => arg === '--resume')) {
             usedResumeFlag = true
@@ -571,8 +583,9 @@ await test('W003 Invariant 4: NEW executor + valid checkpoint + NO sessionId use
           }
         }
         // Git 命令
-        if (req.executable === 'bash' && req.args[0] === '-lc' && req.args[1] !== undefined) {
-          return gitRunner(req.args[1])
+        const command = guardianShellPayload(req)
+        if (command !== undefined) {
+          return gitRunner(command)
         }
         // 其他命令
         return {
@@ -607,10 +620,6 @@ await test('W003 Invariant 4: NEW executor + valid checkpoint + NO sessionId use
     await rm(tempBase, { recursive: true, force: true }).catch(() => {})
   }
 })
-
-
-
-
 
 
 

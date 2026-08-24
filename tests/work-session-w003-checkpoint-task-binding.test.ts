@@ -25,6 +25,7 @@ import {
 } from 'nova-wing/development-guardian'
 import type { GuardianTaskRecoveryCheckpoint } from '../packages/development-guardian/work-session/index.js'
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
+import { guardianShellTestCommand } from './guardian-shell-fixture.js'
 
 // ============ Git Test Helper ============
 
@@ -45,7 +46,8 @@ async function setupTestGitRepo(baseDir: string): Promise<{
   const gitRunner = async (cmd: string) => {
     const { spawn } = await import('node:child_process')
     return new Promise<GitRunResult>((resolve) => {
-      const child = spawn('bash', ['-lc', cmd], {
+      const shell = guardianShellTestCommand(cmd)
+      const child = spawn(shell.executable, shell.args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
