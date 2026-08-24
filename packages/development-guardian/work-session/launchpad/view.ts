@@ -86,6 +86,42 @@ export function renderLaunchpadHtml(input: {
       </div>
       <div class="system-ready"><span>SYSTEM READY</span><i aria-hidden="true"></i></div>
     </header>
+    <section class="composer" aria-labelledby="composer-title">
+      <button class="composer-toggle" type="button" data-composer-toggle aria-expanded="false">
+        <span aria-hidden="true">＋</span> 新建 Work Session
+      </button>
+      <form class="composer-form" data-composer-form hidden>
+        <div class="composer-heading">
+          <p class="eyebrow">NEW WORK SESSION</p>
+          <h2 id="composer-title">新建 Work Session</h2>
+        </div>
+        <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
+        <label>分支<input name="branch" type="text" readonly value="填写项目目录后自动检测"></label>
+        <label>Task<textarea name="goal" rows="6" required placeholder="描述本次需要完成的工作…"></textarea></label>
+        <div class="composer-grid">
+          <label>Executor<input name="executorModel" type="text" value="sonnet" required></label>
+          <label>Soft Limit（分钟）<input name="softMinutes" type="number" min="0" max="1440" value="45" required></label>
+          <label>Hard Limit（分钟）<input name="hardMinutes" type="number" min="1" max="1440" value="90" required></label>
+        </div>
+        <div class="checks">
+          <label><input name="autoCommit" type="checkbox" checked> Auto Commit</label>
+          <label><input name="autoPush" type="checkbox" disabled> Auto Push（需要 trusted config 的远端策略）</label>
+          <label><input name="emailEnabled" type="checkbox"> Email Notification</label>
+        </div>
+        <details>
+          <summary>高级 Guardian 规则（需要明确允许修改路径）</summary>
+          <p>为避免静默扩大权限，请填写相对仓库根目录的允许路径，每行一条，例如 <code>src/**</code>。</p>
+          <label>Allowed paths<textarea name="allowedPaths" rows="3" placeholder="src/**\ntests/**" required></textarea></label>
+          <label>Constraints（可选，每行一条）<textarea name="constraints" rows="2"></textarea></label>
+          <label>Acceptance criteria（可选，每行一条）<textarea name="acceptanceCriteria" rows="2"></textarea></label>
+          <label>Do not do（可选，每行一条）<textarea name="doNotDo" rows="2"></textarea></label>
+          <label>Forbidden paths（可选，每行一条；会附加到安全默认值）<textarea name="forbiddenPaths" rows="2"></textarea></label>
+        </details>
+        <p class="launch-error" data-composer-error role="alert" aria-live="polite"></p>
+        <button class="launch-button" type="submit" data-composer-submit>创建并启动</button>
+      </form>
+    </section>
+    <h2 class="existing-heading">已有 Trusted Work Sessions</h2>
     ${content}
     <footer>LOCAL CONTROL SURFACE · 127.0.0.1</footer>
   </main>
@@ -109,6 +145,10 @@ export const LAUNCHPAD_APP_JS = `
     return
   }
 
+  const mutationHeaders = () => ({
+    'Content-Type': 'application/json',
+    'X-NovaWing-Launchpad-Token': bootstrap.launchToken,
+  })
   const buttons = Array.from(document.querySelectorAll('[data-config-id]'))
   for (const button of buttons) {
     button.addEventListener('click', async () => {
@@ -128,10 +168,7 @@ export const LAUNCHPAD_APP_JS = `
       try {
         const response = await fetch('/api/session/start', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-NovaWing-Launchpad-Token': bootstrap.launchToken,
-          },
+          headers: mutationHeaders(),
           body: JSON.stringify({ configId }),
         })
         const result = await response.json()
@@ -148,6 +185,72 @@ export const LAUNCHPAD_APP_JS = `
       }
     })
   }
+
+  const toggle = document.querySelector('[data-composer-toggle]')
+  const form = document.querySelector('[data-composer-form]')
+  if (!toggle || !form) return
+  toggle.addEventListener('click', () => {
+    const open = form.hidden
+    form.hidden = !open
+    toggle.setAttribute('aria-expanded', String(open))
+    if (open) form.elements.targetRepo.focus()
+  })
+
+  const branch = form.elements.branch
+  const targetRepo = form.elements.targetRepo
+  const error = form.querySelector('[data-composer-error]')
+  const lines = (value) => value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
+  let branchTimer
+  targetRepo.addEventListener('input', () => {
+    branch.value = '正在检测…'
+    clearTimeout(branchTimer)
+    branchTimer = setTimeout(async () => {
+      try {
+        const response = await fetch('/api/session/branch', {
+          method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ targetRepo: targetRepo.value }),
+        })
+        const result = await response.json()
+        branch.value = response.ok ? result.branch : '无法检测分支'
+      } catch { branch.value = '无法检测分支' }
+    }, 350)
+  })
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const submit = form.querySelector('[data-composer-submit]')
+    const allowedPaths = lines(form.elements.allowedPaths.value)
+    if (allowedPaths.length === 0) {
+      error.textContent = '请在高级 Guardian 规则中明确允许修改路径。'
+      form.querySelector('details').open = true
+      return
+    }
+    submit.disabled = true
+    error.textContent = ''
+    const optionalPolicy = (name) => {
+      const value = lines(form.elements[name].value)
+      return value.length === 0 ? {} : { [name]: value }
+    }
+    const requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/[^a-zA-Z0-9_-]/g, '')
+    try {
+      const response = await fetch('/api/session/create', {
+        method: 'POST', headers: mutationHeaders(),
+        body: JSON.stringify({
+          requestId, targetRepo: targetRepo.value, goal: form.elements.goal.value,
+          executorModel: form.elements.executorModel.value,
+          softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
+          autoCommit: form.elements.autoCommit.checked, autoPush: false, emailEnabled: form.elements.emailEnabled.checked,
+          guardian: { allowedPaths, ...optionalPolicy('constraints'), ...optionalPolicy('acceptanceCriteria'), ...optionalPolicy('doNotDo'), ...optionalPolicy('forbiddenPaths') },
+        }),
+      })
+      const result = await response.json()
+      if (!response.ok || result.accepted !== true || typeof result.controlUrl !== 'string') {
+        throw new Error(result.message || 'Work Session 启动失败')
+      }
+      window.location.assign(result.controlUrl)
+    } catch (cause) {
+      error.textContent = cause instanceof Error ? cause.message : 'Work Session 启动失败'
+      submit.disabled = false
+    }
+  })
 })()
 `
 
@@ -229,6 +332,40 @@ body {
   gap: 22px;
   align-items: start;
 }
+
+.composer {
+  margin-bottom: 34px;
+  border: 1px solid rgba(146, 183, 255, .22);
+  border-radius: 18px;
+  background: rgba(18, 23, 33, .82);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, .18);
+}
+
+.composer-toggle {
+  width: 100%; padding: 19px 24px; border: 0; background: transparent; color: #cfe0ff;
+  cursor: pointer; font: 650 15px/1 "Segoe UI", sans-serif; text-align: left;
+}
+
+.composer-toggle span { color: #92b7ff; font-size: 21px; vertical-align: -1px; }
+.composer-form { padding: 0 24px 26px; }
+.composer-heading { margin: 5px 0 22px; }
+.composer-heading h2, .existing-heading { font-size: 20px; }
+.composer-form label { display: grid; gap: 8px; margin: 15px 0; color: #b9c4d4; font-size: 13px; }
+.composer-form input[type="text"], .composer-form input[type="number"], .composer-form textarea {
+  width: 100%; border: 1px solid rgba(151, 170, 202, .2); border-radius: 9px;
+  padding: 11px 12px; background: rgba(7, 10, 15, .55); color: #e8eef8;
+  font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.composer-form textarea { resize: vertical; }
+.composer-form input[readonly] { color: #8ea0b9; }
+.composer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+.composer-grid label { margin: 0; }
+.checks { display: flex; flex-wrap: wrap; gap: 18px; margin: 20px 0; color: #c7cfdb; font-size: 13px; }
+.checks label { display: flex; align-items: center; gap: 7px; margin: 0; }
+.composer details { border-top: 1px solid rgba(151, 170, 202, .1); padding-top: 18px; }
+.composer summary { cursor: pointer; color: #a9c7ff; font-size: 13px; }
+.composer details p { color: #7f899a; font-size: 12px; line-height: 1.5; }
+.existing-heading { margin: 0 0 16px; color: #c7cfdb; }
 
 .session-card,
 .empty-state {
@@ -383,6 +520,7 @@ footer {
   body { min-width: 0; }
   .shell { width: min(100% - 32px, 680px); padding-top: 28px; }
   .session-grid { grid-template-columns: 1fr; }
+  .composer-grid { grid-template-columns: 1fr; }
   .system-ready span { display: none; }
 }
 

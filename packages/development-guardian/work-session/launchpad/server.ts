@@ -1,12 +1,15 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 
 import {
   createProductionWorkSessionUi,
+  createProductionGitRunner,
   loadTrustedWorkSessionConfig,
+  validateTrustedWorkSessionConfig,
+  type ProductionGitProcessRunner,
   type ProductionWorkSessionUi,
   type TrustedWorkSessionConfig,
 } from '../production.js'
@@ -18,8 +21,31 @@ import {
 } from './view.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
-const MAX_BODY_BYTES = 4096
+const MAX_BODY_BYTES = 16 * 1024
 const SAFE_LAUNCH_ERROR = 'Work Session 启动失败'
+const DEFAULT_EXECUTOR_MODEL = 'sonnet'
+const DEFAULT_SOFT_MINUTES = 45
+const DEFAULT_HARD_MINUTES = 90
+const MAX_COMPLETED_COMPOSER_REQUESTS = 100
+const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
+const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
+
+const DEFAULT_GUARDIAN_POLICY = {
+  constraints: [
+    'Keep changes scoped to the requested task.',
+    'Do not modify files outside allowedPaths.',
+  ],
+  acceptanceCriteria: [
+    'Implement the requested task.',
+    'Run relevant deterministic tests.',
+  ],
+  doNotDo: [
+    'Do not access, expose, or modify credentials or secrets.',
+    'Do not modify files outside allowedPaths.',
+    'Do not push changes.',
+  ],
+  forbiddenPaths: ['.env', '**/.env', '**/*secret*', '**/*credential*'],
+} as const
 
 export interface LaunchpadConfigSummary {
   configId: string
@@ -59,6 +85,7 @@ export interface NovaWingLaunchpadDependencies {
     config: TrustedWorkSessionConfig,
     options: { env: NodeJS.ProcessEnv; serverPort: 0 },
   ) => Promise<ManagedWorkSessionApp>
+  gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
 }
 
@@ -66,6 +93,59 @@ interface LaunchResult {
   accepted: true
   controlUrl: string
   alreadyStarted?: true
+}
+
+interface ComposerRequest {
+  requestId: string
+  targetRepo: string
+  goal: string
+  executorModel: string
+  softMinutes: number
+  hardMinutes: number
+  autoCommit: boolean
+  autoPush: boolean
+  emailEnabled: boolean
+  guardian: {
+    constraints?: string[]
+    acceptanceCriteria?: string[]
+    doNotDo?: string[]
+    allowedPaths: string[]
+    forbiddenPaths?: string[]
+  }
+}
+
+type ComposerParseResult = { ok: true; value: ComposerRequest } | { ok: false; error: ComposerError }
+type ComposerError =
+  | 'INVALID_PROJECT_PATH'
+  | 'NOT_A_GIT_REPOSITORY'
+  | 'CANNOT_READ_BRANCH'
+  | 'INVALID_TASK'
+  | 'INVALID_LIMITS'
+  | 'INVALID_GUARDIAN_POLICY'
+  | 'INVALID_REQUEST'
+  | 'IDEMPOTENCY_CONFLICT'
+
+const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', string> = {
+  INVALID_PROJECT_PATH: '项目目录必须是存在的绝对路径。',
+  NOT_A_GIT_REPOSITORY: '项目目录不是有效的 Git 仓库。',
+  CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
+  INVALID_TASK: '请填写有效的 Task 描述。',
+  INVALID_LIMITS: '时间限制无效：Hard Limit 必须不小于 Soft Limit。',
+  INVALID_GUARDIAN_POLICY: '请在高级 Guardian 规则中明确允许修改路径。',
+  INVALID_REQUEST: '创建请求无效。',
+  IDEMPOTENCY_CONFLICT: '该 requestId 已用于不同的创建请求。',
+  SESSION_START_FAILED: SAFE_LAUNCH_ERROR,
+}
+
+interface ComposerCreateEntry {
+  canonicalPayload: string
+  launch: Promise<LaunchResult>
+}
+
+interface CompletedComposerCreateEntry {
+  canonicalPayload: string
+  result: LaunchResult
+  completedAt: number
 }
 
 function titleCaseProject(directoryName: string): string {
@@ -138,10 +218,13 @@ export class NovaWingLaunchpad {
   private readonly loadConfig: (configPath: string) => Promise<TrustedWorkSessionConfig>
   private readonly resolveEnvironment: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
   private readonly createWorkSession: NonNullable<NovaWingLaunchpadDependencies['createWorkSession']>
+  private readonly gitProcessRunner: ProductionGitProcessRunner | undefined
   private readonly shutdownTimeoutMs: number
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
   private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
+  private readonly activeCreates = new Map<string, ComposerCreateEntry>()
+  private readonly completedCreates = new Map<string, CompletedComposerCreateEntry>()
   private readonly activeApps = new Map<string, ManagedWorkSessionApp>()
 
   private address: NovaWingLaunchpadAddress | undefined
@@ -159,6 +242,7 @@ export class NovaWingLaunchpad {
         createProductionWorkSessionUi(config, options)
     )
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
+    this.gitProcessRunner = dependencies.gitProcessRunner
     this.server = createServer((request, response) => {
       void this.handle(request, response)
     })
@@ -216,9 +300,10 @@ export class NovaWingLaunchpad {
       this.shutdownTimeoutMs,
     )
     await bounded(
-      Promise.allSettled([...this.activeApps.values()].map((app) => app.close())).then(() => undefined),
+      Promise.allSettled([...this.activeCreates.values()].map(({ launch }) => launch)).then(() => undefined),
       this.shutdownTimeoutMs,
     )
+    await bounded(Promise.allSettled([...this.activeApps.values()].map((app) => app.close())).then(() => undefined), this.shutdownTimeoutMs)
     this.activeApps.clear()
   }
 
@@ -246,8 +331,16 @@ export class NovaWingLaunchpad {
       await this.serveStart(request, response)
       return
     }
+    if (method === 'POST' && path === '/api/session/create') {
+      await this.serveCreate(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/branch') {
+      await this.serveBranch(request, response)
+      return
+    }
 
-    const knownPaths = new Set(['/', '/app.js', '/styles.css', '/api/session/start'])
+    const knownPaths = new Set(['/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create', '/api/session/branch'])
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
       error: knownPaths.has(path) ? 'method not allowed' : 'not found',
     })
@@ -300,6 +393,58 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 202, result)
     } catch {
       this.respondJson(response, 500, { error: SAFE_LAUNCH_ERROR })
+    }
+  }
+
+  private async serveCreate(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const parsed = parseComposerBody(body)
+    if (!parsed.ok) {
+      this.respondComposerError(response, 400, parsed.error)
+      return
+    }
+    try {
+      const result = await this.createWorkSessionFromComposer(parsed.value)
+      this.respondJson(response, 202, result)
+    } catch (error) {
+      const code = error instanceof ComposerLaunchError ? error.code : 'SESSION_START_FAILED'
+      const status = code === 'SESSION_START_FAILED' ? 500 : code === 'IDEMPOTENCY_CONFLICT' ? 409 : 400
+      this.respondComposerError(response, status, code)
+    }
+  }
+
+  private async serveBranch(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const targetRepo = parseBranchBody(body)
+    if (targetRepo === undefined) {
+      this.respondComposerError(response, 400, 'INVALID_PROJECT_PATH')
+      return
+    }
+    const resolved = resolve(targetRepo)
+    if (!isAbsolute(targetRepo) || !await isDirectory(resolved)) {
+      this.respondComposerError(response, 400, 'INVALID_PROJECT_PATH')
+      return
+    }
+    try {
+      this.respondJson(response, 200, { branch: await this.readCurrentBranch(resolved) })
+    } catch (error) {
+      const code = error instanceof ComposerLaunchError ? error.code : 'CANNOT_READ_BRANCH'
+      this.respondComposerError(response, 400, code)
     }
   }
 
@@ -388,6 +533,116 @@ export class NovaWingLaunchpad {
     }
   }
 
+  private async createWorkSessionFromComposer(input: ComposerRequest): Promise<LaunchResult> {
+    this.pruneCompletedCreates()
+    const canonicalPayload = canonicalComposerPayload(input)
+    const existing = this.activeCreates.get(input.requestId)
+    if (existing !== undefined) {
+      if (existing.canonicalPayload !== canonicalPayload) throw new ComposerLaunchError('IDEMPOTENCY_CONFLICT')
+      return existing.launch
+    }
+    const completed = this.completedCreates.get(input.requestId)
+    if (completed !== undefined) {
+      if (completed.canonicalPayload !== canonicalPayload) throw new ComposerLaunchError('IDEMPOTENCY_CONFLICT')
+      return completed.result
+    }
+    const launch = this.launchComposedWorkSession(input)
+    this.activeCreates.set(input.requestId, { canonicalPayload, launch })
+    try {
+      const result = await launch
+      this.completedCreates.set(input.requestId, { canonicalPayload, result, completedAt: Date.now() })
+      this.pruneCompletedCreates()
+      return result
+    } catch (error) {
+      this.activeCreates.delete(input.requestId)
+      throw error
+    } finally {
+      this.activeCreates.delete(input.requestId)
+    }
+  }
+
+  private pruneCompletedCreates(now = Date.now()): void {
+    for (const [requestId, entry] of this.completedCreates) {
+      if (now - entry.completedAt > COMPLETED_COMPOSER_REQUEST_TTL_MS) this.completedCreates.delete(requestId)
+    }
+    while (this.completedCreates.size > MAX_COMPLETED_COMPOSER_REQUESTS) {
+      const oldestRequestId = this.completedCreates.keys().next().value
+      if (oldestRequestId === undefined) return
+      this.completedCreates.delete(oldestRequestId)
+    }
+  }
+
+  private async launchComposedWorkSession(input: ComposerRequest): Promise<LaunchResult> {
+    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
+    const targetRepo = resolve(input.targetRepo)
+    if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
+      throw new ComposerLaunchError('INVALID_PROJECT_PATH')
+    }
+    const branch = await this.readCurrentBranch(targetRepo)
+    const sessionId = createSessionId(targetRepo)
+    const config = await validateTrustedWorkSessionConfig({
+      session: {
+        id: sessionId,
+        targetRepo,
+        branch,
+        limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: 1 },
+      },
+      tasks: [{
+        id: 'T001',
+        goal: input.goal,
+        guardian: {
+          constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
+          acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...(input.guardian.acceptanceCriteria ?? [])],
+          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo, ...(input.guardian.doNotDo ?? [])],
+          allowedPaths: input.guardian.allowedPaths,
+          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
+        },
+      }],
+      gitCheckpoint: { autoCommit: input.autoCommit, autoPush: false },
+      executor: {
+        model: input.executorModel,
+        maxTurns: 10,
+        allowNpmInstall: false,
+        allowPythonBootstrap: false,
+      },
+      notification: { email: { enabled: input.emailEnabled } },
+    }).catch(() => { throw new ComposerLaunchError('INVALID_GUARDIAN_POLICY') })
+    const env = await this.resolveEnvironment(config).catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
+    const app = await this.createWorkSession(config, { env, serverPort: 0 }).catch(() => {
+      throw new ComposerLaunchError('SESSION_START_FAILED')
+    })
+    if (this.closed) {
+      await app.close()
+      throw new ComposerLaunchError('SESSION_START_FAILED')
+    }
+    this.activeApps.set(sessionId, app)
+    try {
+      const address = await app.start()
+      if (this.closed) throw new Error('closed')
+      app.controller.start()
+      return { accepted: true, controlUrl: address.url }
+    } catch {
+      this.activeApps.delete(sessionId)
+      await app.close().catch(() => undefined)
+      throw new ComposerLaunchError('SESSION_START_FAILED')
+    }
+  }
+
+  private async readCurrentBranch(targetRepo: string): Promise<string> {
+    const runner = createProductionGitRunner(targetRepo, this.gitProcessRunner)
+    const result = await runner('git branch --show-current').catch(() => undefined)
+    if (result === undefined || result.exitCode !== 0) {
+      throw new ComposerLaunchError('NOT_A_GIT_REPOSITORY')
+    }
+    const branch = result.stdout.trim()
+    if (branch.length === 0) throw new ComposerLaunchError('CANNOT_READ_BRANCH')
+    return branch
+  }
+
+  private respondComposerError(response: ServerResponse, status: number, code: ComposerError | 'SESSION_START_FAILED'): void {
+    this.respondJson(response, status, { error: code, message: COMPOSER_SAFE_MESSAGES[code] })
+  }
+
   private origin(): string {
     return this.address?.url ?? ''
   }
@@ -403,6 +658,37 @@ export class NovaWingLaunchpad {
     })
     response.end(JSON.stringify(payload))
   }
+}
+
+class ComposerLaunchError extends Error {
+  constructor(readonly code: ComposerError | 'SESSION_START_FAILED') {
+    super(code)
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  return (await stat(path).catch(() => undefined))?.isDirectory() === true
+}
+
+function createSessionId(targetRepo: string): string {
+  const project = (basename(targetRepo).toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '') || 'session')
+    .slice(0, MAX_SESSION_PROJECT_SLUG_LENGTH)
+  const timestamp = new Date().toISOString().replace(/[^0-9]/gu, '').slice(0, 12)
+  return `${project}-${timestamp}-${randomBytes(3).toString('hex')}`
+}
+
+function canonicalComposerPayload(input: ComposerRequest): string {
+  return JSON.stringify({
+    targetRepo: input.targetRepo,
+    goal: input.goal,
+    executorModel: input.executorModel,
+    softMinutes: input.softMinutes,
+    hardMinutes: input.hardMinutes,
+    autoCommit: input.autoCommit,
+    autoPush: input.autoPush,
+    emailEnabled: input.emailEnabled,
+    guardian: input.guardian,
+  })
 }
 
 export async function createNovaWingLaunchpad(options: {
@@ -447,6 +733,112 @@ function parseStartBody(body: string):
     return { ok: false, error: 'configId is invalid' }
   }
   return { ok: true, configId: record.configId }
+}
+
+function parseComposerBody(body: string): ComposerParseResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const record = parsed as Record<string, unknown>
+  const allowed = new Set([
+    'requestId', 'targetRepo', 'goal', 'executorModel', 'softMinutes', 'hardMinutes',
+    'autoCommit', 'autoPush', 'emailEnabled', 'guardian',
+  ])
+  if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
+  if (typeof record.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/u.test(record.requestId)) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  if (typeof record.targetRepo !== 'string' || record.targetRepo.trim().length === 0) {
+    return { ok: false, error: 'INVALID_PROJECT_PATH' }
+  }
+  if (typeof record.goal !== 'string' || record.goal.trim().length === 0 || record.goal.length > 8_000) {
+    return { ok: false, error: 'INVALID_TASK' }
+  }
+  const softMinutes = record.softMinutes ?? DEFAULT_SOFT_MINUTES
+  const hardMinutes = record.hardMinutes ?? DEFAULT_HARD_MINUTES
+  if (!isValidMinuteLimit(softMinutes, true) || !isValidMinuteLimit(hardMinutes, false) || hardMinutes < softMinutes) {
+    return { ok: false, error: 'INVALID_LIMITS' }
+  }
+  const executorModel = record.executorModel ?? DEFAULT_EXECUTOR_MODEL
+  if (typeof executorModel !== 'string' || executorModel.trim().length === 0 || executorModel.length > 120) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const autoCommit = record.autoCommit ?? true
+  const autoPush = record.autoPush ?? false
+  const emailEnabled = record.emailEnabled ?? false
+  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean') {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  // Composer sessions have no trusted remote policy, so pushing cannot be enabled here.
+  if (autoPush) return { ok: false, error: 'INVALID_GUARDIAN_POLICY' }
+  const guardian = parseComposerGuardian(record.guardian)
+  if (guardian === undefined) return { ok: false, error: 'INVALID_GUARDIAN_POLICY' }
+  return {
+    ok: true,
+    value: {
+      requestId: record.requestId,
+      targetRepo: record.targetRepo.trim(),
+      goal: record.goal.trim(),
+      executorModel: executorModel.trim(),
+      softMinutes,
+      hardMinutes,
+      autoCommit,
+      autoPush,
+      emailEnabled,
+      guardian,
+    },
+  }
+}
+
+function parseBranchBody(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const record = parsed as Record<string, unknown>
+    return Object.keys(record).length === 1 && typeof record.targetRepo === 'string' && record.targetRepo.trim().length > 0
+      ? record.targetRepo.trim()
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const allowed = new Set(['constraints', 'acceptanceCriteria', 'doNotDo', 'allowedPaths', 'forbiddenPaths'])
+  if (Object.keys(record).some((key) => !allowed.has(key))) return undefined
+  const allowedPaths = stringArray(record.allowedPaths)
+  if (allowedPaths === undefined || allowedPaths.length === 0) return undefined
+  const constraints = optionalStringArray(record, 'constraints')
+  const acceptanceCriteria = optionalStringArray(record, 'acceptanceCriteria')
+  const doNotDo = optionalStringArray(record, 'doNotDo')
+  const forbiddenPaths = optionalStringArray(record, 'forbiddenPaths')
+  if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
+  return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
+}
+
+function optionalStringArray(
+  record: Record<string, unknown>,
+  key: 'constraints' | 'acceptanceCriteria' | 'doNotDo' | 'forbiddenPaths',
+): string[] | 'invalid' | undefined {
+  if (record[key] === undefined) return undefined
+  return stringArray(record[key]) ?? 'invalid'
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 100 || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0 || entry.length > 500)) return undefined
+  return value.map((entry) => entry.trim())
+}
+
+function isValidMinuteLimit(value: unknown, allowZero: boolean): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && (allowZero ? value >= 0 : value > 0) && value <= 24 * 60
 }
 
 function readBodyWithLimit(request: IncomingMessage): Promise<string> {

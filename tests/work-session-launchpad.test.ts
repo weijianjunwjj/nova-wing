@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,6 +64,7 @@ interface FakeWorkSessionState {
   closeCalls: number
   receivedServerPorts: number[]
   receivedConfigIds: string[]
+  receivedExecutorModels: string[]
 }
 
 function fakeWorkSessionFactory(
@@ -74,6 +75,7 @@ function fakeWorkSessionFactory(
     state.createCalls += 1
     state.receivedServerPorts.push(input.serverPort)
     state.receivedConfigIds.push(config.session.id)
+    state.receivedExecutorModels.push(config.executor.model)
     if (options.failWith !== undefined) throw options.failWith
     return {
       controller: {
@@ -101,6 +103,7 @@ function emptyFakeState(): FakeWorkSessionState {
     closeCalls: 0,
     receivedServerPorts: [],
     receivedConfigIds: [],
+    receivedExecutorModels: [],
   }
 }
 
@@ -122,6 +125,34 @@ async function postStart(
     },
     body: JSON.stringify(body),
   })
+}
+
+async function postCreate(
+  launchpad: NovaWingLaunchpad,
+  body: unknown,
+  headers: { token?: string; origin?: string } = {},
+): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/create`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+function composerRequest(requestId: string, overrides: Record<string, unknown> = {}): unknown {
+  return {
+    requestId,
+    targetRepo: process.cwd(),
+    goal: 'Implement a focused persistent model with deterministic tests.',
+    guardian: { allowedPaths: ['packages/**', 'tests/**'] },
+    ...overrides,
+  }
 }
 
 await test('Launchpad discovery uses the trusted validator and ignores invalid JSON configs', async () => {
@@ -165,10 +196,224 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /NovaWing Launchpad/u)
     assert.match(html, /AgentRun Persistence/u)
     assert.match(html, /SYSTEM READY/u)
+    assert.match(html, /新建 Work Session/u)
     assert.doesNotMatch(html, /expectedUrl|SMTP_|credential/u)
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer creates a fresh validated session from structured input and reads branch through git argv', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const gitCalls: Array<{ executable: string; args: readonly string[]; cwd: string }> = []
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner(executable, args, cwd) {
+        gitCalls.push({ executable, args, cwd })
+        return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' }
+      },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-0001'), auth)
+    assert.equal(response.status, 202)
+    assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
+    assert.equal(state.createCalls, 1)
+    assert.equal(state.receivedConfigIds.length, 1)
+    assert.match(state.receivedConfigIds[0]!, /^nova-wing-\d{12}-[a-f0-9]{6}$/u)
+    assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
+    assert.equal(state.controllerStartCalls, 1)
+    assert.deepEqual(gitCalls, [{ executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() }])
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer reuses a completed requestId only for the same canonical payload', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const first = await postCreate(launchpad, composerRequest('composer-create-request-0002'), auth)
+    const repeated = await postCreate(launchpad, composerRequest('composer-create-request-0002'), auth)
+    const second = await postCreate(launchpad, composerRequest('composer-create-request-0003'), auth)
+    assert.equal(first.status, 202)
+    assert.equal(repeated.status, 202)
+    assert.equal(second.status, 202)
+    assert.equal(state.createCalls, 2)
+    assert.notEqual(state.receivedConfigIds[0], state.receivedConfigIds[1])
+    const conflicting = await postCreate(launchpad, composerRequest('composer-create-request-0002', {
+      goal: 'A different task must not reuse this request id.',
+    }), auth)
+    assert.equal(conflicting.status, 409)
+    assert.deepEqual(await conflicting.json(), {
+      error: 'IDEMPOTENCY_CONFLICT',
+      message: '该 requestId 已用于不同的创建请求。',
+    })
+    assert.equal(state.createCalls, 2)
+    const injected = await postCreate(launchpad, {
+      ...composerRequest('composer-create-request-0004') as Record<string, unknown>, storageUrl: 'file:///tmp/old.db',
+    }, auth)
+    assert.equal(injected.status, 400)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer caps a long project basename in generated session ids', async () => {
+  const directory = await createConfigDirectory()
+  const targetRepo = join(directory, 'a'.repeat(100))
+  await mkdir(targetRepo)
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-0009', { targetRepo }), {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 202)
+    assert.match(state.receivedConfigIds[0]!, /^a{48}-\d{12}-[a-f0-9]{6}$/u)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Launchpad close waits for a pending Composer create before closing its app', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  let resolveCreate: (() => void) | undefined
+  let signalCreateStarted: (() => void) | undefined
+  const createGate = new Promise<void>((resolve) => { resolveCreate = resolve })
+  const createStarted = new Promise<void>((resolve) => { signalCreateStarted = resolve })
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      async createWorkSession(config, input) {
+        state.createCalls += 1
+        state.receivedServerPorts.push(input.serverPort)
+        state.receivedConfigIds.push(config.session.id)
+        state.receivedExecutorModels.push(config.executor.model)
+        signalCreateStarted?.()
+        await createGate
+        return {
+          controller: { start: () => ({ started: true }) },
+          async start() { return { url: 'http://127.0.0.1:54321' } },
+          async close() { state.closeCalls += 1 },
+        }
+      },
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const pendingRequest = postCreate(launchpad, composerRequest('composer-create-request-0010'), {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    await createStarted
+    let closeFinished = false
+    const closing = launchpad.close().then(() => { closeFinished = true })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(closeFinished, false)
+    resolveCreate?.()
+    await closing
+    await pendingRequest.catch(() => undefined)
+    assert.equal(state.closeCalls, 1)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Launchpad close bounds a Composer create that never resolves', async () => {
+  const directory = await createConfigDirectory()
+  let signalCreateStarted: (() => void) | undefined
+  const createStarted = new Promise<void>((resolve) => { signalCreateStarted = resolve })
+  const shutdownTimeoutMs = 20
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      shutdownTimeoutMs,
+      async createWorkSession() {
+        signalCreateStarted?.()
+        return new Promise<never>(() => undefined)
+      },
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  let closeTimer: NodeJS.Timeout | undefined
+  const keepAliveServer = http.createServer()
+  await new Promise<void>((resolve) => keepAliveServer.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = await launchpad.start()
+    const pendingCreate = postCreate(launchpad, composerRequest('composer-create-request-0011'), {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    }).catch(() => undefined)
+    await createStarted
+    const startedAt = Date.now()
+    await Promise.race([
+      launchpad.close(),
+      new Promise<void>((_, reject) => {
+        closeTimer = setTimeout(() => reject(new Error('Launchpad close exceeded its bounded shutdown timeout')), 500)
+      }),
+    ])
+    if (closeTimer !== undefined) clearTimeout(closeTimer)
+    assert.ok(Date.now() - startedAt >= shutdownTimeoutMs, 'close should wait through the bounded shutdown timeout')
+    void pendingCreate
+  } finally {
+    if (closeTimer !== undefined) clearTimeout(closeTimer)
+    await launchpad.close()
+    await new Promise<void>((resolve) => keepAliveServer.close(() => resolve()))
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer fails closed for invalid paths, non-git repositories, invalid limits, and missing allowed paths', async () => {
+  const directory = await createConfigDirectory()
+  const nonGit = await mkdtemp(join(tmpdir(), 'novawing-not-git-'))
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const invalidPath = await postCreate(launchpad, composerRequest('composer-create-request-0005', { targetRepo: 'relative/path' }), auth)
+    assert.deepEqual(await invalidPath.json(), { error: 'INVALID_PROJECT_PATH', message: '项目目录必须是存在的绝对路径。' })
+    const notGit = await postCreate(launchpad, composerRequest('composer-create-request-0006', { targetRepo: nonGit }), auth)
+    assert.equal((await notGit.json() as { error: string }).error, 'NOT_A_GIT_REPOSITORY')
+    const badLimits = await postCreate(launchpad, composerRequest('composer-create-request-0007', { softMinutes: 91, hardMinutes: 90 }), auth)
+    assert.equal((await badLimits.json() as { error: string }).error, 'INVALID_LIMITS')
+    const noPaths = await postCreate(launchpad, composerRequest('composer-create-request-0008', { guardian: {} }), auth)
+    assert.equal((await noPaths.json() as { error: string }).error, 'INVALID_GUARDIAN_POLICY')
+    assert.equal(state.createCalls, 0)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+    await rm(nonGit, { recursive: true, force: true })
   }
 })
 
