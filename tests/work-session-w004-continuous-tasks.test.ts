@@ -156,7 +156,7 @@ await test('W004 CASE A: T1→commit SHA1→T2→commit SHA2, serial boundaries'
     // git log 顺序正确：baseline → T1 → T2
     const log = (await gitOk(repoPath, ['log', '--format=%s'])).stdout
       .split(/\r?\n/u).filter(Boolean)
-    assert.deepEqual(log, ['完成 T2: 实现任务 2', '完成 T1: 实现任务 1', 'Initial commit'])
+    assert.deepEqual(log, ['T2: 实现任务 2', 'T1: 实现任务 1', 'Initial commit'])
 
     // SHA 与 git 实际一致
     const headHashes = (await gitOk(repoPath, ['log', '--format=%H'])).stdout
@@ -428,7 +428,7 @@ await test('W004 CASE K: durable restart retains T1 SHA, T1 not rerun, T2 execut
     // git log 顺序：baseline → T1 → T2
     const log = (await gitOk(repoPath, ['log', '--format=%s'])).stdout
       .split(/\r?\n/u).filter(Boolean)
-    assert.deepEqual(log, ['完成 T2: 实现任务 2', '完成 T1: 实现任务 1', 'Initial commit'])
+    assert.deepEqual(log, ['T2: 实现任务 2', 'T1: 实现任务 1', 'Initial commit'])
   } finally {
     await cleanupTemp(tempBase)
   }

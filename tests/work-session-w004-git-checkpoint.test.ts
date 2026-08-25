@@ -481,11 +481,77 @@ await test('W004 git-checkpoint happy path: modified + new + deleted committed e
 
     // deterministic commit message
     const subject = (await gitOk(repoPath, ['log', '-1', '--format=%s'])).stdout.trim()
-    assert.equal(subject, `完成 ${TASK.id}: ${TASK.goal}`)
+    assert.equal(subject, `${TASK.id}: ${TASK.goal}`)
 
     // 共 2 个 commit（baseline + task commit）
     const count = (await gitOk(repoPath, ['rev-list', '--count', 'HEAD'])).stdout.trim()
     assert.equal(count, '2', 'exactly one task commit')
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+await test('W004 checkpoint subject uses only a concise first meaningful goal line', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 'w004-subject-'))
+  const { repoPath } = await setupRealRepo(tempBase)
+  const normalizedFirstLine = `Build concise checkpoint ${'x'.repeat(100)}`
+  const task = {
+    id: 'TASK-123',
+    goal: `\n  \n  Build   concise\tcheckpoint ${'x'.repeat(100)}  \nAcceptance criteria must not appear`,
+  }
+  try {
+    await writeFile(join(repoPath, 'src/keep.ts'), 'export const keep = "subject"\n')
+    await finalizeCompletedTask({
+      repoPath,
+      expectedBranch: 'feat/test',
+      task,
+      completionEvidence: evidence({ changedFiles: ['src/keep.ts'] }),
+      policy: autoCommitPolicy(),
+    })
+    const subject = (await gitOk(repoPath, ['log', '-1', '--format=%s'])).stdout.trim()
+    assert.equal(subject, `TASK-123: ${normalizedFirstLine.slice(0, 79)}…`)
+    assert.equal(subject.includes('\n'), false)
+    assert.equal(subject.includes('\r'), false)
+    assert.equal(subject.includes('Acceptance criteria'), false)
+    assert.equal(subject.startsWith('TASK-123: '), true)
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+await test('W004 checkpoint subject removes a leading repeated Task ID token', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 'w004-subject-id-leading-'))
+  const { repoPath } = await setupRealRepo(tempBase)
+  try {
+    await writeFile(join(repoPath, 'src/keep.ts'), 'export const keep = "leading id"\n')
+    await finalizeCompletedTask({
+      repoPath,
+      expectedBranch: 'feat/test',
+      task: { id: 'T012', goal: 'T012: Implement baseline policy lookup' },
+      completionEvidence: evidence({ changedFiles: ['src/keep.ts'] }),
+      policy: autoCommitPolicy(),
+    })
+    const subject = (await gitOk(repoPath, ['log', '-1', '--format=%s'])).stdout.trim()
+    assert.equal(subject, 'T012: Implement baseline policy lookup')
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+await test('W004 checkpoint subject removes an embedded repeated Task ID token', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 'w004-subject-id-embedded-'))
+  const { repoPath } = await setupRealRepo(tempBase)
+  try {
+    await writeFile(join(repoPath, 'src/keep.ts'), 'export const keep = "embedded id"\n')
+    await finalizeCompletedTask({
+      repoPath,
+      expectedBranch: 'feat/test',
+      task: { id: 'T012', goal: '实现 Fly-Weave T012：baseline policy lookup。' },
+      completionEvidence: evidence({ changedFiles: ['src/keep.ts'] }),
+      policy: autoCommitPolicy(),
+    })
+    const subject = (await gitOk(repoPath, ['log', '-1', '--format=%s'])).stdout.trim()
+    assert.equal(subject, 'T012: 实现 Fly-Weave：baseline policy lookup。')
   } finally {
     await rm(tempBase, { recursive: true, force: true }).catch(() => {})
   }

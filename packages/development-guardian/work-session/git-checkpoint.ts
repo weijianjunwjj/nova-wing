@@ -98,6 +98,31 @@ export class GitPushError extends GitCheckpointError {
 }
 
 const PROTECTED_BRANCHES = new Set(['main', 'master'])
+const CHECKPOINT_SUMMARY_MAX_LENGTH = 80
+
+/**
+ * Deterministically render a concise, single-line checkpoint subject from the
+ * first meaningful task-goal line.  Never delegate commit-message generation.
+ */
+function taskGoalSummary(goal: string): string {
+  const firstLine = goal.split(/\r?\n/u).find((line) => line.trim().length > 0)
+  const summary = firstLine?.trim().replace(/\s+/gu, ' ') ?? ''
+  if (summary.length === 0) throw new GitCheckpointError('task goal summary is empty')
+  return summary.length <= CHECKPOINT_SUMMARY_MAX_LENGTH
+    ? summary
+    : `${summary.slice(0, CHECKPOINT_SUMMARY_MAX_LENGTH - 1).trimEnd()}…`
+}
+
+function renderCheckpointCommitMessage(task: Pick<WorkSessionTask, 'id' | 'goal'>): string {
+  const escapedTaskId = task.id.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  const withoutRepeatedTaskId = taskGoalSummary(task.goal)
+    .replace(new RegExp(`(^|[^A-Za-z0-9._-])${escapedTaskId}(?=$|[^A-Za-z0-9._-])`, 'gu'), '$1')
+    .replace(/\s+/gu, ' ')
+    .replace(/\s+([:：-])/gu, '$1')
+    .replace(/^[:：-]+\s*/u, '')
+    .trim()
+  return `${task.id}: ${withoutRepeatedTaskId}`
+}
 
 /** untracked 且位于依赖/产物目录时视为 runtime artifact，不进入 Task commit */
 const RUNTIME_ARTIFACT_DIR_SEGMENTS = new Set(['node_modules', '.venv', 'dist'])
@@ -476,8 +501,8 @@ export async function finalizeCompletedTask(
       )
     }
 
-    // deterministic commit message（不让 LLM 生成）
-    const message = `完成 ${task.id}: ${task.goal}`
+    // Deterministic, concise subject; never let a pasted multi-line goal enter Git history verbatim.
+    const message = renderCheckpointCommitMessage(task)
     await runGitChecked(runGit, ['commit', '-m', message])
     commitSucceeded = true
   } catch (error) {
