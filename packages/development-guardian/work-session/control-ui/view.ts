@@ -75,6 +75,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
     <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
+    <button id="recover-checkpoint-btn" type="button" class="primary" hidden>重新验证并继续</button>
     <span id="resume-note" class="note"></span>
   </section>
 
@@ -398,6 +399,12 @@ function summarizeLedgerEvent(ev) {
   if (ev.eventType === 'GIT_PUSH_COMPLETED') {
     return 'Git Push 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.pushSha)
   }
+  if (ev.eventType === 'CHECKPOINT_RECOVERY_REQUESTED' ||
+      ev.eventType === 'CHECKPOINT_RECOVERY_COMPLETED' ||
+      ev.eventType === 'CHECKPOINT_RECOVERY_FAILED') {
+    return 'Git checkpoint 恢复 · Task：' + displayValue(ev.taskId) +
+      ' · ' + displayValue(ev.recoveryAction) + ' · ' + displayValue(ev.status)
+  }
   if (ev.eventType === 'NOTIFICATION_SENT' || ev.eventType === 'NOTIFICATION_FAILED') {
     return displayValue(ev.notificationKind) + ' 通知' +
       (ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败')
@@ -438,15 +445,22 @@ function renderDecision(rt) {
   var userPaused = rt.state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED'
   var brainUnavailable = rt.state === 'SUSPENDED' &&
     rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
-  if (rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) {
+  var checkpointRecovery = rt.recovery && rt.recovery.available === true
+  if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery) {
     card.hidden = false
-    setText('decision-title', brainUnavailable
+    setText('decision-title', checkpointRecovery
+      ? 'Git checkpoint 推送未确认'
+      : brainUnavailable
       ? 'Brain 暂时不可用'
       : (userPaused ? '已由你暂停' : '需要人工处理'))
-    setText('decision-category', brainUnavailable
+    setText('decision-category', checkpointRecovery
+      ? 'Git Push'
+      : brainUnavailable
       ? 'Brain Review · ' + displayValue(brainFailure.category)
       : displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
-    setText('decision-reason', brainUnavailable
+    setText('decision-reason', checkpointRecovery
+      ? '当前 Task 已产生本地 checkpoint commit，但远端推送未确认。'
+      : brainUnavailable
       ? brainFailure.safeMessage
       : (userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—')))
 
@@ -454,6 +468,7 @@ function renderDecision(rt) {
     var decisionBtn = el('resume-decision-btn')
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
+    var recoveryBtn = el('recover-checkpoint-btn')
     var needsDecision = category === 'DECISION_REQUIRED' || category === 'STALLED'
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED'
     if (input) input.hidden = !needsDecision
@@ -463,8 +478,11 @@ function renderDecision(rt) {
       pausedBtn.hidden = !userPaused && !brainUnavailable
       pausedBtn.textContent = brainUnavailable ? '修复后恢复' : '恢复'
     }
+    if (recoveryBtn) recoveryBtn.hidden = !checkpointRecovery
 
-    if (brainUnavailable) {
+    if (checkpointRecovery) {
+      setText('decision-guidance', 'NovaWing 将先重新验证远端状态；不会重新执行当前 Task。')
+    } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
     } else if (resolvedAck) {
       setText('decision-guidance', '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
@@ -574,6 +592,15 @@ if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
 var resumePausedBtn = el('resume-paused-btn')
 if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {
   resumeSession({})
+})
+var recoverCheckpointBtn = el('recover-checkpoint-btn')
+if (recoverCheckpointBtn) recoverCheckpointBtn.addEventListener('click', async function () {
+  recoverCheckpointBtn.disabled = true
+  try {
+    await requestControl('/api/session/recover-checkpoint')
+  } finally {
+    recoverCheckpointBtn.disabled = false
+  }
 })
 
 refresh()

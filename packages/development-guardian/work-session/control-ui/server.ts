@@ -138,6 +138,9 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/resume') {
       return this.serveResume(req, res)
     }
+    if (method === 'POST' && path === '/api/session/recover-checkpoint') {
+      return this.serveRecoverCheckpoint(req, res)
+    }
 
     const knownPaths = new Set([
       '/',
@@ -149,6 +152,7 @@ export class WorkSessionControlServer {
       '/api/session/pause',
       '/api/session/stop-after-task',
       '/api/session/resume',
+      '/api/session/recover-checkpoint',
     ])
     if (knownPaths.has(path)) {
       return this.respondJson(res, 405, { error: 'method not allowed' })
@@ -261,6 +265,15 @@ export class WorkSessionControlServer {
       } else {
         this.respondJson(res, 409, { error: result.reason ?? 'resume rejected' })
       }
+    })
+  }
+
+  private serveRecoverCheckpoint(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) return
+    this.readBodyWithLimit(req, res, () => {
+      const result = this.controller.recoverFailedCheckpoint()
+      if (result.accepted) this.respondJson(res, 202, { accepted: true })
+      else this.respondJson(res, 409, { error: result.reason ?? 'checkpoint recovery rejected' })
     })
   }
 

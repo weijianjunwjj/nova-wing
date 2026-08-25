@@ -88,6 +88,7 @@ export class WorkSessionControlController {
   /** 明确持有 runtime.start() 的 Promise，rejection 已被 catch，绝不产生 unhandled rejection。 */
   private startPromise: Promise<void> | undefined
   private resumePromise: Promise<void> | undefined
+  private checkpointRecoveryPromise: Promise<void> | undefined
   /** Current Task whose user decision must never be echoed back by provider-derived reasons. */
   private resumeInputRedactionTaskId: string | undefined
 
@@ -258,6 +259,33 @@ export class WorkSessionControlController {
     return { accepted: true }
   }
 
+  recoverFailedCheckpoint(): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    if (!isRecoverableGitPushFailure(state)) {
+      return { accepted: false, reason: 'session is not eligible for checkpoint recovery' }
+    }
+    if (this.runtime.recoverFailedGitCheckpoint === undefined) {
+      return { accepted: false, reason: 'checkpoint recovery is unavailable' }
+    }
+    if (this.checkpointRecoveryPromise !== undefined) {
+      return { accepted: false, reason: 'checkpoint recovery already in progress' }
+    }
+    const data = { taskId: state.currentTaskId, kind: 'GIT_PUSH' }
+    this.emit({ type: 'CHECKPOINT_RECOVERY_REQUESTED', data })
+    this.broadcastSnapshot()
+    this.checkpointRecoveryPromise = this.runtime.recoverFailedGitCheckpoint()
+      .then(() => {
+        this.emit({ type: 'CHECKPOINT_RECOVERY_COMPLETED', data })
+        this.broadcastSnapshot()
+      })
+      .catch(() => {
+        this.emit({ type: 'CHECKPOINT_RECOVERY_FAILED', data })
+        this.broadcastSnapshot()
+      })
+      .finally(() => { this.checkpointRecoveryPromise = undefined })
+    return { accepted: true }
+  }
+
   /** 返回结构化 snapshot，不包含任何 secret / token / provider payload。 */
   getSnapshot(): WorkSessionControlSnapshot {
     const definition = this.runtime.getDefinition()
@@ -310,6 +338,9 @@ export class WorkSessionControlController {
                 : {}),
               ...(state.cancellationReason !== undefined
                 ? { cancellationReason: state.cancellationReason }
+                : {}),
+              ...(isRecoverableGitPushFailure(state)
+                ? { recovery: { available: true as const, kind: 'GIT_PUSH' as const, taskId: state.currentTaskId! } }
                 : {}),
               // failureReason 是本地诊断事实，可能含 provider/credential 文本；
               // Web snapshot 只暴露 FAILED state，不复制 raw failureReason。
@@ -632,6 +663,16 @@ export class WorkSessionControlController {
 
 function humanRequiredData(hr: HumanRequired): Record<string, unknown> {
   return { category: hr.category, reason: hr.reason }
+}
+
+function isRecoverableGitPushFailure(
+  state: WorkSessionDurableState | undefined,
+): state is WorkSessionDurableState & { currentTaskId: string } {
+  const taskId = state?.currentTaskId
+  return state?.state === 'FAILED' && state.failureStage === 'GIT_PUSH' &&
+    state.failureCategory === 'GIT_PUSH_FAILED' && taskId !== null && taskId !== undefined &&
+    state.checkpointCommits?.[taskId] !== undefined &&
+    !state.completedTaskIds.includes(taskId)
 }
 
 function guardianPresentationKey(data: GuardianPhaseSnapshot): string {

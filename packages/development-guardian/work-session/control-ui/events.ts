@@ -31,6 +31,9 @@ export type ControlEventType =
   | 'STOP_AFTER_TASK_REQUESTED'
   | 'SESSION_RESUME_REQUESTED'
   | 'SESSION_RESUMED'
+  | 'CHECKPOINT_RECOVERY_REQUESTED'
+  | 'CHECKPOINT_RECOVERY_COMPLETED'
+  | 'CHECKPOINT_RECOVERY_FAILED'
   | 'NOTIFICATION_SENT'
   | 'NOTIFICATION_FAILED'
 
@@ -102,6 +105,7 @@ export interface WorkSessionControlSnapshot {
     }
     suspensionReason?: string
     cancellationReason?: string
+    recovery?: { available: boolean; kind: 'GIT_PUSH'; taskId: string }
   }
   controls: {
     pauseRequested: boolean
@@ -126,6 +130,7 @@ export interface WorkSessionControlRuntime {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
   resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
+  recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
   requestPause(): { accepted: boolean; reason?: string }
   requestStopAfterTask(): { accepted: boolean; reason?: string }
   getControlIntents(): { pauseRequested: boolean; stopAfterTaskRequested: boolean }

@@ -40,7 +40,10 @@ import {
   finalizeCompletedTask,
   readCurrentHeadSha,
   GitPushError,
+  RemoteVerificationUnavailableError,
+  recoverCheckpointPush,
   type GitCheckpointFinalizer,
+  type GitCheckpointCommandRunner,
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
 
@@ -48,6 +51,8 @@ export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
   /** 可替换 finalizer；缺省使用内置 finalizeCompletedTask */
   finalizer?: GitCheckpointFinalizer
+  /** Injectable only for deterministic recovery tests; normal use spawns git directly. */
+  commandRunner?: GitCheckpointCommandRunner
 }
 
 export interface WorkSessionRuntimeConfig {
@@ -175,6 +180,7 @@ export class WorkSessionRuntime {
   private lastNotificationDelivery: NotificationDeliveryResult | undefined
   private ledger: ExecutionLedgerStore | undefined
   private failureNotificationScheduled = false
+  private checkpointRecoveryPromise: Promise<WorkSessionDurableState> | undefined
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -537,6 +543,115 @@ export class WorkSessionRuntime {
     await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
 
     return this.resume(options.resumeData ?? {})
+  }
+
+  /** Narrow closure for a failed, already-committed Git push checkpoint only. */
+  async recoverFailedGitCheckpoint(): Promise<WorkSessionDurableState> {
+    if (this.checkpointRecoveryPromise !== undefined) {
+      throw new Error('checkpoint recovery already in progress')
+    }
+    this.checkpointRecoveryPromise = this.doRecoverFailedGitCheckpoint()
+      .finally(() => { this.checkpointRecoveryPromise = undefined })
+    return this.checkpointRecoveryPromise
+  }
+
+  private async doRecoverFailedGitCheckpoint(): Promise<WorkSessionDurableState> {
+    const state = this.latestState ?? await this.loadPersistedWorkflowStateForRecovery()
+    const gitCheckpoint = this.config.gitCheckpoint
+    const taskId = state.currentTaskId
+    const commitSha = taskId === null ? undefined : state.checkpointCommits?.[taskId]
+    const baseSha = state.currentTaskBaseHeadSha
+    const remote = gitCheckpoint?.policy.pushRemote
+    if (
+      state.state !== 'FAILED' || state.failureStage !== 'GIT_PUSH' ||
+      state.failureCategory !== 'GIT_PUSH_FAILED' || taskId === null ||
+      commitSha === undefined || baseSha === undefined ||
+      state.completedTaskIds.includes(taskId) || gitCheckpoint?.policy.autoCommit !== true ||
+      gitCheckpoint.policy.autoPush !== true || remote === undefined
+    ) {
+      throw new Error('failed session is not eligible for checkpoint recovery')
+    }
+
+    const requestedKey = `checkpoint-recovery-requested:${taskId}:${commitSha}`
+    this.recordLedger({
+      eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: state.sessionId, taskId,
+      timestamp: this.ledgerTimestamp(), status: 'REQUESTED', recoveryKind: 'GIT_PUSH',
+      recoveryAction: 'RETRY_PUSH', commitSha,
+    }, requestedKey)
+
+    let result
+    try {
+      result = await recoverCheckpointPush({
+        repoPath: this.config.definition.targetRepo, expectedBranch: this.config.definition.branch,
+        commitSha, baseSha, remote,
+        ...(gitCheckpoint.commandRunner === undefined
+          ? {}
+          : { commandRunner: gitCheckpoint.commandRunner }),
+      })
+    } catch (error) {
+      if (error instanceof RemoteVerificationUnavailableError) {
+        this.recordCheckpointRecoveryFailed(state, taskId, commitSha, 'VERIFICATION_UNAVAILABLE')
+      }
+      throw error
+    }
+    if (result.action === 'REMOTE_DRIFT') {
+      this.recordCheckpointRecoveryFailed(state, taskId, commitSha, 'REMOTE_DRIFT')
+      throw new Error('remote drift during checkpoint recovery')
+    }
+
+    const recovered: WorkflowState = {
+      ...state,
+      state: 'RUNNING',
+      currentTaskIndex: state.currentTaskIndex + 1,
+      currentTaskId: null,
+      completedTaskIds: [...state.completedTaskIds, taskId],
+      checkpointPushes: { ...(state.checkpointPushes ?? {}), [taskId]: commitSha },
+      failureReason: undefined, failureStage: undefined, failureCategory: undefined,
+      safeFailureMessage: undefined, currentTaskCheckpoint: undefined,
+      currentTaskBaseHeadSha: undefined,
+      activeSegmentStartedAt: this.now(), updatedAt: new Date().toISOString(),
+    }
+    this.recordLedger({
+      eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: state.sessionId, taskId,
+      timestamp: this.ledgerTimestamp(), status: 'COMPLETED', recoveryKind: 'GIT_PUSH',
+      recoveryAction: result.action, commitSha,
+    }, `checkpoint-recovery-completed:${taskId}:${commitSha}:${result.action}`)
+
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('checkpoint recovery storage unavailable')
+    await workflows.deleteWorkflowRunById({ workflowName: this.workflowId, runId: state.sessionId })
+    this.latestState = recovered
+    const workflow = this.mastra.getWorkflow(this.workflowId)
+    if (!workflow) throw new Error(`Workflow ${this.workflowId} not found`)
+    const run = await workflow.createRun({ runId: state.sessionId })
+    const runResult = await run.start({ inputData: {}, initialState: recovered })
+    if (runResult.status === 'failed') throw new Error(runResult.error?.message ?? 'recovered workflow failed')
+    if (this.latestState === undefined) throw new Error('checkpoint recovery did not update workflow state')
+    const durable = this.convertWorkflowStateToDurableState(this.latestState)
+    this.scheduleNotificationsForState(durable, false)
+    return durable
+  }
+
+  private async loadPersistedWorkflowStateForRecovery(): Promise<WorkflowState> {
+    const workflow = this.mastra.getWorkflow(this.workflowId)
+    if (workflow === undefined) throw new Error(`Workflow ${this.workflowId} not found`)
+    const persisted = await workflow.getWorkflowRunById(this.config.definition.id)
+    const parsed = WorkflowStateSchema.safeParse(persisted?.initialState)
+    if (!parsed.success) throw new Error('persisted checkpoint recovery state is invalid')
+    this.latestState = parsed.data
+    return parsed.data
+  }
+
+  private recordCheckpointRecoveryFailed(
+    state: WorkflowState, taskId: string, commitSha: string,
+    recoveryAction: 'REMOTE_DRIFT' | 'VERIFICATION_UNAVAILABLE',
+  ): void {
+    this.recordLedger({
+      eventType: 'CHECKPOINT_RECOVERY_FAILED', sessionId: state.sessionId, taskId,
+      timestamp: this.ledgerTimestamp(), status: 'FAILED', recoveryKind: 'GIT_PUSH',
+      recoveryAction, commitSha,
+    }, `checkpoint-recovery-failed:${taskId}:${commitSha}:${recoveryAction}`)
   }
 
   private createWorkflow() {

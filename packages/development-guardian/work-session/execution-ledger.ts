@@ -11,7 +11,7 @@ import type {
 } from './failure-classification.js'
 import { safeFailureMessage } from './failure-classification.js'
 
-export const EXECUTION_LEDGER_SCHEMA_VERSION = 2 as const
+export const EXECUTION_LEDGER_SCHEMA_VERSION = 3 as const
 
 export type ExecutionLedgerEventType =
   | 'SESSION_STARTED'
@@ -22,6 +22,9 @@ export type ExecutionLedgerEventType =
   | 'TASK_COMPLETED'
   | 'GIT_COMMIT_COMPLETED'
   | 'GIT_PUSH_COMPLETED'
+  | 'CHECKPOINT_RECOVERY_REQUESTED'
+  | 'CHECKPOINT_RECOVERY_COMPLETED'
+  | 'CHECKPOINT_RECOVERY_FAILED'
   | 'HUMAN_REQUIRED'
   | 'SESSION_COMPLETED'
   | 'SESSION_FAILED'
@@ -29,6 +32,12 @@ export type ExecutionLedgerEventType =
   | 'NOTIFICATION_FAILED'
 
 export type ExecutionLedgerNotificationKind = 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED'
+export type CheckpointRecoveryKind = 'GIT_PUSH'
+export type CheckpointRecoveryAction =
+  | 'REMOTE_ALREADY_MATCHED'
+  | 'RETRY_PUSH'
+  | 'REMOTE_DRIFT'
+  | 'VERIFICATION_UNAVAILABLE'
 
 interface ExecutionLedgerEventBase {
   sessionId: string
@@ -64,6 +73,7 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       commitSha: string
       pushSha: string
     }
+  | CheckpointRecoveryLedgerEvent
   | { eventType: 'HUMAN_REQUIRED'; taskId: string; status: 'SUSPENDED'; safeMessage: string }
   | {
       eventType: 'SESSION_COMPLETED'
@@ -85,6 +95,18 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       notificationId: string
       safeMessage?: string
     }
+)
+
+type CheckpointRecoveryLedgerEvent = {
+  taskId: string
+  recoveryKind: CheckpointRecoveryKind
+  recoveryAction: CheckpointRecoveryAction
+  /** The trusted durable local checkpoint SHA, when safe to persist. */
+  commitSha?: string
+} & (
+  | { eventType: 'CHECKPOINT_RECOVERY_REQUESTED'; status: 'REQUESTED' }
+  | { eventType: 'CHECKPOINT_RECOVERY_COMPLETED'; status: 'COMPLETED' }
+  | { eventType: 'CHECKPOINT_RECOVERY_FAILED'; status: 'FAILED' }
 )
 
 export type ExecutionLedgerEvent = ExecutionLedgerEventInput & {
@@ -127,6 +149,8 @@ function executionLedgerTableSql(tableName: string): string {
       verification_index INTEGER,
       recovery_reason TEXT,
       recovery_bounded INTEGER,
+      recovery_kind TEXT,
+      recovery_action TEXT,
       commit_sha TEXT,
       push_sha TEXT,
       completion_reason TEXT,
@@ -153,6 +177,7 @@ export class ExecutionLedgerStore {
     this.#database.exec('PRAGMA busy_timeout = 250')
     this.#database.exec(executionLedgerTableSql('execution_ledger_events'))
     this.#migrateV1IfNeeded()
+    this.#migrateV3IfNeeded()
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS execution_ledger_session_order
       ON execution_ledger_events(session_id, event_id)
@@ -208,6 +233,22 @@ export class ExecutionLedgerStore {
     }
   }
 
+  /** V3 adds only the narrow checkpoint-recovery dimensions used for SQL analysis. */
+  #migrateV3IfNeeded(): void {
+    const names = new Set((this.#database.prepare(
+      'SELECT name FROM pragma_table_info(\'execution_ledger_events\')',
+    ).all() as Array<{ name: string }>).map((column) => column.name))
+    if (!names.has('recovery_kind')) {
+      this.#database.exec('ALTER TABLE execution_ledger_events ADD COLUMN recovery_kind TEXT')
+    }
+    if (!names.has('recovery_action')) {
+      this.#database.exec('ALTER TABLE execution_ledger_events ADD COLUMN recovery_action TEXT')
+    }
+    this.#database.prepare(
+      'UPDATE execution_ledger_events SET schema_version = ? WHERE schema_version < ?',
+    ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
+  }
+
   append(input: ExecutionLedgerEventInput, dedupeKey: string): ExecutionLedgerEvent {
     this.#assertOpen()
     this.#database.prepare(`
@@ -215,14 +256,14 @@ export class ExecutionLedgerStore {
         schema_version, session_id, dedupe_key, task_id, timestamp, event_type,
         status, phase, iteration, cumulative_elapsed_ms, duration_ms,
         active_elapsed_ms, verification_command, verification_status,
-        verification_index, recovery_reason, recovery_bounded, commit_sha,
+        verification_index, recovery_reason, recovery_bounded, recovery_kind, recovery_action, commit_sha,
         push_sha, completion_reason, failure_stage, failure_category, safe_message,
         notification_kind, notification_id
       ) VALUES (
         $schemaVersion, $sessionId, $dedupeKey, $taskId, $timestamp, $eventType,
         $status, $phase, $iteration, $cumulativeElapsedMs, $durationMs,
         $activeElapsedMs, $verificationCommand, $verificationStatus,
-        $verificationIndex, $recoveryReason, $recoveryBounded, $commitSha,
+        $verificationIndex, $recoveryReason, $recoveryBounded, $recoveryKind, $recoveryAction, $commitSha,
         $pushSha, $completionReason, $failureStage, $failureCategory, $safeMessage,
         $notificationKind, $notificationId
       )
@@ -258,6 +299,8 @@ export class ExecutionLedgerStore {
       recoveryBounded: 'recoveryBounded' in input && input.recoveryBounded !== undefined
         ? Number(input.recoveryBounded)
         : null,
+      recoveryKind: 'recoveryKind' in input ? input.recoveryKind : null,
+      recoveryAction: 'recoveryAction' in input ? input.recoveryAction : null,
       commitSha: 'commitSha' in input ? input.commitSha ?? null : null,
       pushSha: 'pushSha' in input ? input.pushSha : null,
       completionReason: 'completionReason' in input ? input.completionReason : null,
@@ -344,6 +387,12 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalInteger(row, 'recovery_bounded') === null
       ? {}
       : { recoveryBounded: optionalInteger(row, 'recovery_bounded') === 1 }),
+    ...(optionalString(row, 'recovery_kind') === null
+      ? {}
+      : { recoveryKind: optionalString(row, 'recovery_kind')! }),
+    ...(optionalString(row, 'recovery_action') === null
+      ? {}
+      : { recoveryAction: optionalString(row, 'recovery_action')! }),
     ...(optionalString(row, 'commit_sha') === null ? {} : { commitSha: optionalString(row, 'commit_sha')! }),
     ...(optionalString(row, 'push_sha') === null ? {} : { pushSha: optionalString(row, 'push_sha')! }),
     ...(optionalString(row, 'completion_reason') === null ? {} : { completionReason: optionalString(row, 'completion_reason')! }),

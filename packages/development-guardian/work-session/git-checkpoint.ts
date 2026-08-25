@@ -240,6 +240,30 @@ export interface PushCheckpointResult {
   pushSha: string
 }
 
+export type GitCheckpointRecoveryAction =
+  | 'REMOTE_ALREADY_MATCHED'
+  | 'RETRY_PUSH'
+  | 'REMOTE_DRIFT'
+  | 'VERIFICATION_UNAVAILABLE'
+
+export interface RecoverCheckpointPushOptions extends PushCheckpointCommitOptions {
+  baseSha: string
+  /** Test-only bounded wait injection; defaults to 500ms then 1000ms. */
+  wait?: (delayMs: number) => Promise<void>
+}
+
+export interface RecoverCheckpointPushResult {
+  action: Exclude<GitCheckpointRecoveryAction, 'VERIFICATION_UNAVAILABLE'>
+  pushSha?: string
+}
+
+export class RemoteVerificationUnavailableError extends GitCheckpointError {
+  constructor() {
+    super('remote checkpoint verification unavailable')
+    this.name = 'RemoteVerificationUnavailableError'
+  }
+}
+
 /**
  * W004-B: 窄 push 组件。只在 local commit 成功后调用。
  *
@@ -325,13 +349,7 @@ export async function pushCheckpointCommit(
   ])
 
   // push exitCode=0 仍不够：远端 SHA 必须 === commitSha，否则 fail closed
-  const remoteHead = await runGitString(runGit, [
-    'ls-remote',
-    '--heads',
-    remote.name,
-    `refs/heads/${expectedBranch}`,
-  ])
-  const remoteSha = remoteHead.split(/\s+/u)[0] ?? ''
+  const remoteSha = await readRemoteBranchShaWithRetry(runGit, remote.name, expectedBranch)
   if (remoteSha !== commitSha) {
     throw new GitCheckpointError(
       `remote checkpoint verification failed: expected ${commitSha}, got ${remoteSha || '(none)'}`,
@@ -339,6 +357,85 @@ export async function pushCheckpointCommit(
   }
 
   return { pushSha: remoteSha }
+}
+
+/**
+ * Explicit failed-checkpoint recovery.  All identity and worktree gates run
+ * before the first remote read; the only mutation is the single immutable-SHA
+ * push in the base-SHA branch.
+ */
+export async function recoverCheckpointPush(
+  options: RecoverCheckpointPushOptions,
+): Promise<RecoverCheckpointPushResult> {
+  const { repoPath, expectedBranch, commitSha, baseSha, remote } = options
+  const runGit = options.commandRunner ?? createDefaultCommandRunner(repoPath)
+  await assertRecoveryIdentity(runGit, expectedBranch, commitSha, remote)
+  const remoteSha = await readRemoteBranchShaWithRetry(
+    runGit, remote.name, expectedBranch, options.wait,
+  )
+  if (remoteSha === commitSha) {
+    return { action: 'REMOTE_ALREADY_MATCHED', pushSha: commitSha }
+  }
+  if (remoteSha !== baseSha) return { action: 'REMOTE_DRIFT' }
+
+  await runGitChecked(runGit, [
+    'push', '--porcelain', remote.name, `${commitSha}:refs/heads/${expectedBranch}`,
+  ])
+  const verifiedSha = await readRemoteBranchShaWithRetry(
+    runGit, remote.name, expectedBranch, options.wait,
+  )
+  if (verifiedSha !== commitSha) return { action: 'REMOTE_DRIFT' }
+  return { action: 'RETRY_PUSH', pushSha: commitSha }
+}
+
+async function assertRecoveryIdentity(
+  runGit: GitCheckpointCommandRunner,
+  expectedBranch: string,
+  commitSha: string,
+  remote: PushRemotePolicy,
+): Promise<void> {
+  if (PROTECTED_BRANCHES.has(expectedBranch)) {
+    throw new GitCheckpointError(`refusing to push to protected branch: ${expectedBranch}`)
+  }
+  if (!remote.name.trim() || !remote.expectedUrl.trim()) {
+    throw new GitCheckpointError('trusted push remote is missing; refusing recovery')
+  }
+  if (await runGitString(runGit, ['branch', '--show-current']) !== expectedBranch) {
+    throw new GitCheckpointError('branch drift before checkpoint recovery')
+  }
+  if (await runGitString(runGit, ['rev-parse', 'HEAD']) !== commitSha) {
+    throw new GitCheckpointError('HEAD changed before checkpoint recovery')
+  }
+  const urls = (await runGitString(runGit, ['remote', 'get-url', '--push', '--all', remote.name]))
+    .split(/\r?\n/u).map((value) => value.trim()).filter(Boolean)
+  if (urls.length !== 1 || urls[0] !== remote.expectedUrl) {
+    throw new GitCheckpointError('trusted push remote mismatch; refusing recovery')
+  }
+  const status = await runGitString(runGit, ['status', '--porcelain', '--untracked-files=all'])
+  const meaningful = parseGitStatus(status).filter((entry) =>
+    !isUntrackedRuntimeArtifact(entry.status, entry.path),
+  )
+  if (meaningful.length !== 0) {
+    throw new GitCheckpointError('worktree changed before checkpoint recovery')
+  }
+}
+
+async function readRemoteBranchShaWithRetry(
+  runGit: GitCheckpointCommandRunner,
+  remoteName: string,
+  expectedBranch: string,
+  wait: (delayMs: number) => Promise<void> = defaultGitWait,
+): Promise<string> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = await runGit(['ls-remote', '--heads', remoteName, `refs/heads/${expectedBranch}`])
+    if (result.exitCode === 0) return result.stdout.trimEnd().split(/\s+/u)[0] ?? ''
+    if (attempt < 2) await wait((attempt + 1) * 500)
+  }
+  throw new RemoteVerificationUnavailableError()
+}
+
+function defaultGitWait(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
 function validateCompletionEvidence(evidence: TaskCompletionEvidence): void {

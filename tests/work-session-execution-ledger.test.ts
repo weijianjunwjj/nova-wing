@@ -12,6 +12,7 @@ import {
   GuardianWorkSessionTaskRunner,
   GitCheckpointError,
   GitPushError,
+  recoverCheckpointPush,
   SmtpWorkSessionNotifier,
   WorkSessionRuntime,
   executionLedgerPathFromStorageUrl,
@@ -185,6 +186,55 @@ await test('Execution Ledger is append-only, ordered, restart durable and dedupe
   })
 })
 
+await test('Execution Ledger persists minimal structured checkpoint recovery facts without Git diagnostics', async () => {
+  await withTemp('ledger-checkpoint-recovery-', async ({ storageUrl }) => {
+    const ledger = new ExecutionLedgerStore(storageUrl)
+    const input = {
+      sessionId: 'S-recovery', taskId: 'T014', recoveryKind: 'GIT_PUSH' as const,
+      commitSha: 'b02c7239', timestamp: '2026-08-25T00:00:00.000Z',
+    }
+    ledger.append({
+      ...input, eventType: 'CHECKPOINT_RECOVERY_REQUESTED', status: 'REQUESTED',
+      recoveryAction: 'RETRY_PUSH',
+    }, 'checkpoint-recovery-requested:T014:1')
+    ledger.append({
+      ...input, eventType: 'CHECKPOINT_RECOVERY_COMPLETED', status: 'COMPLETED',
+      recoveryAction: 'REMOTE_ALREADY_MATCHED',
+    }, 'checkpoint-recovery-completed:T014:1')
+    ledger.append({
+      ...input, eventType: 'CHECKPOINT_RECOVERY_FAILED', status: 'FAILED',
+      recoveryAction: 'VERIFICATION_UNAVAILABLE',
+    }, 'checkpoint-recovery-failed:T014:2')
+
+    const events = ledger.read('S-recovery')
+    assert.deepEqual(events.map((event) => ({
+      eventType: event.eventType, sessionId: event.sessionId, taskId: event.taskId,
+      timestamp: event.timestamp,
+      recoveryKind: 'recoveryKind' in event ? event.recoveryKind : undefined,
+      recoveryAction: 'recoveryAction' in event ? event.recoveryAction : undefined,
+      commitSha: 'commitSha' in event ? event.commitSha : undefined,
+      status: event.status, schemaVersion: event.schemaVersion,
+    })), [
+      {
+        eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: 'S-recovery', taskId: 'T014',
+        timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
+        recoveryAction: 'RETRY_PUSH', commitSha: 'b02c7239', status: 'REQUESTED', schemaVersion: 3,
+      },
+      {
+        eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: 'S-recovery', taskId: 'T014',
+        timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
+        recoveryAction: 'REMOTE_ALREADY_MATCHED', commitSha: 'b02c7239', status: 'COMPLETED', schemaVersion: 3,
+      },
+      {
+        eventType: 'CHECKPOINT_RECOVERY_FAILED', sessionId: 'S-recovery', taskId: 'T014',
+        timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
+        recoveryAction: 'VERIFICATION_UNAVAILABLE', commitSha: 'b02c7239', status: 'FAILED', schemaVersion: 3,
+      },
+    ])
+    ledger.close()
+  })
+})
+
 await test('Execution Ledger v1 migration reclassifies phase duration as cumulative elapsed', async () => {
   await withTemp('ledger-v1-migration-', async ({ storageUrl }) => {
     const databasePath = executionLedgerPathFromStorageUrl(storageUrl)
@@ -236,7 +286,7 @@ await test('Execution Ledger v1 migration reclassifies phase duration as cumulat
     const ledger = new ExecutionLedgerStore(storageUrl)
     const migrated = ledger.read('v1-migration')
     assert.deepEqual(migrated.map((event) => event.eventId), [7, 11])
-    assert.deepEqual(migrated.map((event) => event.schemaVersion), [2, 2])
+    assert.deepEqual(migrated.map((event) => event.schemaVersion), [3, 3])
     const phase = migrated[1]
     assert.equal(phase?.eventType, 'PHASE_COMPLETED')
     if (phase?.eventType === 'PHASE_COMPLETED') {
@@ -253,6 +303,42 @@ await test('Execution Ledger v1 migration reclassifies phase duration as cumulat
 
     const afterRestart = readExecutionLedger(storageUrl, 'v1-migration')
     assert.deepEqual(afterRestart, migrated)
+  })
+})
+
+await test('Execution Ledger v2 migration preserves events and enables v3 checkpoint recovery facts', async () => {
+  await withTemp('ledger-v2-migration-', async ({ storageUrl }) => {
+    const database = new DatabaseSync(executionLedgerPathFromStorageUrl(storageUrl))
+    database.exec(`
+      CREATE TABLE execution_ledger_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, schema_version INTEGER NOT NULL,
+        session_id TEXT NOT NULL, dedupe_key TEXT NOT NULL, task_id TEXT, timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL, status TEXT, phase TEXT, iteration INTEGER,
+        cumulative_elapsed_ms REAL, duration_ms REAL, active_elapsed_ms REAL,
+        verification_command TEXT, verification_status TEXT, verification_index INTEGER,
+        recovery_reason TEXT, recovery_bounded INTEGER, commit_sha TEXT, push_sha TEXT,
+        completion_reason TEXT, failure_stage TEXT, failure_category TEXT, safe_message TEXT,
+        notification_kind TEXT, notification_id TEXT, UNIQUE(session_id, dedupe_key)
+      ) STRICT;
+      INSERT INTO execution_ledger_events (event_id, schema_version, session_id, dedupe_key, task_id, timestamp, event_type, status, commit_sha, failure_stage, failure_category, safe_message) VALUES
+        (1, 2, 'v2-session', 'start', NULL, '2026-08-25T00:00:00.000Z', 'SESSION_STARTED', 'RUNNING', NULL, NULL, NULL, NULL),
+        (2, 2, 'v2-session', 'task', 'T014', '2026-08-25T00:01:00.000Z', 'TASK_STARTED', 'RUNNING', NULL, NULL, NULL, NULL),
+        (3, 2, 'v2-session', 'commit', 'T014', '2026-08-25T00:02:00.000Z', 'GIT_COMMIT_COMPLETED', 'COMPLETED', 'safe-sha', NULL, NULL, NULL),
+        (4, 2, 'v2-session', 'failed', 'T014', '2026-08-25T00:03:00.000Z', 'SESSION_FAILED', 'FAILED', 'safe-sha', 'GIT_PUSH', 'GIT_PUSH_FAILED', 'push failed');
+    `)
+    database.close()
+    const ledger = new ExecutionLedgerStore(storageUrl)
+    const migrated = ledger.read('v2-session')
+    assert.deepEqual(migrated.map((event) => event.eventId), [1, 2, 3, 4])
+    assert.deepEqual(migrated.map((event) => event.schemaVersion), [3, 3, 3, 3])
+    assert.equal(migrated[2] !== undefined && 'commitSha' in migrated[2] ? migrated[2].commitSha : undefined, 'safe-sha')
+    assert.ok(migrated.every((event) => !('recoveryKind' in event) && !('recoveryAction' in event)))
+    ledger.append({ eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: 'v2-session', taskId: 'T014', timestamp: '2026-08-25T00:04:00.000Z', status: 'REQUESTED', recoveryKind: 'GIT_PUSH', recoveryAction: 'RETRY_PUSH', commitSha: 'safe-sha' }, 'recovery-requested')
+    ledger.append({ eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: 'v2-session', taskId: 'T014', timestamp: '2026-08-25T00:05:00.000Z', status: 'COMPLETED', recoveryKind: 'GIT_PUSH', recoveryAction: 'REMOTE_ALREADY_MATCHED', commitSha: 'safe-sha' }, 'recovery-completed')
+    ledger.close()
+    const afterRestart = readExecutionLedger(storageUrl, 'v2-session')
+    assert.equal(afterRestart.length, 6)
+    assert.deepEqual(afterRestart.slice(4).map((event) => event.eventType), ['CHECKPOINT_RECOVERY_REQUESTED', 'CHECKPOINT_RECOVERY_COMPLETED'])
   })
 })
 
@@ -501,6 +587,129 @@ await test('T009 commit success + push failure stays FAILED, notifies with one r
     )
     await restarted.close()
   })
+})
+
+await test('failed Git push recovery reconciles an already-matched remote without rerunning the Task', async () => {
+  await withTemp('ledger-checkpoint-reconcile-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    let runs = 0
+    const runtime = new WorkSessionRuntime({
+      definition: definition('ledger-checkpoint-reconcile', repoPath), storageUrl,
+      taskRunner: { async run() { runs++; return { status: 'COMPLETED' as const, completionEvidence: completionEvidence() } } },
+      gitCheckpoint: {
+        policy: { autoCommit: true, autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'https://trusted.invalid/repo.git' } },
+        async finalizer() { throw new GitPushError('push verification unavailable', 'commit-recovery-009') },
+        async commandRunner(args) {
+          if (args[0] === 'branch') return { exitCode: 0, stdout: 'feat/test\n', stderr: '' }
+          if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'commit-recovery-009\n', stderr: '' }
+          if (args[0] === 'remote') return { exitCode: 0, stdout: 'https://trusted.invalid/repo.git\n', stderr: '' }
+          if (args[0] === 'status') return { exitCode: 0, stdout: '', stderr: '' }
+          if (args[0] === 'ls-remote') return { exitCode: 0, stdout: 'commit-recovery-009\trefs/heads/feat/test\n', stderr: '' }
+          throw new Error(`unexpected recovery command: ${args[0]}`)
+        },
+      },
+    })
+    await assert.rejects(runtime.start(), /Git checkpoint failed/u)
+    const recovered = await runtime.recoverFailedGitCheckpoint()
+    assert.equal(recovered.state, 'COMPLETED')
+    assert.equal(runs, 1)
+    assert.equal(recovered.checkpointPushes?.T009, 'commit-recovery-009')
+    assert.deepEqual(runtime.readExecutionLedger().filter((event) =>
+      event.eventType.startsWith('CHECKPOINT_RECOVERY_')).map((event) => [
+      event.eventType, 'recoveryAction' in event ? event.recoveryAction : undefined,
+    ]), [
+      ['CHECKPOINT_RECOVERY_REQUESTED', 'RETRY_PUSH'],
+      ['CHECKPOINT_RECOVERY_COMPLETED', 'REMOTE_ALREADY_MATCHED'],
+    ])
+    await runtime.close()
+  })
+})
+
+await test('batch checkpoint recovery completes T014 once then continues T015 once without a recovery push', async () => {
+  await withTemp('ledger-checkpoint-batch-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    const batch: WorkSessionDefinition = {
+      ...definition('ledger-checkpoint-batch', repoPath),
+      tasks: [
+        { id: 'T014', goal: 'first completed task' },
+        { id: 'T015', goal: 'second completed task' },
+      ],
+    }
+    const calls = { T014: 0, T015: 0, commits: 0, recoveryPushes: 0 }
+    const runtime = new WorkSessionRuntime({
+      definition: batch, storageUrl,
+      taskRunner: { async run(task) {
+        calls[task.id as 'T014' | 'T015']++
+        return { status: 'COMPLETED' as const, completionEvidence: completionEvidence() }
+      } },
+      gitCheckpoint: {
+        policy: { autoCommit: true, autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'https://trusted.invalid/repo.git' } },
+        async finalizer({ task }) {
+          calls.commits++
+          if (task.id === 'T014') throw new GitPushError('push verification unavailable', 'commit-t014')
+          return { commitSha: 'commit-t015', pushSha: 'commit-t015', committedFiles: ['src/t015.ts'] }
+        },
+        async commandRunner(args) {
+          if (args[0] === 'branch') return { exitCode: 0, stdout: 'feat/test\n', stderr: '' }
+          if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'commit-t014\n', stderr: '' }
+          if (args[0] === 'remote') return { exitCode: 0, stdout: 'https://trusted.invalid/repo.git\n', stderr: '' }
+          if (args[0] === 'status') return { exitCode: 0, stdout: '', stderr: '' }
+          if (args[0] === 'ls-remote') return { exitCode: 0, stdout: 'commit-t014\trefs/heads/feat/test\n', stderr: '' }
+          if (args[0] === 'push') { calls.recoveryPushes++; return { exitCode: 0, stdout: '', stderr: '' } }
+          throw new Error(`unexpected recovery command: ${args[0]}`)
+        },
+      },
+    })
+    await assert.rejects(runtime.start(), /Git checkpoint failed/u)
+    const recovered = await runtime.recoverFailedGitCheckpoint()
+    assert.equal(recovered.state, 'COMPLETED')
+    assert.equal(calls.T014, 1)
+    assert.equal(calls.T015, 1)
+    assert.equal(calls.commits, 2)
+    assert.equal(calls.recoveryPushes, 0)
+    assert.deepEqual(recovered.completedTaskIds, ['T014', 'T015'])
+    assert.equal(recovered.checkpointPushes?.T014, 'commit-t014')
+    await runtime.close()
+  })
+})
+
+await test('recovery immutable push verifies with bounded retries and fails closed without a second push', async () => {
+  const runCase = async (responses: Array<{ exitCode: number; stdout: string }>) => {
+    let pushes = 0
+    let remoteReads = 0
+    const result = await recoverCheckpointPush({
+      repoPath: '.', expectedBranch: 'feat/test', commitSha: 'commit', baseSha: 'base',
+      remote: { name: 'origin', expectedUrl: 'https://trusted.invalid/repo.git' },
+      wait: async () => {},
+      commandRunner: async (args) => {
+        if (args[0] === 'branch') return { exitCode: 0, stdout: 'feat/test\n', stderr: '' }
+        if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'commit\n', stderr: '' }
+        if (args[0] === 'remote') return { exitCode: 0, stdout: 'https://trusted.invalid/repo.git\n', stderr: '' }
+        if (args[0] === 'status') return { exitCode: 0, stdout: '', stderr: '' }
+        if (args[0] === 'push') { pushes++; return { exitCode: 0, stdout: '', stderr: '' } }
+        if (args[0] === 'ls-remote') {
+          const response = responses[remoteReads++]!
+          return { ...response, stderr: 'token=NEVER_LOG_THIS' }
+        }
+        throw new Error(`unexpected command ${args[0]}`)
+      },
+    })
+    return { result, pushes, remoteReads }
+  }
+  const retry = await runCase([
+    { exitCode: 0, stdout: 'base\trefs/heads/feat/test\n' },
+    { exitCode: 1, stdout: '' }, { exitCode: 0, stdout: 'commit\trefs/heads/feat/test\n' },
+  ])
+  assert.equal(retry.result.action, 'RETRY_PUSH'); assert.equal(retry.pushes, 1); assert.equal(retry.remoteReads, 3)
+  const mismatch = await runCase([
+    { exitCode: 0, stdout: 'base\trefs/heads/feat/test\n' },
+    { exitCode: 0, stdout: 'other\trefs/heads/feat/test\n' },
+  ])
+  assert.equal(mismatch.result.action, 'REMOTE_DRIFT'); assert.equal(mismatch.pushes, 1); assert.equal(mismatch.remoteReads, 2)
+  await assert.rejects(() => runCase([
+    { exitCode: 0, stdout: 'base\trefs/heads/feat/test\n' },
+    { exitCode: 1, stdout: '' }, { exitCode: 1, stdout: '' }, { exitCode: 1, stdout: '' },
+  ]), /verification unavailable/u)
 })
 
 await test('two FAILED notification delivery failures do not mutate terminal state and are ledger-visible', async () => {
