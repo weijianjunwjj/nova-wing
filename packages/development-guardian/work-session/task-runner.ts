@@ -51,6 +51,8 @@ export interface WorkSessionTaskResult {
   status: WorkSessionTaskResultStatus
   summary?: string
   humanRequired?: HumanRequired
+  /** Runtime validates and persists this exact command before it can be approved. */
+  pendingVerificationCommand?: string
   brainFailure?: GuardianBrainFailure
   error?: string
   failureStage?: WorkSessionFailureStage
@@ -72,6 +74,8 @@ export interface WorkSessionTaskRunContext {
   shouldPauseAutonomousWork?: () => boolean
   /** Additive safe structured progress sink used by the Execution Ledger. */
   onProgress?: GuardianProgressObserver
+  /** Runtime-owned one-shot capability; never comes from the browser. */
+  approvedVerificationCommand?: string
 }
 
 export interface WorkSessionTaskRunner {

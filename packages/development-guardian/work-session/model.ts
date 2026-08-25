@@ -56,6 +56,17 @@ export interface HumanRequired {
   reason: string
 }
 
+/** A durable, task-bound, exact-command approval request owned by the runtime. */
+export interface PendingVerificationApproval {
+  sessionId: string
+  taskId: string
+  /** Safe for the local control snapshot only; never copied to the ledger. */
+  command: string
+  commandFingerprint: string
+  generation: number
+  status: 'REQUESTED' | 'APPROVED'
+}
+
 export interface WorkSessionDurableState {
   sessionId: string
   state: WorkSessionState
@@ -63,6 +74,7 @@ export interface WorkSessionDurableState {
   currentTaskId: string | null
   completedTaskIds: readonly string[]
   humanRequired?: HumanRequired
+  pendingVerificationApproval?: PendingVerificationApproval
   /** Brain did not produce a verdict; distinct from a true human decision. */
   brainFailure?: GuardianBrainFailure
   /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。 */

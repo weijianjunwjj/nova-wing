@@ -11,7 +11,7 @@ import type {
 } from './failure-classification.js'
 import { safeFailureMessage } from './failure-classification.js'
 
-export const EXECUTION_LEDGER_SCHEMA_VERSION = 3 as const
+export const EXECUTION_LEDGER_SCHEMA_VERSION = 4 as const
 
 export type ExecutionLedgerEventType =
   | 'SESSION_STARTED'
@@ -26,6 +26,9 @@ export type ExecutionLedgerEventType =
   | 'CHECKPOINT_RECOVERY_COMPLETED'
   | 'CHECKPOINT_RECOVERY_FAILED'
   | 'HUMAN_REQUIRED'
+  | 'VERIFICATION_APPROVAL_REQUESTED'
+  | 'VERIFICATION_APPROVED'
+  | 'VERIFICATION_APPROVAL_CONSUMED'
   | 'SESSION_COMPLETED'
   | 'SESSION_FAILED'
   | 'NOTIFICATION_SENT'
@@ -75,6 +78,12 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
     }
   | CheckpointRecoveryLedgerEvent
   | { eventType: 'HUMAN_REQUIRED'; taskId: string; status: 'SUSPENDED'; safeMessage: string }
+  | {
+      eventType: 'VERIFICATION_APPROVAL_REQUESTED' | 'VERIFICATION_APPROVED' | 'VERIFICATION_APPROVAL_CONSUMED'
+      taskId: string
+      status: 'REQUESTED' | 'APPROVED' | 'CONSUMED'
+      commandFingerprint: string
+    }
   | {
       eventType: 'SESSION_COMPLETED'
       status: 'COMPLETED'
@@ -159,6 +168,7 @@ function executionLedgerTableSql(tableName: string): string {
       safe_message TEXT,
       notification_kind TEXT,
       notification_id TEXT,
+      command_fingerprint TEXT,
       UNIQUE(session_id, dedupe_key)
     ) STRICT
   `
@@ -178,6 +188,7 @@ export class ExecutionLedgerStore {
     this.#database.exec(executionLedgerTableSql('execution_ledger_events'))
     this.#migrateV1IfNeeded()
     this.#migrateV3IfNeeded()
+    this.#migrateV4IfNeeded()
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS execution_ledger_session_order
       ON execution_ledger_events(session_id, event_id)
@@ -249,6 +260,18 @@ export class ExecutionLedgerStore {
     ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
   }
 
+  #migrateV4IfNeeded(): void {
+    const names = new Set((this.#database.prepare(
+      'SELECT name FROM pragma_table_info(\'execution_ledger_events\')',
+    ).all() as Array<{ name: string }>).map((column) => column.name))
+    if (!names.has('command_fingerprint')) {
+      this.#database.exec('ALTER TABLE execution_ledger_events ADD COLUMN command_fingerprint TEXT')
+    }
+    this.#database.prepare(
+      'UPDATE execution_ledger_events SET schema_version = ? WHERE schema_version < ?',
+    ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
+  }
+
   append(input: ExecutionLedgerEventInput, dedupeKey: string): ExecutionLedgerEvent {
     this.#assertOpen()
     this.#database.prepare(`
@@ -258,14 +281,14 @@ export class ExecutionLedgerStore {
         active_elapsed_ms, verification_command, verification_status,
         verification_index, recovery_reason, recovery_bounded, recovery_kind, recovery_action, commit_sha,
         push_sha, completion_reason, failure_stage, failure_category, safe_message,
-        notification_kind, notification_id
+        notification_kind, notification_id, command_fingerprint
       ) VALUES (
         $schemaVersion, $sessionId, $dedupeKey, $taskId, $timestamp, $eventType,
         $status, $phase, $iteration, $cumulativeElapsedMs, $durationMs,
         $activeElapsedMs, $verificationCommand, $verificationStatus,
         $verificationIndex, $recoveryReason, $recoveryBounded, $recoveryKind, $recoveryAction, $commitSha,
         $pushSha, $completionReason, $failureStage, $failureCategory, $safeMessage,
-        $notificationKind, $notificationId
+        $notificationKind, $notificationId, $commandFingerprint
       )
     `).run({
       schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
@@ -311,6 +334,7 @@ export class ExecutionLedgerStore {
         : null,
       notificationKind: 'notificationKind' in input ? input.notificationKind : null,
       notificationId: 'notificationId' in input ? input.notificationId : null,
+      commandFingerprint: 'commandFingerprint' in input ? input.commandFingerprint : null,
     })
     const row = this.#database.prepare(`
       SELECT * FROM execution_ledger_events
@@ -401,6 +425,7 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalString(row, 'safe_message') === null ? {} : { safeMessage: optionalString(row, 'safe_message')! }),
     ...(optionalString(row, 'notification_kind') === null ? {} : { notificationKind: optionalString(row, 'notification_kind')! }),
     ...(optionalString(row, 'notification_id') === null ? {} : { notificationId: optionalString(row, 'notification_id')! }),
+    ...(optionalString(row, 'command_fingerprint') === null ? {} : { commandFingerprint: optionalString(row, 'command_fingerprint')! }),
   }
   return { ...base, ...optional } as ExecutionLedgerEvent
 }

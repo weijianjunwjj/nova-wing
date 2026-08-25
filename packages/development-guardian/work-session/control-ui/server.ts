@@ -138,6 +138,9 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/resume') {
       return this.serveResume(req, res)
     }
+    if (method === 'POST' && path === '/api/session/approve-verification') {
+      return this.serveApproveVerification(req, res)
+    }
     if (method === 'POST' && path === '/api/session/recover-checkpoint') {
       return this.serveRecoverCheckpoint(req, res)
     }
@@ -152,6 +155,7 @@ export class WorkSessionControlServer {
       '/api/session/pause',
       '/api/session/stop-after-task',
       '/api/session/resume',
+      '/api/session/approve-verification',
       '/api/session/recover-checkpoint',
     ])
     if (knownPaths.has(path)) {
@@ -274,6 +278,18 @@ export class WorkSessionControlServer {
       const result = this.controller.recoverFailedCheckpoint()
       if (result.accepted) this.respondJson(res, 202, { accepted: true })
       else this.respondJson(res, 409, { error: result.reason ?? 'checkpoint recovery rejected' })
+    })
+  }
+
+  private serveApproveVerification(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) return
+    this.readBodyWithLimit(req, res, (body) => {
+      // This endpoint deliberately accepts only an empty body: command identity
+      // is read from durable runtime state, never supplied by the browser.
+      if (body.trim().length !== 0) return this.respondJson(res, 400, { error: 'approval body must be empty' })
+      const result = this.controller.approvePendingVerificationAndContinue()
+      if (result.accepted) this.respondJson(res, 202, { accepted: true })
+      else this.respondJson(res, 409, { error: result.reason ?? 'verification approval rejected' })
     })
   }
 

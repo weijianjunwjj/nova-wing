@@ -73,6 +73,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <p id="decision-guidance" class="note"></p>
     <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
     <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
+    <button id="approve-verification-btn" type="button" class="primary" hidden>批准此验证并继续</button>
     <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
     <button id="recover-checkpoint-btn" type="button" class="primary" hidden>重新验证并继续</button>
@@ -446,19 +447,22 @@ function renderDecision(rt) {
   var brainUnavailable = rt.state === 'SUSPENDED' &&
     rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
   var checkpointRecovery = rt.recovery && rt.recovery.available === true
+  var verificationApproval = rt.pendingVerificationApproval
   if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery) {
     card.hidden = false
-    setText('decision-title', checkpointRecovery
+    setText('decision-title', verificationApproval ? '需要验证授权' : checkpointRecovery
       ? 'Git checkpoint 推送未确认'
       : brainUnavailable
       ? 'Brain 暂时不可用'
       : (userPaused ? '已由你暂停' : '需要人工处理'))
-    setText('decision-category', checkpointRecovery
+    setText('decision-category', verificationApproval ? '验证授权' : checkpointRecovery
       ? 'Git Push'
       : brainUnavailable
       ? 'Brain Review · ' + displayValue(brainFailure.category)
       : displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
-    setText('decision-reason', checkpointRecovery
+    setText('decision-reason', verificationApproval
+      ? 'Task: ' + verificationApproval.taskId + '；验证命令：' + verificationApproval.command
+      : checkpointRecovery
       ? '当前 Task 已产生本地 checkpoint commit，但远端推送未确认。'
       : brainUnavailable
       ? brainFailure.safeMessage
@@ -466,13 +470,15 @@ function renderDecision(rt) {
 
     var input = el('decision-input')
     var decisionBtn = el('resume-decision-btn')
+    var approvalBtn = el('approve-verification-btn')
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
-    var needsDecision = category === 'DECISION_REQUIRED' || category === 'STALLED'
+    var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED')
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED'
     if (input) input.hidden = !needsDecision
     if (decisionBtn) decisionBtn.hidden = !needsDecision
+    if (approvalBtn) approvalBtn.hidden = !verificationApproval
     if (resolvedBtn) resolvedBtn.hidden = !resolvedAck
     if (pausedBtn) {
       pausedBtn.hidden = !userPaused && !brainUnavailable
@@ -480,7 +486,9 @@ function renderDecision(rt) {
     }
     if (recoveryBtn) recoveryBtn.hidden = !checkpointRecovery
 
-    if (checkpointRecovery) {
+    if (verificationApproval) {
+      setText('decision-guidance', '此命令由 Reviewer 要求，用于完成当前 Task 的 deterministic verification。授权仅对当前 Task 的这一条命令生效。')
+    } else if (checkpointRecovery) {
       setText('decision-guidance', 'NovaWing 将先重新验证远端状态；不会重新执行当前 Task。')
     } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
@@ -584,6 +592,11 @@ if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', function () {
   var input = el('decision-input')
   var decision = input ? input.value.trim() : ''
   if (decision.length > 0) resumeSession({ decision: decision })
+})
+var approveVerificationBtn = el('approve-verification-btn')
+if (approveVerificationBtn) approveVerificationBtn.addEventListener('click', async function () {
+  approveVerificationBtn.disabled = true
+  try { await requestControl('/api/session/approve-verification') } finally { approveVerificationBtn.disabled = false }
 })
 var resumeResolvedBtn = el('resume-resolved-btn')
 if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {

@@ -111,6 +111,11 @@ export interface ClaudeCodeExecutorOptions {
     /** Internal Guardian iteration of the Executor being recovered. */
     iteration: number
   }) => void
+  /**
+   * Runtime-owned, single-use approval for one exact deterministic verification
+   * command. This is never derived from Claude input or browser input.
+   */
+  approvedVerificationCommand?: string
   /** W003: 允许的 worktree checkpoint（用于 resume 验证） */
   allowedWorktreeCheckpoint?: {
     taskId: string
@@ -857,7 +862,8 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       if (command.length === 0) {
         continue
       }
-      if (!ALLOWED_VERIFICATION_COMMANDS.has(command)) {
+      const runtimeApproved = this.options.approvedVerificationCommand === command
+      if (!ALLOWED_VERIFICATION_COMMANDS.has(command) && !runtimeApproved) {
         results.push({
           name: command,
           status: 'skipped',

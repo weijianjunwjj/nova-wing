@@ -347,13 +347,14 @@ export async function createProductionWorkSessionUi(
           if (policy === undefined) throw new Error(`missing Guardian policy for task ${task.id}`)
           return createGuardianTask(task, policy)
         },
-        createExecutor(_task, _resumeData, onProgress) {
+        createExecutor(_task, _resumeData, onProgress, approvedVerificationCommand) {
           return createExecutor({
             cwd: definition.targetRepo,
             model: trusted.executor.model,
             maxTurns: trusted.executor.maxTurns,
             allowNpmInstall: trusted.executor.allowNpmInstall,
             allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
+            ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
             ...(env.NOVAWING_GIT_BASH_PATH?.trim()
               ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() }
               : {}),

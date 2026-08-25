@@ -92,6 +92,11 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    pendingVerificationApproval?: {
+      taskId: string
+      command: string
+      generation: number
+    }
     brainFailure?: {
       stage: 'BRAIN_REVIEW'
       category: string
@@ -130,6 +135,7 @@ export interface WorkSessionControlRuntime {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
   resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
+  approvePendingVerificationAndContinue?(): Promise<WorkSessionDurableState>
   recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
   requestPause(): { accepted: boolean; reason?: string }
   requestStopAfterTask(): { accepted: boolean; reason?: string }

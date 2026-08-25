@@ -4,6 +4,8 @@
  */
 
 import { Mastra } from '@mastra/core'
+import { createHash } from 'node:crypto'
+import { isAbsolute, relative, resolve } from 'node:path'
 import {
   createWorkflow,
   createStep,
@@ -81,6 +83,42 @@ export interface ResumeInput {
   approval?: boolean
 }
 
+const VERIFICATION_APPROVAL_BLOCKER = 'verification command requires human approval: '
+
+function verificationCommandFingerprint(command: string): string {
+  return createHash('sha256').update(command, 'utf8').digest('hex')
+}
+
+/** Strictly a display-safe deterministic command, never a shell-language grant. */
+function isSafeApprovalCommand(command: string): boolean {
+  return command.length > 0 && command.length <= 500 &&
+    !/[\r\n\0]/.test(command) &&
+    !['*', '?', '[', ']', '`', '$'].some((character) => command.includes(character)) &&
+    !/(?:token|secret|password|credential|authorization|cookie|api[_-]?key)/i.test(command)
+}
+
+/**
+ * The only non-global verification command eligible for user approval. This is
+ * deliberately a parser for one known deterministic verifier, not a shell
+ * policy: `cd <repo-relative-dir> && <repo .venv python> -m alembic upgrade head`.
+ */
+function isEligibleScopedVerificationCommand(command: string, targetRepo: string): boolean {
+  if (!isSafeApprovalCommand(command)) return false
+  const match = /^cd ([A-Za-z0-9._/-]+) && ([A-Za-z0-9._/-]+) -m alembic upgrade head$/.exec(command)
+  if (match === null) return false
+  const [, cwdText, executableText] = match
+  if (cwdText === undefined || executableText === undefined || isAbsolute(cwdText) || isAbsolute(executableText)) {
+    return false
+  }
+  const repo = resolve(targetRepo)
+  const cwd = resolve(repo, cwdText)
+  const cwdRelation = relative(repo, cwd)
+  if (cwdRelation === '..' || cwdRelation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(cwdRelation)) {
+    return false
+  }
+  return resolve(cwd, executableText) === resolve(repo, '.venv', 'Scripts', 'python.exe')
+}
+
 export interface RecoveryCheckpointResumeOptions {
   /** 目标 session id（必须等于本 runtime 的 definition.id） */
   sessionId: string
@@ -100,6 +138,11 @@ const WorkflowStateSchema = z.object({
   humanRequired: z.object({
     category: z.string(),
     reason: z.string(),
+  }).optional(),
+  pendingVerificationApproval: z.object({
+    sessionId: z.string(), taskId: z.string(), command: z.string(),
+    commandFingerprint: z.string(), generation: z.number().int().positive(),
+    status: z.enum(['REQUESTED', 'APPROVED']),
   }).optional(),
   brainFailure: z.object({
     stage: z.literal('BRAIN_REVIEW'),
@@ -478,6 +521,48 @@ export class WorkSessionRuntime {
   }
 
   /**
+   * The browser supplies no command or identity. This method approves only the
+   * durable request already bound to this runtime's session and current task.
+   */
+  async approvePendingVerificationAndContinue(): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('verification approval storage unavailable')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') {
+      throw new Error('verification approval requires a suspended session')
+    }
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success) throw new Error('verification approval state is invalid')
+    const state = parsed.data
+    const pending = state.pendingVerificationApproval
+    if (
+      state.state !== 'SUSPENDED' || state.humanRequired?.category !== 'DECISION_REQUIRED' ||
+      pending === undefined || pending.status !== 'REQUESTED' ||
+      pending.sessionId !== runId || pending.taskId !== state.currentTaskId ||
+      !isEligibleScopedVerificationCommand(pending.command, this.config.definition.targetRepo) ||
+      pending.commandFingerprint !== verificationCommandFingerprint(pending.command)
+    ) {
+      throw new Error('verification approval is not available for the current task')
+    }
+    const approved: WorkflowState = {
+      ...state,
+      pendingVerificationApproval: { ...pending, status: 'APPROVED' },
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = approved as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
+    this.latestState = approved
+    this.recordLedger({
+      eventType: 'VERIFICATION_APPROVED', sessionId: runId, taskId: pending.taskId,
+      timestamp: this.ledgerTimestamp(), status: 'APPROVED',
+      commandFingerprint: pending.commandFingerprint,
+    }, `verification-approved:${pending.taskId}:${pending.generation}:${pending.commandFingerprint}`)
+    return this.resume({})
+  }
+
+  /**
    * W003 FINAL: 显式 Legacy Recovery 入口。
    *
    * 把一个显式创建的 GuardianTaskRecoveryCheckpoint（例如 adoptLegacyRecoveryCheckpoint
@@ -740,6 +825,7 @@ export class WorkSessionRuntime {
                 completionReason: limitReason,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                pendingVerificationApproval: undefined,
                 stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(currentState),
                 updatedAt: new Date().toISOString(),
@@ -794,10 +880,37 @@ export class WorkSessionRuntime {
           // W003: 传递 checkpoint 给 TaskRunner
           // W004-B: 同时传递 hard deadline（clock 帧内），供 Guardian adapter 构造 stop hook
           const checkpoint = currentState.currentTaskCheckpoint
+          const approvedVerification = currentState.pendingVerificationApproval
+          const approvedVerificationCommand =
+            approvedVerification?.status === 'APPROVED' &&
+            approvedVerification.sessionId === currentState.sessionId &&
+            approvedVerification.taskId === task.id &&
+            approvedVerification.commandFingerprint === verificationCommandFingerprint(approvedVerification.command) &&
+            isEligibleScopedVerificationCommand(approvedVerification.command, self.config.definition.targetRepo)
+              ? approvedVerification.command
+              : undefined
+          // Consume before starting Guardian work. A crash/restart cannot turn a
+          // persisted approval into a second execution of the command.
+          if (approvedVerificationCommand !== undefined) {
+            const consumedState: WorkflowState = {
+              ...currentState,
+              pendingVerificationApproval: undefined,
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(consumedState)
+            currentState = consumedState
+            self.latestState = consumedState
+            self.recordLedger({
+              eventType: 'VERIFICATION_APPROVAL_CONSUMED', sessionId: consumedState.sessionId,
+              taskId: task.id, timestamp: self.ledgerTimestamp(), status: 'CONSUMED',
+              commandFingerprint: approvedVerification!.commandFingerprint,
+            }, `verification-consumed:${task.id}:${approvedVerification!.generation}:${approvedVerification!.commandFingerprint}`)
+          }
           const runContext: WorkSessionTaskRunContext = {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
+            ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
 
@@ -825,6 +938,7 @@ export class WorkSessionRuntime {
                 safeFailureMessage: failure.safeMessage,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                pendingVerificationApproval: undefined,
                 ...self.settleActiveTime(currentState),
                 updatedAt: new Date().toISOString(),
               }
@@ -929,6 +1043,7 @@ export class WorkSessionRuntime {
                 : {}),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              pendingVerificationApproval: undefined,
               currentTaskBaseHeadSha: undefined,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               updatedAt: new Date().toISOString(),
@@ -961,6 +1076,7 @@ export class WorkSessionRuntime {
                 suspensionReason: undefined,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                pendingVerificationApproval: undefined,
                 stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(completedState),
                 updatedAt: new Date().toISOString(),
@@ -1039,12 +1155,29 @@ export class WorkSessionRuntime {
 
           if (result.status === 'HUMAN_REQUIRED') {
             // 需要人工介入，suspend workflow
+            const nextGeneration = (currentState.humanRequiredGeneration ?? 0) + 1
+            const requestedCommand = result.pendingVerificationCommand
+            const pendingVerificationApproval =
+              requestedCommand !== undefined &&
+              result.humanRequired?.category === 'DECISION_REQUIRED' &&
+              result.humanRequired.reason.includes(VERIFICATION_APPROVAL_BLOCKER) &&
+              isEligibleScopedVerificationCommand(requestedCommand, self.config.definition.targetRepo)
+                ? {
+                    sessionId: currentState.sessionId,
+                    taskId: task.id,
+                    command: requestedCommand,
+                    commandFingerprint: verificationCommandFingerprint(requestedCommand),
+                    generation: nextGeneration,
+                    status: 'REQUESTED' as const,
+                  }
+                : undefined
             const suspendedState: WorkflowState = {
               ...currentState,
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
               brainFailure: undefined,
-              humanRequiredGeneration: (currentState.humanRequiredGeneration ?? 0) + 1,
+              humanRequiredGeneration: nextGeneration,
+              pendingVerificationApproval,
               suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
@@ -1064,6 +1197,13 @@ export class WorkSessionRuntime {
                 : { activeElapsedMs: suspendedState.activeElapsedMs }),
               safeMessage: safeFailureMessage(result.humanRequired?.reason ?? 'human required'),
             }, `human-required:${task.id}:${suspendedState.humanRequiredGeneration ?? 0}`)
+            if (pendingVerificationApproval !== undefined) {
+              self.recordLedger({
+                eventType: 'VERIFICATION_APPROVAL_REQUESTED', sessionId: suspendedState.sessionId,
+                taskId: task.id, timestamp: self.ledgerTimestamp(), status: 'REQUESTED',
+                commandFingerprint: pendingVerificationApproval.commandFingerprint,
+              }, `verification-requested:${task.id}:${pendingVerificationApproval.generation}:${pendingVerificationApproval.commandFingerprint}`)
+            }
 
             // 调用 suspend，Mastra 会持久化当前状态
             return await suspend(
@@ -1087,6 +1227,7 @@ export class WorkSessionRuntime {
               safeFailureMessage: failure.safeMessage,
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              pendingVerificationApproval: undefined,
               ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
             }
@@ -1109,6 +1250,7 @@ export class WorkSessionRuntime {
           cancellationReason: undefined,
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
+          pendingVerificationApproval: undefined,
           stopAfterTaskRequested: undefined,
           ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
           updatedAt: new Date().toISOString(),
@@ -1151,6 +1293,9 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.pendingVerificationApproval !== undefined) {
+      result.pendingVerificationApproval = wfState.pendingVerificationApproval
     }
     if (wfState.brainFailure) {
       result.brainFailure = {

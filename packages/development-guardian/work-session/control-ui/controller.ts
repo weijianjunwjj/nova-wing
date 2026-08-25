@@ -259,6 +259,25 @@ export class WorkSessionControlController {
     return { accepted: true }
   }
 
+  approvePendingVerificationAndContinue(): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    const pending = state?.pendingVerificationApproval
+    if (
+      state?.state !== 'SUSPENDED' || state.humanRequired?.category !== 'DECISION_REQUIRED' ||
+      pending === undefined || pending.status !== 'REQUESTED' ||
+      pending.sessionId !== state.sessionId || pending.taskId !== state.currentTaskId ||
+      this.runtime.approvePendingVerificationAndContinue === undefined
+    ) return { accepted: false, reason: 'verification approval is unavailable' }
+    if (this.resumePromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
+    const safeEventData = { taskId: pending.taskId, category: 'VERIFICATION_APPROVAL' }
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.resumePromise = this.runtime.approvePendingVerificationAndContinue()
+      .then(() => { this.emit({ type: 'SESSION_RESUMED', data: safeEventData }); this.broadcastSnapshot() })
+      .catch(() => { this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } }); this.broadcastSnapshot() })
+      .finally(() => { this.resumePromise = undefined })
+    return { accepted: true }
+  }
+
   recoverFailedCheckpoint(): { accepted: boolean; reason?: string } {
     const state = this.runtime.getDurableState()
     if (!isRecoverableGitPushFailure(state)) {
@@ -329,6 +348,14 @@ export class WorkSessionControlController {
                 : {}),
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
+                : {}),
+              ...(state.pendingVerificationApproval !== undefined &&
+              state.pendingVerificationApproval.status === 'REQUESTED'
+                ? { pendingVerificationApproval: {
+                    taskId: state.pendingVerificationApproval.taskId,
+                    command: state.pendingVerificationApproval.command,
+                    generation: state.pendingVerificationApproval.generation,
+                  } }
                 : {}),
               ...(state.brainFailure !== undefined
                 ? { brainFailure: this.safeBrainFailure(state) }
@@ -458,6 +485,9 @@ export class WorkSessionControlController {
       state.completedTaskIds,
       state.humanRequired !== undefined
         ? [state.humanRequired.category, state.humanRequired.reason]
+        : null,
+      state.pendingVerificationApproval !== undefined
+        ? [state.pendingVerificationApproval.taskId, state.pendingVerificationApproval.generation, state.pendingVerificationApproval.status]
         : null,
       state.brainFailure !== undefined
         ? [state.brainFailure.category, state.brainFailure.fingerprint]
@@ -703,6 +733,9 @@ function validateResumeForState(
   state: WorkSessionDurableState,
   input: ControlResumeInput,
 ): { accepted: boolean; reason?: string; input?: ControlResumeInput } {
+  if (state.pendingVerificationApproval !== undefined) {
+    return { accepted: false, reason: 'verification approval must use its dedicated control' }
+  }
   const decision = typeof input.decision === 'string' ? input.decision.trim() : undefined
   const hasDecision = decision !== undefined && decision.length >= 1 && decision.length <= 2_000
   const hasApproval = input.approval !== undefined

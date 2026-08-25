@@ -324,9 +324,9 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   }
 
   // Verification 需要额外授权
-  if (reason.includes('verification') && reason.includes('approval')) {
+  if (pendingVerificationCommand(task) !== undefined) {
     return {
-      category: 'PERMISSION_REQUIRED',
+      category: 'DECISION_REQUIRED',
       reason,
     }
   }
@@ -383,6 +383,7 @@ export interface GuardianWorkSessionTaskRunnerOptions {
     task: WorkSessionTask,
     resumeData?: unknown,
     onProgress?: GuardianProgressObserver,
+    approvedVerificationCommand?: string,
   ) => GuardianRecoverableExecutor
   createGuardianTask?: (task: WorkSessionTask, resumeData?: unknown) => GuardianTask
   taskBuilder?: GuardianTaskBuilderOptions
@@ -665,6 +666,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       workSessionTask,
       sanitizedResumeInput,
       onProgress,
+      context?.approvedVerificationCommand,
     )
 
     // W003: 如果有 checkpoint，先做 repo gate —— 任何 provider execution 之前
@@ -828,12 +830,16 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         executor,
       )
 
+      const verificationCommand = pendingVerificationCommand(result.task)
       return {
         status: 'HUMAN_REQUIRED',
         ...(result.task.lastReport?.summary !== undefined
           ? { summary: result.task.lastReport.summary }
           : {}),
         humanRequired: classifyHumanRequired(result.task),
+        ...(verificationCommand === undefined
+          ? {}
+          : { pendingVerificationCommand: verificationCommand }),
         ...(capturedCheckpoint !== undefined ? { checkpoint: capturedCheckpoint } : {}),
       }
     }
@@ -844,6 +850,25 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       error: `unexpected Guardian state: ${result.task.state}`,
     }
   }
+}
+
+/**
+ * Only expose an approval candidate when Guardian itself produced the precise
+ * deterministic-verification blocker and the report names exactly one command.
+ */
+function pendingVerificationCommand(task: GuardianTask): string | undefined {
+  const report = task.lastReport
+  if (report === undefined) return undefined
+  const prefix = 'verification command requires human approval: '
+  const commands = report.blockers
+    .filter((blocker) => blocker.startsWith(prefix))
+    .map((blocker) => blocker.slice(prefix.length))
+  if (commands.length !== 1 || commands[0] === undefined) return undefined
+  const command = commands[0]
+  return report.verificationResults.some(
+    (result) => result.name === command && result.status === 'skipped' &&
+      result.details === 'verification command is not in the MVP allowlist',
+  ) ? command : undefined
 }
 
 function sanitizeResumeInput(value: unknown): { decision?: string; approval?: boolean } {
