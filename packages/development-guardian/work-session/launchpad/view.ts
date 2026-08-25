@@ -45,7 +45,7 @@ function renderCard(config: LaunchpadConfigSummary): string {
       <p class="launch-error" data-launch-error role="alert" aria-live="polite"></p>
       <button class="launch-button" type="button" data-config-id="${escapeHtml(config.configId)}">
         <span aria-hidden="true">▶</span>
-        <span data-button-label>启动 Work Session</span>
+        <span data-button-label>打开 Work Session</span>
       </button>
     </article>`
 }
@@ -168,7 +168,7 @@ export const LAUNCHPAD_APP_JS = `
       if (!configId || !label || !state || !error) return
 
       button.disabled = true
-      label.textContent = '正在启动 NovaWing...'
+      label.textContent = '正在打开 NovaWing...'
       state.textContent = 'STARTING'
       state.classList.add('is-starting')
       error.textContent = ''
@@ -186,7 +186,7 @@ export const LAUNCHPAD_APP_JS = `
         window.location.assign(result.controlUrl)
       } catch {
         button.disabled = false
-        label.textContent = '启动 Work Session'
+        label.textContent = '打开 Work Session'
         state.textContent = 'READY'
         state.classList.remove('is-starting')
         error.textContent = 'Work Session 启动失败'

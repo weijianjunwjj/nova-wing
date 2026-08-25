@@ -78,6 +78,7 @@ const expectedRuntimeExports = {
     'normalizeAskBridgeDiagnostics',
     'parseDelegationPacket',
     'parseGitStatus',
+    'persistComposedTrustedWorkSessionConfig',
     'pushCheckpointCommit',
     'readCurrentHeadSha',
     'readExecutionLedger',

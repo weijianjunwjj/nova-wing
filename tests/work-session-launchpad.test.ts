@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import {
   findBrowserExecutable,
   loadTrustedWorkSessionConfig,
   openLaunchpadInAppMode,
+  persistComposedTrustedWorkSessionConfig,
   type BrowserProcessSpawner,
   type NovaWingLaunchpad,
   type TrustedWorkSessionConfig,
@@ -263,9 +264,51 @@ await test('Composer creates a fresh validated session from structured input and
     assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [{ executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() }])
+    const sessionId = state.receivedConfigIds[0]!
+    const persistedPath = join(directory, `${sessionId}.json`)
+    const persistedText = await readFile(persistedPath, 'utf8')
+    const persisted = JSON.parse(persistedText) as TrustedWorkSessionConfig
+    assert.equal(persisted.session.id, sessionId)
+    assert.deepEqual(persisted, state.receivedConfigs[0])
+    assert.doesNotMatch(persistedText, /"(?:token|password|credential|cookie|secret)"\s*:/iu)
+    assert.equal(launchpad.getConfigs().filter((config) => config.taskId === 'T011').length, 1)
+
+    await launchpad.close()
+    const reopenedState = emptyFakeState()
+    const reopened = await createNovaWingLaunchpad({
+      configDirectory: directory,
+      dependencies: { createWorkSession: fakeWorkSessionFactory(reopenedState) },
+    })
+    try {
+      const restored = reopened.getConfigs().find((config) => config.taskId === 'T011')
+      assert.ok(restored)
+      const reopenedAddress = await reopened.start()
+      const reopenResponse = await postStart(reopened, { configId: restored.configId }, {
+        token: reopened.getTokenForTest(), origin: reopenedAddress.url,
+      })
+      assert.equal(reopenResponse.status, 202)
+      assert.deepEqual(reopenedState.receivedConfigIds, [sessionId])
+    } finally {
+      await reopened.close()
+    }
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer config persistence leaves no discoverable JSON file when atomic preparation fails', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'novawing-launchpad-file-'))
+  const configDirectory = join(parent, 'not-a-directory')
+  await writeFile(configDirectory, 'block persistence', 'utf8')
+  try {
+    await assert.rejects(persistComposedTrustedWorkSessionConfig(
+      configDirectory,
+      trustedConfig({ sessionId: 'nova-wing-202608250000-a1b2c3' }) as TrustedWorkSessionConfig,
+    ))
+    assert.equal((await readdir(parent)).filter((name) => name.endsWith('.json')).length, 0)
+  } finally {
+    await rm(parent, { recursive: true, force: true })
   }
 })
 
