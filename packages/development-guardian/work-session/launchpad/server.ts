@@ -26,6 +26,7 @@ const SAFE_LAUNCH_ERROR = 'Work Session 启动失败'
 const DEFAULT_EXECUTOR_MODEL = 'sonnet'
 const DEFAULT_SOFT_MINUTES = 45
 const DEFAULT_HARD_MINUTES = 90
+const MAX_COMPOSER_TASKS = 10
 const MAX_COMPLETED_COMPOSER_REQUESTS = 100
 const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
 const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
@@ -98,8 +99,10 @@ interface LaunchResult {
 interface ComposerRequest {
   requestId: string
   targetRepo: string
-  taskId: string
-  goal: string
+  tasks: Array<{
+    id: string
+    goal: string
+  }>
   executorModel: string
   softMinutes: number
   hardMinutes: number
@@ -126,6 +129,7 @@ type ComposerError =
   | 'CANNOT_READ_BRANCH'
   | 'INVALID_TASK_ID'
   | 'INVALID_TASK'
+  | 'DUPLICATE_TASK_ID'
   | 'INVALID_LIMITS'
   | 'MISSING_ALLOWED_PATHS'
   | 'INVALID_GUARDIAN_POLICY'
@@ -141,6 +145,7 @@ const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', str
   CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
   INVALID_TASK_ID: '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。',
   INVALID_TASK: '请填写有效的 Task 描述。',
+  DUPLICATE_TASK_ID: 'Task ID 不得重复。',
   INVALID_LIMITS: '时间限制无效：Hard Limit 必须不小于 Soft Limit。',
   MISSING_ALLOWED_PATHS: '请填写至少一个允许修改路径。',
   INVALID_GUARDIAN_POLICY: 'Guardian 规则无效。',
@@ -606,11 +611,11 @@ export class NovaWingLaunchpad {
         id: sessionId,
         targetRepo,
         branch,
-        limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: 1 },
+        limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: input.tasks.length },
       },
-      tasks: [{
-        id: input.taskId,
-        goal: input.goal,
+      tasks: input.tasks.map((task) => ({
+        id: task.id,
+        goal: task.goal,
         guardian: {
           constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
           acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...(input.guardian.acceptanceCriteria ?? [])],
@@ -618,7 +623,7 @@ export class NovaWingLaunchpad {
           allowedPaths: input.guardian.allowedPaths,
           forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
         },
-      }],
+      })),
       gitCheckpoint: {
         autoCommit: input.autoCommit,
         autoPush: input.autoPush,
@@ -717,8 +722,7 @@ function createSessionId(targetRepo: string): string {
 function canonicalComposerPayload(input: ComposerRequest): string {
   return JSON.stringify({
     targetRepo: input.targetRepo,
-    taskId: input.taskId,
-    goal: input.goal,
+    tasks: input.tasks,
     executorModel: input.executorModel,
     softMinutes: input.softMinutes,
     hardMinutes: input.hardMinutes,
@@ -786,7 +790,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   }
   const record = parsed as Record<string, unknown>
   const allowed = new Set([
-    'requestId', 'targetRepo', 'taskId', 'goal', 'executorModel', 'softMinutes', 'hardMinutes',
+    'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
@@ -796,12 +800,11 @@ function parseComposerBody(body: string): ComposerParseResult {
   if (typeof record.targetRepo !== 'string' || record.targetRepo.trim().length === 0) {
     return { ok: false, error: 'INVALID_PROJECT_PATH' }
   }
-  if (typeof record.taskId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/u.test(record.taskId.trim())) {
-    return { ok: false, error: 'INVALID_TASK_ID' }
-  }
-  if (typeof record.goal !== 'string' || record.goal.trim().length === 0 || record.goal.length > 8_000) {
-    return { ok: false, error: 'INVALID_TASK' }
-  }
+  const tasks = parseComposerTasks(record.tasks)
+  if (tasks === 'invalid-id') return { ok: false, error: 'INVALID_TASK_ID' }
+  if (tasks === 'invalid-task') return { ok: false, error: 'INVALID_TASK' }
+  if (tasks === 'duplicate-id') return { ok: false, error: 'DUPLICATE_TASK_ID' }
+  if (tasks === undefined) return { ok: false, error: 'INVALID_REQUEST' }
   const softMinutes = record.softMinutes ?? DEFAULT_SOFT_MINUTES
   const hardMinutes = record.hardMinutes ?? DEFAULT_HARD_MINUTES
   if (!isValidMinuteLimit(softMinutes, true) || !isValidMinuteLimit(hardMinutes, false) || hardMinutes < softMinutes) {
@@ -830,8 +833,7 @@ function parseComposerBody(body: string): ComposerParseResult {
     value: {
       requestId: record.requestId,
       targetRepo: record.targetRepo.trim(),
-      taskId: record.taskId.trim(),
-      goal: record.goal.trim(),
+      tasks,
       executorModel: executorModel.trim(),
       softMinutes,
       hardMinutes,
@@ -842,6 +844,25 @@ function parseComposerBody(body: string): ComposerParseResult {
       guardian,
     },
   }
+}
+
+function parseComposerTasks(value: unknown): ComposerRequest['tasks'] | 'invalid-id' | 'invalid-task' | 'duplicate-id' | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_COMPOSER_TASKS) return undefined
+  const tasks: ComposerRequest['tasks'] = []
+  const ids = new Set<string>()
+  for (const valueTask of value) {
+    if (valueTask === null || typeof valueTask !== 'object' || Array.isArray(valueTask)) return undefined
+    const task = valueTask as Record<string, unknown>
+    if (Object.keys(task).length !== 2 || typeof task.id !== 'string' || typeof task.goal !== 'string') return undefined
+    const id = task.id.trim()
+    const goal = task.goal.trim()
+    if (!/^[A-Za-z0-9._-]{1,64}$/u.test(id)) return 'invalid-id'
+    if (goal.length === 0 || task.goal.length > 8_000) return 'invalid-task'
+    if (ids.has(id)) return 'duplicate-id'
+    ids.add(id)
+    tasks.push({ id, goal })
+  }
+  return tasks
 }
 
 function parseComposerPushRemote(value: unknown): ComposerRequest['pushRemote'] | undefined {

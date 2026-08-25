@@ -97,8 +97,15 @@ export function renderLaunchpadHtml(input: {
         </div>
         <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
         <label>分支<input name="branch" type="text" readonly value="填写项目目录后自动检测"></label>
-        <label>Task ID<input name="taskId" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" required placeholder="T011"></label>
-        <label>Task<textarea name="goal" rows="6" required placeholder="描述本次需要完成的工作…"></textarea></label>
+        <div class="composer-tasks" data-composer-tasks>
+          <fieldset class="composer-task" data-composer-task>
+            <legend>Task 1</legend>
+            <label>Task ID<input data-task-id type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" required placeholder="T011"></label>
+            <label>Task<textarea data-task-goal rows="6" required placeholder="描述本次需要完成的工作…"></textarea></label>
+            <button class="task-remove" type="button" data-remove-task hidden>删除 Task</button>
+          </fieldset>
+        </div>
+        <button class="task-add" type="button" data-add-task>＋ 添加 Task</button>
         <label>允许修改路径<textarea name="allowedPaths" rows="3" placeholder="apps/api/**\ntests/**" required></textarea><span class="field-hint">每行一条，相对于仓库根目录。</span></label>
         <div class="composer-grid">
           <label>Executor<input name="executorModel" type="text" value="sonnet" required></label>
@@ -199,26 +206,67 @@ export const LAUNCHPAD_APP_JS = `
 
   const branch = form.elements.branch
   const targetRepo = form.elements.targetRepo
-  const taskId = form.elements.taskId
-  const goal = form.elements.goal
+  const taskContainer = form.querySelector('[data-composer-tasks]')
+  const addTask = form.querySelector('[data-add-task]')
   const autoCommit = form.elements.autoCommit
   const autoPush = form.elements.autoPush
+  const softMinutes = form.elements.softMinutes
+  const hardMinutes = form.elements.hardMinutes
   const pushRemote = form.querySelector('[data-push-remote]')
   const error = form.querySelector('[data-composer-error]')
   const lines = (value) => value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
   let branchTimer
   let discoveredPushRemote
-  let taskIdEdited = false
-  taskId.addEventListener('input', () => {
-    taskIdEdited = true
-    taskId.removeAttribute('aria-invalid')
-    if (error.textContent.startsWith('请填写有效的 Task ID')) error.textContent = ''
+  const taskRows = () => Array.from(taskContainer.querySelectorAll('[data-composer-task]'))
+  let suggestedSoftMinutes = 45
+  let suggestedHardMinutes = 90
+  const updateTaskRows = () => {
+    const rows = taskRows()
+    for (const [index, row] of rows.entries()) {
+      row.querySelector('legend').textContent = 'Task ' + (index + 1)
+      row.querySelector('[data-remove-task]').hidden = rows.length === 1
+    }
+    addTask.disabled = rows.length >= 10
+    const nextSoftMinutes = rows.length === 1 ? 45 : Math.max(45, rows.length * 30)
+    const nextHardMinutes = rows.length === 1 ? 90 : Math.max(90, rows.length * 60)
+    if (Number(softMinutes.value) === suggestedSoftMinutes) softMinutes.value = String(nextSoftMinutes)
+    if (Number(hardMinutes.value) === suggestedHardMinutes) hardMinutes.value = String(nextHardMinutes)
+    suggestedSoftMinutes = nextSoftMinutes
+    suggestedHardMinutes = nextHardMinutes
+  }
+  const attachTaskRow = (row) => {
+    const taskId = row.querySelector('[data-task-id]')
+    const goal = row.querySelector('[data-task-goal]')
+    let taskIdEdited = false
+    taskId.addEventListener('input', () => {
+      taskIdEdited = true
+      taskId.removeAttribute('aria-invalid')
+      if (error.textContent.startsWith('请填写有效的 Task ID')) error.textContent = ''
+    })
+    goal.addEventListener('input', () => {
+      if (taskIdEdited || taskId.value.trim()) return
+      const suggested = goal.value.match(/^\\s*([A-Za-z0-9._-]{1,64})(?:\\s*[:：-]|\\s+)/u)
+      if (suggested) taskId.value = suggested[1]
+    })
+    row.querySelector('[data-remove-task]').addEventListener('click', () => {
+      if (taskRows().length === 1) return
+      row.remove()
+      updateTaskRows()
+    })
+  }
+  attachTaskRow(taskRows()[0])
+  addTask.addEventListener('click', () => {
+    if (taskRows().length >= 10) return
+    const row = taskRows()[0].cloneNode(true)
+    row.querySelector('[data-task-id]').value = ''
+    row.querySelector('[data-task-goal]').value = ''
+    row.querySelector('[data-remove-task]').hidden = false
+    taskContainer.appendChild(row)
+    attachTaskRow(row)
+    updateTaskRows()
+    row.querySelector('[data-task-id]').focus()
   })
-  goal.addEventListener('input', () => {
-    if (taskIdEdited || taskId.value.trim()) return
-    const suggested = goal.value.match(/^\\s*([A-Za-z0-9._-]{1,64})(?:\\s*[:：-]|\\s+)/u)
-    if (suggested) taskId.value = suggested[1]
-  })
+  updateTaskRows()
   const updatePushRemote = () => {
     if (!autoPush.checked) { pushRemote.hidden = true; return }
     if (discoveredPushRemote) {
@@ -261,10 +309,23 @@ export const LAUNCHPAD_APP_JS = `
     event.preventDefault()
     const submit = form.querySelector('[data-composer-submit]')
     const allowedPaths = lines(form.elements.allowedPaths.value)
-    if (!/^[A-Za-z0-9._-]{1,64}$/.test(taskId.value.trim())) {
-      error.textContent = '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。'
-      taskId.setAttribute('aria-invalid', 'true')
-      taskId.focus()
+    const tasks = taskRows().map((row) => ({
+      id: row.querySelector('[data-task-id]').value.trim(),
+      goal: row.querySelector('[data-task-goal]').value,
+    }))
+    const invalidTask = tasks.find((task) => !/^[A-Za-z0-9._-]{1,64}$/.test(task.id) || task.goal.trim().length === 0)
+    if (invalidTask) {
+      error.textContent = !/^[A-Za-z0-9._-]{1,64}$/.test(invalidTask.id)
+        ? '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。'
+        : '请填写有效的 Task 描述。'
+      const row = taskRows()[tasks.indexOf(invalidTask)]
+      const field = row.querySelector(!/^[A-Za-z0-9._-]{1,64}$/.test(invalidTask.id) ? '[data-task-id]' : '[data-task-goal]')
+      field.setAttribute('aria-invalid', 'true')
+      field.focus()
+      return
+    }
+    if (new Set(tasks.map((task) => task.id)).size !== tasks.length) {
+      error.textContent = 'Task ID 不得重复。'
       return
     }
     if (allowedPaths.length === 0) {
@@ -288,7 +349,7 @@ export const LAUNCHPAD_APP_JS = `
       const response = await fetch('/api/session/create', {
         method: 'POST', headers: mutationHeaders(),
         body: JSON.stringify({
-          requestId, targetRepo: targetRepo.value, taskId: taskId.value, goal: goal.value,
+          requestId, targetRepo: targetRepo.value, tasks,
           executorModel: form.elements.executorModel.value,
           softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
           autoCommit: autoCommit.checked, autoPush: autoPush.checked,

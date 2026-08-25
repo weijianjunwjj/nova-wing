@@ -170,8 +170,7 @@ function composerRequest(requestId: string, overrides: Record<string, unknown> =
   return {
     requestId,
     targetRepo: process.cwd(),
-    taskId: 'T011',
-    goal: 'Implement a focused persistent model with deterministic tests.',
+    tasks: [{ id: 'T011', goal: 'Implement a focused persistent model with deterministic tests.' }],
     guardian: { allowedPaths: ['packages/**', 'tests/**'] },
     ...overrides,
   }
@@ -219,7 +218,10 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /AgentRun Persistence/u)
     assert.match(html, /SYSTEM READY/u)
     assert.match(html, /新建 Work Session/u)
-    assert.match(html, /name="taskId"/u)
+    assert.match(html, /data-composer-tasks/u)
+    assert.match(html, /data-task-id/u)
+    assert.match(html, /data-task-goal/u)
+    assert.match(html, /data-add-task/u)
     assert.match(html, /邮件通知（完成 \/ 失败 \/ 需人工）/u)
     assert.doesNotMatch(html, /name="autoPush"[^>]*disabled/u)
     const advanced = html.match(/<details>[\s\S]*?<\/details>/u)?.[0] ?? ''
@@ -258,6 +260,7 @@ await test('Composer creates a fresh validated session from structured input and
     assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
     assert.equal(state.controllerStartCalls, 1)
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
+    assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [{ executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() }])
   } finally {
@@ -285,6 +288,44 @@ await test('Composer includes completion email notification when enabled', async
     assert.deepEqual(state.receivedConfigs[0]!.notification, {
       email: { enabled: true, notifyOnCompleted: true },
     })
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer creates ordered batch tasks with a shared Guardian policy and matching maxTasks', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-batch', {
+      tasks: [
+        { id: 'T014', goal: 'Implement check_inventory Tool.' },
+        { id: 'T015', goal: 'Implement constrained replacement decision.' },
+        { id: 'T016', goal: 'Add deterministic coverage.' },
+        { id: 'T017', goal: 'Document the result.' },
+      ],
+    }), { token: launchpad.getTokenForTest(), origin: address.url })
+    assert.equal(response.status, 202)
+    const config = state.receivedConfigs[0]!
+    assert.deepEqual(config.tasks.map((task) => ({ id: task.id, goal: task.goal })), [
+      { id: 'T014', goal: 'Implement check_inventory Tool.' },
+      { id: 'T015', goal: 'Implement constrained replacement decision.' },
+      { id: 'T016', goal: 'Add deterministic coverage.' },
+      { id: 'T017', goal: 'Document the result.' },
+    ])
+    assert.equal(config.session.limits.maxTasks, 4)
+    assert.deepEqual(config.tasks.map((task) => task.guardian.allowedPaths), [
+      ['packages/**', 'tests/**'], ['packages/**', 'tests/**'], ['packages/**', 'tests/**'], ['packages/**', 'tests/**'],
+    ])
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -389,8 +430,12 @@ await test('Composer reuses a completed requestId only for the same canonical pa
   try {
     const address = await launchpad.start()
     const auth = { token: launchpad.getTokenForTest(), origin: address.url }
-    const first = await postCreate(launchpad, composerRequest('composer-create-request-0002'), auth)
-    const repeated = await postCreate(launchpad, composerRequest('composer-create-request-0002'), auth)
+    const orderedTasks = [
+      { id: 'T011', goal: 'Implement a focused persistent model with deterministic tests.' },
+      { id: 'T012', goal: 'Implement the follow-up validation.' },
+    ]
+    const first = await postCreate(launchpad, composerRequest('composer-create-request-0002', { tasks: orderedTasks }), auth)
+    const repeated = await postCreate(launchpad, composerRequest('composer-create-request-0002', { tasks: orderedTasks }), auth)
     const second = await postCreate(launchpad, composerRequest('composer-create-request-0003'), auth)
     assert.equal(first.status, 202)
     assert.equal(repeated.status, 202)
@@ -398,7 +443,7 @@ await test('Composer reuses a completed requestId only for the same canonical pa
     assert.equal(state.createCalls, 2)
     assert.notEqual(state.receivedConfigIds[0], state.receivedConfigIds[1])
     const conflicting = await postCreate(launchpad, composerRequest('composer-create-request-0002', {
-      taskId: 'T012',
+      tasks: [...orderedTasks].reverse(),
     }), auth)
     assert.equal(conflicting.status, 409)
     assert.deepEqual(await conflicting.json(), {
@@ -549,6 +594,20 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
     assert.equal((await badLimits.json() as { error: string }).error, 'INVALID_LIMITS')
     const noPaths = await postCreate(launchpad, composerRequest('composer-create-request-0008', { guardian: {} }), auth)
     assert.equal((await noPaths.json() as { error: string }).error, 'MISSING_ALLOWED_PATHS')
+    const emptyTasks = await postCreate(launchpad, composerRequest('composer-create-request-empty', { tasks: [] }), auth)
+    assert.equal((await emptyTasks.json() as { error: string }).error, 'INVALID_REQUEST')
+    const tooManyTasks = await postCreate(launchpad, composerRequest('composer-create-request-many', {
+      tasks: Array.from({ length: 11 }, (_, index) => ({ id: `T${index}`, goal: 'Valid task goal.' })),
+    }), auth)
+    assert.equal((await tooManyTasks.json() as { error: string }).error, 'INVALID_REQUEST')
+    const duplicateTasks = await postCreate(launchpad, composerRequest('composer-create-request-duplicate', {
+      tasks: [{ id: 'T011', goal: 'First task.' }, { id: 'T011', goal: 'Second task.' }],
+    }), auth)
+    assert.equal((await duplicateTasks.json() as { error: string }).error, 'DUPLICATE_TASK_ID')
+    const invalidGoal = await postCreate(launchpad, composerRequest('composer-create-request-invalid-goal', {
+      tasks: [{ id: 'T011', goal: '   ' }],
+    }), auth)
+    assert.equal((await invalidGoal.json() as { error: string }).error, 'INVALID_TASK')
     const missingPushRemote = await postCreate(launchpad, composerRequest('composer-create-request-0011', { autoPush: true }), auth)
     assert.equal((await missingPushRemote.json() as { error: string }).error, 'AUTO_PUSH_REMOTE_UNAVAILABLE')
     const pushWithoutCommit = await postCreate(launchpad, composerRequest('composer-create-request-0012', {
