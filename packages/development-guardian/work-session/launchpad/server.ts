@@ -98,12 +98,17 @@ interface LaunchResult {
 interface ComposerRequest {
   requestId: string
   targetRepo: string
+  taskId: string
   goal: string
   executorModel: string
   softMinutes: number
   hardMinutes: number
   autoCommit: boolean
   autoPush: boolean
+  pushRemote?: {
+    name: string
+    expectedUrl: string
+  }
   emailEnabled: boolean
   guardian: {
     constraints?: string[]
@@ -119,9 +124,14 @@ type ComposerError =
   | 'INVALID_PROJECT_PATH'
   | 'NOT_A_GIT_REPOSITORY'
   | 'CANNOT_READ_BRANCH'
+  | 'INVALID_TASK_ID'
   | 'INVALID_TASK'
   | 'INVALID_LIMITS'
+  | 'MISSING_ALLOWED_PATHS'
   | 'INVALID_GUARDIAN_POLICY'
+  | 'AUTO_PUSH_REQUIRES_AUTO_COMMIT'
+  | 'AUTO_PUSH_REMOTE_UNAVAILABLE'
+  | 'INVALID_PUSH_REMOTE'
   | 'INVALID_REQUEST'
   | 'IDEMPOTENCY_CONFLICT'
 
@@ -129,9 +139,14 @@ const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', str
   INVALID_PROJECT_PATH: '项目目录必须是存在的绝对路径。',
   NOT_A_GIT_REPOSITORY: '项目目录不是有效的 Git 仓库。',
   CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
+  INVALID_TASK_ID: '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。',
   INVALID_TASK: '请填写有效的 Task 描述。',
   INVALID_LIMITS: '时间限制无效：Hard Limit 必须不小于 Soft Limit。',
-  INVALID_GUARDIAN_POLICY: '请在高级 Guardian 规则中明确允许修改路径。',
+  MISSING_ALLOWED_PATHS: '请填写至少一个允许修改路径。',
+  INVALID_GUARDIAN_POLICY: 'Guardian 规则无效。',
+  AUTO_PUSH_REQUIRES_AUTO_COMMIT: 'Auto Push requires Auto Commit。',
+  AUTO_PUSH_REMOTE_UNAVAILABLE: '无法确定 Auto Push 的 origin 远端，请填写有效的远端配置。',
+  INVALID_PUSH_REMOTE: 'Auto Push remote 配置无效。',
   INVALID_REQUEST: '创建请求无效。',
   IDEMPOTENCY_CONFLICT: '该 requestId 已用于不同的创建请求。',
   SESSION_START_FAILED: SAFE_LAUNCH_ERROR,
@@ -441,7 +456,13 @@ export class NovaWingLaunchpad {
       return
     }
     try {
-      this.respondJson(response, 200, { branch: await this.readCurrentBranch(resolved) })
+      const branch = await this.readCurrentBranch(resolved)
+      const pushRemote = await this.readOriginPushRemote(resolved)
+      this.respondJson(response, 200, {
+        branch,
+        pushRemoteStatus: pushRemote === undefined ? 'unavailable' : 'available',
+        ...(pushRemote === undefined ? {} : { pushRemote }),
+      })
     } catch (error) {
       const code = error instanceof ComposerLaunchError ? error.code : 'CANNOT_READ_BRANCH'
       this.respondComposerError(response, 400, code)
@@ -588,7 +609,7 @@ export class NovaWingLaunchpad {
         limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: 1 },
       },
       tasks: [{
-        id: 'T001',
+        id: input.taskId,
         goal: input.goal,
         guardian: {
           constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
@@ -598,14 +619,22 @@ export class NovaWingLaunchpad {
           forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
         },
       }],
-      gitCheckpoint: { autoCommit: input.autoCommit, autoPush: false },
+      gitCheckpoint: {
+        autoCommit: input.autoCommit,
+        autoPush: input.autoPush,
+        ...(input.autoPush ? { pushRemote: input.pushRemote } : {}),
+      },
       executor: {
         model: input.executorModel,
         maxTurns: 10,
         allowNpmInstall: false,
         allowPythonBootstrap: false,
       },
-      notification: { email: { enabled: input.emailEnabled } },
+      notification: {
+        email: input.emailEnabled
+          ? { enabled: true, notifyOnCompleted: true }
+          : { enabled: false },
+      },
     }).catch(() => { throw new ComposerLaunchError('INVALID_GUARDIAN_POLICY') })
     const env = await this.resolveEnvironment(config).catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
     const app = await this.createWorkSession(config, { env, serverPort: 0 }).catch(() => {
@@ -637,6 +666,14 @@ export class NovaWingLaunchpad {
     const branch = result.stdout.trim()
     if (branch.length === 0) throw new ComposerLaunchError('CANNOT_READ_BRANCH')
     return branch
+  }
+
+  private async readOriginPushRemote(targetRepo: string): Promise<{ name: 'origin'; expectedUrl: string } | undefined> {
+    const runner = createProductionGitRunner(targetRepo, this.gitProcessRunner)
+    const result = await runner('git remote get-url --push --all origin').catch(() => undefined)
+    if (result === undefined || result.exitCode !== 0) return undefined
+    const urls = [...new Set(result.stdout.split(/\r?\n/u).map((url) => url.trim()).filter(Boolean))]
+    return urls.length === 1 && isSafeRemoteUrl(urls[0]!) ? { name: 'origin', expectedUrl: urls[0]! } : undefined
   }
 
   private respondComposerError(response: ServerResponse, status: number, code: ComposerError | 'SESSION_START_FAILED'): void {
@@ -680,12 +717,14 @@ function createSessionId(targetRepo: string): string {
 function canonicalComposerPayload(input: ComposerRequest): string {
   return JSON.stringify({
     targetRepo: input.targetRepo,
+    taskId: input.taskId,
     goal: input.goal,
     executorModel: input.executorModel,
     softMinutes: input.softMinutes,
     hardMinutes: input.hardMinutes,
     autoCommit: input.autoCommit,
     autoPush: input.autoPush,
+    pushRemote: input.pushRemote,
     emailEnabled: input.emailEnabled,
     guardian: input.guardian,
   })
@@ -747,8 +786,8 @@ function parseComposerBody(body: string): ComposerParseResult {
   }
   const record = parsed as Record<string, unknown>
   const allowed = new Set([
-    'requestId', 'targetRepo', 'goal', 'executorModel', 'softMinutes', 'hardMinutes',
-    'autoCommit', 'autoPush', 'emailEnabled', 'guardian',
+    'requestId', 'targetRepo', 'taskId', 'goal', 'executorModel', 'softMinutes', 'hardMinutes',
+    'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
   if (typeof record.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/u.test(record.requestId)) {
@@ -756,6 +795,9 @@ function parseComposerBody(body: string): ComposerParseResult {
   }
   if (typeof record.targetRepo !== 'string' || record.targetRepo.trim().length === 0) {
     return { ok: false, error: 'INVALID_PROJECT_PATH' }
+  }
+  if (typeof record.taskId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/u.test(record.taskId.trim())) {
+    return { ok: false, error: 'INVALID_TASK_ID' }
   }
   if (typeof record.goal !== 'string' || record.goal.trim().length === 0 || record.goal.length > 8_000) {
     return { ok: false, error: 'INVALID_TASK' }
@@ -775,25 +817,65 @@ function parseComposerBody(body: string): ComposerParseResult {
   if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean') {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
-  // Composer sessions have no trusted remote policy, so pushing cannot be enabled here.
-  if (autoPush) return { ok: false, error: 'INVALID_GUARDIAN_POLICY' }
+  if (autoPush && !autoCommit) return { ok: false, error: 'AUTO_PUSH_REQUIRES_AUTO_COMMIT' }
+  const pushRemote = autoPush ? parseComposerPushRemote(record.pushRemote) : undefined
+  if (autoPush && record.pushRemote === undefined) return { ok: false, error: 'AUTO_PUSH_REMOTE_UNAVAILABLE' }
+  if (autoPush && pushRemote === undefined) return { ok: false, error: 'INVALID_PUSH_REMOTE' }
   const guardian = parseComposerGuardian(record.guardian)
-  if (guardian === undefined) return { ok: false, error: 'INVALID_GUARDIAN_POLICY' }
+  if (guardian === undefined) {
+    return { ok: false, error: hasAllowedPaths(record.guardian) ? 'INVALID_GUARDIAN_POLICY' : 'MISSING_ALLOWED_PATHS' }
+  }
   return {
     ok: true,
     value: {
       requestId: record.requestId,
       targetRepo: record.targetRepo.trim(),
+      taskId: record.taskId.trim(),
       goal: record.goal.trim(),
       executorModel: executorModel.trim(),
       softMinutes,
       hardMinutes,
       autoCommit,
       autoPush,
+      ...(pushRemote === undefined ? {} : { pushRemote }),
       emailEnabled,
       guardian,
     },
   }
+}
+
+function parseComposerPushRemote(value: unknown): ComposerRequest['pushRemote'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 2 || typeof record.name !== 'string' || typeof record.expectedUrl !== 'string') return undefined
+  const name = record.name.trim()
+  const expectedUrl = record.expectedUrl.trim()
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(name) && isSafeRemoteUrl(expectedUrl)
+    ? { name, expectedUrl }
+    : undefined
+}
+
+function isSafeRemoteUrl(value: string): boolean {
+  if (value.length === 0 || value.length > 2_048 || /[\s\u0000-\u001f\u007f]/u.test(value)) return false
+  if (value.startsWith('https://')) {
+    try {
+      const url = new URL(value)
+      return url.protocol === 'https:' && url.username.length === 0 && url.password.length === 0 &&
+        url.search.length === 0 && url.hash.length === 0 && url.hostname.length > 0 && url.pathname.length > 1
+    } catch {
+      return false
+    }
+  }
+  if (value.startsWith('ssh://')) {
+    try {
+      const url = new URL(value)
+      return url.protocol === 'ssh:' && url.username === 'git' && url.password.length === 0 &&
+        url.search.length === 0 && url.hash.length === 0 && url.hostname.length > 0 && url.pathname.length > 1
+    } catch {
+      return false
+    }
+  }
+  return /^git@[A-Za-z0-9.-]+:[^/?#\s][^?#\s]*$/u.test(value)
 }
 
 function parseBranchBody(body: string): string | undefined {
@@ -822,6 +904,12 @@ function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | un
   const forbiddenPaths = optionalStringArray(record, 'forbiddenPaths')
   if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
   return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
+}
+
+function hasAllowedPaths(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const paths = (value as Record<string, unknown>).allowedPaths
+  return Array.isArray(paths) && paths.some((path) => typeof path === 'string' && path.trim().length > 0)
 }
 
 function optionalStringArray(

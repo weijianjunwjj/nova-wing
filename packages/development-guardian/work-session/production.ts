@@ -208,6 +208,7 @@ export interface ProductionGitProcessRunner {
 
 const PRODUCTION_GIT_COMMANDS = new Map<string, readonly string[]>([
   ['git branch --show-current', ['branch', '--show-current']],
+  ['git remote get-url --push --all origin', ['remote', 'get-url', '--push', '--all', 'origin']],
   ['git rev-parse HEAD', ['rev-parse', 'HEAD']],
   ['git status --porcelain --untracked-files=all', ['status', '--porcelain', '--untracked-files=all']],
 ])

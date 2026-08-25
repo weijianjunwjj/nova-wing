@@ -90,14 +90,16 @@ export function renderLaunchpadHtml(input: {
       <button class="composer-toggle" type="button" data-composer-toggle aria-expanded="false">
         <span aria-hidden="true">＋</span> 新建 Work Session
       </button>
-      <form class="composer-form" data-composer-form hidden>
+      <form class="composer-form" data-composer-form hidden novalidate>
         <div class="composer-heading">
           <p class="eyebrow">NEW WORK SESSION</p>
           <h2 id="composer-title">新建 Work Session</h2>
         </div>
         <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
         <label>分支<input name="branch" type="text" readonly value="填写项目目录后自动检测"></label>
+        <label>Task ID<input name="taskId" type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" required placeholder="T011"></label>
         <label>Task<textarea name="goal" rows="6" required placeholder="描述本次需要完成的工作…"></textarea></label>
+        <label>允许修改路径<textarea name="allowedPaths" rows="3" placeholder="apps/api/**\ntests/**" required></textarea><span class="field-hint">每行一条，相对于仓库根目录。</span></label>
         <div class="composer-grid">
           <label>Executor<input name="executorModel" type="text" value="sonnet" required></label>
           <label>Soft Limit（分钟）<input name="softMinutes" type="number" min="0" max="1440" value="45" required></label>
@@ -105,13 +107,12 @@ export function renderLaunchpadHtml(input: {
         </div>
         <div class="checks">
           <label><input name="autoCommit" type="checkbox" checked> Auto Commit</label>
-          <label><input name="autoPush" type="checkbox" disabled> Auto Push（需要 trusted config 的远端策略）</label>
-          <label><input name="emailEnabled" type="checkbox"> Email Notification</label>
+          <label><input name="autoPush" type="checkbox"> Auto Push</label>
+          <label><input name="emailEnabled" type="checkbox"> 邮件通知（完成 / 失败 / 需人工）</label>
         </div>
+        <p class="push-remote" data-push-remote hidden></p>
         <details>
-          <summary>高级 Guardian 规则（需要明确允许修改路径）</summary>
-          <p>为避免静默扩大权限，请填写相对仓库根目录的允许路径，每行一条，例如 <code>src/**</code>。</p>
-          <label>Allowed paths<textarea name="allowedPaths" rows="3" placeholder="src/**\ntests/**" required></textarea></label>
+          <summary>高级 Guardian 规则</summary>
           <label>Constraints（可选，每行一条）<textarea name="constraints" rows="2"></textarea></label>
           <label>Acceptance criteria（可选，每行一条）<textarea name="acceptanceCriteria" rows="2"></textarea></label>
           <label>Do not do（可选，每行一条）<textarea name="doNotDo" rows="2"></textarea></label>
@@ -198,11 +199,51 @@ export const LAUNCHPAD_APP_JS = `
 
   const branch = form.elements.branch
   const targetRepo = form.elements.targetRepo
+  const taskId = form.elements.taskId
+  const goal = form.elements.goal
+  const autoCommit = form.elements.autoCommit
+  const autoPush = form.elements.autoPush
+  const pushRemote = form.querySelector('[data-push-remote]')
   const error = form.querySelector('[data-composer-error]')
   const lines = (value) => value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
   let branchTimer
+  let discoveredPushRemote
+  let taskIdEdited = false
+  taskId.addEventListener('input', () => {
+    taskIdEdited = true
+    taskId.removeAttribute('aria-invalid')
+    if (error.textContent.startsWith('请填写有效的 Task ID')) error.textContent = ''
+  })
+  goal.addEventListener('input', () => {
+    if (taskIdEdited || taskId.value.trim()) return
+    const suggested = goal.value.match(/^\\s*([A-Za-z0-9._-]{1,64})(?:\\s*[:：-]|\\s+)/u)
+    if (suggested) taskId.value = suggested[1]
+  })
+  const updatePushRemote = () => {
+    if (!autoPush.checked) { pushRemote.hidden = true; return }
+    if (discoveredPushRemote) {
+      pushRemote.textContent = '将推送到：' + discoveredPushRemote.name + ' · ' + discoveredPushRemote.expectedUrl
+    } else {
+      pushRemote.textContent = '无法确定 origin push 远端；请先检查项目 remote 后再启用 Auto Push。'
+    }
+    pushRemote.hidden = false
+  }
+  autoPush.addEventListener('change', () => {
+    if (autoPush.checked) autoCommit.checked = true
+    updatePushRemote()
+  })
+  autoCommit.addEventListener('change', () => {
+    if (!autoCommit.checked) autoPush.checked = false
+    updatePushRemote()
+  })
+  form.elements.allowedPaths.addEventListener('input', () => {
+    form.elements.allowedPaths.removeAttribute('aria-invalid')
+    if (error.textContent === '请填写至少一个允许修改路径。') error.textContent = ''
+  })
   targetRepo.addEventListener('input', () => {
     branch.value = '正在检测…'
+    discoveredPushRemote = undefined
+    updatePushRemote()
     clearTimeout(branchTimer)
     branchTimer = setTimeout(async () => {
       try {
@@ -211,6 +252,8 @@ export const LAUNCHPAD_APP_JS = `
         })
         const result = await response.json()
         branch.value = response.ok ? result.branch : '无法检测分支'
+        discoveredPushRemote = response.ok && result.pushRemoteStatus === 'available' ? result.pushRemote : undefined
+        updatePushRemote()
       } catch { branch.value = '无法检测分支' }
     }, 350)
   })
@@ -218,9 +261,20 @@ export const LAUNCHPAD_APP_JS = `
     event.preventDefault()
     const submit = form.querySelector('[data-composer-submit]')
     const allowedPaths = lines(form.elements.allowedPaths.value)
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(taskId.value.trim())) {
+      error.textContent = '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。'
+      taskId.setAttribute('aria-invalid', 'true')
+      taskId.focus()
+      return
+    }
     if (allowedPaths.length === 0) {
-      error.textContent = '请在高级 Guardian 规则中明确允许修改路径。'
-      form.querySelector('details').open = true
+      error.textContent = '请填写至少一个允许修改路径。'
+      form.elements.allowedPaths.setAttribute('aria-invalid', 'true')
+      form.elements.allowedPaths.focus()
+      return
+    }
+    if (autoPush.checked && !discoveredPushRemote) {
+      error.textContent = '无法确定 Auto Push 的 origin 远端，请先检查项目 remote。'
       return
     }
     submit.disabled = true
@@ -234,10 +288,12 @@ export const LAUNCHPAD_APP_JS = `
       const response = await fetch('/api/session/create', {
         method: 'POST', headers: mutationHeaders(),
         body: JSON.stringify({
-          requestId, targetRepo: targetRepo.value, goal: form.elements.goal.value,
+          requestId, targetRepo: targetRepo.value, taskId: taskId.value, goal: goal.value,
           executorModel: form.elements.executorModel.value,
           softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
-          autoCommit: form.elements.autoCommit.checked, autoPush: false, emailEnabled: form.elements.emailEnabled.checked,
+          autoCommit: autoCommit.checked, autoPush: autoPush.checked,
+          ...(autoPush.checked ? { pushRemote: discoveredPushRemote } : {}),
+          emailEnabled: form.elements.emailEnabled.checked,
           guardian: { allowedPaths, ...optionalPolicy('constraints'), ...optionalPolicy('acceptanceCriteria'), ...optionalPolicy('doNotDo'), ...optionalPolicy('forbiddenPaths') },
         }),
       })
@@ -357,11 +413,14 @@ body {
   font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .composer-form textarea { resize: vertical; }
+.composer-form [aria-invalid="true"] { border-color: #ef9b9b; box-shadow: 0 0 0 2px rgba(239, 155, 155, .15); }
 .composer-form input[readonly] { color: #8ea0b9; }
+.field-hint { color: #7f899a; font-size: 12px; }
 .composer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
 .composer-grid label { margin: 0; }
 .checks { display: flex; flex-wrap: wrap; gap: 18px; margin: 20px 0; color: #c7cfdb; font-size: 13px; }
 .checks label { display: flex; align-items: center; gap: 7px; margin: 0; }
+.push-remote { margin: -8px 0 18px; color: #a9c7ff; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .composer details { border-top: 1px solid rgba(151, 170, 202, .1); padding-top: 18px; }
 .composer summary { cursor: pointer; color: #a9c7ff; font-size: 13px; }
 .composer details p { color: #7f899a; font-size: 12px; line-height: 1.5; }

@@ -65,6 +65,7 @@ interface FakeWorkSessionState {
   receivedServerPorts: number[]
   receivedConfigIds: string[]
   receivedExecutorModels: string[]
+  receivedConfigs: TrustedWorkSessionConfig[]
 }
 
 function fakeWorkSessionFactory(
@@ -76,6 +77,7 @@ function fakeWorkSessionFactory(
     state.receivedServerPorts.push(input.serverPort)
     state.receivedConfigIds.push(config.session.id)
     state.receivedExecutorModels.push(config.executor.model)
+    state.receivedConfigs.push(config)
     if (options.failWith !== undefined) throw options.failWith
     return {
       controller: {
@@ -104,6 +106,7 @@ function emptyFakeState(): FakeWorkSessionState {
     receivedServerPorts: [],
     receivedConfigIds: [],
     receivedExecutorModels: [],
+    receivedConfigs: [],
   }
 }
 
@@ -145,10 +148,29 @@ async function postCreate(
   })
 }
 
+async function postBranch(
+  launchpad: NovaWingLaunchpad,
+  targetRepo: string,
+  headers: { token: string; origin: string },
+): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/branch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-NovaWing-Launchpad-Token': headers.token,
+      Origin: headers.origin,
+    },
+    body: JSON.stringify({ targetRepo }),
+  })
+}
+
 function composerRequest(requestId: string, overrides: Record<string, unknown> = {}): unknown {
   return {
     requestId,
     targetRepo: process.cwd(),
+    taskId: 'T011',
     goal: 'Implement a focused persistent model with deterministic tests.',
     guardian: { allowedPaths: ['packages/**', 'tests/**'] },
     ...overrides,
@@ -197,6 +219,12 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /AgentRun Persistence/u)
     assert.match(html, /SYSTEM READY/u)
     assert.match(html, /新建 Work Session/u)
+    assert.match(html, /name="taskId"/u)
+    assert.match(html, /邮件通知（完成 \/ 失败 \/ 需人工）/u)
+    assert.doesNotMatch(html, /name="autoPush"[^>]*disabled/u)
+    const advanced = html.match(/<details>[\s\S]*?<\/details>/u)?.[0] ?? ''
+    assert.doesNotMatch(advanced, /allowedPaths/u)
+    assert.match(html, /name="allowedPaths"[^>]*required/u)
     assert.doesNotMatch(html, /expectedUrl|SMTP_|credential/u)
   } finally {
     await launchpad.close()
@@ -222,16 +250,128 @@ await test('Composer creates a fresh validated session from structured input and
     const address = await launchpad.start()
     const auth = { token: launchpad.getTokenForTest(), origin: address.url }
     const response = await postCreate(launchpad, composerRequest('composer-create-request-0001'), auth)
-    assert.equal(response.status, 202)
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
     assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
     assert.equal(state.createCalls, 1)
     assert.equal(state.receivedConfigIds.length, 1)
     assert.match(state.receivedConfigIds[0]!, /^nova-wing-\d{12}-[a-f0-9]{6}$/u)
     assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
     assert.equal(state.controllerStartCalls, 1)
+    assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
+    assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [{ executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() }])
   } finally {
     await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer includes completion email notification when enabled', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-email', { emailEnabled: true }), {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 202)
+    assert.deepEqual(state.receivedConfigs[0]!.notification, {
+      email: { enabled: true, notifyOnCompleted: true },
+    })
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer discovers one origin push URL read-only and carries its confirmed identity into auto push config', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const gitCalls: Array<{ executable: string; args: readonly string[]; cwd: string }> = []
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      async gitProcessRunner(executable, args, cwd) {
+        gitCalls.push({ executable, args, cwd })
+        if (args[0] === 'remote') return { exitCode: 0, stdout: 'https://github.com/acme/nova-wing.git\n', stderr: '' }
+        return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' }
+      },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const discovery = await postBranch(launchpad, process.cwd(), auth)
+    assert.deepEqual(await discovery.json(), {
+      branch: 'feat/composer',
+      pushRemoteStatus: 'available',
+      pushRemote: { name: 'origin', expectedUrl: 'https://github.com/acme/nova-wing.git' },
+    })
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-push', {
+      autoPush: true,
+      pushRemote: { name: 'origin', expectedUrl: 'https://github.com/acme/nova-wing.git' },
+    }), auth)
+    assert.equal(response.status, 202)
+    assert.deepEqual(state.receivedConfigs[0]!.gitCheckpoint, {
+      autoCommit: true,
+      autoPush: true,
+      pushRemote: { name: 'origin', expectedUrl: 'https://github.com/acme/nova-wing.git' },
+    })
+    assert.deepEqual(gitCalls[1], {
+      executable: 'git', args: ['remote', 'get-url', '--push', '--all', 'origin'], cwd: process.cwd(),
+    })
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer remote discovery never exposes credential-bearing or ambiguous origin URLs', async () => {
+  const directory = await createConfigDirectory()
+  const cases: Array<{ remote: string; available: boolean }> = [
+    { remote: 'git@github.com:acme/nova-wing.git\n', available: true },
+    { remote: 'ssh://git@github.com/acme/nova-wing.git\n', available: true },
+    { remote: 'https://user:pass@github.com/acme/nova-wing.git\n', available: false },
+    { remote: 'https://ghp_xxx@github.com/acme/nova-wing.git\n', available: false },
+    { remote: 'http://github.com/acme/nova-wing.git\n', available: false },
+    { remote: 'https://github.com/acme/nova-wing.git?token=secret\n', available: false },
+    { remote: 'https://github.com/acme/nova-wing.git#secret\n', available: false },
+    { remote: 'https://github.com/acme/one.git\nhttps://github.com/acme/two.git\n', available: false },
+  ]
+  try {
+    for (const entry of cases) {
+      const launchpad = await createNovaWingLaunchpad({
+        configDirectory: directory,
+        dependencies: {
+          async gitProcessRunner(_executable, args) {
+            return args[0] === 'remote'
+              ? { exitCode: 0, stdout: entry.remote, stderr: '' }
+              : { exitCode: 0, stdout: 'feat/composer\n', stderr: '' }
+          },
+        },
+      })
+      try {
+        const address = await launchpad.start()
+        const response = await postBranch(launchpad, process.cwd(), {
+          token: launchpad.getTokenForTest(), origin: address.url,
+        })
+        const body = await response.text()
+        assert.equal(response.status, 200)
+        assert.equal(JSON.parse(body).pushRemoteStatus, entry.available ? 'available' : 'unavailable')
+        if (!entry.available) assert.doesNotMatch(body, /user|pass|ghp_xxx|token=secret|#secret|http:\/\//u)
+      } finally {
+        await launchpad.close()
+      }
+    }
+  } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -258,7 +398,7 @@ await test('Composer reuses a completed requestId only for the same canonical pa
     assert.equal(state.createCalls, 2)
     assert.notEqual(state.receivedConfigIds[0], state.receivedConfigIds[1])
     const conflicting = await postCreate(launchpad, composerRequest('composer-create-request-0002', {
-      goal: 'A different task must not reuse this request id.',
+      taskId: 'T012',
     }), auth)
     assert.equal(conflicting.status, 409)
     assert.deepEqual(await conflicting.json(), {
@@ -408,7 +548,17 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
     const badLimits = await postCreate(launchpad, composerRequest('composer-create-request-0007', { softMinutes: 91, hardMinutes: 90 }), auth)
     assert.equal((await badLimits.json() as { error: string }).error, 'INVALID_LIMITS')
     const noPaths = await postCreate(launchpad, composerRequest('composer-create-request-0008', { guardian: {} }), auth)
-    assert.equal((await noPaths.json() as { error: string }).error, 'INVALID_GUARDIAN_POLICY')
+    assert.equal((await noPaths.json() as { error: string }).error, 'MISSING_ALLOWED_PATHS')
+    const missingPushRemote = await postCreate(launchpad, composerRequest('composer-create-request-0011', { autoPush: true }), auth)
+    assert.equal((await missingPushRemote.json() as { error: string }).error, 'AUTO_PUSH_REMOTE_UNAVAILABLE')
+    const pushWithoutCommit = await postCreate(launchpad, composerRequest('composer-create-request-0012', {
+      autoPush: true, autoCommit: false, pushRemote: { name: 'origin', expectedUrl: 'https://github.com/acme/nova-wing.git' },
+    }), auth)
+    assert.equal((await pushWithoutCommit.json() as { error: string }).error, 'AUTO_PUSH_REQUIRES_AUTO_COMMIT')
+    const malformedPushRemote = await postCreate(launchpad, composerRequest('composer-create-request-0013', {
+      autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'not a remote' },
+    }), auth)
+    assert.equal((await malformedPushRemote.json() as { error: string }).error, 'INVALID_PUSH_REMOTE')
     assert.equal(state.createCalls, 0)
   } finally {
     await launchpad.close()
