@@ -26,7 +26,12 @@ function renderCard(config: LaunchpadConfigSummary): string {
           <p class="eyebrow">TRUSTED WORK SESSION</p>
           <h2>${escapeHtml(config.project)}</h2>
         </div>
-        <span class="card-state" data-card-state>READY</span>
+        <div class="card-actions">
+          <span class="card-state" data-card-state>READY</span>
+          <button class="delete-button" type="button" data-delete-config-id="${escapeHtml(config.configId)}">
+            删除
+          </button>
+        </div>
       </div>
 
       <div class="task-block">
@@ -50,6 +55,14 @@ function renderCard(config: LaunchpadConfigSummary): string {
     </article>`
 }
 
+function renderEmptyState(hidden: boolean): string {
+  return `<section class="empty-state" data-empty-state${hidden ? ' hidden' : ''}>
+        <p class="eyebrow">NO TRUSTED CONFIGS</p>
+        <h2>没有发现可启动的 Work Session</h2>
+        <p>请将合法的 JSON 配置放入 NovaWing trusted config directory。</p>
+      </section>`
+}
+
 export function renderLaunchpadHtml(input: {
   configs: readonly LaunchpadConfigSummary[]
   launchToken: string
@@ -59,15 +72,10 @@ export function renderLaunchpadHtml(input: {
     launchToken: input.launchToken,
     serverOrigin: input.serverOrigin,
   }).replaceAll('<', '\\u003c')
-  const content = input.configs.length === 0
-    ? `<section class="empty-state">
-        <p class="eyebrow">NO TRUSTED CONFIGS</p>
-        <h2>没有发现可启动的 Work Session</h2>
-        <p>请将合法的 JSON 配置放入 NovaWing trusted config directory。</p>
-      </section>`
-    : `<section class="session-grid" aria-label="Trusted Work Sessions">
+  const content = `<section class="session-grid" data-session-list aria-label="Trusted Work Sessions"${input.configs.length === 0 ? ' hidden' : ''}>
         ${input.configs.map(renderCard).join('\n')}
-      </section>`
+      </section>
+      ${renderEmptyState(input.configs.length > 0)}`
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -190,6 +198,48 @@ export const LAUNCHPAD_APP_JS = `
         state.textContent = 'READY'
         state.classList.remove('is-starting')
         error.textContent = 'Work Session 启动失败'
+      }
+    })
+  }
+
+  const deleteButtons = Array.from(document.querySelectorAll('[data-delete-config-id]'))
+  for (const button of deleteButtons) {
+    button.addEventListener('click', async () => {
+      const configId = button.dataset.deleteConfigId
+      const card = button.closest('[data-config-card]')
+      const error = card && card.querySelector('[data-launch-error]')
+      if (!configId || !card || !error) return
+      if (!window.confirm('确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。')) return
+
+      button.disabled = true
+      button.textContent = '正在删除…'
+      error.textContent = ''
+      try {
+        const response = await fetch('/api/session/delete', {
+          method: 'POST',
+          headers: mutationHeaders(),
+          body: JSON.stringify({ configId }),
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || result.deleted !== true) {
+          error.textContent = response.status === 409 && result.error === 'SESSION_ACTIVE'
+            ? 'Work Session 正在运行，请先结束后再删除。'
+            : 'Work Session 删除失败'
+          button.disabled = false
+          button.textContent = '删除'
+          return
+        }
+        card.remove()
+        const sessionList = document.querySelector('[data-session-list]')
+        if (sessionList && !sessionList.querySelector('[data-config-card]')) {
+          sessionList.hidden = true
+          const emptyState = document.querySelector('[data-empty-state]')
+          if (emptyState) emptyState.hidden = false
+        }
+      } catch {
+        error.textContent = 'Work Session 删除失败'
+        button.disabled = false
+        button.textContent = '删除'
       }
     })
   }
@@ -381,6 +431,8 @@ export const LAUNCHPAD_STYLES_CSS = `
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   min-width: 720px;
@@ -504,6 +556,14 @@ body {
   gap: 18px;
 }
 
+.card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   color: #70809a;
@@ -534,6 +594,26 @@ h2 {
   background: rgba(146, 183, 255, .08);
   color: #a9c7ff;
 }
+
+.delete-button {
+  padding: 7px 11px;
+  border: 1px solid rgba(239, 155, 155, .24);
+  border-radius: 8px;
+  background: rgba(239, 155, 155, .055);
+  color: #d8a0a0;
+  cursor: pointer;
+  font: 600 12px/1 "Segoe UI", sans-serif;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+
+.delete-button:hover:not(:disabled) {
+  border-color: rgba(239, 155, 155, .5);
+  background: rgba(239, 155, 155, .11);
+  color: #f1b4b4;
+}
+
+.delete-button:focus-visible { outline: 2px solid #ef9b9b; outline-offset: 3px; }
+.delete-button:disabled { cursor: wait; opacity: .58; }
 
 .task-block {
   margin: 24px 0;

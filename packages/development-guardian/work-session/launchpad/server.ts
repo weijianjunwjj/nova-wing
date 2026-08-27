@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { access, mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import {
   createProductionWorkSessionUi,
@@ -31,6 +31,7 @@ const MAX_COMPLETED_COMPOSER_REQUESTS = 100
 const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
 const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
 const SAFE_COMPOSER_SESSION_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{12}-[a-f0-9]{6}$/u
+const SAFE_DELETE_ERROR = 'Work Session 删除失败'
 
 const DEFAULT_GUARDIAN_POLICY = {
   constraints: [
@@ -288,6 +289,7 @@ export class NovaWingLaunchpad {
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
   private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
+  private readonly activeDeletes = new Set<string>()
   private readonly activeCreates = new Map<string, ComposerCreateEntry>()
   private readonly completedCreates = new Map<string, CompletedComposerCreateEntry>()
   private readonly activeApps = new Map<string, ManagedWorkSessionApp>()
@@ -408,12 +410,19 @@ export class NovaWingLaunchpad {
       await this.serveCreate(request, response)
       return
     }
+    if (method === 'POST' && path === '/api/session/delete') {
+      await this.serveDelete(request, response)
+      return
+    }
     if (method === 'POST' && path === '/api/session/branch') {
       await this.serveBranch(request, response)
       return
     }
 
-    const knownPaths = new Set(['/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create', '/api/session/branch'])
+    const knownPaths = new Set([
+      '/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
+      '/api/session/delete', '/api/session/branch',
+    ])
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
       error: knownPaths.has(path) ? 'method not allowed' : 'not found',
     })
@@ -496,6 +505,48 @@ export class NovaWingLaunchpad {
     }
   }
 
+  private async serveDelete(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const parsed = parseConfigIdBody(body)
+    if (!parsed.ok) {
+      this.respondJson(response, 400, { error: 'INVALID_REQUEST' })
+      return
+    }
+    if (!this.configs.has(parsed.configId)) {
+      this.respondJson(response, 404, { error: 'UNKNOWN_CONFIG' })
+      return
+    }
+    if (this.activeStarts.has(parsed.configId) || this.activeApps.has(parsed.configId)) {
+      this.respondJson(response, 409, { error: 'SESSION_ACTIVE' })
+      return
+    }
+
+    try {
+      await this.deleteWorkSessionConfig(parsed.configId)
+      this.respondJson(response, 200, { deleted: true })
+    } catch (error) {
+      if (error instanceof DeleteConfigError && error.code === 'UNKNOWN_CONFIG') {
+        this.respondJson(response, 404, { error: error.code })
+        return
+      }
+      if (error instanceof DeleteConfigError && error.code === 'SESSION_ACTIVE') {
+        this.respondJson(response, 409, { error: error.code })
+        return
+      }
+      this.respondJson(response, 500, { error: SAFE_DELETE_ERROR })
+    }
+  }
+
   private async serveBranch(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.authorizeMutation(request, response)) return
     const body = await readBodyWithLimit(request).catch(() => undefined)
@@ -560,6 +611,7 @@ export class NovaWingLaunchpad {
   }
 
   private async startWorkSession(configId: string): Promise<LaunchResult> {
+    if (this.activeDeletes.has(configId)) throw new Error('unknown config')
     const existing = this.activeStarts.get(configId)
     if (existing !== undefined) {
       const result = await existing
@@ -576,6 +628,60 @@ export class NovaWingLaunchpad {
       this.activeStarts.delete(configId)
       throw error
     }
+  }
+
+  private async deleteWorkSessionConfig(configId: string): Promise<void> {
+    const discovered = this.configs.get(configId)
+    if (discovered === undefined || this.activeDeletes.has(configId)) {
+      throw new DeleteConfigError('UNKNOWN_CONFIG')
+    }
+    if (this.activeStarts.has(configId) || this.activeApps.has(configId)) {
+      throw new DeleteConfigError('SESSION_ACTIVE')
+    }
+    const configPath = this.resolveTrustedConfigPath(discovered)
+    if (configPath === undefined) throw new DeleteConfigError('DELETE_FAILED')
+
+    this.activeDeletes.add(configId)
+    try {
+      try {
+        await this.loadConfig(configPath)
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') {
+          this.configs.delete(configId)
+          return
+        }
+        throw new DeleteConfigError('DELETE_FAILED')
+      }
+      if (this.activeStarts.has(configId) || this.activeApps.has(configId)) {
+        throw new DeleteConfigError('SESSION_ACTIVE')
+      }
+      try {
+        await unlink(configPath)
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== 'ENOENT') {
+          throw new DeleteConfigError('DELETE_FAILED')
+        }
+      }
+      this.configs.delete(configId)
+    } finally {
+      this.activeDeletes.delete(configId)
+    }
+  }
+
+  private resolveTrustedConfigPath(discovered: DiscoveredLaunchpadConfig): string | undefined {
+    const configPath = resolve(discovered.configPath)
+    const relativePath = relative(this.configDirectory, configPath)
+    if (
+      relativePath.length === 0 ||
+      isAbsolute(relativePath) ||
+      relativePath === '..' ||
+      relativePath.startsWith('../') ||
+      relativePath.startsWith('..\\') ||
+      dirname(configPath) !== this.configDirectory
+    ) {
+      return undefined
+    }
+    return configPath
   }
 
   private async launchWorkSession(
@@ -765,6 +871,12 @@ class ComposerLaunchError extends Error {
   }
 }
 
+class DeleteConfigError extends Error {
+  constructor(readonly code: 'UNKNOWN_CONFIG' | 'SESSION_ACTIVE' | 'DELETE_FAILED') {
+    super(code)
+  }
+}
+
 async function isDirectory(path: string): Promise<boolean> {
   return (await stat(path).catch(() => undefined))?.isDirectory() === true
 }
@@ -833,6 +945,27 @@ function parseStartBody(body: string):
     return { ok: false, error: 'configId is invalid' }
   }
   return { ok: true, configId: record.configId }
+}
+
+function parseConfigIdBody(body: string):
+  | { ok: true; configId: string }
+  | { ok: false } {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false }
+    const record = parsed as Record<string, unknown>
+    if (
+      Object.keys(record).length !== 1 ||
+      !Object.hasOwn(record, 'configId') ||
+      typeof record.configId !== 'string' ||
+      !/^[a-f0-9]{32}$/u.test(record.configId)
+    ) {
+      return { ok: false }
+    }
+    return { ok: true, configId: record.configId }
+  } catch {
+    return { ok: false }
+  }
 }
 
 function parseComposerBody(body: string): ComposerParseResult {

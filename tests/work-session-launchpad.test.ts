@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import vm from 'node:vm'
 
 import {
   createNovaWingLaunchpad,
@@ -149,6 +150,24 @@ async function postCreate(
   })
 }
 
+async function postDelete(
+  launchpad: NovaWingLaunchpad,
+  body: unknown,
+  headers: { token?: string; origin?: string } = {},
+): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
+    },
+    body: JSON.stringify(body),
+  })
+}
+
 async function postBranch(
   launchpad: NovaWingLaunchpad,
   targetRepo: string,
@@ -223,12 +242,17 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /data-task-id/u)
     assert.match(html, /data-task-goal/u)
     assert.match(html, /data-add-task/u)
+    assert.match(html, /data-delete-config-id=/u)
+    assert.match(html, />\s*删除\s*<\/button>/u)
     assert.match(html, /邮件通知（完成 \/ 失败 \/ 需人工）/u)
     assert.doesNotMatch(html, /name="autoPush"[^>]*disabled/u)
     const advanced = html.match(/<details>[\s\S]*?<\/details>/u)?.[0] ?? ''
     assert.doesNotMatch(advanced, /allowedPaths/u)
     assert.match(html, /name="allowedPaths"[^>]*required/u)
     assert.doesNotMatch(html, /expectedUrl|SMTP_|credential/u)
+    const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    assert.match(appJs, /确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。/u)
+    assert.match(appJs, /Work Session 正在运行，请先结束后再删除。/u)
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -725,6 +749,282 @@ await test('Browser can submit only a discovered configId, never an arbitrary co
     }, auth)).status, 400)
     assert.equal((await postStart(launchpad, { configId: '0'.repeat(32) }, auth)).status, 404)
     assert.equal(state.createCalls, 0)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Deleting a trusted config removes its file, Map entry, and rediscovered card', async () => {
+  const directory = await createConfigDirectory()
+  const configPath = join(directory, 'fly-weave.json')
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const configId = launchpad.getConfigs()[0]!.configId
+    const response = await postDelete(launchpad, { configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+    await assert.rejects(access(configPath), { code: 'ENOENT' })
+    assert.deepEqual(launchpad.getConfigs(), [])
+    const currentHtml = await (await fetch(address.url)).text()
+    assert.doesNotMatch(currentHtml, /data-config-card=/u)
+    assert.match(currentHtml, /没有发现可启动的 Work Session/u)
+  } finally {
+    await launchpad.close()
+  }
+
+  const reopened = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    assert.deepEqual(reopened.getConfigs(), [])
+    const reopenedAddress = await reopened.start()
+    const reopenedHtml = await (await fetch(reopenedAddress.url)).text()
+    assert.doesNotMatch(reopenedHtml, /data-config-card=/u)
+  } finally {
+    await reopened.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Deleting one trusted config preserves every other config file and card', async () => {
+  const directory = await createConfigDirectory()
+  const keptPath = join(directory, 'keep.json')
+  await writeFile(keptPath, JSON.stringify(trustedConfig({ sessionId: 'keep-session', goal: 'Keep this card' })), 'utf8')
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const deleted = launchpad.getConfigs().find((config) => config.goal === 'AgentRun Persistence')
+    assert.ok(deleted)
+    const response = await postDelete(launchpad, { configId: deleted.configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(launchpad.getConfigs().map((config) => config.goal), ['Keep this card'])
+    await access(keptPath)
+    await assert.rejects(access(join(directory, 'fly-weave.json')), { code: 'ENOENT' })
+    const html = await (await fetch(address.url)).text()
+    assert.match(html, /Keep this card/u)
+    assert.doesNotMatch(html, /AgentRun Persistence/u)
+    assert.equal((await readdir(directory)).filter((name) => name.endsWith('.json')).length, 1)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Deleting an unknown configId fails safely without deleting any file', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const response = await postDelete(launchpad, { configId: '0'.repeat(32) }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: 'UNKNOWN_CONFIG' })
+    await access(join(directory, 'fly-weave.json'))
+    assert.equal(launchpad.getConfigs().length, 1)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API rejects every client-supplied path field and cannot redirect deletion', async () => {
+  const directory = await createConfigDirectory()
+  const otherPath = join(directory, 'other.json')
+  await writeFile(otherPath, JSON.stringify(trustedConfig({ sessionId: 'other-session', goal: 'Other config' })), 'utf8')
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const configId = launchpad.getConfigs().find((config) => config.goal === 'AgentRun Persistence')!.configId
+    const response = await postDelete(launchpad, {
+      configId,
+      configPath: otherPath,
+      filename: '../other.json',
+    }, auth)
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), { error: 'INVALID_REQUEST' })
+    await access(join(directory, 'fly-weave.json'))
+    await access(otherPath)
+    assert.equal(launchpad.getConfigs().length, 2)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API requires both same Origin and the ephemeral token', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const configId = launchpad.getConfigs()[0]!.configId
+    assert.equal((await postDelete(launchpad, { configId }, { origin: address.url })).status, 403)
+    assert.equal((await postDelete(launchpad, { configId }, {
+      token: launchpad.getTokenForTest(), origin: 'http://evil.example',
+    })).status, 403)
+    await access(join(directory, 'fly-weave.json'))
+    assert.equal(launchpad.getConfigs().length, 1)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API refuses pending starts and running apps without closing them', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  let releaseCreate: (() => void) | undefined
+  let signalCreateStarted: (() => void) | undefined
+  const createGate = new Promise<void>((resolve) => { releaseCreate = resolve })
+  const createStarted = new Promise<void>((resolve) => { signalCreateStarted = resolve })
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      async createWorkSession(config, input) {
+        state.createCalls += 1
+        state.receivedServerPorts.push(input.serverPort)
+        state.receivedConfigIds.push(config.session.id)
+        state.receivedExecutorModels.push(config.executor.model)
+        signalCreateStarted?.()
+        await createGate
+        return {
+          controller: { start: () => { state.controllerStartCalls += 1; return { started: true } } },
+          async start() { state.startCalls += 1; return { url: 'http://127.0.0.1:54321' } },
+          async close() { state.closeCalls += 1 },
+        }
+      },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const configId = launchpad.getConfigs()[0]!.configId
+    const pendingStart = postStart(launchpad, { configId }, auth)
+    await createStarted
+    const whileStarting = await postDelete(launchpad, { configId }, auth)
+    assert.equal(whileStarting.status, 409)
+    assert.deepEqual(await whileStarting.json(), { error: 'SESSION_ACTIVE' })
+    await access(join(directory, 'fly-weave.json'))
+    assert.equal(state.closeCalls, 0)
+
+    releaseCreate?.()
+    assert.equal((await pendingStart).status, 202)
+    const whileRunning = await postDelete(launchpad, { configId }, auth)
+    assert.equal(whileRunning.status, 409)
+    assert.deepEqual(await whileRunning.json(), { error: 'SESSION_ACTIVE' })
+    await access(join(directory, 'fly-weave.json'))
+    assert.equal(state.closeCalls, 0)
+  } finally {
+    releaseCreate?.()
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API treats an already-missing config file as success and removes the ghost Map entry', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const configId = launchpad.getConfigs()[0]!.configId
+    await rm(join(directory, 'fly-weave.json'))
+    const response = await postDelete(launchpad, { configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+    assert.deepEqual(launchpad.getConfigs(), [])
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Browser delete confirmation removes only the successful card and reveals the empty state', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const configId = launchpad.getConfigs()[0]!.configId
+    const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    const errorElement = { textContent: '' }
+    let cardRemoved = false
+    const card = {
+      querySelector(selector: string) { return selector === '[data-launch-error]' ? errorElement : undefined },
+      remove() { cardRemoved = true },
+    }
+    const sessionList = {
+      hidden: false,
+      querySelector(selector: string) {
+        return selector === '[data-config-card]' && !cardRemoved ? card : undefined
+      },
+    }
+    const emptyState = { hidden: true }
+    let deleteListener: (() => Promise<void>) | undefined
+    const deleteButton = {
+      dataset: { deleteConfigId: configId },
+      disabled: false,
+      textContent: '删除',
+      addEventListener(type: string, listener: () => Promise<void>) {
+        if (type === 'click') deleteListener = listener
+      },
+      closest(selector: string) { return selector === '[data-config-card]' ? card : undefined },
+    }
+    let confirmMessage = ''
+    let confirmAllowed = false
+    let submittedBody: unknown
+    const document = {
+      getElementById(id: string) {
+        return id === 'novawing-bootstrap'
+          ? { textContent: JSON.stringify({ launchToken: launchpad.getTokenForTest(), serverOrigin: address.url }) }
+          : undefined
+      },
+      querySelectorAll(selector: string) {
+        if (selector === '[data-delete-config-id]') return [deleteButton]
+        return []
+      },
+      querySelector(selector: string) {
+        if (selector === '[data-session-list]') return sessionList
+        if (selector === '[data-empty-state]') return emptyState
+        return undefined
+      },
+    }
+    const browserFetch = async (path: string, init: RequestInit): Promise<Response> => {
+      submittedBody = JSON.parse(String(init.body)) as unknown
+      return fetch(`${address.url}${path}`, {
+        ...init,
+        headers: { ...(init.headers as Record<string, string>), Origin: address.url },
+      })
+    }
+    vm.runInNewContext(appJs, {
+      document,
+      fetch: browserFetch,
+      window: {
+        confirm(message: string) { confirmMessage = message; return confirmAllowed },
+        location: { assign() { throw new Error('delete must not navigate') } },
+      },
+    })
+    assert.ok(deleteListener)
+    await deleteListener()
+    assert.equal(confirmMessage, '确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。')
+    assert.equal(submittedBody, undefined)
+    assert.equal(cardRemoved, false)
+    assert.equal(sessionList.hidden, false)
+    assert.equal(emptyState.hidden, true)
+
+    confirmAllowed = true
+    await deleteListener()
+    assert.deepEqual(submittedBody, { configId })
+    assert.equal(cardRemoved, true)
+    assert.equal(sessionList.hidden, true)
+    assert.equal(emptyState.hidden, false)
+    assert.equal(errorElement.textContent, '')
+    assert.deepEqual(launchpad.getConfigs(), [])
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
