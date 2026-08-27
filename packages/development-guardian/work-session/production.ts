@@ -284,7 +284,7 @@ function defaultStorageUrl(sessionId: string, env: NodeJS.ProcessEnv): string {
 }
 
 function brainReasoning(env: NodeJS.ProcessEnv): 'auto' | 'instant' | 'medium' | 'high' {
-  const value = env.NOVAWING_CHATGPT_REASONING?.trim() || 'medium'
+  const value = env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
   if (value !== 'auto' && value !== 'instant' && value !== 'medium' && value !== 'high') {
     throw new Error('NOVAWING_CHATGPT_REASONING is invalid')
   }
