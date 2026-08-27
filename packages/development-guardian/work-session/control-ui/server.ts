@@ -138,6 +138,9 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/resume') {
       return this.serveResume(req, res)
     }
+    if (method === 'POST' && path === '/api/session/resume-recoverable') {
+      return this.serveResumeRecoverable(req, res)
+    }
     if (method === 'POST' && path === '/api/session/approve-verification') {
       return this.serveApproveVerification(req, res)
     }
@@ -155,6 +158,7 @@ export class WorkSessionControlServer {
       '/api/session/pause',
       '/api/session/stop-after-task',
       '/api/session/resume',
+      '/api/session/resume-recoverable',
       '/api/session/approve-verification',
       '/api/session/recover-checkpoint',
     ])
@@ -268,6 +272,30 @@ export class WorkSessionControlServer {
         this.respondJson(res, 202, { accepted: true })
       } else {
         this.respondJson(res, 409, { error: result.reason ?? 'resume rejected' })
+      }
+    })
+  }
+
+  private serveResumeRecoverable(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) {
+      return
+    }
+    const contentType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(res, 415, { error: 'content type must be application/json' })
+      return
+    }
+    this.readBodyWithLimit(req, res, (body) => {
+      const parsed = parseResumeBody(body)
+      if (!parsed.ok) {
+        this.respondJson(res, 400, { error: parsed.error })
+        return
+      }
+      const result = this.controller.resumeRecoverable(parsed.input)
+      if (result.accepted) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: result.reason ?? 'recoverable resume rejected' })
       }
     })
   }

@@ -3,6 +3,7 @@
  */
 
 export * from './model.js'
+export * from './recoverability.js'
 export * from './task-runner.js'
 export * from './fake-task-runner.js'
 export * from './guardian-task-runner.js'

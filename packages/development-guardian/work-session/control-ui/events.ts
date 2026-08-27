@@ -9,6 +9,10 @@
 
 import type { WorkSessionDefinition, WorkSessionDurableState } from '../model.js'
 import type { ExecutionLedgerEvent } from '../execution-ledger.js'
+import type {
+  WorkSessionDisplayState,
+  WorkSessionRecoverySummary,
+} from '../recoverability.js'
 
 /**
  * recent event 类型。SSE 把 GUARDIAN_PHASE 映射为 `event: guardian`，
@@ -83,6 +87,10 @@ export interface WorkSessionControlSnapshot {
   runtime: {
     started: boolean
     running: boolean
+    /** T021: 当前进程内是否存在真正启动/恢复过执行的 Runtime Runner。 */
+    hasActiveExecution?: boolean
+    /** T021: 派生展示状态（持久化 state 与 runtime liveness 分离后的单一来源）。 */
+    displayState?: WorkSessionDisplayState
     state?: string
     currentTaskId?: string | null
     completedTaskIds?: readonly string[]
@@ -111,6 +119,8 @@ export interface WorkSessionControlSnapshot {
     suspensionReason?: string
     cancellationReason?: string
     recovery?: { available: boolean; kind: 'GIT_PUSH'; taskId: string }
+    /** T021: 从持久化事实推导的恢复信息；仅 RECOVERABLE 展示状态时存在。 */
+    recoverableSummary?: WorkSessionRecoverySummary
   }
   controls: {
     pauseRequested: boolean
@@ -137,6 +147,10 @@ export interface WorkSessionControlRuntime {
   resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
   approvePendingVerificationAndContinue?(): Promise<WorkSessionDurableState>
   recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
+  /** T021: 当前进程内是否真正启动/恢复过执行；用于区分持久化 state 与 runtime liveness。 */
+  hasActiveExecution?(): boolean
+  /** T021: 显式恢复 crash-遗留的 RUNNING session（无 suspend step）。 */
+  resumeInterrupted?(): Promise<WorkSessionDurableState>
   requestPause(): { accepted: boolean; reason?: string }
   requestStopAfterTask(): { accepted: boolean; reason?: string }
   getControlIntents(): { pauseRequested: boolean; stopAfterTaskRequested: boolean }

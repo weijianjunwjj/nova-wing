@@ -33,6 +33,11 @@ test('Finding #8: Claude Provider insufficient account balance requires credenti
       stopReason: 'brain reported blocked',
       lastReport: report({ blockers: ['Claude Code failed with 403 Insufficient account balance'] }),
     }),
+    task({
+      stopReason:
+        'Reviewer cannot continue because the old Claude Code report has HTTP 402 Insufficient Balance; changed_files are within allowed_paths and no forbidden_paths violation was found',
+      lastReport: report({ blockers: ['Claude Code failed with HTTP 402 Insufficient Balance'] }),
+    }),
   ]) {
     const humanRequired = classifyHumanRequired(candidate)
     assert.equal(humanRequired.category, 'CREDENTIAL_REQUIRED')

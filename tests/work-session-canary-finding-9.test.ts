@@ -3,15 +3,18 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 import {
   ClaudeCodeExecutor,
+  WorkSessionRuntime,
   type DelegationPacket,
   type ExecutionReport,
   type GuardianBrain,
   type GuardianCommandRequest,
   type GuardianTask,
+  type WorkSessionDefinition,
 } from 'nova-wing/development-guardian'
 import { guardianShellTestCommand, isClaudeShellRequest, isGuardianShellRequest } from './guardian-shell-fixture.js'
 import type {
@@ -20,6 +23,7 @@ import type {
   RepositoryCheckpoint,
 } from '../packages/development-guardian/work-session/checkpoint.js'
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
+import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import {
   computeWorktreeFingerprint,
   parseGitStatus,
@@ -261,7 +265,15 @@ test('Finding #9: ordinary, Brain-only, and non-credential recovery keep Executo
       assert.equal(args[resumeIndex + 1], 'healthy-executor-session', stopReason)
     }
   } finally {
-    await rm(tempDir, { recursive: true, force: true })
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rm(tempDir, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 4) break
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
   }
 })
 
@@ -296,6 +308,9 @@ test('Finding #9: Executor credential recovery keeps Reviewer and repository con
     assert.equal(brain.conversationUrl, 'https://chatgpt.com/c/existing-reviewer')
     assert.equal(brain.reviewedTasks[0]?.recoveryContinuation, true)
     assert.deepEqual(brain.reviewedTasks[0]?.resumeInput, { approval: true })
+    assert.equal(brain.reviewedTasks[0]?.lastReport, undefined)
+    assert.equal(brain.reviewedTasks[0]?.stopReason, undefined)
+    assert.notEqual(brain.reviewedTasks[1]?.lastReport?.summary, 'Claude Code failed with 403 Insufficient account balance')
 
     assert.equal(fixture.claudeRequests.length, 1)
     const args = claudeArguments(fixture.claudeRequests[0]!)
@@ -315,6 +330,104 @@ test('Finding #9: Executor credential recovery keeps Reviewer and repository con
     })
   } finally {
     await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('Finding #9 + T021: persisted 402 survives restart as evidence but resumes through a fresh Executor report', async () => {
+  const { tempDir, repoPath, gitRunner } = await setupRepository()
+  try {
+    const repo = await captureRepositoryCheckpoint(repoPath, gitRunner)
+    const staleCheckpoint = checkpoint(
+      recoveryTask(
+        'Reviewer cannot continue because the old Claude Code report has HTTP 402 Insufficient Balance; changed_files are within allowed_paths and no forbidden_paths violation was found',
+        { blockers: ['Claude Code failed with HTTP 402 Insufficient Balance'] },
+      ),
+      repo,
+      {
+        chatgptConversationUrl: 'https://chatgpt.com/c/existing-reviewer',
+        claudeSessionId: 'stale-executor-session',
+      },
+    )
+    const definition: WorkSessionDefinition = {
+      id: 'finding-9-t021-restart',
+      targetRepo: repoPath,
+      branch: repo.branch,
+      tasks: [{ id: 'T1', goal: 'continue the partially implemented task' }],
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 1 },
+    }
+    const storageUrl = pathToFileURL(join(tempDir, 'session.db')).href
+
+    const runtime1 = new WorkSessionRuntime({
+      definition,
+      storageUrl,
+      taskRunner: {
+        async run() {
+          return {
+            status: 'HUMAN_REQUIRED' as const,
+            humanRequired: {
+              category: 'SAFETY_BLOCKED',
+              reason: staleCheckpoint.task.stopReason ?? 'legacy misclassification',
+            },
+            checkpoint: staleCheckpoint,
+          }
+        },
+      },
+    })
+    const suspended = await runtime1.start()
+    assert.equal(suspended.state, 'SUSPENDED')
+    assert.equal(suspended.currentTaskCheckpoint?.provider.claudeSessionId, 'stale-executor-session')
+    await runtime1.close()
+
+    const brain = new RecordingBrain([revisePacket(), terminalPacket('done')])
+    const fixture = createExecutorFixture(repoPath, gitRunner, 'new-provider-session')
+    const runtime2 = new WorkSessionRuntime({
+      definition,
+      storageUrl,
+      taskRunner: new GuardianWorkSessionTaskRunner({
+        brain,
+        createExecutor: () => fixture.executor,
+        repoPath,
+        gitRunner,
+      }),
+    })
+    const controller = new WorkSessionControlController({
+      createRuntime: () => runtime2,
+      pollIntervalMs: 10,
+    })
+    const hydrated = await controller.loadPersistedState()
+    assert.equal(hydrated?.sessionId, definition.id)
+    assert.equal(controller.getSnapshot().runtime.displayState, 'RECOVERABLE')
+    assert.equal(controller.getSnapshot().runtime.humanRequired?.category, 'CREDENTIAL_REQUIRED')
+
+    const accepted = controller.resumeRecoverable({ approval: true })
+    assert.equal(accepted.accepted, true)
+    await controller.getResumePromise()
+
+    const completed = runtime2.getDurableState()
+    assert.equal(completed?.sessionId, definition.id)
+    assert.equal(completed?.state, 'COMPLETED')
+    assert.deepEqual(completed?.completedTaskIds, ['T1'])
+    assert.equal(brain.restoreCalls, 1, 'Reviewer continuation must be restored')
+    assert.equal(brain.reviewedTasks[0]?.lastReport, undefined, 'old 402 report must be stale')
+    assert.equal(brain.reviewedTasks[0]?.stopReason, undefined, 'old 402 blocker must be stale')
+    assert.equal(brain.reviewedTasks[1]?.lastReport?.summary, 'continued existing task')
+    assert.equal(fixture.claudeRequests.length, 1, 'new Executor must run exactly once')
+    const args = claudeArguments(fixture.claudeRequests[0]!)
+    assert.equal(args.includes('--resume'), false)
+    assert.equal(args.includes('stale-executor-session'), false)
+
+    controller.close()
+    await runtime2.close()
+  } finally {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rm(tempDir, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 4) break
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
   }
 })
 

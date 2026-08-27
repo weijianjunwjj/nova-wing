@@ -278,7 +278,7 @@ export interface ProductionWorkSessionUi {
   close(): Promise<void>
 }
 
-function defaultStorageUrl(sessionId: string, env: NodeJS.ProcessEnv): string {
+export function defaultStorageUrl(sessionId: string, env: NodeJS.ProcessEnv): string {
   const base = env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing')
   return new URL(`file:///${join(base, 'NovaWing', 'work-sessions', `${sessionId}.db`).replaceAll('\\', '/')}`).href
 }

@@ -18,6 +18,9 @@ function renderCard(config: LaunchpadConfigSummary): string {
     config.autoPush ? 'Auto Push' : 'No Auto Push',
   ].join(' · ')
   const emailLabel = config.emailEnabled ? 'Email Enabled' : 'Email Disabled'
+  const status = config.status ?? 'READY'
+  const recoverable = status === 'RECOVERABLE'
+  const buttonLabel = recoverable ? '继续 Work Session' : '打开 Work Session'
 
   return `
     <article class="session-card" data-config-card="${escapeHtml(config.configId)}">
@@ -27,7 +30,7 @@ function renderCard(config: LaunchpadConfigSummary): string {
           <h2>${escapeHtml(config.project)}</h2>
         </div>
         <div class="card-actions">
-          <span class="card-state" data-card-state>READY</span>
+          <span class="card-state" data-card-state>${escapeHtml(status)}</span>
           <button class="delete-button" type="button" data-delete-config-id="${escapeHtml(config.configId)}">
             删除
           </button>
@@ -50,7 +53,7 @@ function renderCard(config: LaunchpadConfigSummary): string {
       <p class="launch-error" data-launch-error role="alert" aria-live="polite"></p>
       <button class="launch-button" type="button" data-config-id="${escapeHtml(config.configId)}">
         <span aria-hidden="true">▶</span>
-        <span data-button-label>打开 Work Session</span>
+        <span data-button-label>${escapeHtml(buttonLabel)}</span>
       </button>
     </article>`
 }
@@ -175,6 +178,8 @@ export const LAUNCHPAD_APP_JS = `
       const error = card && card.querySelector('[data-launch-error]')
       if (!configId || !label || !state || !error) return
 
+      const originalState = state.textContent
+      const originalLabel = label.textContent
       button.disabled = true
       label.textContent = '正在打开 NovaWing...'
       state.textContent = 'STARTING'
@@ -194,8 +199,8 @@ export const LAUNCHPAD_APP_JS = `
         window.location.assign(result.controlUrl)
       } catch {
         button.disabled = false
-        label.textContent = '打开 Work Session'
-        state.textContent = 'READY'
+        label.textContent = originalLabel
+        state.textContent = originalState
         state.classList.remove('is-starting')
         error.textContent = 'Work Session 启动失败'
       }

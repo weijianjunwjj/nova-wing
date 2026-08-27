@@ -7,12 +7,19 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import {
   createProductionWorkSessionUi,
   createProductionGitRunner,
+  defaultStorageUrl,
   loadTrustedWorkSessionConfig,
   validateTrustedWorkSessionConfig,
   type ProductionGitProcessRunner,
   type ProductionWorkSessionUi,
   type TrustedWorkSessionConfig,
 } from '../production.js'
+import { WorkSessionRuntime } from '../runtime.js'
+import {
+  deriveDisplayState,
+  type WorkSessionDisplayState,
+} from '../recoverability.js'
+import { fileURLToPath } from 'node:url'
 import { resolveProductionSmtpEnvironment } from '../local-smtp-secrets.js'
 import {
   LAUNCHPAD_APP_JS,
@@ -62,10 +69,13 @@ export interface LaunchpadConfigSummary {
   autoCommit: boolean
   autoPush: boolean
   emailEnabled: boolean
+  /** T021: 派生展示状态（持久化 state 与当前进程 Runner 存活状态分离）。start() 前为 undefined。 */
+  status?: WorkSessionDisplayState
 }
 
 interface DiscoveredLaunchpadConfig {
   configPath: string
+  config: TrustedWorkSessionConfig
   summary: LaunchpadConfigSummary
 }
 
@@ -90,6 +100,8 @@ export interface NovaWingLaunchpadDependencies {
   ) => Promise<ManagedWorkSessionApp>
   gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
+  /** T021: 读取某 config 对应持久化 Session 的派生展示状态（缺省读 Mastra storage）。 */
+  readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
 }
 
 interface LaunchResult {
@@ -223,7 +235,7 @@ export async function discoverTrustedWorkSessionConfigs(
     try {
       const config = await loadConfig(configPath)
       const configId = randomBytes(16).toString('hex')
-      discovered.push({ configPath, summary: summaryFromConfig(configId, config) })
+      discovered.push({ configPath, config, summary: summaryFromConfig(configId, config) })
     } catch {
       // One invalid trusted config must not prevent the remaining cards from loading.
     }
@@ -286,6 +298,8 @@ export class NovaWingLaunchpad {
   private readonly createWorkSession: NonNullable<NovaWingLaunchpadDependencies['createWorkSession']>
   private readonly gitProcessRunner: ProductionGitProcessRunner | undefined
   private readonly shutdownTimeoutMs: number
+  private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
+  private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
   private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
@@ -318,13 +332,31 @@ export class NovaWingLaunchpad {
     )
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
     this.gitProcessRunner = dependencies.gitProcessRunner
+    this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
     this.server = createServer((request, response) => {
       void this.handle(request, response)
     })
   }
 
   getConfigs(): readonly LaunchpadConfigSummary[] {
-    return [...this.configs.values()].map((config) => ({ ...config.summary }))
+    return [...this.configs.values()].map((config) => {
+      const status = this.statuses.get(config.summary.configId)
+      return { ...config.summary, ...(status === undefined ? {} : { status }) }
+    })
+  }
+
+  /** T021: 读取每个 config 的持久化状态并派生展示状态。只发现、不自动恢复。 */
+  private async hydrateStatuses(): Promise<void> {
+    await Promise.all([...this.configs.values()].map(async (config) => {
+      const configId = config.summary.configId
+      try {
+        const status = await this.readSessionStatus(config.config)
+        this.statuses.set(configId, status)
+      } catch {
+        // 读取失败按 READY 处理（与 discovery 的容错一致），不阻塞其余卡片。
+        this.statuses.set(configId, 'READY')
+      }
+    }))
   }
 
   getAddress(): NovaWingLaunchpadAddress | undefined {
@@ -338,6 +370,7 @@ export class NovaWingLaunchpad {
   async start(): Promise<NovaWingLaunchpadAddress> {
     if (this.closed) throw new Error('Launchpad is closed')
     if (this.address !== undefined) return this.address
+    await this.hydrateStatuses()
     await new Promise<void>((resolveStart, rejectStart) => {
       const onError = (error: Error): void => rejectStart(error)
       this.server.once('error', onError)
@@ -803,7 +836,7 @@ export class NovaWingLaunchpad {
     const configPath = await persistComposedTrustedWorkSessionConfig(this.configDirectory, config)
       .catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
     const configId = randomBytes(16).toString('hex')
-    this.configs.set(configId, { configPath, summary: summaryFromConfig(configId, config) })
+    this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
     const env = await this.resolveEnvironment(config).catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
     const app = await this.createWorkSession(config, { env, serverPort: 0 }).catch(() => {
       throw new ComposerLaunchError('SESSION_START_FAILED')
@@ -1179,4 +1212,44 @@ async function bounded(work: Promise<void>, timeoutMs: number): Promise<void> {
   })
   await Promise.race([work, timeout])
   if (timer !== undefined) clearTimeout(timer)
+}
+
+/**
+ * T021: 生产默认的 Launchpad 状态读取。读 Mastra workflow 持久化 domain state，
+ * 不创建/启动 Runner（loadPersistedState 只 hydrate，不执行）。db 文件不存在即 READY。
+ */
+async function readProductionSessionStatus(
+  config: TrustedWorkSessionConfig,
+): Promise<WorkSessionDisplayState> {
+  const storageUrl = config.storageUrl ?? defaultStorageUrl(config.session.id, process.env)
+  const exists = await stat(fileURLToPath(storageUrl))
+    .then((entry) => entry.isFile())
+    .catch(() => false)
+  if (!exists) {
+    return 'READY'
+  }
+
+  const definition = {
+    id: config.session.id,
+    targetRepo: config.session.targetRepo,
+    branch: config.session.branch,
+    tasks: config.tasks.map((task) => ({ id: task.id, goal: task.goal })),
+    limits: { ...config.session.limits },
+  }
+  const runtime = new WorkSessionRuntime({
+    definition,
+    storageUrl,
+    taskRunner: {
+      async run() {
+        return { status: 'FAILED' as const, error: 'read-only session status probe' }
+      },
+    },
+  })
+  try {
+    const state = await runtime.loadPersistedState()
+    // Launchpad 不持有活动 Runner：非终态即 RECOVERABLE。
+    return deriveDisplayState(state, false)
+  } finally {
+    await runtime.close()
+  }
 }

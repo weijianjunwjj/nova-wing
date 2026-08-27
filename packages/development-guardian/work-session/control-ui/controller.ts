@@ -18,6 +18,11 @@ import type {
   WorkSessionDurableState,
   HumanRequired,
 } from '../model.js'
+import {
+  deriveDisplayState,
+  deriveRecoverySummary,
+  isTerminalWorkSessionState,
+} from '../recoverability.js'
 import type { GuardianProgressEvent, GuardianProgressObserver } from '../../progress.js'
 import type {
   NotificationDeliveryObserver,
@@ -30,6 +35,7 @@ import type {
   WorkSessionControlRuntime,
   ControlSubscriber,
 } from './events.js'
+import { isExecutorProviderCredentialRecovery } from '../guardian-task-runner.js'
 
 /** runtime factory：控制面注入 createRuntime(eventSink)，测试注入 fake runtime。 */
 export type WorkSessionRuntimeFactory = (
@@ -53,6 +59,22 @@ const SAFE_SESSION_FAILED_MESSAGE = 'Work Session 失败。请检查本地诊断
 const SAFE_POST_RESUME_HUMAN_REASON = '需要补充信息。请检查本地诊断信息。'
 const SAFE_BRAIN_FAILURE_MESSAGE =
   '无法完成 Brain transport/configuration。Brain 尚未完成 Review。当前执行进度已保留。'
+const SAFE_EXECUTOR_CREDENTIAL_RECOVERY_REASON =
+  'Executor Provider 凭据、余额或账户设置需要在 NovaWing 外完成。现有 repository checkpoint 将保留。'
+
+function effectiveHumanRequired(state: WorkSessionDurableState): HumanRequired | undefined {
+  const checkpoint = state.currentTaskCheckpoint
+  if (
+    checkpoint !== undefined &&
+    isExecutorProviderCredentialRecovery(checkpoint.task)
+  ) {
+    return {
+      category: 'CREDENTIAL_REQUIRED',
+      reason: SAFE_EXECUTOR_CREDENTIAL_RECOVERY_REASON,
+    }
+  }
+  return state.humanRequired
+}
 
 export interface ControlResumeInput {
   decision?: string
@@ -226,7 +248,7 @@ export class WorkSessionControlController {
       ? 'USER_PAUSED'
       : state.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED'
         ? 'BRAIN_INFRASTRUCTURE_FAILED'
-        : state.humanRequired?.category ?? 'UNKNOWN'
+        : effectiveHumanRequired(state)?.category ?? 'UNKNOWN'
     const safeEventData = {
       taskId: state.currentTaskId,
       category,
@@ -241,6 +263,57 @@ export class WorkSessionControlController {
     // passed only to the runtime/provider path and never copied into events/status.
     this.resumePromise = this.runtime
       .resume(validated.input ?? {})
+      .then(() => {
+        this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
+        this.broadcastSnapshot()
+      })
+      .catch(() => {
+        this.emit({
+          type: 'SESSION_FAILED',
+          data: { message: SAFE_SESSION_FAILED_MESSAGE },
+        })
+        this.broadcastSnapshot()
+      })
+      .finally(() => {
+        this.resumePromise = undefined
+      })
+
+    return { accepted: true }
+  }
+
+  /**
+   * T021: 显式恢复一个 RECOVERABLE / INTERRUPTED Session。
+   *
+   * 分派：
+   * - 持久化 state=SUSPENDED（正常 suspend，Mastra status='suspended'）→ 走既有 resume()；
+   * - 持久化 state=RUNNING（进程异常退出遗留）→ 走 runtime.resumeInterrupted()。
+   *
+   * 必须由用户显式触发；loadPersistedState 只发现不恢复。idempotent：resumePromise
+   * 保证同一 Session 最多只有一个活动恢复在途。
+   */
+  resumeRecoverable(input: ControlResumeInput): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    if (state === undefined || isTerminalWorkSessionState(state.state)) {
+      return { accepted: false, reason: 'session is not recoverable' }
+    }
+    if (this.runtime.hasActiveExecution?.() ?? false) {
+      return { accepted: false, reason: 'session already has an active runner' }
+    }
+    if (state.state === 'SUSPENDED') {
+      return this.resume(input)
+    }
+    if (this.runtime.resumeInterrupted === undefined) {
+      return { accepted: false, reason: 'interrupted resume is unavailable' }
+    }
+    if (this.resumePromise !== undefined) {
+      return { accepted: false, reason: 'resume already in progress' }
+    }
+
+    const safeEventData = { taskId: state.currentTaskId, category: 'RECOVERABLE' }
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.broadcastSnapshot()
+
+    this.resumePromise = this.runtime.resumeInterrupted()
       .then(() => {
         this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
         this.broadcastSnapshot()
@@ -310,7 +383,14 @@ export class WorkSessionControlController {
     const definition = this.runtime.getDefinition()
     const state = this.runtime.getDurableState()
     const controls = this.runtime.getControlIntents()
-    const executionLedger = this.runtime.readExecutionLedger?.().slice(-50)
+    const hasActiveExecution = this.runtime.hasActiveExecution?.() ?? false
+    const displayState = deriveDisplayState(state, hasActiveExecution)
+    const fullLedger = this.runtime.readExecutionLedger?.()
+    const executionLedger = fullLedger?.slice(-50)
+    const recoverableSummary =
+      displayState === 'RECOVERABLE' && state !== undefined
+        ? deriveRecoverySummary(definition, state, fullLedger ?? [])
+        : undefined
 
     return {
       server: { ...this.serverInfo },
@@ -328,6 +408,8 @@ export class WorkSessionControlController {
       runtime: {
         started: this.started,
         running: state?.state === 'RUNNING',
+        hasActiveExecution,
+        displayState,
         ...(state !== undefined
           ? {
               state: state.state,
@@ -373,6 +455,7 @@ export class WorkSessionControlController {
               // Web snapshot 只暴露 FAILED state，不复制 raw failureReason。
             }
           : {}),
+        ...(recoverableSummary === undefined ? {} : { recoverableSummary }),
       },
       controls,
       guardian: this.guardianPhase !== undefined ? { ...this.guardianPhase } : {},
@@ -627,7 +710,7 @@ export class WorkSessionControlController {
   }
 
   private safeHumanRequired(state: WorkSessionDurableState): HumanRequired {
-    const humanRequired = state.humanRequired
+    const humanRequired = effectiveHumanRequired(state)
     if (humanRequired === undefined) {
       return { category: 'UNKNOWN', reason: SAFE_POST_RESUME_HUMAN_REASON }
     }
@@ -754,7 +837,7 @@ function validateResumeForState(
     return { accepted: true, input: {} }
   }
 
-  switch (state.humanRequired?.category) {
+  switch (effectiveHumanRequired(state)?.category) {
     case 'DECISION_REQUIRED':
     case 'STALLED':
       if (!hasDecision || hasApproval) {

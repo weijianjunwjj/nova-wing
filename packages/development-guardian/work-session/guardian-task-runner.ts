@@ -204,6 +204,18 @@ function isRepoDriftReason(reason: string): boolean {
   return REPO_DRIFT_PATTERNS.some((pattern) => pattern.test(reason))
 }
 
+const SCOPE_VIOLATION_PATTERNS: readonly RegExp[] = [
+  /\bscope violation\b/iu,
+  /\boutside (?:the )?allowed scope\b/iu,
+  /\binside (?:the )?forbidden scope\b/iu,
+  /\bforbidden (?:path|file|scope|operation|action)\b/iu,
+]
+
+function hasScopeViolationEvidence(task: GuardianTask, reason: string): boolean {
+  return [reason, ...(task.lastReport?.blockers ?? [])]
+    .some((item) => SCOPE_VIOLATION_PATTERNS.some((pattern) => pattern.test(item)))
+}
+
 function providerFailureEvidence(task: GuardianTask, reason: string): string {
   const report = task.lastReport
   if (report === undefined) {
@@ -257,9 +269,13 @@ function isProviderCredentialRequired(task: GuardianTask, reason: string): boole
  * product decisions, repository drift, and other HUMAN_REQUIRED causes keep the
  * Executor session eligible for Exact Resume.
  */
-function isExecutorProviderCredentialRecovery(task: GuardianTask): boolean {
+export function isExecutorProviderCredentialRecovery(task: GuardianTask): boolean {
   const reason = task.stopReason ?? 'unknown'
   const evidence = providerFailureEvidence(task, reason)
+
+  if (hasScopeViolationEvidence(task, reason) || isRepoDriftReason(reason)) {
+    return false
+  }
 
   // Require the Executor context and credential prerequisite to occur in the
   // same structured evidence item. This avoids combining an unrelated Claude
@@ -268,6 +284,20 @@ function isExecutorProviderCredentialRecovery(task: GuardianTask): boolean {
     /\b(?:claude code|executor provider|model provider)\b/iu.test(item) &&
     hasProviderCredentialPrerequisite(item),
   )
+}
+
+/**
+ * A user-confirmed Executor credential recovery makes only the failed provider
+ * attempt stale. Keep task identity, constraints, Reviewer packet, iteration,
+ * and repository checkpoint, but do not present the old 402/auth report as the
+ * current execution result to the Reviewer.
+ */
+function invalidateResolvedExecutorCredentialFailure(task: GuardianTask): GuardianTask {
+  const recovered: GuardianTask = { ...task, state: 'READY' }
+  delete recovered.lastReport
+  delete recovered.stopReason
+  delete recovered.brainFailure
+  return recovered
 }
 
 /**
@@ -302,7 +332,7 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   }
 
   // Scope violation
-  if (reason.includes('scope violation') || reason.includes('forbidden') || reason.includes('allowed scope')) {
+  if (hasScopeViolationEvidence(task, reason)) {
     return {
       category: 'SAFETY_BLOCKED',
       reason,
@@ -688,7 +718,8 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       // the independently healthy Brain session, but do not inject the stale
       // Claude session into the new Executor instance. Repository recovery is
       // still authorized solely by the already-passed fail-closed gate above.
-      const restoreExecutorSession = !isExecutorProviderCredentialRecovery(checkpoint.task)
+      const executorCredentialRecovery = isExecutorProviderCredentialRecovery(checkpoint.task)
+      const restoreExecutorSession = !executorCredentialRecovery
       this.restoreProviderState(
         checkpoint,
         this.options.brain,
@@ -700,7 +731,9 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       // 通过 task identity gate（run 顶部）与 RepositoryCheckpoint gate（上方）之后即视为延续，
       // 不由 sessionId / conversationUrl / lastPacket / lastReport 推断。
       guardianTask = {
-        ...checkpoint.task,
+        ...(executorCredentialRecovery
+          ? invalidateResolvedExecutorCredentialFailure(checkpoint.task)
+          : checkpoint.task),
         recoveryContinuation: true,
         resumeInput: sanitizedResumeInput,
       }

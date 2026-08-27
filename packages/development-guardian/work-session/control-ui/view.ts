@@ -80,6 +80,35 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <span id="resume-note" class="note"></span>
   </section>
 
+  <section id="recoverable-card" class="card decision" hidden>
+    <h2 id="recoverable-title">可恢复的 Work Session</h2>
+    <div class="row">
+      <span class="label">最后活动</span>
+      <span id="recoverable-last-activity" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">最后完成 Task</span>
+      <span id="recoverable-last-task" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">当前 Task</span>
+      <span id="recoverable-current-task" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">当前 Phase</span>
+      <span id="recoverable-phase" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">最后可靠 checkpoint</span>
+      <span id="recoverable-checkpoint" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">下一步</span>
+      <span id="recoverable-next" class="value">—</span>
+    </div>
+    <button id="resume-recoverable-btn" type="button" class="primary">继续 Work Session</button>
+  </section>
+
   <section class="card">
     <h2>任务（Task）</h2>
     <ol id="task-list" class="task-list"></ol>
@@ -173,6 +202,7 @@ var BADGE_CLASS = {
   READY: 'badge-ready',
   RUNNING: 'badge-running',
   SUSPENDED: 'badge-suspended',
+  RECOVERABLE: 'badge-recoverable',
   COMPLETED: 'badge-completed',
   FAILED: 'badge-failed',
   CANCELLED: 'badge-cancelled'
@@ -182,6 +212,7 @@ var STATE_LABELS = {
   READY: '就绪',
   RUNNING: '运行中',
   SUSPENDED: '已暂停',
+  RECOVERABLE: '可恢复',
   COMPLETED: '已完成',
   FAILED: '失败',
   CANCELLED: '已取消'
@@ -236,11 +267,11 @@ function render(snapshot) {
     '软限制 ' + cfg.limits.softMinutes + ' 分钟 · 硬限制 ' + cfg.limits.hardMinutes +
     ' 分钟 · 最多 ' + cfg.limits.maxTasks + ' 个 Task')
 
-  var state = rt.state || 'READY'
+  var displayState = rt.displayState || rt.state || 'READY'
   var badge = el('state-badge')
   if (badge) {
-    badge.textContent = displayValue(state, STATE_LABELS)
-    badge.className = 'badge ' + (BADGE_CLASS[state] || 'badge-ready')
+    badge.textContent = displayValue(displayState, STATE_LABELS)
+    badge.className = 'badge ' + (BADGE_CLASS[displayState] || 'badge-ready')
   }
 
   renderTasks(cfg, rt)
@@ -248,11 +279,12 @@ function render(snapshot) {
   renderRecent(snapshot.recentEvents || [])
   renderLedger(snapshot.executionLedger || [])
   renderDecision(rt)
+  renderRecoverable(rt)
   renderControls(rt, snapshot.controls || {})
 }
 
 function renderControls(rt, controls) {
-  var state = rt.state || 'READY'
+  var displayState = rt.displayState || rt.state || 'READY'
   var startBtn = el('start-btn')
   var pauseBtn = el('pause-btn')
   var stopBtn = el('stop-btn')
@@ -260,20 +292,37 @@ function renderControls(rt, controls) {
     startBtn.hidden = rt.started === true
   }
   if (pauseBtn) {
-    pauseBtn.hidden = state !== 'RUNNING'
+    pauseBtn.hidden = displayState !== 'RUNNING'
     pauseBtn.disabled = controls.pauseRequested === true
     pauseBtn.textContent = controls.pauseRequested === true ? '已请求暂停' : '暂停'
   }
   if (stopBtn) {
-    stopBtn.hidden = state !== 'RUNNING'
+    stopBtn.hidden = displayState !== 'RUNNING'
     stopBtn.disabled = controls.stopAfterTaskRequested === true
     stopBtn.textContent = controls.stopAfterTaskRequested === true
       ? '已请求停止'
       : '当前 Task 完成后停止'
   }
-  if (state === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED') {
+  if (displayState === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED') {
     setText('start-note', '已由你暂停')
   }
+}
+
+function renderRecoverable(rt) {
+  var card = el('recoverable-card')
+  if (!card) return
+  var summary = rt.recoverableSummary
+  if (rt.displayState !== 'RECOVERABLE' || !summary) {
+    card.hidden = true
+    return
+  }
+  card.hidden = false
+  setText('recoverable-last-activity', summary.lastActivityAt ? formatTime(summary.lastActivityAt) : '—')
+  setText('recoverable-last-task', summary.lastCompletedTaskId || '—')
+  setText('recoverable-current-task', summary.currentTaskId || '—')
+  setText('recoverable-phase', displayValue(summary.currentPhase, GUARDIAN_PHASE_LABELS))
+  setText('recoverable-checkpoint', summary.lastReliableCheckpoint || '—')
+  setText('recoverable-next', summary.nextResumableAction || '—')
 }
 
 function renderTasks(cfg, rt) {
@@ -575,6 +624,21 @@ async function resumeSession(payload) {
   }
 }
 
+async function resumeRecoverableSession(payload) {
+  try {
+    await fetch('/api/session/resume-recoverable', {
+      method: 'POST',
+      headers: {
+        'X-NovaWing-Control-Token': controlToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload || {})
+    })
+  } finally {
+    refresh()
+  }
+}
+
 var startBtn = el('start-btn')
 if (startBtn) startBtn.addEventListener('click', start)
 var pauseBtn = el('pause-btn')
@@ -605,6 +669,15 @@ if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
 var resumePausedBtn = el('resume-paused-btn')
 if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {
   resumeSession({})
+})
+var resumeRecoverableBtn = el('resume-recoverable-btn')
+if (resumeRecoverableBtn) resumeRecoverableBtn.addEventListener('click', async function () {
+  resumeRecoverableBtn.disabled = true
+  try {
+    await resumeRecoverableSession({})
+  } finally {
+    resumeRecoverableBtn.disabled = false
+  }
 })
 var recoverCheckpointBtn = el('recover-checkpoint-btn')
 if (recoverCheckpointBtn) recoverCheckpointBtn.addEventListener('click', async function () {
@@ -689,6 +762,7 @@ body {
 .badge-ready { color: var(--muted); }
 .badge-running { color: var(--ok); border-color: rgba(74, 222, 128, 0.35); }
 .badge-suspended { color: var(--warn); border-color: rgba(250, 204, 21, 0.35); }
+.badge-recoverable { color: #fb923c; border-color: rgba(251, 146, 60, 0.35); }
 .badge-completed { color: var(--accent); border-color: rgba(91, 140, 255, 0.35); }
 .badge-failed { color: var(--danger); border-color: rgba(248, 113, 113, 0.35); }
 .badge-cancelled { color: var(--muted); }

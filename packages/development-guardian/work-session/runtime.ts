@@ -48,6 +48,7 @@ import {
   type GitCheckpointCommandRunner,
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
+import { isTerminalWorkSessionState } from './recoverability.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -224,6 +225,10 @@ export class WorkSessionRuntime {
   private ledger: ExecutionLedgerStore | undefined
   private failureNotificationScheduled = false
   private checkpointRecoveryPromise: Promise<WorkSessionDurableState> | undefined
+  /** T021: 本进程内是否真正启动/恢复过 workflow 执行。loadPersistedState 只 hydrate，不置位。 */
+  private executionStarted = false
+  /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
+  private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -314,33 +319,11 @@ export class WorkSessionRuntime {
    * a fabricated READY state.
    */
   async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
-    const workflow = this.mastra.getWorkflow(this.workflowId)
-    if (!workflow) {
-      throw new Error(`Workflow ${this.workflowId} not found after registration`)
-    }
+    const persisted = await this.readPersistedWorkflowSnapshot()
+    if (persisted === undefined) return undefined
 
-    const persisted = await workflow.getWorkflowRunById(this.config.definition.id, {
-      withNestedWorkflows: false,
-    })
-    if (persisted === null) {
-      return undefined
-    }
-    if (persisted.initialState === undefined) {
-      throw new Error(`Persisted work session ${this.config.definition.id} has no workflow state`)
-    }
-
-    const parsed = WorkflowStateSchema.safeParse(persisted.initialState)
-    if (!parsed.success) {
-      throw new Error(`Persisted work session ${this.config.definition.id} has invalid workflow state`)
-    }
-    if (parsed.data.sessionId !== this.config.definition.id) {
-      throw new Error(
-        `Persisted work session identity mismatch: expected ${this.config.definition.id}, got ${parsed.data.sessionId}`,
-      )
-    }
-
-    let hydratedState = parsed.data
-    if (parsed.data.state === 'FAILED') {
+    let hydratedState = persisted.state
+    if (persisted.state.state === 'FAILED') {
       const failedDeliveries = this.readExecutionLedger().filter(
         (event) =>
           (event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED') &&
@@ -349,12 +332,12 @@ export class WorkSessionRuntime {
       const ledgerSent = failedDeliveries.some(
         (event) => event.eventType === 'NOTIFICATION_SENT',
       )
-      const notificationSent = parsed.data.failureNotified === true || ledgerSent
+      const notificationSent = persisted.state.failureNotified === true || ledgerSent
       // Durable success is authoritative because the Ledger is fail-open. Ledger
       // facts may strengthen durable state; their absence only clears an old
       // attempted-only pre-delivery claim so bounded delivery can resume.
       hydratedState = {
-        ...parsed.data,
+        ...persisted.state,
         failureNotificationAttempted:
           notificationSent || failedDeliveries.length > 0 || undefined,
         failureNotified: notificationSent || undefined,
@@ -424,6 +407,7 @@ export class WorkSessionRuntime {
         activeElapsedMs: 0,
       }, 'session-started')
 
+      this.executionStarted = true
       const result = await run.start({
         inputData: {},
         initialState,
@@ -491,6 +475,7 @@ export class WorkSessionRuntime {
       })
 
       // 步骤 5: resume，Mastra 会从 snapshot 恢复
+      this.executionStarted = true
       await run.resume({
         step: suspendedStep.path,
         resumeData: resumeInput,
@@ -702,30 +687,146 @@ export class WorkSessionRuntime {
       recoveryAction: result.action, commitSha,
     }, `checkpoint-recovery-completed:${taskId}:${commitSha}:${result.action}`)
 
+    return this.restartRunFromState(recovered)
+  }
+
+  /**
+   * T021: 显式恢复一个「持久化状态为 RUNNING 但当前进程无活动 Runner」的 Session。
+   *
+   * 与 resume()（Mastra status='suspended'）区分：进程异常退出时 workflow run 没有
+   * suspend step，Mastra status 停留在 'running'，无法走 suspend/resume。这里从持久化
+   * domain state 重建 run，execute step 会从 currentTaskIndex 继续并跳过 completedTaskIds，
+   * 因此已完成 Task 不会重跑。若有 currentTaskCheckpoint，则照常传给 TaskRunner 走既有
+   * RepositoryCheckpoint gate + provider restore，绝不从 Task 头部无脑重跑。
+   *
+   * 必须由用户显式调用；loadPersistedState 只发现、不自动恢复。
+   */
+  async resumeInterrupted(): Promise<WorkSessionDurableState> {
+    if (this.resumeInterruptedPromise !== undefined) {
+      throw new Error('interrupted resume already in progress')
+    }
+    this.resumeInterruptedPromise = this.doResumeInterrupted()
+      .finally(() => { this.resumeInterruptedPromise = undefined })
+    return this.resumeInterruptedPromise
+  }
+
+  private async doResumeInterrupted(): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    const workflow = this.mastra.getWorkflow(this.workflowId)
+    if (workflow === undefined) {
+      throw new Error(`Workflow ${this.workflowId} not found`)
+    }
+    const persisted = await workflow.getWorkflowRunById(runId)
+    if (persisted === null) {
+      throw new Error(`No persisted session to recover for runId=${runId}`)
+    }
+    // SUSPENDED 走既有 resume()；此处只负责 crash-遗留的 running status。
+    if (persisted.status === 'suspended') {
+      throw new Error('use resume() for a suspended session')
+    }
+
+    const state = await this.loadPersistedWorkflowStateForRecovery()
+    if (isTerminalWorkSessionState(state.state)) {
+      throw new Error(`session is ${state.state} and cannot be recovered`)
+    }
+
+    const recovered: WorkflowState = {
+      ...state,
+      state: 'RUNNING',
+      humanRequired: undefined,
+      brainFailure: undefined,
+      suspensionReason: undefined,
+      pendingVerificationApproval: undefined,
+      activeSegmentStartedAt: this.now(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    return this.restartRunFromState(recovered)
+  }
+
+  /**
+   * 从给定 domain state 重建 workflow run 并开始执行。用于 Git checkpoint recovery
+   * 与 T021 中断恢复：delete 旧 run → createRun → start(initialState)。
+   */
+  private async restartRunFromState(recovered: WorkflowState): Promise<WorkSessionDurableState> {
     const storage = this.mastra.getStorage()
     const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
-    if (workflows === undefined) throw new Error('checkpoint recovery storage unavailable')
-    await workflows.deleteWorkflowRunById({ workflowName: this.workflowId, runId: state.sessionId })
+    if (workflows === undefined) throw new Error('workflow storage unavailable')
+    await workflows.deleteWorkflowRunById({ workflowName: this.workflowId, runId: recovered.sessionId })
     this.latestState = recovered
     const workflow = this.mastra.getWorkflow(this.workflowId)
     if (!workflow) throw new Error(`Workflow ${this.workflowId} not found`)
-    const run = await workflow.createRun({ runId: state.sessionId })
+    this.executionStarted = true
+    const run = await workflow.createRun({ runId: recovered.sessionId })
     const runResult = await run.start({ inputData: {}, initialState: recovered })
     if (runResult.status === 'failed') throw new Error(runResult.error?.message ?? 'recovered workflow failed')
-    if (this.latestState === undefined) throw new Error('checkpoint recovery did not update workflow state')
+    if (this.latestState === undefined) throw new Error('recovered workflow did not update state')
     const durable = this.convertWorkflowStateToDurableState(this.latestState)
     this.scheduleNotificationsForState(durable, false)
     return durable
   }
 
   private async loadPersistedWorkflowStateForRecovery(): Promise<WorkflowState> {
-    const workflow = this.mastra.getWorkflow(this.workflowId)
-    if (workflow === undefined) throw new Error(`Workflow ${this.workflowId} not found`)
-    const persisted = await workflow.getWorkflowRunById(this.config.definition.id)
-    const parsed = WorkflowStateSchema.safeParse(persisted?.initialState)
-    if (!parsed.success) throw new Error('persisted checkpoint recovery state is invalid')
-    this.latestState = parsed.data
-    return parsed.data
+    const snapshot = await this.readPersistedWorkflowSnapshot()
+    if (snapshot === undefined) throw new Error('persisted checkpoint recovery state is missing')
+    this.latestState = snapshot.state
+    return snapshot.state
+  }
+
+  /**
+   * T021: 从 workflow snapshot 读取最新持久化 domain state。
+   *
+   * Mastra 的 getWorkflowRunById().initialState 在 step 运行期间不会随 setState
+   * 同步更新，只有 suspend/complete/fail 才 flush；RUNNING 异常退出时 initialState
+   * 仍是 run.start 的初始值。snapshot.value 才是被 persistDurableState 显式维护的
+   * 最新 domain state，因此读取以 snapshot 为准。
+   */
+  private async readPersistedWorkflowSnapshot(): Promise<{
+    state: WorkflowState
+    status: string
+  } | undefined> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return undefined
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return undefined
+    const snapshot = await workflows.loadWorkflowSnapshot({
+      workflowName: this.workflowId,
+      runId: this.config.definition.id,
+    })
+    if (snapshot === null) return undefined
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success) {
+      throw new Error(`Persisted work session ${this.config.definition.id} has invalid workflow state`)
+    }
+    if (parsed.data.sessionId !== this.config.definition.id) {
+      throw new Error(
+        `Persisted work session identity mismatch: expected ${this.config.definition.id}, got ${parsed.data.sessionId}`,
+      )
+    }
+    return { state: parsed.data, status: snapshot.status }
+  }
+
+  /**
+   * T021: 显式持久化 workflow snapshot 为给定 domain state。
+   * 在 execute step 的 Task claim / Task completed 边界调用，使 RUNNING 异常退出后
+   * 也能恢复 last completed task 与 current task，而不从 Task 头部重跑。
+   */
+  private async persistDurableState(state: WorkflowState): Promise<void> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return
+    const snapshot = await workflows.loadWorkflowSnapshot({
+      workflowName: this.workflowId,
+      runId: this.config.definition.id,
+    })
+    if (snapshot === null) return
+    snapshot.value = state as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({
+      workflowName: this.workflowId,
+      runId: this.config.definition.id,
+      snapshot,
+    })
   }
 
   private recordCheckpointRecoveryFailed(
@@ -847,6 +948,7 @@ export class WorkSessionRuntime {
           await setState(updatedState)
           currentState = updatedState
           self.latestState = updatedState
+          await self.persistDurableState(updatedState)
           if (isNewTaskClaim) {
             self.recordLedger({
               eventType: 'TASK_STARTED',
@@ -1051,6 +1153,7 @@ export class WorkSessionRuntime {
             await setState(completedState)
             currentState = completedState
             self.latestState = completedState
+            await self.persistDurableState(completedState)
             self.recordLedger({
               eventType: 'TASK_COMPLETED',
               sessionId: completedState.sessionId,
@@ -1457,6 +1560,15 @@ export class WorkSessionRuntime {
         (this.latestState?.state === 'RUNNING' || this.latestState?.state === 'SUSPENDED') &&
         this.stopAfterTaskRequested,
     }
+  }
+
+  /**
+   * T021: 当前进程内是否真正启动/恢复过 workflow 执行。
+   * 持久化 session state（getDurableState）与 runtime liveness 是两回事；
+   * 进程重启后新实例 loadPersistedState 只 hydrate，本方法仍返回 false。
+   */
+  hasActiveExecution(): boolean {
+    return this.executionStarted
   }
 
   /**
