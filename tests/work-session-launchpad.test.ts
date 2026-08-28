@@ -15,7 +15,7 @@ import {
   openLaunchpadInAppMode,
   persistComposedTrustedWorkSessionConfig,
   type BrowserProcessSpawner,
-  type NovaWingLaunchpad,
+  NovaWingLaunchpad,
   type TrustedWorkSessionConfig,
 } from 'nova-wing/development-guardian'
 
@@ -68,11 +68,16 @@ interface FakeWorkSessionState {
   receivedConfigIds: string[]
   receivedExecutorModels: string[]
   receivedConfigs: TrustedWorkSessionConfig[]
+  createdApps: Array<{
+    close(): Promise<void>
+    isLive(): boolean
+    setActiveSession(active: boolean): void
+  }>
 }
 
 function fakeWorkSessionFactory(
   state: FakeWorkSessionState,
-  options: { controllerStarted?: boolean; failWith?: Error } = {},
+  options: { controllerStarted?: boolean; failWith?: Error; sessionActive?: boolean } = {},
 ) {
   return async (config: TrustedWorkSessionConfig, input: { serverPort: 0 }) => {
     state.createCalls += 1
@@ -81,7 +86,9 @@ function fakeWorkSessionFactory(
     state.receivedExecutorModels.push(config.executor.model)
     state.receivedConfigs.push(config)
     if (options.failWith !== undefined) throw options.failWith
-    return {
+    let live = true
+    let sessionActive = options.sessionActive ?? true
+    const app = {
       controller: {
         start() {
           state.controllerStartCalls += 1
@@ -92,10 +99,24 @@ function fakeWorkSessionFactory(
         state.startCalls += 1
         return { url: 'http://127.0.0.1:54321' }
       },
+      isLive() {
+        return live
+      },
+      hasActiveSession() {
+        return sessionActive
+      },
+      setActiveSession(active: boolean) {
+        sessionActive = active
+      },
       async close() {
+        if (!live) return
+        live = false
+        sessionActive = false
         state.closeCalls += 1
       },
     }
+    state.createdApps.push(app)
+    return app
   }
 }
 
@@ -109,6 +130,7 @@ function emptyFakeState(): FakeWorkSessionState {
     receivedConfigIds: [],
     receivedExecutorModels: [],
     receivedConfigs: [],
+    createdApps: [],
   }
 }
 
@@ -573,6 +595,8 @@ await test('Launchpad close waits for a pending Composer create before closing i
         return {
           controller: { start: () => ({ started: true }) },
           async start() { return { url: 'http://127.0.0.1:54321' } },
+          isLive() { return true },
+          hasActiveSession() { return true },
           async close() { state.closeCalls += 1 },
         }
       },
@@ -895,6 +919,8 @@ await test('Delete API refuses pending starts and running apps without closing t
         return {
           controller: { start: () => { state.controllerStartCalls += 1; return { started: true } } },
           async start() { state.startCalls += 1; return { url: 'http://127.0.0.1:54321' } },
+          isLive() { return true },
+          hasActiveSession() { return true },
           async close() { state.closeCalls += 1 },
         }
       },
@@ -923,6 +949,112 @@ await test('Delete API refuses pending starts and running apps without closing t
     releaseCreate?.()
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API permits a config after its control app has closed', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const configId = launchpad.getConfigs()[0]!.configId
+    assert.equal((await postStart(launchpad, { configId }, auth)).status, 202)
+    await state.createdApps[0]!.close()
+
+    const response = await postDelete(launchpad, { configId }, auth)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+    assert.equal(state.closeCalls, 1, 'closed apps are retired idempotently')
+    assert.deepEqual(launchpad.getConfigs(), [])
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete API retires a settled repository-drift zombie control app', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      // Models a recoverable control surface after fail-closed repository drift:
+      // the listener remains open, but the resume operation has settled.
+      createWorkSession: fakeWorkSessionFactory(state, { controllerStarted: false, sessionActive: false }),
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const configId = launchpad.getConfigs()[0]!.configId
+    assert.equal((await postStart(launchpad, { configId }, auth)).status, 202)
+
+    const response = await postDelete(launchpad, { configId }, auth)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+    assert.equal(state.closeCalls, 1)
+    await assert.rejects(access(join(directory, 'fly-weave.json')), { code: 'ENOENT' })
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete trusts a discovered direct-child config without launch-time schema revalidation', async () => {
+  const directory = await createConfigDirectory()
+  let loadCalls = 0
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      async loadConfig(configPath) {
+        loadCalls += 1
+        if (loadCalls > 1) throw new Error('legacy config no longer matches the current schema')
+        return loadTrustedWorkSessionConfig(configPath)
+      },
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const response = await postDelete(launchpad, { configId: launchpad.getConfigs()[0]!.configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+    assert.equal(loadCalls, 1, 'delete must use the discovery-time trusted Map entry')
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Delete rejects an injected non-child configPath with a stable safe error code', async () => {
+  const directory = await createConfigDirectory()
+  const outsideDirectory = await mkdtemp(join(tmpdir(), 'novawing-launchpad-outside-'))
+  const outsidePath = join(outsideDirectory, 'outside.json')
+  await writeFile(outsidePath, JSON.stringify(trustedConfig({ sessionId: 'outside-session' })), 'utf8')
+  const discovered = await discoverTrustedWorkSessionConfigs(directory)
+  discovered[0]!.configPath = outsidePath
+  const launchpad = new NovaWingLaunchpad(discovered, directory)
+  try {
+    const address = await launchpad.start()
+    const response = await postDelete(launchpad, { configId: launchpad.getConfigs()[0]!.configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 500)
+    const text = await response.text()
+    assert.deepEqual(JSON.parse(text), { error: 'DELETE_FAILED' })
+    assert.doesNotMatch(text, /outside\.json|novawing-launchpad-outside/u)
+    await access(outsidePath)
+    await access(join(directory, 'fly-weave.json'))
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+    await rm(outsideDirectory, { recursive: true, force: true })
   }
 })
 
@@ -1148,6 +1280,9 @@ await test('Launch failure returns only a safe product error and permits a later
     assert.equal(second.status, 500)
     assert.deepEqual(await first.json(), { error: 'Work Session 启动失败' })
     assert.equal(state.createCalls, 2)
+    const deleted = await postDelete(launchpad, { configId }, auth)
+    assert.equal(deleted.status, 200)
+    assert.deepEqual(await deleted.json(), { deleted: true })
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })

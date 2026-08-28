@@ -38,7 +38,6 @@ const MAX_COMPLETED_COMPOSER_REQUESTS = 100
 const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
 const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
 const SAFE_COMPOSER_SESSION_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{12}-[a-f0-9]{6}$/u
-const SAFE_DELETE_ERROR = 'Work Session 删除失败'
 
 const DEFAULT_GUARDIAN_POLICY = {
   constraints: [
@@ -88,7 +87,16 @@ export interface NovaWingLaunchpadAddress {
 interface ManagedWorkSessionApp {
   controller: { start(): { started: boolean } }
   start(): Promise<{ url: string }>
+  /** Whether the local control server is still accepting connections. */
+  isLive(): boolean
+  /** Whether start/resume/recovery work is currently in flight. */
+  hasActiveSession(): boolean
   close(): Promise<void>
+}
+
+interface LiveWorkSessionApp {
+  app: ManagedWorkSessionApp
+  controlUrl: string
 }
 
 export interface NovaWingLaunchpadDependencies {
@@ -306,7 +314,7 @@ export class NovaWingLaunchpad {
   private readonly activeDeletes = new Set<string>()
   private readonly activeCreates = new Map<string, ComposerCreateEntry>()
   private readonly completedCreates = new Map<string, CompletedComposerCreateEntry>()
-  private readonly activeApps = new Map<string, ManagedWorkSessionApp>()
+  private readonly liveApps = new Map<string, LiveWorkSessionApp>()
 
   private address: NovaWingLaunchpadAddress | undefined
   private closed = false
@@ -411,8 +419,11 @@ export class NovaWingLaunchpad {
       Promise.allSettled([...this.activeCreates.values()].map(({ launch }) => launch)).then(() => undefined),
       this.shutdownTimeoutMs,
     )
-    await bounded(Promise.allSettled([...this.activeApps.values()].map((app) => app.close())).then(() => undefined), this.shutdownTimeoutMs)
-    this.activeApps.clear()
+    await bounded(
+      Promise.allSettled([...this.liveApps.values()].map(({ app }) => app.close())).then(() => undefined),
+      this.shutdownTimeoutMs,
+    )
+    this.liveApps.clear()
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -559,24 +570,13 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 404, { error: 'UNKNOWN_CONFIG' })
       return
     }
-    if (this.activeStarts.has(parsed.configId) || this.activeApps.has(parsed.configId)) {
-      this.respondJson(response, 409, { error: 'SESSION_ACTIVE' })
-      return
-    }
-
     try {
       await this.deleteWorkSessionConfig(parsed.configId)
       this.respondJson(response, 200, { deleted: true })
     } catch (error) {
-      if (error instanceof DeleteConfigError && error.code === 'UNKNOWN_CONFIG') {
-        this.respondJson(response, 404, { error: error.code })
-        return
-      }
-      if (error instanceof DeleteConfigError && error.code === 'SESSION_ACTIVE') {
-        this.respondJson(response, 409, { error: error.code })
-        return
-      }
-      this.respondJson(response, 500, { error: SAFE_DELETE_ERROR })
+      const code = error instanceof DeleteConfigError ? error.code : 'DELETE_FAILED'
+      const status = code === 'UNKNOWN_CONFIG' ? 404 : code === 'SESSION_ACTIVE' ? 409 : 500
+      this.respondJson(response, status, { error: code })
     }
   }
 
@@ -657,9 +657,8 @@ export class NovaWingLaunchpad {
     this.activeStarts.set(configId, launch)
     try {
       return await launch
-    } catch (error) {
-      this.activeStarts.delete(configId)
-      throw error
+    } finally {
+      if (this.activeStarts.get(configId) === launch) this.activeStarts.delete(configId)
     }
   }
 
@@ -668,7 +667,11 @@ export class NovaWingLaunchpad {
     if (discovered === undefined || this.activeDeletes.has(configId)) {
       throw new DeleteConfigError('UNKNOWN_CONFIG')
     }
-    if (this.activeStarts.has(configId) || this.activeApps.has(configId)) {
+    if (this.activeStarts.has(configId)) {
+      throw new DeleteConfigError('SESSION_ACTIVE')
+    }
+    const liveApp = this.liveApps.get(configId)
+    if (liveApp !== undefined && this.isBlockingLiveApp(liveApp.app)) {
       throw new DeleteConfigError('SESSION_ACTIVE')
     }
     const configPath = this.resolveTrustedConfigPath(discovered)
@@ -676,17 +679,9 @@ export class NovaWingLaunchpad {
 
     this.activeDeletes.add(configId)
     try {
-      try {
-        await this.loadConfig(configPath)
-      } catch (error) {
-        if (isNodeError(error) && error.code === 'ENOENT') {
-          this.configs.delete(configId)
-          return
-        }
-        throw new DeleteConfigError('DELETE_FAILED')
-      }
-      if (this.activeStarts.has(configId) || this.activeApps.has(configId)) {
-        throw new DeleteConfigError('SESSION_ACTIVE')
+      if (liveApp !== undefined) {
+        this.liveApps.delete(configId)
+        await liveApp.app.close().catch(() => undefined)
       }
       try {
         await unlink(configPath)
@@ -696,8 +691,18 @@ export class NovaWingLaunchpad {
         }
       }
       this.configs.delete(configId)
+      this.statuses.delete(configId)
     } finally {
       this.activeDeletes.delete(configId)
+    }
+  }
+
+  private isBlockingLiveApp(app: ManagedWorkSessionApp): boolean {
+    try {
+      return app.isLive() && app.hasActiveSession()
+    } catch {
+      // An indeterminate app is treated as active. Deletion must fail closed.
+      return true
     }
   }
 
@@ -722,6 +727,18 @@ export class NovaWingLaunchpad {
     discovered: DiscoveredLaunchpadConfig,
   ): Promise<LaunchResult> {
     if (this.closed) throw new Error('Launchpad is closed')
+    const existing = this.liveApps.get(configId)
+    if (existing !== undefined) {
+      try {
+        if (existing.app.isLive()) {
+          return { accepted: true, controlUrl: existing.controlUrl, alreadyStarted: true }
+        }
+      } catch {
+        // A failed liveness probe retires the stale app before relaunch.
+      }
+      this.liveApps.delete(configId)
+      await existing.app.close().catch(() => undefined)
+    }
     const config = await this.loadConfig(discovered.configPath)
     const env = await this.resolveEnvironment(config)
     const app = await this.createWorkSession(config, { env, serverPort: 0 })
@@ -730,22 +747,21 @@ export class NovaWingLaunchpad {
       throw new Error('Launchpad is closed')
     }
 
-    this.activeApps.set(configId, app)
     try {
       const address = await app.start()
       if (this.closed) {
         await app.close()
-        this.activeApps.delete(configId)
         throw new Error('Launchpad is closed')
       }
       const result = app.controller.start()
+      this.liveApps.set(configId, { app, controlUrl: address.url })
       return {
         accepted: true,
         controlUrl: address.url,
         ...(result.started ? {} : { alreadyStarted: true }),
       }
     } catch (error) {
-      this.activeApps.delete(configId)
+      this.liveApps.delete(configId)
       await app.close().catch(() => undefined)
       throw error
     }
@@ -837,23 +853,9 @@ export class NovaWingLaunchpad {
       .catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
     const configId = randomBytes(16).toString('hex')
     this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
-    const env = await this.resolveEnvironment(config).catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
-    const app = await this.createWorkSession(config, { env, serverPort: 0 }).catch(() => {
-      throw new ComposerLaunchError('SESSION_START_FAILED')
-    })
-    if (this.closed) {
-      await app.close()
-      throw new ComposerLaunchError('SESSION_START_FAILED')
-    }
-    this.activeApps.set(configId, app)
     try {
-      const address = await app.start()
-      if (this.closed) throw new Error('closed')
-      app.controller.start()
-      return { accepted: true, controlUrl: address.url }
+      return await this.startWorkSession(configId)
     } catch {
-      this.activeApps.delete(configId)
-      await app.close().catch(() => undefined)
       throw new ComposerLaunchError('SESSION_START_FAILED')
     }
   }

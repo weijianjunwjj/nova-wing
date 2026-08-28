@@ -51,7 +51,7 @@ export class WorkSessionControlServer {
   private readonly server: Server
   private readonly sseClients = new Set<ServerResponse>()
 
-  private address?: WorkSessionControlServerAddress
+  private address: WorkSessionControlServerAddress | undefined
   private sseId = 0
 
   constructor(options: WorkSessionControlServerOptions) {
@@ -66,6 +66,11 @@ export class WorkSessionControlServer {
   /** 返回实际 host/port/url。host 恒为 127.0.0.1。 */
   getAddress(): WorkSessionControlServerAddress | undefined {
     return this.address
+  }
+
+  /** Process-local listener liveness; durable Session state is intentionally separate. */
+  isListening(): boolean {
+    return this.address !== undefined && this.server.listening
   }
 
   /** 仅供测试读取，验证 token 不被 status/SSE 泄漏时用。 */
@@ -105,6 +110,7 @@ export class WorkSessionControlServer {
       await new Promise<void>((resolve) => {
         this.server.close(() => resolve())
       })
+      this.address = undefined
     }
     this.controller.close()
   }

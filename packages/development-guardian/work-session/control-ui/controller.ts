@@ -164,6 +164,18 @@ export class WorkSessionControlController {
   }
 
   /**
+   * Process-local operation liveness for owners such as Launchpad. This is
+   * deliberately separate from durable state and from runtime recovery
+   * eligibility: a settled/failed operation must not keep an owning config
+   * permanently locked.
+   */
+  hasActiveOperation(): boolean {
+    return this.startPromise !== undefined ||
+      this.resumePromise !== undefined ||
+      this.checkpointRecoveryPromise !== undefined
+  }
+
+  /**
    * Restore an existing durable session before the production HTTP listener opens.
    * Hydration is read-only and never starts or resumes autonomous work.
    */
@@ -204,6 +216,9 @@ export class WorkSessionControlController {
           data: { message: SAFE_SESSION_FAILED_MESSAGE },
         })
         this.broadcastSnapshot()
+      })
+      .finally(() => {
+        this.startPromise = undefined
       })
 
     return { started: true }

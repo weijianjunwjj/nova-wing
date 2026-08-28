@@ -275,6 +275,8 @@ export interface ProductionWorkSessionUi {
   server: WorkSessionControlServer
   runtime: ClosableControlRuntime
   start(): Promise<WorkSessionControlServerAddress>
+  isLive(): boolean
+  hasActiveSession(): boolean
   close(): Promise<void>
 }
 
@@ -426,6 +428,12 @@ export async function createProductionWorkSessionUi(
       const address = await server.start()
       localControlUrl = address.url
       return address
+    },
+    isLive() {
+      return server.isListening()
+    },
+    hasActiveSession() {
+      return controller.hasActiveOperation()
     },
     async close() {
       await server.close()
