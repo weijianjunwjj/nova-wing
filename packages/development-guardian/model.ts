@@ -47,10 +47,45 @@ export interface DelegationPacket {
 
 export type VerificationStatus = 'passed' | 'failed' | 'skipped'
 
+export type VerificationFailureClassification =
+  | 'CODE_VERIFICATION_FAILED'
+  | 'ENVIRONMENT_REQUIRED'
+  | 'PERMISSION_REQUIRED'
+  | 'REPOSITORY_DRIFT'
+  | 'UNKNOWN'
+
+export type VerificationFailurePhase =
+  | 'setup/session fixture'
+  | 'setup/module fixture'
+  | 'setup/fixture'
+  | 'collection'
+  | 'import'
+  | 'migration/bootstrap'
+  | 'test'
+  | 'unknown'
+
+export interface VerificationFirstFailure {
+  title: string
+  exceptionType?: string
+  /** Redacted and bounded; the complete redacted output lives at rawOutputRef. */
+  tracebackSnippet: string
+  phase: VerificationFailurePhase
+}
+
 export interface VerificationResult {
   name: string
   status: VerificationStatus
   details?: string
+  exitCode?: number | null
+  durationMs?: number
+  firstFailure?: VerificationFirstFailure
+  classification?: VerificationFailureClassification
+  rawOutputRef?: string
+  finalSummary?: string
+  /** Number of distinct root-cause signatures after deterministic collapse. */
+  rootCauseCount?: number
+  /** Number of tests/items fanned out from the collapsed root cause. */
+  affectedTests?: number
 }
 
 /**
@@ -118,5 +153,5 @@ export interface GuardianRunResult {
   task: GuardianTask
   reports: readonly ExecutionReport[]
   /** Known failure boundary; avoids reconstructing source from provider text. */
-  failureStage?: 'EXECUTOR'
+  failureStage?: 'EXECUTOR' | 'VERIFICATION'
 }

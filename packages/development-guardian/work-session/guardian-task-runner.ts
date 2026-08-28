@@ -25,6 +25,7 @@ import {
   parseGitStatus,
   computeWorktreeFingerprint,
 } from './worktree-fingerprint.js'
+import { environmentVerificationFailure } from '../verification-evidence.js'
 
 export interface GuardianTaskBuilderOptions {
   maxIterations?: number
@@ -150,6 +151,26 @@ function detectEnvironmentPrerequisiteBlock(task: GuardianTask): string | undefi
     return undefined
   }
 
+  const structuredFailure = environmentVerificationFailure(report.verificationResults)
+  if (structuredFailure !== undefined) {
+    const firstFailure = structuredFailure.firstFailure
+    const endpoint = firstFailure?.tracebackSnippet.match(
+      /\b(?:server at\s+)?["']?((?:\d{1,3}\.){3}\d{1,3})["']?(?:,?\s+port\s+|:)(\d{2,5})/iu,
+    )
+    const target = endpoint === null || endpoint === undefined
+      ? undefined
+      : `${endpoint[1]}:${endpoint[2]}`
+    const affected = structuredFailure.affectedTests
+    return [
+      `${firstFailure?.exceptionType ?? 'External service'} unavailable${target === undefined ? '' : `: ${target}`} — ${firstFailure?.title ?? structuredFailure.finalSummary ?? 'connection failed'}.`,
+      'The verification suite did not reach normal test execution.',
+      affected === undefined
+        ? undefined
+        : `${affected} errors originated from the shared ${firstFailure?.phase ?? 'setup'} failure (rootCauseCount=${structuredFailure.rootCauseCount ?? 1}).`,
+      'Code execution is complete. Fix the local service/runtime, then retry verification.',
+    ].filter((value): value is string => value !== undefined).join(' ')
+  }
+
   for (const result of report.verificationResults) {
     if (result.status !== 'failed') {
       continue
@@ -212,7 +233,8 @@ const SCOPE_VIOLATION_PATTERNS: readonly RegExp[] = [
 ]
 
 function hasScopeViolationEvidence(task: GuardianTask, reason: string): boolean {
-  return [reason, ...(task.lastReport?.blockers ?? [])]
+  const typedReason = /^(?:SCOPE_VIOLATION|SAFETY_BLOCKED):/u.test(reason) ? [reason] : []
+  return [...typedReason, ...(task.lastReport?.blockers ?? [])]
     .some((item) => SCOPE_VIOLATION_PATTERNS.some((pattern) => pattern.test(item)))
 }
 
@@ -864,6 +886,9 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       )
 
       const verificationCommand = pendingVerificationCommand(result.task)
+      const verificationFailure = environmentVerificationFailure(
+        result.task.lastReport?.verificationResults ?? [],
+      )
       return {
         status: 'HUMAN_REQUIRED',
         ...(result.task.lastReport?.summary !== undefined
@@ -873,6 +898,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         ...(verificationCommand === undefined
           ? {}
           : { pendingVerificationCommand: verificationCommand }),
+        ...(verificationFailure === undefined ? {} : { verificationFailure }),
         ...(capturedCheckpoint !== undefined ? { checkpoint: capturedCheckpoint } : {}),
       }
     }

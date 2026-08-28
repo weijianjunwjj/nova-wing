@@ -30,6 +30,7 @@ export interface GuardianProgressEvent {
     /** Stable position in the Executor verification list for this iteration. */
     index?: number
     durationMs?: number
+    evidence?: import('./model.js').VerificationResult
   }
 }
 

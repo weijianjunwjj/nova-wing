@@ -10,6 +10,10 @@ import {
   RetryableGuardianBrainError,
   guardianBrainFailureFrom,
 } from './brain-error.js'
+import { environmentVerificationFailure } from './verification-evidence.js'
+
+export const VERIFICATION_ENVIRONMENT_REQUIRED_STOP =
+  'VERIFICATION_ENVIRONMENT_REQUIRED'
 
 export class GuardianStopError extends Error {
   constructor(
@@ -112,6 +116,49 @@ export async function runGuardianTask(options: {
   }
 
   emitProgress('PREPARING', 'completed')
+
+  // A resolved environment suspension resumes at the deterministic verifier,
+  // not at Reviewer/Executor. The repository checkpoint is validated by the
+  // Work Session adapter before this function is entered.
+  if (
+    task.recoveryContinuation === true &&
+    task.resumeInput?.approval === true &&
+    task.stopReason === VERIFICATION_ENVIRONMENT_REQUIRED_STOP &&
+    task.lastReport !== undefined &&
+    environmentVerificationFailure(task.lastReport.verificationResults) !== undefined
+  ) {
+    if (options.executor.retryVerification === undefined) {
+      task = { ...task, state: 'HUMAN_REQUIRED' }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+      return { task, reports }
+    }
+    try {
+      const report = await options.executor.retryVerification({
+        task,
+        report: task.lastReport,
+      })
+      reports.push(report)
+      task = { ...task, state: 'READY', lastReport: report }
+      if (environmentVerificationFailure(report.verificationResults) !== undefined) {
+        task = {
+          ...task,
+          state: 'HUMAN_REQUIRED',
+          stopReason: VERIFICATION_ENVIRONMENT_REQUIRED_STOP,
+        }
+        emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+        return { task, reports }
+      }
+      delete task.stopReason
+    } catch (error) {
+      task = {
+        ...task,
+        state: 'FAILED',
+        stopReason: error instanceof Error ? error.message : 'verification retry failed',
+      }
+      emitProgress('FAILED', 'completed', task.stopReason)
+      return { task, reports, failureStage: 'VERIFICATION' }
+    }
+  }
 
   while (true) {
     // W004-B checkpoint A：每次开始新的 Brain review 前。绝不 kill 正在 mutation 的 process。
@@ -275,6 +322,18 @@ export async function runGuardianTask(options: {
 
     reports.push(report)
     task = { ...task, lastReport: report }
+
+    // Stable structured evidence wins before Reviewer text. An unavailable
+    // service/runtime cannot ask the Reviewer to revise code it did not break.
+    if (environmentVerificationFailure(report.verificationResults) !== undefined) {
+      task = {
+        ...task,
+        state: 'HUMAN_REQUIRED',
+        stopReason: VERIFICATION_ENVIRONMENT_REQUIRED_STOP,
+      }
+      emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+      return { task, reports }
+    }
 
     if (report.blockers.length > 0) {
       task = {

@@ -166,6 +166,7 @@ const WorkflowStateSchema = z.object({
   failureNotificationAttempted: z.boolean().optional(),
   failureNotified: z.boolean().optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
+  verificationFailure: z.any().optional(),
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
   checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
   failureReason: z.string().optional(), // W004-A FINAL
@@ -229,6 +230,8 @@ export class WorkSessionRuntime {
   private executionStarted = false
   /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
   private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
+  /** Direct runtime idempotency guard; the control layer also rejects duplicate clicks. */
+  private suspendedResumePromise: Promise<WorkSessionDurableState> | undefined
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -442,6 +445,15 @@ export class WorkSessionRuntime {
   }
 
   async resume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
+    if (this.suspendedResumePromise !== undefined) {
+      throw new Error('session resume already in progress')
+    }
+    this.suspendedResumePromise = this.doResume(resumeInput)
+      .finally(() => { this.suspendedResumePromise = undefined })
+    return this.suspendedResumePromise
+  }
+
+  private async doResume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
 
     const workflow = this.mastra.getWorkflow(this.workflowId)
@@ -873,6 +885,7 @@ export class WorkSessionRuntime {
             state: 'RUNNING',
             humanRequired: undefined,
             brainFailure: undefined,
+            verificationFailure: undefined,
             suspensionReason: undefined,
             activeSegmentStartedAt: self.now(),
             updatedAt: new Date().toISOString(),
@@ -926,6 +939,7 @@ export class WorkSessionRuntime {
                 completionReason: limitReason,
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
+                verificationFailure: undefined,
                 pendingVerificationApproval: undefined,
                 stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(currentState),
@@ -1145,6 +1159,7 @@ export class WorkSessionRuntime {
                 : {}),
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              verificationFailure: undefined,
               pendingVerificationApproval: undefined,
               currentTaskBaseHeadSha: undefined,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
@@ -1283,6 +1298,7 @@ export class WorkSessionRuntime {
               pendingVerificationApproval,
               suspensionReason: undefined,
               currentTaskCheckpoint: result.checkpoint, // W003: 持久化 checkpoint
+              verificationFailure: result.verificationFailure,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
@@ -1330,6 +1346,7 @@ export class WorkSessionRuntime {
               safeFailureMessage: failure.safeMessage,
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
+              verificationFailure: undefined,
               pendingVerificationApproval: undefined,
               ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
@@ -1353,6 +1370,7 @@ export class WorkSessionRuntime {
           cancellationReason: undefined,
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
+          verificationFailure: undefined,
           pendingVerificationApproval: undefined,
           stopAfterTaskRequested: undefined,
           ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
@@ -1447,6 +1465,9 @@ export class WorkSessionRuntime {
     // W003: 传递 checkpoint
     if (wfState.currentTaskCheckpoint) {
       result.currentTaskCheckpoint = wfState.currentTaskCheckpoint
+    }
+    if (wfState.verificationFailure !== undefined) {
+      result.verificationFailure = wfState.verificationFailure
     }
     // W004-A: 传递 checkpoint commits
     if (wfState.checkpointCommits !== undefined) {
@@ -1614,6 +1635,7 @@ export class WorkSessionRuntime {
     const verificationCommand = event.verification === undefined
       ? undefined
       : safeFailureMessage(event.verification.command)
+    const evidence = event.verification?.evidence
     this.recordLedger({
       eventType,
       sessionId: this.config.definition.id,
@@ -1643,6 +1665,26 @@ export class WorkSessionRuntime {
             recoveryReason: event.recovery.reason,
             recoveryBounded: event.recovery.bounded,
           }),
+      ...(evidence?.classification === undefined
+        ? {}
+        : { verificationClassification: evidence.classification }),
+      ...(evidence?.rawOutputRef === undefined ? {} : { rawOutputRef: evidence.rawOutputRef }),
+      ...(evidence?.firstFailure?.title === undefined
+        ? {}
+        : { firstFailureTitle: evidence.firstFailure.title }),
+      ...(evidence?.firstFailure?.exceptionType === undefined
+        ? {}
+        : { exceptionType: evidence.firstFailure.exceptionType }),
+      ...(evidence?.firstFailure?.phase === undefined
+        ? {}
+        : { failurePhase: evidence.firstFailure.phase }),
+      ...(evidence?.finalSummary === undefined ? {} : { finalSummary: evidence.finalSummary }),
+      ...(evidence?.rootCauseCount === undefined
+        ? {}
+        : { rootCauseCount: evidence.rootCauseCount }),
+      ...(evidence?.affectedTests === undefined
+        ? {}
+        : { affectedTests: evidence.affectedTests }),
       ...(this.latestState === undefined
         ? {}
         : { activeElapsedMs: this.activeElapsedMs(this.latestState) }),

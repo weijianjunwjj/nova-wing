@@ -5,7 +5,7 @@
  */
 
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
-import type { GuardianBrainFailure } from '../model.js'
+import type { GuardianBrainFailure, VerificationResult } from '../model.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
@@ -93,6 +93,8 @@ export interface WorkSessionDurableState {
   failureNotified?: boolean
   /** W003: 当前 Task 的 recovery checkpoint（仅当 SUSPENDED 时存在） */
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
+  /** Product-safe evidence retained for a suspended deterministic verifier. */
+  verificationFailure?: VerificationResult
   /**
    * W004-A: 每个已完成 Task 对应的 commit SHA。
    * 连续 Task 需要区分 T1→sha1 / T2→sha2 / T3→sha3，故不保存单一 lastCommitSha。

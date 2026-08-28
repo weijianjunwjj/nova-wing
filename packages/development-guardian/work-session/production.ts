@@ -318,6 +318,7 @@ export async function createProductionWorkSessionUi(
     throw new Error('Work Session storage must be outside targetRepo')
   }
   await mkdir(resolve(storagePath, '..'), { recursive: true })
+  const verificationOutputDirectory = `${storagePath}.artifacts`
 
   const createBrain = dependencies.createBrain ?? ((options) => new AskBridgeBrain(options))
   const brain = createBrain({
@@ -354,6 +355,7 @@ export async function createProductionWorkSessionUi(
             maxTurns: trusted.executor.maxTurns,
             allowNpmInstall: trusted.executor.allowNpmInstall,
             allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
+            verificationOutputDirectory,
             ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
             ...(env.NOVAWING_GIT_BASH_PATH?.trim()
               ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() }

@@ -37,6 +37,17 @@ export interface WorkSessionFailureHint {
 
 const UNKNOWN_SAFE_MESSAGE = '发生未知错误。请在本地控制台查看安全诊断信息。'
 
+/** Shared redaction boundary for summaries, durable verification logs and UI data. */
+export function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\bBearer\s+\S+/giu, 'Bearer [REDACTED]')
+    .replace(
+      /(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z0-9-]*[_ -])*(?:authorization|password|secret|token|api[_ -]?key|credential|cookie|smtp[_ -]?pass))\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/giu,
+      '$1=[REDACTED]',
+    )
+    .replace(/\b(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@')
+}
+
 /**
  * The shared product-data boundary for failure text. Raw provider payloads,
  * credentials and authenticated remote URLs must never cross it.
@@ -62,13 +73,7 @@ export function safeFailureMessage(reason: unknown): string {
   const withoutStructuredDetail = normalized
     .replace(/\{[\s\S]*$/u, '[REDACTED PROVIDER DETAIL]')
     .replace(/\[[\s\S]*$/u, '[REDACTED PROVIDER DETAIL]')
-  const redacted = withoutStructuredDetail
-    .replace(/\bBearer\s+\S+/giu, '[REDACTED]')
-    .replace(
-      /(?<![A-Za-z0-9])((?:[A-Za-z][A-Za-z0-9-]*[_ -])*(?:authorization|password|secret|token|api[_ -]?key|credential|cookie|smtp[_ -]?pass))\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/giu,
-      '$1=[REDACTED]',
-    )
-    .replace(/\b(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@')
+  const redacted = redactSensitiveText(withoutStructuredDetail)
     .replace(/\s+/gu, ' ')
     .trim()
   return redacted.length === 0 ? UNKNOWN_SAFE_MESSAGE : redacted.slice(0, 500)
@@ -108,12 +113,10 @@ export function classifyWorkSessionFailure(
   }
 
   if (failureCategory === undefined) {
-    if (/repo[_ -]?drift|head changed|branch mismatch|worktree.*mismatch/iu.test(message)) {
+    if (/^REPO_DRIFT:/u.test(message)) {
       failureCategory = 'REPO_DRIFT'
     } else if (/credential|unauthorized|authentication|insufficient balance|api[_ -]?key/iu.test(message)) {
       failureCategory = 'CREDENTIAL'
-    } else if (/permission|not permitted|forbidden/iu.test(message)) {
-      failureCategory = 'PERMISSION'
     } else if (/budget|hard limit|max iterations/iu.test(message)) {
       failureCategory = 'BUDGET'
     } else if (/protocol|malformed|missing completion evidence/iu.test(message)) {

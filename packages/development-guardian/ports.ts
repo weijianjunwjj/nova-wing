@@ -19,6 +19,12 @@ export interface GuardianExecutor {
     task: GuardianTask
     packet: DelegationPacket
   }): Promise<ExecutionReport>
+
+  /** Environment recovery path: rerun verification without invoking the code executor. */
+  retryVerification?(input: {
+    task: GuardianTask
+    report: ExecutionReport
+  }): Promise<ExecutionReport>
 }
 
 /**

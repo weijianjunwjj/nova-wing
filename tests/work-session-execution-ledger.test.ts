@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   ExecutionLedgerStore,
+  EXECUTION_LEDGER_SCHEMA_VERSION,
   GuardianWorkSessionTaskRunner,
   GitCheckpointError,
   GitPushError,
@@ -218,17 +219,17 @@ await test('Execution Ledger persists minimal structured checkpoint recovery fac
       {
         eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: 'S-recovery', taskId: 'T014',
         timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
-        recoveryAction: 'RETRY_PUSH', commitSha: 'b02c7239', status: 'REQUESTED', schemaVersion: 4,
+        recoveryAction: 'RETRY_PUSH', commitSha: 'b02c7239', status: 'REQUESTED', schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
       },
       {
         eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: 'S-recovery', taskId: 'T014',
         timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
-        recoveryAction: 'REMOTE_ALREADY_MATCHED', commitSha: 'b02c7239', status: 'COMPLETED', schemaVersion: 4,
+        recoveryAction: 'REMOTE_ALREADY_MATCHED', commitSha: 'b02c7239', status: 'COMPLETED', schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
       },
       {
         eventType: 'CHECKPOINT_RECOVERY_FAILED', sessionId: 'S-recovery', taskId: 'T014',
         timestamp: '2026-08-25T00:00:00.000Z', recoveryKind: 'GIT_PUSH',
-        recoveryAction: 'VERIFICATION_UNAVAILABLE', commitSha: 'b02c7239', status: 'FAILED', schemaVersion: 4,
+        recoveryAction: 'VERIFICATION_UNAVAILABLE', commitSha: 'b02c7239', status: 'FAILED', schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
       },
     ])
     ledger.close()
@@ -286,7 +287,10 @@ await test('Execution Ledger v1 migration reclassifies phase duration as cumulat
     const ledger = new ExecutionLedgerStore(storageUrl)
     const migrated = ledger.read('v1-migration')
     assert.deepEqual(migrated.map((event) => event.eventId), [7, 11])
-    assert.deepEqual(migrated.map((event) => event.schemaVersion), [4, 4])
+    assert.deepEqual(migrated.map((event) => event.schemaVersion), [
+      EXECUTION_LEDGER_SCHEMA_VERSION,
+      EXECUTION_LEDGER_SCHEMA_VERSION,
+    ])
     const phase = migrated[1]
     assert.equal(phase?.eventType, 'PHASE_COMPLETED')
     if (phase?.eventType === 'PHASE_COMPLETED') {
@@ -330,7 +334,10 @@ await test('Execution Ledger v2 migration preserves events and enables v3 checkp
     const ledger = new ExecutionLedgerStore(storageUrl)
     const migrated = ledger.read('v2-session')
     assert.deepEqual(migrated.map((event) => event.eventId), [1, 2, 3, 4])
-    assert.deepEqual(migrated.map((event) => event.schemaVersion), [4, 4, 4, 4])
+    assert.deepEqual(
+      migrated.map((event) => event.schemaVersion),
+      Array(4).fill(EXECUTION_LEDGER_SCHEMA_VERSION),
+    )
     assert.equal(migrated[2] !== undefined && 'commitSha' in migrated[2] ? migrated[2].commitSha : undefined, 'safe-sha')
     assert.ok(migrated.every((event) => !('recoveryKind' in event) && !('recoveryAction' in event)))
     ledger.append({ eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: 'v2-session', taskId: 'T014', timestamp: '2026-08-25T00:04:00.000Z', status: 'REQUESTED', recoveryKind: 'GIT_PUSH', recoveryAction: 'RETRY_PUSH', commitSha: 'safe-sha' }, 'recovery-requested')

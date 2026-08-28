@@ -11,7 +11,7 @@ import type {
 } from './failure-classification.js'
 import { safeFailureMessage } from './failure-classification.js'
 
-export const EXECUTION_LEDGER_SCHEMA_VERSION = 4 as const
+export const EXECUTION_LEDGER_SCHEMA_VERSION = 5 as const
 
 export type ExecutionLedgerEventType =
   | 'SESSION_STARTED'
@@ -66,6 +66,14 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       verificationIndex?: number
       recoveryReason?: string
       recoveryBounded?: boolean
+      verificationClassification?: string
+      rawOutputRef?: string
+      firstFailureTitle?: string
+      exceptionType?: string
+      failurePhase?: string
+      finalSummary?: string
+      rootCauseCount?: number
+      affectedTests?: number
     }
   | { eventType: 'TASK_COMPLETED'; taskId: string; status: 'COMPLETED' }
   | { eventType: 'GIT_COMMIT_COMPLETED'; taskId: string; status: 'COMPLETED'; commitSha: string }
@@ -169,6 +177,14 @@ function executionLedgerTableSql(tableName: string): string {
       notification_kind TEXT,
       notification_id TEXT,
       command_fingerprint TEXT,
+      verification_classification TEXT,
+      raw_output_ref TEXT,
+      first_failure_title TEXT,
+      exception_type TEXT,
+      failure_phase TEXT,
+      final_summary TEXT,
+      root_cause_count INTEGER,
+      affected_tests INTEGER,
       UNIQUE(session_id, dedupe_key)
     ) STRICT
   `
@@ -189,6 +205,7 @@ export class ExecutionLedgerStore {
     this.#migrateV1IfNeeded()
     this.#migrateV3IfNeeded()
     this.#migrateV4IfNeeded()
+    this.#migrateV5IfNeeded()
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS execution_ledger_session_order
       ON execution_ledger_events(session_id, event_id)
@@ -272,6 +289,26 @@ export class ExecutionLedgerStore {
     ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
   }
 
+  #migrateV5IfNeeded(): void {
+    const names = new Set((this.#database.prepare(
+      'SELECT name FROM pragma_table_info(\'execution_ledger_events\')',
+    ).all() as Array<{ name: string }>).map((column) => column.name))
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ['verification_classification', 'TEXT'], ['raw_output_ref', 'TEXT'],
+      ['first_failure_title', 'TEXT'], ['exception_type', 'TEXT'],
+      ['failure_phase', 'TEXT'], ['final_summary', 'TEXT'],
+      ['root_cause_count', 'INTEGER'], ['affected_tests', 'INTEGER'],
+    ]
+    for (const [name, type] of additions) {
+      if (!names.has(name)) {
+        this.#database.exec(`ALTER TABLE execution_ledger_events ADD COLUMN ${name} ${type}`)
+      }
+    }
+    this.#database.prepare(
+      'UPDATE execution_ledger_events SET schema_version = ? WHERE schema_version < ?',
+    ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
+  }
+
   append(input: ExecutionLedgerEventInput, dedupeKey: string): ExecutionLedgerEvent {
     this.#assertOpen()
     this.#database.prepare(`
@@ -281,14 +318,18 @@ export class ExecutionLedgerStore {
         active_elapsed_ms, verification_command, verification_status,
         verification_index, recovery_reason, recovery_bounded, recovery_kind, recovery_action, commit_sha,
         push_sha, completion_reason, failure_stage, failure_category, safe_message,
-        notification_kind, notification_id, command_fingerprint
+        notification_kind, notification_id, command_fingerprint,
+        verification_classification, raw_output_ref, first_failure_title,
+        exception_type, failure_phase, final_summary, root_cause_count, affected_tests
       ) VALUES (
         $schemaVersion, $sessionId, $dedupeKey, $taskId, $timestamp, $eventType,
         $status, $phase, $iteration, $cumulativeElapsedMs, $durationMs,
         $activeElapsedMs, $verificationCommand, $verificationStatus,
         $verificationIndex, $recoveryReason, $recoveryBounded, $recoveryKind, $recoveryAction, $commitSha,
         $pushSha, $completionReason, $failureStage, $failureCategory, $safeMessage,
-        $notificationKind, $notificationId, $commandFingerprint
+        $notificationKind, $notificationId, $commandFingerprint,
+        $verificationClassification, $rawOutputRef, $firstFailureTitle,
+        $exceptionType, $failurePhase, $finalSummary, $rootCauseCount, $affectedTests
       )
     `).run({
       schemaVersion: EXECUTION_LEDGER_SCHEMA_VERSION,
@@ -335,6 +376,18 @@ export class ExecutionLedgerStore {
       notificationKind: 'notificationKind' in input ? input.notificationKind : null,
       notificationId: 'notificationId' in input ? input.notificationId : null,
       commandFingerprint: 'commandFingerprint' in input ? input.commandFingerprint : null,
+      verificationClassification: 'verificationClassification' in input
+        ? input.verificationClassification ?? null : null,
+      rawOutputRef: 'rawOutputRef' in input && input.rawOutputRef !== undefined
+        ? safeFailureMessage(input.rawOutputRef) : null,
+      firstFailureTitle: 'firstFailureTitle' in input && input.firstFailureTitle !== undefined
+        ? safeFailureMessage(input.firstFailureTitle) : null,
+      exceptionType: 'exceptionType' in input ? input.exceptionType ?? null : null,
+      failurePhase: 'failurePhase' in input ? input.failurePhase ?? null : null,
+      finalSummary: 'finalSummary' in input && input.finalSummary !== undefined
+        ? safeFailureMessage(input.finalSummary) : null,
+      rootCauseCount: 'rootCauseCount' in input ? input.rootCauseCount ?? null : null,
+      affectedTests: 'affectedTests' in input ? input.affectedTests ?? null : null,
     })
     const row = this.#database.prepare(`
       SELECT * FROM execution_ledger_events
@@ -426,6 +479,14 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalString(row, 'notification_kind') === null ? {} : { notificationKind: optionalString(row, 'notification_kind')! }),
     ...(optionalString(row, 'notification_id') === null ? {} : { notificationId: optionalString(row, 'notification_id')! }),
     ...(optionalString(row, 'command_fingerprint') === null ? {} : { commandFingerprint: optionalString(row, 'command_fingerprint')! }),
+    ...(optionalString(row, 'verification_classification') === null ? {} : { verificationClassification: optionalString(row, 'verification_classification')! }),
+    ...(optionalString(row, 'raw_output_ref') === null ? {} : { rawOutputRef: optionalString(row, 'raw_output_ref')! }),
+    ...(optionalString(row, 'first_failure_title') === null ? {} : { firstFailureTitle: optionalString(row, 'first_failure_title')! }),
+    ...(optionalString(row, 'exception_type') === null ? {} : { exceptionType: optionalString(row, 'exception_type')! }),
+    ...(optionalString(row, 'failure_phase') === null ? {} : { failurePhase: optionalString(row, 'failure_phase')! }),
+    ...(optionalString(row, 'final_summary') === null ? {} : { finalSummary: optionalString(row, 'final_summary')! }),
+    ...(optionalInteger(row, 'root_cause_count') === null ? {} : { rootCauseCount: optionalInteger(row, 'root_cause_count')! }),
+    ...(optionalInteger(row, 'affected_tests') === null ? {} : { affectedTests: optionalInteger(row, 'affected_tests')! }),
   }
   return { ...base, ...optional } as ExecutionLedgerEvent
 }

@@ -100,6 +100,22 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    verificationFailure?: {
+      command: string
+      classification: string
+      exitCode?: number | null
+      durationMs?: number
+      firstFailure?: {
+        title: string
+        exceptionType?: string
+        tracebackSnippet: string
+        phase: string
+      }
+      rawOutputRef?: string
+      finalSummary?: string
+      rootCauseCount?: number
+      affectedTests?: number
+    }
     pendingVerificationApproval?: {
       taskId: string
       command: string

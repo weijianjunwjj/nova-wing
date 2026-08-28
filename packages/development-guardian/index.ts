@@ -71,6 +71,9 @@ export type {
   GuardianTask,
   GuardianTaskState,
   VerificationResult,
+  VerificationFailureClassification,
+  VerificationFailurePhase,
+  VerificationFirstFailure,
   VerificationStatus,
 } from './model.js'
 export type { GuardianBrain, GuardianExecutor } from './ports.js'
@@ -81,3 +84,8 @@ export type {
   GuardianProgressStatus,
 } from './progress.js'
 export * from './work-session/index.js'
+export {
+  buildVerificationResult,
+  environmentVerificationFailure,
+  persistVerificationOutput,
+} from './verification-evidence.js'

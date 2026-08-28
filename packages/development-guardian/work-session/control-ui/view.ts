@@ -542,7 +542,9 @@ function renderDecision(rt) {
     } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
     } else if (resolvedAck) {
-      setText('decision-guidance', '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
+      setText('decision-guidance', category === 'ENVIRONMENT_REQUIRED'
+        ? '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。'
+        : '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
     } else if (category === 'PERMISSION_REQUIRED') {
       setText('decision-guidance', '请先更新受信任的项目权限。')
     } else if (category === 'BUDGET_EXHAUSTED') {

@@ -431,6 +431,33 @@ export class WorkSessionControlController {
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
                 : {}),
+              ...(state.verificationFailure === undefined
+                ? {}
+                : { verificationFailure: {
+                    command: state.verificationFailure.name,
+                    classification: state.verificationFailure.classification ?? 'UNKNOWN',
+                    ...(state.verificationFailure.exitCode === undefined
+                      ? {}
+                      : { exitCode: state.verificationFailure.exitCode }),
+                    ...(state.verificationFailure.durationMs === undefined
+                      ? {}
+                      : { durationMs: state.verificationFailure.durationMs }),
+                    ...(state.verificationFailure.firstFailure === undefined
+                      ? {}
+                      : { firstFailure: { ...state.verificationFailure.firstFailure } }),
+                    ...(state.verificationFailure.rawOutputRef === undefined
+                      ? {}
+                      : { rawOutputRef: state.verificationFailure.rawOutputRef }),
+                    ...(state.verificationFailure.finalSummary === undefined
+                      ? {}
+                      : { finalSummary: state.verificationFailure.finalSummary }),
+                    ...(state.verificationFailure.rootCauseCount === undefined
+                      ? {}
+                      : { rootCauseCount: state.verificationFailure.rootCauseCount }),
+                    ...(state.verificationFailure.affectedTests === undefined
+                      ? {}
+                      : { affectedTests: state.verificationFailure.affectedTests }),
+                  } }),
               ...(state.pendingVerificationApproval !== undefined &&
               state.pendingVerificationApproval.status === 'REQUESTED'
                 ? { pendingVerificationApproval: {
@@ -569,6 +596,13 @@ export class WorkSessionControlController {
       state.humanRequired !== undefined
         ? [state.humanRequired.category, state.humanRequired.reason]
         : null,
+      state.verificationFailure === undefined
+        ? null
+        : [
+            state.verificationFailure.name,
+            state.verificationFailure.classification,
+            state.verificationFailure.rawOutputRef,
+          ],
       state.pendingVerificationApproval !== undefined
         ? [state.pendingVerificationApproval.taskId, state.pendingVerificationApproval.generation, state.pendingVerificationApproval.status]
         : null,

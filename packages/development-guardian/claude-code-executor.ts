@@ -17,6 +17,10 @@ import {
   guardianShellCommand,
   type GuardianShellContractOptions,
 } from './shell-contract.js'
+import {
+  buildVerificationResult,
+  persistVerificationOutput,
+} from './verification-evidence.js'
 
 export interface GuardianCommandRequest {
   executable: string
@@ -103,6 +107,8 @@ export interface ClaudeCodeExecutorOptions {
     /** Stable position in the verification list for this Executor iteration. */
     index?: number
     durationMs?: number
+    /** Present on a completed command; safe, bounded and already redacted. */
+    evidence?: VerificationResult
   }) => void
   onRecovery?: (recovery: {
     reason: 'max_turns'
@@ -116,6 +122,8 @@ export interface ClaudeCodeExecutorOptions {
    * command. This is never derived from Claude input or browser input.
    */
   approvedVerificationCommand?: string
+  /** Session-owned directory outside the target worktree for redacted raw verification logs. */
+  verificationOutputDirectory?: string
   /** W003: 允许的 worktree checkpoint（用于 resume 验证） */
   allowedWorktreeCheckpoint?: {
     taskId: string
@@ -313,10 +321,10 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
-      stdout = `${stdout}${chunk}`.slice(-1_000_000)
+      stdout = `${stdout}${chunk}`
     })
     child.stderr.on('data', (chunk: string) => {
-      stderr = `${stderr}${chunk}`.slice(-1_000_000)
+      stderr = `${stderr}${chunk}`
     })
 
     const timer = setTimeout(() => {
@@ -848,12 +856,19 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     return args
   }
 
-  private async verify(task: GuardianTask, commands: readonly string[]): Promise<{
+  private async verify(
+    task: GuardianTask,
+    commands: readonly string[],
+    includeBaseline = true,
+  ): Promise<{
     results: VerificationResult[]
     blockers: string[]
     commandsRun: string[]
   }> {
-    const effectiveCommands = [...new Set(['git diff --check', ...commands.map((command) => command.trim())])]
+    const effectiveCommands = [...new Set([
+      ...(includeBaseline ? ['git diff --check'] : []),
+      ...commands.map((command) => command.trim()),
+    ])]
     const results: VerificationResult[] = []
     const blockers: string[] = []
     const commandsRun: string[] = []
@@ -885,15 +900,67 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       const durationMs = performance.now() - startedAt
       this.emitTiming(task, 'verification', durationMs, { command })
       const status = result.exitCode === 0 ? 'passed' : 'failed'
-      this.options.onVerification?.({ command, status, iteration: task.iteration, index, durationMs })
-      results.push({
-        name: command,
-        status,
-        ...(result.exitCode === 0 ? {} : { details: commandFailureDetails(result) }),
+      const rawOutputRef = status === 'failed'
+        ? await persistVerificationOutput({
+            ...(this.options.verificationOutputDirectory === undefined
+              ? {}
+              : { directory: this.options.verificationOutputDirectory }),
+            taskId: task.id,
+            iteration: task.iteration,
+            index,
+            command,
+            result,
+          })
+        : undefined
+      const evidence = buildVerificationResult({
+        command,
+        result,
+        durationMs,
+        ...(rawOutputRef === undefined ? {} : { rawOutputRef }),
       })
+      this.options.onVerification?.({
+        command,
+        status,
+        iteration: task.iteration,
+        index,
+        durationMs,
+        evidence,
+      })
+      results.push(evidence)
     }
 
     return { results, blockers, commandsRun }
+  }
+
+  /**
+   * Recovery boundary for ENVIRONMENT_REQUIRED. This deliberately bypasses
+   * clean-start inspection and Claude invocation: only failed deterministic
+   * verification commands are executed again.
+   */
+  async retryVerification(input: {
+    task: GuardianTask
+    report: ExecutionReport
+  }): Promise<ExecutionReport> {
+    const failedCommands = input.report.verificationResults
+      .filter((result) => result.status === 'failed')
+      .map((result) => result.name)
+    if (failedCommands.length === 0) return input.report
+
+    const retry = await this.verify(input.task, failedCommands, false)
+    const retriedByName = new Map(retry.results.map((result) => [result.name, result]))
+    const verificationResults = input.report.verificationResults.map(
+      (result) => retriedByName.get(result.name) ?? result,
+    )
+    const latestRawOutputRef = retry.results.find((result) => result.rawOutputRef !== undefined)?.rawOutputRef
+    return {
+      ...input.report,
+      commandsRun: [...input.report.commandsRun, ...retry.commandsRun],
+      verificationResults,
+      blockers: [...input.report.blockers, ...retry.blockers],
+      ...(latestRawOutputRef === undefined
+        ? {}
+        : { rawOutputRef: latestRawOutputRef }),
+    }
   }
 
   private reportSummary(parsed: ClaudeCodeJsonResult): string {
@@ -1356,6 +1423,9 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
 
       const verification = await this.verify(input.task, input.packet.verification)
       allBlockers.push(...verification.blockers)
+      const rawOutputRef = verification.results.find(
+        (result) => result.rawOutputRef !== undefined,
+      )?.rawOutputRef
 
       return {
         summary: this.reportSummary(finalAttempt.parsed),
@@ -1363,6 +1433,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         commandsRun: ['claude -p --output-format json', ...verification.commandsRun],
         verificationResults: verification.results,
         blockers: allBlockers,
+        ...(rawOutputRef === undefined ? {} : { rawOutputRef }),
         executorCapabilities,
         deterministicVerificationCapabilities,
       }

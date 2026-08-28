@@ -57,6 +57,8 @@ export interface WorkSessionTaskResult {
   error?: string
   failureStage?: WorkSessionFailureStage
   failureCategory?: WorkSessionFailureCategory
+  /** Product-safe evidence retained when verification suspends on the environment. */
+  verificationFailure?: VerificationResult
   /** W003: suspended result 可选的恢复 checkpoint */
   checkpoint?: GuardianTaskRecoveryCheckpoint
   /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
