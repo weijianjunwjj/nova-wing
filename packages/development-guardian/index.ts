@@ -67,6 +67,7 @@ export type {
   ExecutionReport,
   GuardianBrainFailure,
   GuardianBrainFailureCategory,
+  GuardianBrainFailureType,
   GuardianRunResult,
   GuardianTask,
   GuardianTaskState,

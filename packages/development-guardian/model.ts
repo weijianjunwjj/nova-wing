@@ -13,13 +13,25 @@ export type GuardianBrainFailureCategory =
   | 'PROTOCOL'
   | 'RESPONSE'
 
+export type GuardianBrainFailureType =
+  | 'BRAIN_UNAVAILABLE'
+  | 'BRAIN_TRANSPORT_FAILED'
+  | 'BRAIN_CONFIGURATION_FAILED'
+  | 'BRAIN_AUTH_REQUIRED'
+  | 'BRAIN_RATE_LIMITED'
+  | 'BRAIN_RESPONSE_INVALID'
+
 /**
  * Provider-neutral Brain infrastructure failure. This is deliberately separate
  * from HUMAN_REQUIRED: no Reviewer decision exists when transport/configuration
  * did not complete.
  */
 export interface GuardianBrainFailure {
-  stage: 'BRAIN_REVIEW'
+  stage: 'BRAIN_REVIEW' | 'FINAL_REVIEW'
+  /** Present for all newly-classified failures; optional only for legacy checkpoints. */
+  failureType?: GuardianBrainFailureType
+  /** Stable, redacted presentation text; optional only for legacy checkpoints. */
+  safeMessage?: string
   category: GuardianBrainFailureCategory
   rootCause: string
   adapter: string
@@ -31,6 +43,11 @@ export interface GuardianBrainFailure {
   fingerprint: string
   /** Bounded, normalized local diagnostic; never an unbounded stderr dump. */
   rawError?: string
+  attempt?: number
+  timestamp?: string
+  lastReliableCheckpoint?: string
+  nextResumableAction?: string
+  rawOutputRef?: string
 }
 
 export type DelegationVerdict = 'proceed' | 'revise' | 'blocked' | 'done'

@@ -307,9 +307,19 @@ function getExecutorCapabilities(options: {
 
 function defaultCommandRunner(request: GuardianCommandRequest): Promise<GuardianCommandResult> {
   return new Promise((resolve, reject) => {
+    const inheritedEnvironment = request.env ?? process.env
+    const processEnvironment = request.nativeGitBash === true
+      ? {
+          ...inheritedEnvironment,
+          BASH: request.executable,
+          NOVAWING_GIT_BASH_PATH: request.executable,
+          SHELL: request.executable,
+          npm_config_script_shell: request.executable,
+        }
+      : inheritedEnvironment
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
-      env: request.env ?? process.env,
+      env: processEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
       shell: false,
@@ -655,6 +665,17 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     }
   }
 
+  private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv | undefined {
+    if (nativeGitBash !== true) return undefined
+    return {
+      ...process.env,
+      BASH: executable,
+      NOVAWING_GIT_BASH_PATH: executable,
+      SHELL: executable,
+      npm_config_script_shell: executable,
+    }
+  }
+
   private emitTiming(
     task: GuardianTask,
     phase: ClaudeCodeTimingPhase,
@@ -672,11 +693,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
 
   private async runBash(command: string, timeoutMs = this.timeoutMs): Promise<GuardianCommandResult> {
     const spec = guardianShellCommand(command, this.shellOptions())
+    const env = this.commandEnvironment(spec.executable, spec.nativeGitBash)
     return this.runner({
       executable: spec.executable,
       args: spec.args,
       cwd: this.options.cwd,
       timeoutMs,
+      ...(env === undefined ? {} : { env }),
       ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
     })
   }
@@ -1079,12 +1102,14 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   }> {
     const args = this.buildClaudeArgs(task, packet, mode)
     const spec = claudeCommand(args, this.shellOptions())
+    const env = this.commandEnvironment(spec.executable, spec.nativeGitBash)
     const claudeStartedAt = performance.now()
     const claude = await this.runner({
       executable: spec.executable,
       args: spec.args,
       cwd: this.options.cwd,
       timeoutMs: this.timeoutMs,
+      ...(env === undefined ? {} : { env }),
       ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
     })
     const claudeDurationMs = performance.now() - claudeStartedAt

@@ -142,6 +142,12 @@ test('guardian stops after consecutive retryable Brain timeouts', async () => {
   assert.equal(reviews, 2)
   assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.equal(result.task.brainFailure?.fingerprint, 'brain-transport:timeout')
+  assert.equal(result.task.brainFailure?.failureType, 'BRAIN_TRANSPORT_FAILED')
+  assert.equal(result.task.brainFailure?.stage, 'BRAIN_REVIEW')
+  assert.equal(result.task.brainFailure?.attempt, 2)
+  assert.equal(result.task.brainFailure?.nextResumableAction, 'REVIEWING')
+  assert.match(result.task.brainFailure?.timestamp ?? '', /^\d{4}-\d{2}-\d{2}T/u)
+  assert.doesNotMatch(result.task.brainFailure?.safeMessage ?? '', /timeout/u)
 })
 
 test('guardian does not retry ordinary Brain errors', async () => {

@@ -263,6 +263,8 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /data-composer-tasks/u)
     assert.match(html, /data-task-id/u)
     assert.match(html, /data-task-goal/u)
+    assert.match(html, /data-task-goal-count>0 \/ 8000/u)
+    assert.match(html, /data-task-goal rows="6" maxlength="8000"/u)
     assert.match(html, /data-add-task/u)
     assert.match(html, /data-delete-config-id=/u)
     assert.match(html, />\s*删除\s*<\/button>/u)
@@ -275,6 +277,57 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     const appJs = await (await fetch(`${address.url}/app.js`)).text()
     assert.match(appJs, /确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。/u)
     assert.match(appJs, /Work Session 正在运行，请先结束后再删除。/u)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Launchpad renders DEGRADED and blocks before creating a Work Session when shell preflight fails', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const expected = 'D:\\Git\\bin\\bash.exe'
+  const actual = 'C:\\Windows\\System32\\bash.exe'
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state),
+      preflight: async () => ({
+        overall: 'ENVIRONMENT_REQUIRED', canStart: false,
+        checkedAt: '2026-08-28T00:00:00.000Z',
+        dependencies: [
+          { id: 'CORE', state: 'DEGRADED' },
+          {
+            id: 'SHELL', state: 'UNAVAILABLE', failureType: 'SHELL_ENVIRONMENT_INVALID',
+            safeMessage: 'shell invalid', expectedExecutable: expected, actualExecutable: actual,
+            safeRemediation: 'restart runtime and Resume',
+          },
+          { id: 'BRAIN', state: 'UNAVAILABLE' },
+          { id: 'EXECUTOR', state: 'UNAVAILABLE' },
+        ],
+      }),
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const html = await (await fetch(address.url)).text()
+    assert.match(html, /SYSTEM DEGRADED/u)
+    assert.match(html, /NovaWing Core: DEGRADED/u)
+    assert.match(html, /BRAIN: UNAVAILABLE/u)
+    assert.match(html, /EXECUTOR: UNAVAILABLE/u)
+    const configId = launchpad.getConfigs()[0]?.configId
+    assert.ok(configId)
+    const response = await postStart(launchpad, { configId }, {
+      token: launchpad.getTokenForTest(), origin: address.url,
+    })
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'DEPENDENCY_REQUIRED', classification: 'ENVIRONMENT_REQUIRED',
+      failureType: 'SHELL_ENVIRONMENT_INVALID', dependency: 'SHELL', message: 'shell invalid',
+      expectedExecutable: expected, actualExecutable: actual,
+      safeRemediation: 'restart runtime and Resume',
+    })
+    assert.equal(state.createCalls, 0)
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -365,6 +418,7 @@ await test('Composer includes completion email notification when enabled', async
     configDirectory: directory,
     dependencies: {
       createWorkSession: fakeWorkSessionFactory(state),
+      async resolveEnvironment() { return {} },
       async gitProcessRunner() { return { exitCode: 0, stdout: 'feat/composer\n', stderr: '' } },
     },
   })
@@ -699,6 +753,13 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
       tasks: [{ id: 'T011', goal: '   ' }],
     }), auth)
     assert.equal((await invalidGoal.json() as { error: string }).error, 'INVALID_TASK')
+    const tooLongGoal = await postCreate(launchpad, composerRequest('composer-create-request-too-long', {
+      tasks: [{ id: 'T011', goal: 'x'.repeat(8_001) }],
+    }), auth)
+    assert.deepEqual(await tooLongGoal.json(), {
+      error: 'INVALID_TASK_TOO_LONG',
+      message: 'Task 描述过长，最大 8000 字符。',
+    })
     const missingPushRemote = await postCreate(launchpad, composerRequest('composer-create-request-0011', { autoPush: true }), auth)
     assert.equal((await missingPushRemote.json() as { error: string }).error, 'AUTO_PUSH_REMOTE_UNAVAILABLE')
     const pushWithoutCommit = await postCreate(launchpad, composerRequest('composer-create-request-0012', {

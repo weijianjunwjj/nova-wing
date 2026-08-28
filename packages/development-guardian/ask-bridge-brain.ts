@@ -247,6 +247,14 @@ function isModelSelectionFailure(details: string): boolean {
   return /(?:error switching model|model switch failed|model selection failed)/iu.test(details)
 }
 
+function isAuthenticationFailure(details: string): boolean {
+  return /\b(?:authentication|unauthorized|sign[ -]?in|login|credential|api[_ -]?key)\b/iu.test(details)
+}
+
+function isRateLimitFailure(details: string): boolean {
+  return /\b(?:rate limit|too many requests|quota|credits?|balance|billing|429|402)\b/iu.test(details)
+}
+
 function extractAvailableOptions(details: string): string[] {
   const marker = /available options\s*:\s*/iu.exec(details)
   if (marker === null) return []
@@ -477,6 +485,7 @@ export class AskBridgeBrain implements GuardianBrain {
           const message = error instanceof Error ? error.message : String(error)
           throw new GuardianBrainInfrastructureError(`ask-bridge unavailable: ${message}`, {
             category: 'TRANSPORT',
+            failureType: 'BRAIN_UNAVAILABLE',
             ...this.failureContext(),
             rawError: message,
           })
@@ -532,6 +541,7 @@ export class AskBridgeBrain implements GuardianBrain {
             'timeout',
             {
               ...this.failureContext(),
+              failureType: 'BRAIN_TRANSPORT_FAILED',
               degraded: reasoningDegraded,
             },
           )
@@ -542,11 +552,21 @@ export class AskBridgeBrain implements GuardianBrain {
             ...this.failureContext(),
             degraded: reasoningDegraded,
             rawError: details,
+            failureType: 'BRAIN_TRANSPORT_FAILED',
           })
         }
-        const configurationFailure = isModelSelectionFailure(details) || isReasoningOptionFailure(details)
+        const authenticationFailure = isAuthenticationFailure(details)
+        const rateLimitFailure = isRateLimitFailure(details)
+        const configurationFailure = authenticationFailure || rateLimitFailure || isModelSelectionFailure(details) || isReasoningOptionFailure(details)
         throw new GuardianBrainInfrastructureError(`ask-bridge failed: ${details}`, {
           category: configurationFailure ? 'CONFIGURATION' : 'TRANSPORT',
+          failureType: authenticationFailure
+            ? 'BRAIN_AUTH_REQUIRED'
+            : rateLimitFailure
+              ? 'BRAIN_RATE_LIMITED'
+              : configurationFailure
+                ? 'BRAIN_CONFIGURATION_FAILED'
+                : 'BRAIN_TRANSPORT_FAILED',
           ...this.failureContext(),
           availableOptions: extractAvailableOptions(details),
           degraded: reasoningDegraded,
@@ -566,6 +586,7 @@ export class AskBridgeBrain implements GuardianBrain {
         const details = failureDetails(result)
         throw new GuardianBrainInfrastructureError(`ask-bridge returned empty response: ${details}`, {
           category: 'RESPONSE',
+          failureType: 'BRAIN_RESPONSE_INVALID',
           ...this.failureContext(),
           degraded: reasoningDegraded,
           rawError: details,
@@ -582,11 +603,13 @@ export class AskBridgeBrain implements GuardianBrain {
           throw new RetryableGuardianBrainError(error.message, 'protocol', {
             ...this.failureContext(),
             degraded: reasoningDegraded,
+            failureType: 'BRAIN_RESPONSE_INVALID',
           })
         }
         if (error instanceof TenXChatBrainProtocolError) {
           throw new GuardianBrainInfrastructureError(error.message, {
             category: 'PROTOCOL',
+            failureType: 'BRAIN_RESPONSE_INVALID',
             ...this.failureContext(),
             degraded: reasoningDegraded,
           })

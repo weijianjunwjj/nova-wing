@@ -84,6 +84,9 @@ test('final review timeout preserves executor report', async () => {
   assert.deepEqual(result.reports[0]?.changedFiles, ['src/auth.ts', 'src/auth.test.ts'])
   assert.equal(result.reports[0]?.summary, 'implementation completed')
   assert.equal(result.reports[0]?.verificationResults.length, 2)
+  assert.equal(result.task.brainFailure?.stage, 'FINAL_REVIEW')
+  assert.equal(result.task.brainFailure?.lastReliableCheckpoint, 'AFTER_EXECUTOR_VERIFICATION')
+  assert.equal(result.task.brainFailure?.nextResumableAction, 'FINAL_REVIEW')
 
   const finalReviewActive = events.find((e) => e.phase === 'FINAL_REVIEW' && e.status === 'active')
   assert.ok(finalReviewActive, 'must show FINAL_REVIEW started')
@@ -153,7 +156,7 @@ test('timeout stopReason distinguishes initial vs final review', async () => {
   assert.equal(initialResult.reports.length, 0)
   assert.equal(finalResult.reports.length, 1)
   assert.equal(initialResult.task.brainFailure?.stage, 'BRAIN_REVIEW')
-  assert.equal(finalResult.task.brainFailure?.stage, 'BRAIN_REVIEW')
+  assert.equal(finalResult.task.brainFailure?.stage, 'FINAL_REVIEW')
 })
 
 test('CLI heartbeat timer is cleared after phase completes', async () => {

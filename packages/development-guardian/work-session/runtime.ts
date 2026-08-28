@@ -146,7 +146,12 @@ const WorkflowStateSchema = z.object({
     status: z.enum(['REQUESTED', 'APPROVED']),
   }).optional(),
   brainFailure: z.object({
-    stage: z.literal('BRAIN_REVIEW'),
+    stage: z.enum(['BRAIN_REVIEW', 'FINAL_REVIEW']),
+    failureType: z.enum([
+      'BRAIN_UNAVAILABLE', 'BRAIN_TRANSPORT_FAILED', 'BRAIN_CONFIGURATION_FAILED',
+      'BRAIN_AUTH_REQUIRED', 'BRAIN_RATE_LIMITED', 'BRAIN_RESPONSE_INVALID',
+    ]).optional(),
+    safeMessage: z.string().optional(),
     category: z.enum(['CONFIGURATION', 'TRANSPORT', 'PROTOCOL', 'RESPONSE']),
     rootCause: z.string(),
     adapter: z.string(),
@@ -157,6 +162,11 @@ const WorkflowStateSchema = z.object({
     degraded: z.boolean(),
     fingerprint: z.string(),
     rawError: z.string().optional(),
+    attempt: z.number().int().positive().optional(),
+    timestamp: z.string().optional(),
+    lastReliableCheckpoint: z.string().optional(),
+    nextResumableAction: z.string().optional(),
+    rawOutputRef: z.string().optional(),
   }).optional(),
   humanRequiredGeneration: z.number().int().nonnegative().optional(),
   lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
@@ -1223,6 +1233,8 @@ export class WorkSessionRuntime {
                 retryable: brainFailure.retryable,
                 degraded: brainFailure.degraded,
                 fingerprint: brainFailure.fingerprint,
+                ...(brainFailure.failureType === undefined ? {} : { failureType: brainFailure.failureType }),
+                ...(brainFailure.safeMessage === undefined ? {} : { safeMessage: brainFailure.safeMessage }),
                 ...(brainFailure.requestedModel === undefined
                   ? {}
                   : { requestedModel: brainFailure.requestedModel }),
@@ -1235,6 +1247,11 @@ export class WorkSessionRuntime {
                 ...(brainFailure.rawError === undefined
                   ? {}
                   : { rawError: brainFailure.rawError }),
+                ...(brainFailure.attempt === undefined ? {} : { attempt: brainFailure.attempt }),
+                ...(brainFailure.timestamp === undefined ? {} : { timestamp: brainFailure.timestamp }),
+                ...(brainFailure.lastReliableCheckpoint === undefined ? {} : { lastReliableCheckpoint: brainFailure.lastReliableCheckpoint }),
+                ...(brainFailure.nextResumableAction === undefined ? {} : { nextResumableAction: brainFailure.nextResumableAction }),
+                ...(brainFailure.rawOutputRef === undefined ? {} : { rawOutputRef: brainFailure.rawOutputRef }),
               },
               suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
               currentTaskCheckpoint: result.checkpoint,
@@ -1427,6 +1444,8 @@ export class WorkSessionRuntime {
         retryable: wfState.brainFailure.retryable,
         degraded: wfState.brainFailure.degraded,
         fingerprint: wfState.brainFailure.fingerprint,
+        ...(wfState.brainFailure.failureType === undefined ? {} : { failureType: wfState.brainFailure.failureType }),
+        ...(wfState.brainFailure.safeMessage === undefined ? {} : { safeMessage: wfState.brainFailure.safeMessage }),
         ...(wfState.brainFailure.requestedModel === undefined
           ? {}
           : { requestedModel: wfState.brainFailure.requestedModel }),
@@ -1439,6 +1458,11 @@ export class WorkSessionRuntime {
         ...(wfState.brainFailure.rawError === undefined
           ? {}
           : { rawError: wfState.brainFailure.rawError }),
+        ...(wfState.brainFailure.attempt === undefined ? {} : { attempt: wfState.brainFailure.attempt }),
+        ...(wfState.brainFailure.timestamp === undefined ? {} : { timestamp: wfState.brainFailure.timestamp }),
+        ...(wfState.brainFailure.lastReliableCheckpoint === undefined ? {} : { lastReliableCheckpoint: wfState.brainFailure.lastReliableCheckpoint }),
+        ...(wfState.brainFailure.nextResumableAction === undefined ? {} : { nextResumableAction: wfState.brainFailure.nextResumableAction }),
+        ...(wfState.brainFailure.rawOutputRef === undefined ? {} : { rawOutputRef: wfState.brainFailure.rawOutputRef }),
       }
     }
     if (wfState.humanRequiredGeneration !== undefined) {

@@ -45,6 +45,8 @@ export type WorkSessionRuntimeFactory = (
 
 export interface WorkSessionControlControllerOptions {
   createRuntime: WorkSessionRuntimeFactory
+  /** Revalidates external dependencies immediately before a recoverable resume. */
+  beforeResume?: () => Promise<void>
   /** state polling 间隔（毫秒）；缺省 250 */
   pollIntervalMs?: number
   /** recent events ring buffer 上限；缺省 100 */
@@ -94,6 +96,7 @@ export class WorkSessionControlController {
   private readonly pollIntervalMs: number
   private readonly maxRecentEvents: number
   private readonly clock: { now(): number } | undefined
+  private readonly beforeResume: (() => Promise<void>) | undefined
 
   private started = false
   private closed = false
@@ -127,6 +130,7 @@ export class WorkSessionControlController {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.maxRecentEvents = options.maxRecentEvents ?? DEFAULT_MAX_RECENT_EVENTS
     this.clock = options.clock
+    this.beforeResume = options.beforeResume
     // 注入的 factory 拿到 Guardian progress sink；controller 把 GuardianProgressEvent
     // 转成 GUARDIAN_PHASE recent event。生产 factory 把 sink 接到 runner.onProgress。
     this.runtime = options.createRuntime(
@@ -276,8 +280,12 @@ export class WorkSessionControlController {
 
     // W005-B: resume is background-owned just like start. The user's decision is
     // passed only to the runtime/provider path and never copied into events/status.
-    this.resumePromise = this.runtime
-      .resume(validated.input ?? {})
+    const resumeOperation = this.beforeResume === undefined
+      ? this.runtime.resume(validated.input ?? {})
+      : Promise.resolve()
+          .then(() => this.beforeResume!())
+          .then(() => this.runtime.resume(validated.input ?? {}))
+    this.resumePromise = resumeOperation
       .then(() => {
         this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
         this.broadcastSnapshot()
@@ -328,7 +336,12 @@ export class WorkSessionControlController {
     this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
     this.broadcastSnapshot()
 
-    this.resumePromise = this.runtime.resumeInterrupted()
+    const resumeOperation = this.beforeResume === undefined
+      ? this.runtime.resumeInterrupted()
+      : Promise.resolve()
+          .then(() => this.beforeResume!())
+          .then(() => this.runtime.resumeInterrupted!())
+    this.resumePromise = resumeOperation
       .then(() => {
         this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
         this.broadcastSnapshot()
@@ -780,7 +793,12 @@ export class WorkSessionControlController {
   > {
     const failure = state.brainFailure
     return {
-      stage: 'BRAIN_REVIEW',
+      stage: failure?.stage ?? 'BRAIN_REVIEW',
+      ...(failure?.failureType === undefined ? {} : { failureType: failure.failureType }),
+      ...(failure?.attempt === undefined ? {} : { attempt: failure.attempt }),
+      ...(failure?.timestamp === undefined ? {} : { timestamp: failure.timestamp }),
+      ...(failure?.lastReliableCheckpoint === undefined ? {} : { lastReliableCheckpoint: failure.lastReliableCheckpoint }),
+      ...(failure?.nextResumableAction === undefined ? {} : { nextResumableAction: failure.nextResumableAction }),
       category: failure?.category ?? 'TRANSPORT',
       adapter: failure?.adapter ?? 'guardian-brain',
       retryable: failure?.retryable ?? false,
@@ -792,7 +810,7 @@ export class WorkSessionControlController {
       ...(failure?.requestedReasoning === undefined
         ? {}
         : { requestedReasoning: failure.requestedReasoning }),
-      safeMessage: SAFE_BRAIN_FAILURE_MESSAGE,
+      safeMessage: failure?.safeMessage ?? SAFE_BRAIN_FAILURE_MESSAGE,
     }
   }
 

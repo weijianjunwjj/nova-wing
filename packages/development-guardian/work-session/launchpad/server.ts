@@ -22,18 +22,25 @@ import {
 import { fileURLToPath } from 'node:url'
 import { resolveProductionSmtpEnvironment } from '../local-smtp-secrets.js'
 import {
+  DependencyPreflightError,
+  requireDependencyPreflightReady,
+  runProductionDependencyPreflight,
+  type DependencyHealthReport,
+} from '../dependency-health.js'
+import {
   LAUNCHPAD_APP_JS,
   LAUNCHPAD_STYLES_CSS,
   renderLaunchpadHtml,
 } from './view.js'
 
 const LOOPBACK_HOST = '127.0.0.1'
-const MAX_BODY_BYTES = 16 * 1024
+const MAX_BODY_BYTES = 96 * 1024
 const SAFE_LAUNCH_ERROR = 'Work Session 启动失败'
 const DEFAULT_EXECUTOR_MODEL = 'sonnet'
 const DEFAULT_SOFT_MINUTES = 45
 const DEFAULT_HARD_MINUTES = 90
 const MAX_COMPOSER_TASKS = 10
+export const MAX_COMPOSER_TASK_GOAL_CHARS = 8_000
 const MAX_COMPLETED_COMPOSER_REQUESTS = 100
 const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
 const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
@@ -110,6 +117,8 @@ export interface NovaWingLaunchpadDependencies {
   shutdownTimeoutMs?: number
   /** T021: 读取某 config 对应持久化 Session 的派生展示状态（缺省读 Mastra storage）。 */
   readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
+  /** One-shot bounded preflight; production enables it explicitly. */
+  preflight?: (targetRepo?: string) => Promise<DependencyHealthReport>
 }
 
 interface LaunchResult {
@@ -151,6 +160,7 @@ type ComposerError =
   | 'CANNOT_READ_BRANCH'
   | 'INVALID_TASK_ID'
   | 'INVALID_TASK'
+  | 'INVALID_TASK_TOO_LONG'
   | 'DUPLICATE_TASK_ID'
   | 'INVALID_LIMITS'
   | 'MISSING_ALLOWED_PATHS'
@@ -167,6 +177,7 @@ const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', str
   CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
   INVALID_TASK_ID: '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。',
   INVALID_TASK: '请填写有效的 Task 描述。',
+  INVALID_TASK_TOO_LONG: `Task 描述过长，最大 ${MAX_COMPOSER_TASK_GOAL_CHARS} 字符。`,
   DUPLICATE_TASK_ID: 'Task ID 不得重复。',
   INVALID_LIMITS: '时间限制无效：Hard Limit 必须不小于 Soft Limit。',
   MISSING_ALLOWED_PATHS: '请填写至少一个允许修改路径。',
@@ -307,6 +318,7 @@ export class NovaWingLaunchpad {
   private readonly gitProcessRunner: ProductionGitProcessRunner | undefined
   private readonly shutdownTimeoutMs: number
   private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
+  private readonly preflight: NovaWingLaunchpadDependencies['preflight']
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
@@ -318,6 +330,9 @@ export class NovaWingLaunchpad {
 
   private address: NovaWingLaunchpadAddress | undefined
   private closed = false
+  private dependencyHealth: DependencyHealthReport = {
+    overall: 'READY', canStart: true, checkedAt: new Date(0).toISOString(), dependencies: [],
+  }
 
   constructor(
     discovered: readonly DiscoveredLaunchpadConfig[],
@@ -341,6 +356,7 @@ export class NovaWingLaunchpad {
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
     this.gitProcessRunner = dependencies.gitProcessRunner
     this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
+    this.preflight = dependencies.preflight
     this.server = createServer((request, response) => {
       void this.handle(request, response)
     })
@@ -379,6 +395,14 @@ export class NovaWingLaunchpad {
     if (this.closed) throw new Error('Launchpad is closed')
     if (this.address !== undefined) return this.address
     await this.hydrateStatuses()
+    if (this.preflight !== undefined) {
+      this.dependencyHealth = await this.preflight().catch(() => ({
+        overall: 'DEGRADED' as const,
+        canStart: false,
+        checkedAt: new Date().toISOString(),
+        dependencies: [{ id: 'CORE' as const, state: 'DEGRADED' as const, failureType: 'PREFLIGHT_FAILED', safeMessage: 'Dependency preflight 无法完成。' }],
+      }))
+    }
     await new Promise<void>((resolveStart, rejectStart) => {
       const onError = (error: Error): void => rejectStart(error)
       this.server.once('error', onError)
@@ -483,6 +507,7 @@ export class NovaWingLaunchpad {
       configs: this.getConfigs(),
       launchToken: this.token,
       serverOrigin: this.origin(),
+      dependencyHealth: this.dependencyHealth,
     }))
   }
 
@@ -517,7 +542,8 @@ export class NovaWingLaunchpad {
     try {
       const result = await this.startWorkSession(parsed.configId)
       this.respondJson(response, 202, result)
-    } catch {
+    } catch (error) {
+      if (this.respondPreflightError(response, error)) return
       this.respondJson(response, 500, { error: SAFE_LAUNCH_ERROR })
     }
   }
@@ -543,6 +569,7 @@ export class NovaWingLaunchpad {
       const result = await this.createWorkSessionFromComposer(parsed.value)
       this.respondJson(response, 202, result)
     } catch (error) {
+      if (this.respondPreflightError(response, error)) return
       const code = error instanceof ComposerLaunchError ? error.code : 'SESSION_START_FAILED'
       const status = code === 'SESSION_START_FAILED' ? 500 : code === 'IDEMPOTENCY_CONFLICT' ? 409 : 400
       this.respondComposerError(response, status, code)
@@ -740,6 +767,7 @@ export class NovaWingLaunchpad {
       await existing.app.close().catch(() => undefined)
     }
     const config = await this.loadConfig(discovered.configPath)
+    await this.assertDependenciesReady(config.session.targetRepo)
     const env = await this.resolveEnvironment(config)
     const app = await this.createWorkSession(config, { env, serverPort: 0 })
     if (this.closed) {
@@ -812,6 +840,7 @@ export class NovaWingLaunchpad {
     if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
       throw new ComposerLaunchError('INVALID_PROJECT_PATH')
     }
+    await this.assertDependenciesReady(targetRepo)
     const branch = await this.readCurrentBranch(targetRepo)
     const sessionId = createSessionId(targetRepo)
     const config = await validateTrustedWorkSessionConfig({
@@ -883,6 +912,30 @@ export class NovaWingLaunchpad {
     this.respondJson(response, status, { error: code, message: COMPOSER_SAFE_MESSAGES[code] })
   }
 
+  private async assertDependenciesReady(targetRepo: string): Promise<void> {
+    if (this.preflight === undefined) return
+    const report = await this.preflight(targetRepo)
+    this.dependencyHealth = report
+    requireDependencyPreflightReady(report)
+  }
+
+  private respondPreflightError(response: ServerResponse, error: unknown): boolean {
+    if (!(error instanceof DependencyPreflightError)) return false
+    const blocker = error.report.dependencies.find((item) => item.id === 'SHELL' && item.state !== 'READY') ??
+      error.report.dependencies.find((item) => item.state !== 'READY')
+    this.respondJson(response, 503, {
+      error: 'DEPENDENCY_REQUIRED',
+      classification: error.report.overall,
+      failureType: blocker?.failureType,
+      dependency: blocker?.id,
+      message: blocker?.safeMessage,
+      expectedExecutable: blocker?.expectedExecutable,
+      actualExecutable: blocker?.actualExecutable,
+      safeRemediation: blocker?.safeRemediation,
+    })
+    return true
+  }
+
   private origin(): string {
     return this.address?.url ?? ''
   }
@@ -942,11 +995,22 @@ export async function createNovaWingLaunchpad(options: {
   configDirectory?: string
   env?: NodeJS.ProcessEnv
   dependencies?: NovaWingLaunchpadDependencies
+  enableProductionPreflight?: boolean
 } = {}): Promise<NovaWingLaunchpad> {
   const configDirectory = options.configDirectory ?? defaultTrustedConfigDirectory(options.env)
   const loadConfig = options.dependencies?.loadConfig ?? loadTrustedWorkSessionConfig
   const discovered = await discoverTrustedWorkSessionConfigs(configDirectory, loadConfig)
-  return new NovaWingLaunchpad(discovered, configDirectory, options.dependencies)
+  const dependencies = options.enableProductionPreflight === true
+    ? {
+        ...options.dependencies,
+        preflight: options.dependencies?.preflight ?? ((targetRepo?: string) =>
+          runProductionDependencyPreflight({
+            ...(options.env === undefined ? {} : { env: options.env }),
+            ...(targetRepo === undefined ? {} : { targetRepo }),
+          })),
+      }
+    : options.dependencies
+  return new NovaWingLaunchpad(discovered, configDirectory, dependencies)
 }
 
 function pathOf(request: IncomingMessage): string {
@@ -1028,6 +1092,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   const tasks = parseComposerTasks(record.tasks)
   if (tasks === 'invalid-id') return { ok: false, error: 'INVALID_TASK_ID' }
   if (tasks === 'invalid-task') return { ok: false, error: 'INVALID_TASK' }
+  if (tasks === 'too-long') return { ok: false, error: 'INVALID_TASK_TOO_LONG' }
   if (tasks === 'duplicate-id') return { ok: false, error: 'DUPLICATE_TASK_ID' }
   if (tasks === undefined) return { ok: false, error: 'INVALID_REQUEST' }
   const softMinutes = record.softMinutes ?? DEFAULT_SOFT_MINUTES
@@ -1071,7 +1136,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   }
 }
 
-function parseComposerTasks(value: unknown): ComposerRequest['tasks'] | 'invalid-id' | 'invalid-task' | 'duplicate-id' | undefined {
+function parseComposerTasks(value: unknown): ComposerRequest['tasks'] | 'invalid-id' | 'invalid-task' | 'too-long' | 'duplicate-id' | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_COMPOSER_TASKS) return undefined
   const tasks: ComposerRequest['tasks'] = []
   const ids = new Set<string>()
@@ -1082,7 +1147,8 @@ function parseComposerTasks(value: unknown): ComposerRequest['tasks'] | 'invalid
     const id = task.id.trim()
     const goal = task.goal.trim()
     if (!/^[A-Za-z0-9._-]{1,64}$/u.test(id)) return 'invalid-id'
-    if (goal.length === 0 || task.goal.length > 8_000) return 'invalid-task'
+    if (goal.length === 0) return 'invalid-task'
+    if (task.goal.length > MAX_COMPOSER_TASK_GOAL_CHARS) return 'too-long'
     if (ids.has(id)) return 'duplicate-id'
     ids.add(id)
     tasks.push({ id, goal })

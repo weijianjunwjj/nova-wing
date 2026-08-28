@@ -122,7 +122,12 @@ export interface WorkSessionControlSnapshot {
       generation: number
     }
     brainFailure?: {
-      stage: 'BRAIN_REVIEW'
+      stage: 'BRAIN_REVIEW' | 'FINAL_REVIEW'
+      failureType?: string
+      attempt?: number
+      timestamp?: string
+      lastReliableCheckpoint?: string
+      nextResumableAction?: string
       category: string
       adapter: string
       retryable: boolean

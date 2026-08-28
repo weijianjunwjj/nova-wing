@@ -10,7 +10,11 @@ let launchpad
 
 try {
   const configDirectory = defaultTrustedConfigDirectory(process.env)
-  launchpad = await createNovaWingLaunchpad({ configDirectory })
+  launchpad = await createNovaWingLaunchpad({
+    configDirectory,
+    env: process.env,
+    enableProductionPreflight: true,
+  })
   const address = await launchpad.start()
   const browser = await openLaunchpadInAppMode(address.url)
 

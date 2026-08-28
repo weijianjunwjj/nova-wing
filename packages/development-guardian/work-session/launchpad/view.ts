@@ -1,4 +1,5 @@
 import type { LaunchpadConfigSummary } from './server.js'
+import type { DependencyHealthReport } from '../dependency-health.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -70,6 +71,7 @@ export function renderLaunchpadHtml(input: {
   configs: readonly LaunchpadConfigSummary[]
   launchToken: string
   serverOrigin: string
+  dependencyHealth?: DependencyHealthReport
 }): string {
   const bootstrap = JSON.stringify({
     launchToken: input.launchToken,
@@ -79,6 +81,11 @@ export function renderLaunchpadHtml(input: {
         ${input.configs.map(renderCard).join('\n')}
       </section>
       ${renderEmptyState(input.configs.length > 0)}`
+  const healthState = input.dependencyHealth?.overall === 'READY' || input.dependencyHealth === undefined ? 'READY' : 'DEGRADED'
+  const health = (['CORE', 'BRAIN', 'EXECUTOR'] as const).map((id) => {
+    const item = input.dependencyHealth?.dependencies.find((candidate) => candidate.id === id)
+    return `<span data-dependency-health="${id}">${id === 'CORE' ? 'NovaWing Core' : id}: ${escapeHtml(item?.state ?? healthState)}</span>`
+  }).join(' · ')
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -95,8 +102,9 @@ export function renderLaunchpadHtml(input: {
         <p class="brand"><span aria-hidden="true">✦</span> NovaWing Launchpad</p>
         <p class="subtitle">Autonomous Development Guardian</p>
       </div>
-      <div class="system-ready"><span>SYSTEM READY</span><i aria-hidden="true"></i></div>
+      <div class="system-ready" data-system-health="${healthState}"><span>SYSTEM ${healthState}</span><i aria-hidden="true"></i></div>
     </header>
+    <p class="subtitle" data-dependency-summary>${health}</p>
     <section class="composer" aria-labelledby="composer-title">
       <button class="composer-toggle" type="button" data-composer-toggle aria-expanded="false">
         <span aria-hidden="true">＋</span> 新建 Work Session
@@ -112,7 +120,7 @@ export function renderLaunchpadHtml(input: {
           <fieldset class="composer-task" data-composer-task>
             <legend>Task 1</legend>
             <label>Task ID<input data-task-id type="text" maxlength="64" pattern="[A-Za-z0-9._-]+" autocomplete="off" required placeholder="T011"></label>
-            <label>Task<textarea data-task-goal rows="6" required placeholder="描述本次需要完成的工作…"></textarea></label>
+            <label>Task<textarea data-task-goal rows="6" maxlength="8000" required placeholder="描述本次需要完成的工作…"></textarea><span class="field-hint" data-task-goal-count>0 / 8000</span></label>
             <button class="task-remove" type="button" data-remove-task hidden>删除 Task</button>
           </fieldset>
         </div>
@@ -292,6 +300,7 @@ export const LAUNCHPAD_APP_JS = `
   const attachTaskRow = (row) => {
     const taskId = row.querySelector('[data-task-id]')
     const goal = row.querySelector('[data-task-goal]')
+    const goalCount = row.querySelector('[data-task-goal-count]')
     let taskIdEdited = false
     taskId.addEventListener('input', () => {
       taskIdEdited = true
@@ -299,10 +308,14 @@ export const LAUNCHPAD_APP_JS = `
       if (error.textContent.startsWith('请填写有效的 Task ID')) error.textContent = ''
     })
     goal.addEventListener('input', () => {
+      goalCount.textContent = goal.value.length + ' / 8000'
+      goal.removeAttribute('aria-invalid')
+      if (error.textContent.startsWith('Task 描述过长')) error.textContent = ''
       if (taskIdEdited || taskId.value.trim()) return
       const suggested = goal.value.match(/^\\s*([A-Za-z0-9._-]{1,64})(?:\\s*[:：-]|\\s+)/u)
       if (suggested) taskId.value = suggested[1]
     })
+    goalCount.textContent = goal.value.length + ' / 8000'
     row.querySelector('[data-remove-task]').addEventListener('click', () => {
       if (taskRows().length === 1) return
       row.remove()
@@ -368,6 +381,14 @@ export const LAUNCHPAD_APP_JS = `
       id: row.querySelector('[data-task-id]').value.trim(),
       goal: row.querySelector('[data-task-goal]').value,
     }))
+    const tooLongTask = tasks.find((task) => task.goal.length > 8000)
+    if (tooLongTask) {
+      error.textContent = 'Task 描述过长，最大 8000 字符。'
+      const field = taskRows()[tasks.indexOf(tooLongTask)].querySelector('[data-task-goal]')
+      field.setAttribute('aria-invalid', 'true')
+      field.focus()
+      return
+    }
     const invalidTask = tasks.find((task) => !/^[A-Za-z0-9._-]{1,64}$/.test(task.id) || task.goal.trim().length === 0)
     if (invalidTask) {
       error.textContent = !/^[A-Za-z0-9._-]{1,64}$/.test(invalidTask.id)

@@ -158,6 +158,23 @@ test('missing configured Git Bash fails closed through shell:false process launc
   )
 })
 
+test('native Git Bash executor pins nested npm scripts to Git Bash instead of cmd.exe', async () => {
+  const executable = 'D:/Git/bin/bash.exe'
+  const observed: NodeJS.ProcessEnv[] = []
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    platform: 'win32',
+    gitBashPath: executable,
+    commandRunner: async (request) => {
+      observed.push(request.env ?? {})
+      return result(request.args.join(' ').includes('claude') ? claudeJson() : '')
+    },
+  })
+  await executor.execute({ task: task(), packet: packet() })
+  assert.ok(observed.length > 0)
+  assert.ok(observed.every((env) => env.npm_config_script_shell === executable))
+})
+
 test('executor runs Claude Code then deterministic verification', async () => {
   const runner = new QueueRunner([
     result(''),

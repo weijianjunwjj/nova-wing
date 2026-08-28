@@ -27,6 +27,11 @@ import {
   WorkSessionControlServer,
   type WorkSessionControlServerAddress,
 } from './control-ui/server.js'
+import {
+  requireDependencyPreflightReady,
+  runProductionDependencyPreflight,
+  type DependencyHealthReport,
+} from './dependency-health.js'
 
 const GuardianPolicySchema = z.object({
   constraints: z.array(z.string()),
@@ -267,6 +272,7 @@ export interface ProductionWorkSessionDependencies {
   env?: NodeJS.ProcessEnv
   createSmtpTransport?: (config: SmtpTransportConfig) => SmtpMailTransport
   notificationRetryDelayMs?: number
+  preflight?: (targetRepo: string) => Promise<DependencyHealthReport>
 }
 
 export interface ProductionWorkSessionUi {
@@ -339,6 +345,11 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    beforeResume: async () => {
+      const report = await (dependencies.preflight?.(definition.targetRepo) ??
+        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo }))
+      requireDependencyPreflightReady(report)
+    },
     createRuntime(eventSink, notificationSink) {
       const runner = new GuardianWorkSessionTaskRunner({
         brain,

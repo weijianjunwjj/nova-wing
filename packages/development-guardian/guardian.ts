@@ -183,11 +183,13 @@ export async function runGuardianTask(options: {
     const reviewPhase = task.lastReport === undefined ? 'REVIEWING' : 'FINAL_REVIEW'
     emitProgress(reviewPhase, 'active')
     let packet: DelegationPacket
+    let brainReviewAttempt = 0
     try {
       let retriesRemaining = options.maxBrainReviewRetries ?? 0
       let rotationsRemaining = options.maxBrainReviewSessionRotations ?? 0
       while (true) {
         try {
+          brainReviewAttempt += 1
           packet = await options.brain.review({
             task,
             ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
@@ -231,7 +233,15 @@ export async function runGuardianTask(options: {
       emitProgress(reviewPhase, 'completed')
     } catch (error) {
       emitProgress(reviewPhase, 'failed', error instanceof Error ? error.message : String(error))
-      const brainFailure = guardianBrainFailureFrom(error)
+      const classifiedFailure = guardianBrainFailureFrom(error)
+      const brainFailure = {
+        ...classifiedFailure,
+        stage: reviewPhase === 'FINAL_REVIEW' ? 'FINAL_REVIEW' as const : 'BRAIN_REVIEW' as const,
+        attempt: brainReviewAttempt,
+        timestamp: new Date().toISOString(),
+        lastReliableCheckpoint: task.lastReport === undefined ? 'BEFORE_EXECUTOR' : 'AFTER_EXECUTOR_VERIFICATION',
+        nextResumableAction: reviewPhase,
+      }
       task = {
         ...task,
         state: 'BRAIN_INFRASTRUCTURE_FAILED',
