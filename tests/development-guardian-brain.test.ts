@@ -63,12 +63,73 @@ test('parseDelegationPacket accepts strict JSON and maps do_not_do', () => {
   assert.deepEqual(packet.doNotDo, ['不要改 schema'])
 })
 
-test('parseDelegationPacket accepts one fenced JSON block but rejects prose', () => {
+test('parseDelegationPacket normalizes whitespace, one JSON fence, and one unambiguous wrapped object', () => {
+  assert.equal(parseDelegationPacket(`  \r\n${validPacket}\n  `).verdict, 'proceed')
   assert.equal(parseDelegationPacket(`\`\`\`json\n${validPacket}\n\`\`\``).verdict, 'proceed')
+  assert.equal(parseDelegationPacket(`Reviewer result follows:\n${validPacket}\nEnd of result.`).verdict, 'proceed')
+})
+
+test('parseDelegationPacket rejects ambiguous, malformed, and non-object JSON wrappers', () => {
   assert.throws(
-    () => parseDelegationPacket(`这里是结果：\n${validPacket}`),
-    TenXChatBrainProtocolError,
+    () => parseDelegationPacket(`${validPacket}\n${validPacket}`),
+    (error: unknown) => error instanceof TenXChatBrainProtocolError && error.kind === 'format',
   )
+  assert.throws(
+    () => parseDelegationPacket(`array wrapper: [${validPacket}]`),
+    (error: unknown) => error instanceof TenXChatBrainProtocolError && error.kind === 'format',
+  )
+  assert.throws(
+    () => parseDelegationPacket('{"verdict":"proceed"'),
+    (error: unknown) => error instanceof TenXChatBrainProtocolError && error.kind === 'format',
+  )
+  assert.throws(
+    () => parseDelegationPacket('Reviewer could not produce JSON.'),
+    (error: unknown) => error instanceof TenXChatBrainProtocolError && error.kind === 'format',
+  )
+})
+
+test('parseDelegationPacket keeps strict packet contract validation after normalization', () => {
+  const invalidSchema = JSON.stringify({
+    verdict: 'proceed',
+    goal: '完成最小任务',
+    instructions: 'not-an-array',
+    constraints: [],
+    verification: [],
+    do_not_do: [],
+  })
+  const missingRequiredField = JSON.stringify({
+    verdict: 'done',
+    goal: '完成最小任务',
+    instructions: [],
+    constraints: [],
+    verification: [],
+  })
+
+  for (const response of [invalidSchema, `wrapped:\n${missingRequiredField}`]) {
+    assert.throws(
+      () => parseDelegationPacket(response),
+      (error: unknown) => error instanceof TenXChatBrainProtocolError && error.kind === 'contract',
+    )
+  }
+})
+
+test('brain prompt adds protocol repair only when a bounded retry requests it', () => {
+  const task = {
+    id: 'task-protocol-repair',
+    goal: '完成最小任务',
+    state: 'REVIEWING' as const,
+    iteration: 1,
+    maxIterations: 4,
+  }
+  const normalPrompt = buildGuardianBrainPrompt({ task })
+  const repairPrompt = buildGuardianBrainPrompt({ task, protocolRepair: true })
+
+  assert.doesNotMatch(normalPrompt, /协议修复/)
+  assert.match(repairPrompt, /上次响应违反了严格 JSON wire format/)
+  assert.match(repairPrompt, /只返回合法 JSON object/)
+  assert.match(repairPrompt, /不要 Markdown、代码围栏或解释文字/)
+  assert.match(repairPrompt, /不要省略必填字段/)
+  assert.match(repairPrompt, /不要改变 verdict \/ revise \/ done 语义/)
 })
 
 test('brain initializes existing conversation once and keeps using same delegate', async () => {

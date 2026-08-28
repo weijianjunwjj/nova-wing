@@ -184,6 +184,7 @@ export async function runGuardianTask(options: {
     emitProgress(reviewPhase, 'active')
     let packet: DelegationPacket
     let brainReviewAttempt = 0
+    let protocolRepair = false
     try {
       let retriesRemaining = options.maxBrainReviewRetries ?? 0
       let rotationsRemaining = options.maxBrainReviewSessionRotations ?? 0
@@ -193,6 +194,7 @@ export async function runGuardianTask(options: {
           packet = await options.brain.review({
             task,
             ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
+            ...(protocolRepair ? { protocolRepair: true } : {}),
           })
           break
         } catch (error) {
@@ -202,6 +204,7 @@ export async function runGuardianTask(options: {
 
           if (retriesRemaining > 0) {
             retriesRemaining -= 1
+            if (error.kind === 'protocol') protocolRepair = true
             // Every retry starts a new provider operation and must cross both
             // autonomous safety boundaries before the next invocation.
             if (stopForHardLimit() || stopForUserPause()) {

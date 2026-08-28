@@ -367,8 +367,43 @@ test('ask-bridge brain marks only malformed JSON after a successful transport as
       error instanceof RetryableGuardianBrainError &&
       error.kind === 'protocol' &&
       error.message === 'reviewer returned malformed Guardian JSON' &&
+      error.failure.fingerprint === 'brain-protocol:json-format' &&
       !error.message.includes('do-not-log'),
   )
+})
+
+test('malformed AskBridge JSON exhausts the bounded retry then suspends without Executor', async () => {
+  let bridgeCalls = 0
+  let executorCalls = 0
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      bridgeCalls += 1
+      await writeResponse(request, '{"verdict":"proceed"')
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/bounded-protocol-retry', stderr: '' }
+    },
+  })
+
+  const result = await runGuardianTask({
+    task,
+    brain,
+    executor: {
+      async execute() {
+        executorCalls += 1
+        throw new Error('must not execute after invalid Brain response')
+      },
+    },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 0,
+  })
+
+  assert.equal(bridgeCalls, 2)
+  assert.equal(executorCalls, 0)
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.category, 'PROTOCOL')
+  assert.equal(result.task.brainFailure?.failureType, 'BRAIN_RESPONSE_INVALID')
+  assert.equal(result.task.brainFailure?.fingerprint, 'brain-protocol:json-format')
+  assert.equal(result.task.brainFailure?.attempt, 2)
 })
 
 test('ask-bridge protocol retry reuses the Thread Link captured before malformed JSON', async () => {
@@ -389,7 +424,7 @@ test('ask-bridge protocol retry reuses the Thread Link captured before malformed
     brain.review({ task }),
     (error: unknown) => error instanceof RetryableGuardianBrainError && error.kind === 'protocol',
   )
-  const result = await brain.review({ task })
+  const result = await brain.review({ task, protocolRepair: true })
 
   assert.equal(result.verdict, 'proceed')
   assert.equal(requests[0]?.args.includes('--new'), true)
@@ -397,6 +432,8 @@ test('ask-bridge protocol retry reuses the Thread Link captured before malformed
   assert.ok(retrySessionIndex >= 0)
   assert.equal(requests[1]?.args[retrySessionIndex + 1], sessionUrl)
   assert.equal(requests[1]?.args.includes('--new'), false)
+  assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
+  assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
 })
 
 test('guardian protocol retry keeps the AskBridge Thread Link through final review', async () => {
@@ -411,6 +448,7 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
   })
   const requests: AskBridgeCommandRequest[] = []
   const responses = ['{"verdict":"proceed"', packet, donePacket]
+  let executorCalls = 0
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
     commandRunner: async (request) => {
@@ -427,6 +465,7 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
     brain,
     executor: {
       async execute() {
+        executorCalls += 1
         return {
           summary: 'executor completed',
           changedFiles: [],
@@ -442,6 +481,7 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
 
   assert.equal(result.task.state, 'COMPLETED')
   assert.equal(requests.length, 3)
+  assert.equal(executorCalls, 1)
   assert.equal(requests[0]?.args.includes('--new'), true)
   for (const request of requests.slice(1)) {
     const sessionIndex = request.args.indexOf('--session-url')
@@ -449,17 +489,80 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
     assert.equal(request.args[sessionIndex + 1], sessionUrl)
     assert.equal(request.args.includes('--new'), false)
   }
+  assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
+  assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
+  assert.doesNotMatch(requests[2]?.args.at(-1) ?? '', /协议修复/)
 })
 
-test('ask-bridge brain does not make valid JSON packet-contract failures retryable', async () => {
+test('recovered final review accepts fenced JSON without invoking Executor again', async () => {
+  const donePacket = JSON.stringify({
+    verdict: 'done',
+    goal: '完成最小任务',
+    instructions: [],
+    constraints: ['不得越界'],
+    verification: ['npm test'],
+    do_not_do: ['不要提交'],
+  })
+  let executorCalls = 0
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
-    commandRunner: () => Promise.resolve({ exitCode: 0, stdout: '{"verdict":"proceed"}', stderr: '' }),
+    commandRunner: async (request) => {
+      await writeResponse(request, `\`\`\`json\n${donePacket}\n\`\`\``)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/recovered-final-review', stderr: '' }
+    },
+  })
+
+  const result = await runGuardianTask({
+    task: {
+      ...task,
+      state: 'REVIEWING',
+      iteration: 1,
+      lastReport: {
+        summary: 'executor and verification already completed',
+        changedFiles: ['src/already-complete.ts'],
+        commandsRun: ['npm test'],
+        verificationResults: [{ name: 'npm test', status: 'passed' }],
+        blockers: [],
+      },
+    },
+    brain,
+    executor: {
+      async execute() {
+        executorCalls += 1
+        throw new Error('recovered Brain review must not rerun Executor')
+      },
+    },
+    maxBrainReviewRetries: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(result.task.iteration, 1)
+  assert.equal(executorCalls, 0)
+  assert.deepEqual(result.task.lastReport?.changedFiles, ['src/already-complete.ts'])
+})
+
+test('ask-bridge keeps valid JSON packet-contract failures strict and non-retryable', async () => {
+  const invalidContract = JSON.stringify({
+    verdict: 'proceed',
+    goal: '完成最小任务',
+    instructions: 'forbidden_paths includes **/*credential* as ordinary task text',
+    constraints: [],
+    verification: [],
+    do_not_do: [],
+  })
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: 0, stdout: invalidContract, stderr: '' }),
   })
 
   await assert.rejects(
     brain.review({ task }),
-    (error: unknown) => !(error instanceof RetryableGuardianBrainError),
+    (error: unknown) =>
+      error instanceof GuardianBrainInfrastructureError &&
+      !(error instanceof RetryableGuardianBrainError) &&
+      error.failure.category === 'PROTOCOL' &&
+      error.failure.failureType === 'BRAIN_RESPONSE_INVALID' &&
+      error.failure.fingerprint === 'brain-protocol:packet-contract',
   )
 })
 

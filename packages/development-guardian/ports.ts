@@ -5,6 +5,8 @@ export interface GuardianBrain {
   review(input: {
     task: GuardianTask
     report?: ExecutionReport
+    /** True only for a bounded retry after a wire-format protocol failure. */
+    protocolRepair?: boolean
   }): Promise<DelegationPacket>
 
   /**

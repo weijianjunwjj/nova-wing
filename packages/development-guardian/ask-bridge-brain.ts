@@ -452,6 +452,7 @@ export class AskBridgeBrain implements GuardianBrain {
   async review(input: {
     task: GuardianTask
     report?: ExecutionReport
+    protocolRepair?: boolean
   }): Promise<DelegationPacket> {
     const taskId = input.task.id
     if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
@@ -604,6 +605,7 @@ export class AskBridgeBrain implements GuardianBrain {
             ...this.failureContext(),
             degraded: reasoningDegraded,
             failureType: 'BRAIN_RESPONSE_INVALID',
+            fingerprint: 'brain-protocol:json-format',
           })
         }
         if (error instanceof TenXChatBrainProtocolError) {
@@ -612,6 +614,7 @@ export class AskBridgeBrain implements GuardianBrain {
             failureType: 'BRAIN_RESPONSE_INVALID',
             ...this.failureContext(),
             degraded: reasoningDegraded,
+            fingerprint: 'brain-protocol:packet-contract',
           })
         }
         throw error

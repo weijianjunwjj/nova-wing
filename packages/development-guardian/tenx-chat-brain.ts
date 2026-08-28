@@ -36,18 +36,89 @@ function requireStringArray(value: unknown, field: string): string[] {
   return value.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
 }
 
+function tryParseJson(payload: string): { parsed: true; value: unknown } | { parsed: false } {
+  try {
+    return { parsed: true, value: JSON.parse(payload) as unknown }
+  } catch {
+    return { parsed: false }
+  }
+}
+
+function balancedObjectEnd(text: string, start: number): number | undefined {
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index]
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (character === '"') {
+      inString = true
+    } else if (character === '{') {
+      depth += 1
+    } else if (character === '}') {
+      depth -= 1
+      if (depth === 0) return index
+      if (depth < 0) return undefined
+    }
+  }
+
+  return undefined
+}
+
+function uniqueWrappedObject(text: string): string | undefined {
+  const candidates: Array<{ start: number; end: number }> = []
+
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== '{') continue
+    const end = balancedObjectEnd(text, index)
+    if (end === undefined) return undefined
+    candidates.push({ start: index, end })
+    if (candidates.length > 1) return undefined
+    index = end
+  }
+
+  const candidate = candidates[0]
+  if (candidate === undefined) return undefined
+  const wrapper = `${text.slice(0, candidate.start)}${text.slice(candidate.end + 1)}`
+  // An object nested inside an array is not a top-level object. Any remaining
+  // JSON structural delimiter also makes the wrapper ambiguous, so fail closed.
+  if (/[\[\]{}]/u.test(wrapper)) return undefined
+  return text.slice(candidate.start, candidate.end + 1)
+}
+
 function extractJson(text: string): unknown {
   const trimmed = text.trim()
+  const direct = tryParseJson(trimmed)
+  if (direct.parsed) return direct.value
+
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)
-  const payload = fenced?.[1]?.trim() ?? trimmed
-  try {
-    return JSON.parse(payload) as unknown
-  } catch {
-    // Keep JSON-decoding failure structurally distinct from valid JSON that
-    // violates the Guardian packet contract. Callers may safely recover only
-    // from this narrow protocol-format failure.
+  if (fenced !== null) {
+    const fencedResult = tryParseJson(fenced[1]?.trim() ?? '')
+    if (fencedResult.parsed) return fencedResult.value
     throw new TenXChatBrainProtocolError('reviewer returned malformed Guardian JSON', 'format')
   }
+
+  const wrappedObject = uniqueWrappedObject(trimmed)
+  if (wrappedObject !== undefined) {
+    const wrappedResult = tryParseJson(wrappedObject)
+    if (wrappedResult.parsed) return wrappedResult.value
+  }
+
+  // Keep JSON-decoding failure structurally distinct from valid JSON that
+  // violates the Guardian packet contract. Callers may safely recover only
+  // from this narrow protocol-format failure.
+  throw new TenXChatBrainProtocolError('reviewer returned malformed Guardian JSON', 'format')
 }
 
 export function parseDelegationPacket(text: string): DelegationPacket {
@@ -127,6 +198,7 @@ function serializePacket(packet: DelegationPacket | undefined): unknown {
 export function buildGuardianBrainPrompt(input: {
   task: GuardianTask
   report?: ExecutionReport
+  protocolRepair?: boolean
 }): string {
   const payload = {
     task: {
@@ -162,6 +234,12 @@ export function buildGuardianBrainPrompt(input: {
     '',
     '只返回一个 JSON 对象，不要 Markdown，不要代码围栏，不要解释文字。',
     '输出必须是严格可被 JSON.parse 解析的标准 JSON。',
+    ...(input.protocolRepair === true
+      ? [
+          '协议修复：上次响应违反了严格 JSON wire format。',
+          '本次只返回合法 JSON object；不要 Markdown、代码围栏或解释文字，不要省略必填字段，也不要改变 verdict / revise / done 语义。',
+        ]
+      : []),
     'JSON 字符串里的反斜杠必须正确转义；尤其不要直接输出类似正则、Windows 路径或代码中的单个反斜杠。',
     '如果需要描述正则或代码细节，优先用自然语言描述，避免在字符串中出现原始反斜杠。',
     '字段必须严格为：',
@@ -252,6 +330,7 @@ export class TenXChatBrain implements GuardianBrain {
   async review(input: {
     task: GuardianTask
     report?: ExecutionReport
+    protocolRepair?: boolean
   }): Promise<DelegationPacket> {
     await this.initialize()
     const prompt = buildGuardianBrainPrompt(input)

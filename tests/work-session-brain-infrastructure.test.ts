@@ -103,6 +103,7 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
     suspended.currentTaskCheckpoint?.task.lastReport?.summary,
     'Executor changes already complete',
   )
+  assert.deepEqual(suspended.currentTaskCheckpoint?.repo, checkpoint.repo)
 
   const completed = await runtime.resume({})
   assert.equal(completed.state, 'COMPLETED')
@@ -113,4 +114,5 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
     seenCheckpoints[1]?.task.lastReport?.summary,
     'Executor changes already complete',
   )
+  assert.deepEqual(seenCheckpoints[1]?.repo, checkpoint.repo)
 })

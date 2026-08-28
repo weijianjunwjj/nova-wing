@@ -92,31 +92,38 @@ test('guardian retries one typed transient Brain timeout without adding an execu
 
 test('guardian retries one malformed Reviewer protocol response in the same session then completes', async () => {
   let reviews = 0
+  let executions = 0
+  const protocolRepairFlags: Array<boolean | undefined> = []
   const result = await runGuardianTask({
     task: baseTask(),
     brain: {
-      async review() {
+      async review(input) {
         reviews += 1
+        protocolRepairFlags.push(input.protocolRepair)
         if (reviews === 1) throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
         return reviews === 2 ? packet('proceed') : packet('done')
       },
     },
-    executor: { async execute() { return report() } },
+    executor: { async execute() { executions += 1; return report() } },
     maxBrainReviewRetries: 1,
     maxBrainReviewSessionRotations: 1,
   })
   assert.equal(result.task.state, 'COMPLETED')
   assert.equal(reviews, 3)
+  assert.equal(executions, 1)
+  assert.deepEqual(protocolRepairFlags, [undefined, true, undefined])
 })
 
 test('guardian rotates after a second malformed Reviewer protocol response and completes fresh review', async () => {
   let reviews = 0
   let rotations = 0
+  const protocolRepairFlags: Array<boolean | undefined> = []
   const result = await runGuardianTask({
     task: baseTask(),
     brain: {
-      async review() {
+      async review(input) {
         reviews += 1
+        protocolRepairFlags.push(input.protocolRepair)
         if (reviews <= 2) throw new RetryableGuardianBrainError('reviewer returned malformed Guardian JSON', 'protocol')
         return reviews === 3 ? packet('proceed') : packet('done')
       },
@@ -129,6 +136,7 @@ test('guardian rotates after a second malformed Reviewer protocol response and c
   assert.equal(result.task.state, 'COMPLETED')
   assert.equal(reviews, 4)
   assert.equal(rotations, 1)
+  assert.deepEqual(protocolRepairFlags, [undefined, true, true, undefined])
 })
 
 test('guardian stops after consecutive retryable Brain timeouts', async () => {
