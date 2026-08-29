@@ -28,6 +28,7 @@ export type {
   AskBridgeCommandRunner,
   AskBridgeConfigurationStatus,
   AskBridgeOutputEvent,
+  AskBridgeProviderConfigurationState,
   AskBridgeProcessTreeCleanupOptions,
   AskBridgeProcessTreeTerminator,
   AskBridgeReasoning,

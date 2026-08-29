@@ -32,12 +32,12 @@ export interface AskBridgeTimingEvent {
   durationMs: number
 }
 
-export interface AskBridgeConfigurationStatus {
-  taskId: string
+export interface AskBridgeProviderConfigurationState {
   requestedModel?: string
   requestedReasoning?: AskBridgeReasoning
   actualModel?: string | 'unknown'
   actualReasoning?: AskBridgeReasoning | 'unknown'
+  configuredAt?: string
   degraded: boolean
   warning?: {
     category: 'REASONING_CONFIGURATION'
@@ -45,6 +45,10 @@ export interface AskBridgeConfigurationStatus {
     message: string
     availableOptions: readonly string[]
   }
+}
+
+export interface AskBridgeConfigurationStatus extends AskBridgeProviderConfigurationState {
+  taskId: string
 }
 
 export interface AskBridgeCommandRequest {
@@ -138,6 +142,8 @@ export interface AskBridgeBrainProviderState {
   reviewedTaskIds: readonly string[]
   /** Task conversations that must never become continuation truth after restart. */
   staleTaskIds?: readonly string[]
+  /** Last configuration verified during this Browser/provider lifecycle. Contains no secrets. */
+  configuration?: AskBridgeProviderConfigurationState
 }
 
 function defaultAskBridgeCommand(): string {
@@ -308,8 +314,8 @@ function isPerformanceIssueNoise(line: string): boolean {
 }
 
 function isReasoningOptionFailure(details: string): boolean {
-  return /(?:error switching reasoning|reasoning switch failed)/iu.test(details) &&
-    /option not found/iu.test(details)
+  return /(?:error switching reasoning|reasoning switch failed|reasoning-switch-failed)/iu.test(details) &&
+    /(?:option not found|(?:ChatGPT\s+)?picker not found)/iu.test(details)
 }
 
 function isModelSelectionFailure(details: string): boolean {
@@ -413,7 +419,8 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
   private readonly staleTaskIds = new Set<string>()
-  private readonly configurationByTask = new Map<string, AskBridgeConfigurationStatus>()
+  private providerConfiguration: AskBridgeProviderConfigurationState | undefined
+  private configurationResyncRequested = false
   /** Tasks whose replaceable state must override the constructor's initial URL. */
   private readonly rotatedTaskIds = new Set<string>()
 
@@ -432,19 +439,24 @@ export class AskBridgeBrain implements GuardianBrain {
       taskConversationUrls: Object.fromEntries(this.taskConversationUrls),
       reviewedTaskIds: Array.from(this.reviewedTaskIds),
       staleTaskIds: Array.from(this.staleTaskIds),
+      ...(this.providerConfiguration === undefined
+        ? {}
+        : { configuration: this.cloneProviderConfiguration(this.providerConfiguration) }),
     }
   }
 
   captureConfigurationStatus(taskId: string): AskBridgeConfigurationStatus | undefined {
-    const status = this.configurationByTask.get(taskId)
-    return status === undefined
+    return this.providerConfiguration === undefined
       ? undefined
       : {
-          ...status,
-          ...(status.warning === undefined
-            ? {}
-            : { warning: { ...status.warning, availableOptions: [...status.warning.availableOptions] } }),
+          taskId,
+          ...this.cloneProviderConfiguration(this.providerConfiguration),
         }
+  }
+
+  /** Explicitly require the next review to re-apply the requested provider configuration. */
+  requestConfigurationResync(): void {
+    this.configurationResyncRequested = true
   }
 
   /**
@@ -455,7 +467,10 @@ export class AskBridgeBrain implements GuardianBrain {
     this.reviewedTaskIds.clear()
     this.staleTaskIds.clear()
     this.rotatedTaskIds.clear()
-    this.configurationByTask.clear()
+    this.configurationResyncRequested = false
+    if (state.configuration !== undefined) {
+      this.providerConfiguration = this.cloneProviderConfiguration(state.configuration)
+    }
 
     const staleTaskIds = new Set(state.staleTaskIds ?? [])
     for (const [taskId, url] of Object.entries(state.taskConversationUrls)) {
@@ -508,6 +523,86 @@ export class AskBridgeBrain implements GuardianBrain {
       : this.options.conversationUrl ?? this.taskConversationUrls.get(taskId)
   }
 
+  private cloneProviderConfiguration(
+    configuration: AskBridgeProviderConfigurationState,
+  ): AskBridgeProviderConfigurationState {
+    return {
+      ...configuration,
+      ...(configuration.warning === undefined
+        ? {}
+        : {
+            warning: {
+              ...configuration.warning,
+              availableOptions: [...configuration.warning.availableOptions],
+            },
+          }),
+    }
+  }
+
+  private syncRequestedConfiguration(): void {
+    if (this.options.model === undefined && this.options.reasoning === undefined) return
+
+    const previous = this.providerConfiguration
+    const reasoningChanged =
+      this.options.reasoning !== undefined &&
+      previous?.requestedReasoning !== this.options.reasoning
+    const next = this.cloneProviderConfiguration(previous ?? { degraded: false })
+    if (reasoningChanged) delete next.warning
+    this.providerConfiguration = {
+      ...next,
+      ...(this.options.model === undefined ? {} : { requestedModel: this.options.model }),
+      ...(this.options.reasoning === undefined
+        ? {}
+        : { requestedReasoning: this.options.reasoning }),
+      ...(reasoningChanged ? { degraded: false } : {}),
+    }
+  }
+
+  private shouldConfigureModel(): boolean {
+    return this.options.model !== undefined &&
+      (this.configurationResyncRequested ||
+        this.providerConfiguration?.actualModel !== this.options.model)
+  }
+
+  private shouldConfigureReasoning(omitReasoning: boolean): boolean {
+    if (omitReasoning || this.options.reasoning === undefined) return false
+    if (this.configurationResyncRequested) return true
+    const configuration = this.providerConfiguration
+    if (
+      configuration?.requestedReasoning === this.options.reasoning &&
+      configuration.degraded
+    ) {
+      return false
+    }
+    return configuration?.actualReasoning !== this.options.reasoning
+  }
+
+  private rememberSuccessfulConfiguration(args: readonly string[]): void {
+    const configuredModel = args.includes('--model')
+    const configuredReasoning = args.includes('--reasoning')
+    if (!configuredModel && !configuredReasoning) return
+
+    const previous = this.cloneProviderConfiguration(
+      this.providerConfiguration ?? { degraded: false },
+    )
+    if (configuredReasoning) delete previous.warning
+    this.providerConfiguration = {
+      ...previous,
+      ...(configuredModel && this.options.model !== undefined
+        ? { requestedModel: this.options.model, actualModel: this.options.model }
+        : {}),
+      ...(configuredReasoning && this.options.reasoning !== undefined
+        ? {
+            requestedReasoning: this.options.reasoning,
+            actualReasoning: this.options.reasoning,
+            degraded: false,
+          }
+        : {}),
+      configuredAt: new Date().toISOString(),
+    }
+    this.configurationResyncRequested = false
+  }
+
   private failureContext(): {
     adapter: string
     requestedModel?: string
@@ -544,16 +639,10 @@ export class AskBridgeBrain implements GuardianBrain {
     } else if (isFirstReview) {
       args.push('--new')
     }
-    if (isFirstReview && this.options.model !== undefined) {
+    if (this.shouldConfigureModel() && this.options.model !== undefined) {
       args.push('--model', this.options.model)
     }
-    const knownReasoningDegradation = this.configurationByTask.get(taskId)?.degraded === true
-    if (
-      isFirstReview &&
-      this.options.reasoning !== undefined &&
-      !omitReasoning &&
-      !knownReasoningDegradation
-    ) {
+    if (this.shouldConfigureReasoning(omitReasoning) && this.options.reasoning !== undefined) {
       args.push('--reasoning', this.options.reasoning)
     }
 
@@ -590,6 +679,7 @@ export class AskBridgeBrain implements GuardianBrain {
     transportTimeoutMs?: number
   }): Promise<DelegationPacket> {
     const taskId = input.task.id
+    this.syncRequestedConfiguration()
     if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
       throw this.conversationFailure(taskId, 'missing')
     }
@@ -600,18 +690,29 @@ export class AskBridgeBrain implements GuardianBrain {
     const operationTimeoutMs = Math.min(input.transportTimeoutMs ?? this.timeoutMs, this.timeoutMs)
 
     try {
-      const runBridge = async (omitReasoning = false): Promise<AskBridgeCommandResult> => {
+      const runBridge = async (omitReasoning = false): Promise<{
+        result: AskBridgeCommandResult
+        args: readonly string[]
+      }> => {
         const remainingOperationMs = Math.max(
           0,
           Math.floor(operationTimeoutMs - (performance.now() - startedAt)),
         )
         if (remainingOperationMs < 1_000) {
-          return { exitCode: null, stdout: '', stderr: 'ask-bridge operation budget exhausted' }
+          return {
+            result: {
+              exitCode: null,
+              stdout: '',
+              stderr: 'ask-bridge operation budget exhausted',
+            },
+            args: [],
+          }
         }
         try {
-          return await this.runner({
+          const args = this.buildArgs(taskId, prompt, outputPath, remainingOperationMs, omitReasoning)
+          const result = await this.runner({
             executable: this.command,
-            args: this.buildArgs(taskId, prompt, outputPath, remainingOperationMs, omitReasoning),
+            args,
             timeoutMs: remainingOperationMs,
             ...(this.options.onDiagnostic === undefined
               ? {}
@@ -623,6 +724,7 @@ export class AskBridgeBrain implements GuardianBrain {
                   },
                 }),
           })
+          return { result, args }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           throw new GuardianBrainInfrastructureError(`ask-bridge unavailable: ${message}`, {
@@ -634,24 +736,29 @@ export class AskBridgeBrain implements GuardianBrain {
         }
       }
 
-      let reasoningDegraded = this.configurationByTask.get(taskId)?.degraded === true
+      let reasoningDegraded = this.providerConfiguration?.degraded === true
       const attemptedContinuation = this.conversationUrlForTask(taskId) !== undefined
-      let result = await runBridge()
+      let bridgeRun = await runBridge()
+      let { result } = bridgeRun
 
       if (
         result.exitCode !== 0 &&
-        !this.reviewedTaskIds.has(taskId) &&
+        bridgeRun.args.includes('--reasoning') &&
         this.options.reasoning !== undefined
       ) {
         const details = failureDetails(result)
         if (isReasoningOptionFailure(details)) {
           const availableOptions = extractAvailableOptions(details)
-          const status: AskBridgeConfigurationStatus = {
-            taskId,
+          const failedConfiguration = this.cloneProviderConfiguration(
+            this.providerConfiguration ?? { degraded: false },
+          )
+          delete failedConfiguration.configuredAt
+          this.providerConfiguration = {
+            ...failedConfiguration,
             requestedReasoning: this.options.reasoning,
             actualReasoning: 'unknown',
             degraded: true,
-            ...(this.options.model === undefined
+            ...(!bridgeRun.args.includes('--model') || this.options.model === undefined
               ? {}
               : { requestedModel: this.options.model, actualModel: 'unknown' }),
             warning: {
@@ -661,12 +768,21 @@ export class AskBridgeBrain implements GuardianBrain {
               availableOptions,
             },
           }
-          this.configurationByTask.set(taskId, status)
-          this.options.onConfiguration?.(status)
+          this.configurationResyncRequested = false
+          this.options.onConfiguration?.({
+            taskId,
+            ...this.cloneProviderConfiguration(this.providerConfiguration),
+          })
           reasoningDegraded = true
           await unlink(outputPath).catch(() => {})
-          result = await runBridge(true)
+          bridgeRun = await runBridge(true)
+          result = bridgeRun.result
         }
+      }
+
+      if (result.exitCode === 0) {
+        this.rememberSuccessfulConfiguration(bridgeRun.args)
+        reasoningDegraded = this.providerConfiguration?.degraded === true
       }
 
       this.options.onTiming?.({
@@ -768,23 +884,8 @@ export class AskBridgeBrain implements GuardianBrain {
         throw error
       }
       this.reviewedTaskIds.add(taskId)
-      const existingStatus = this.configurationByTask.get(taskId)
-      const successfulStatus: AskBridgeConfigurationStatus = {
-        taskId,
-        degraded: reasoningDegraded,
-        ...(this.options.model === undefined
-          ? {}
-          : { requestedModel: this.options.model, actualModel: this.options.model }),
-        ...(this.options.reasoning === undefined
-          ? {}
-          : {
-              requestedReasoning: this.options.reasoning,
-              actualReasoning: reasoningDegraded ? 'unknown' : this.options.reasoning,
-            }),
-        ...(existingStatus?.warning === undefined ? {} : { warning: existingStatus.warning }),
-      }
-      this.configurationByTask.set(taskId, successfulStatus)
-      this.options.onConfiguration?.(successfulStatus)
+      const successfulStatus = this.captureConfigurationStatus(taskId)
+      if (successfulStatus !== undefined) this.options.onConfiguration?.(successfulStatus)
       return packet
     } finally {
       await unlink(outputPath).catch(() => {})

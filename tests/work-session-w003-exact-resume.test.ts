@@ -29,24 +29,50 @@ interface TestBrainState {
   conversationUrl?: string
   reviewCount: number
   isResumed: boolean
+  configurationRestored: boolean
 }
 
 class TestBrain implements GuardianBrain {
-  state: TestBrainState = { reviewCount: 0, isResumed: false }
+  state: TestBrainState = { reviewCount: 0, isResumed: false, configurationRestored: false }
 
-  captureProviderState(): { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] } {
+  captureProviderState(): {
+    taskConversationUrls: Record<string, string>
+    reviewedTaskIds: string[]
+    configuration: {
+      requestedReasoning: 'high'
+      actualReasoning: 'high'
+      configuredAt: string
+      degraded: false
+    }
+  } {
     return {
       taskConversationUrls: this.state.conversationUrl !== undefined ? { 'T1': this.state.conversationUrl } : {},
       reviewedTaskIds: this.state.conversationUrl !== undefined ? ['T1'] : [],
+      configuration: {
+        requestedReasoning: 'high',
+        actualReasoning: 'high',
+        configuredAt: '2026-08-29T00:00:00.000Z',
+        degraded: false,
+      },
     }
   }
 
-  restoreProviderState(state: { taskConversationUrls: Record<string, string>; reviewedTaskIds: string[] }): void {
+  restoreProviderState(state: {
+    taskConversationUrls: Record<string, string>
+    reviewedTaskIds: string[]
+    configuration?: {
+      requestedReasoning?: string
+      actualReasoning?: string
+      configuredAt?: string
+      degraded: boolean
+    }
+  }): void {
     const url = state.taskConversationUrls['T1']
     if (url !== undefined) {
       this.state.conversationUrl = url
       this.state.isResumed = true
     }
+    this.state.configurationRestored = state.configuration?.actualReasoning === 'high'
   }
 
   async review(_input: { task: GuardianTask; report: ExecutionReport }): Promise<DelegationPacket> {
@@ -325,6 +351,8 @@ await test('W003 Exact Resume: provider sessions preserved across process restar
     const checkpoint1 = state1.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint
     assert.strictEqual(checkpoint1.version, 1, 'Checkpoint version must be 1')
     assert.strictEqual(checkpoint1.provider.chatgptConversationUrl, 'https://chatgpt.com/c/test-exact-resume', 'ChatGPT URL must be captured')
+    assert.strictEqual(checkpoint1.provider.chatgptConfiguration?.requestedReasoning, 'high', 'Requested reasoning must be captured')
+    assert.strictEqual(checkpoint1.provider.chatgptConfiguration?.actualReasoning, 'high', 'Actual reasoning evidence must be captured')
     assert.strictEqual(checkpoint1.provider.claudeSessionId, 'claude-exact-resume-session', 'Claude session ID must be captured')
     assert.ok(checkpoint1.repo.branch.length > 0, 'Branch must be captured')
     assert.ok(checkpoint1.repo.headSha.length === 40, 'HEAD SHA must be captured')
@@ -368,6 +396,7 @@ await test('W003 Exact Resume: provider sessions preserved across process restar
 
     // 验证 provider state 恢复
     assert.strictEqual(brain2.state.conversationUrl, 'https://chatgpt.com/c/test-exact-resume', 'Brain must have restored ChatGPT URL')
+    assert.strictEqual(brain2.state.configurationRestored, true, 'Brain must restore sticky reasoning evidence')
     assert.strictEqual(brain2.state.reviewCount, 2, 'Brain must have reviewed twice after resume (revise -> execute -> done)')
 
     assert.strictEqual(executor2.state.sessionId, 'claude-exact-resume-session', 'Executor must have restored Claude session ID')

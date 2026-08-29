@@ -17,6 +17,7 @@ import type {
   WorkSessionTaskRunContext,
 } from './task-runner.js'
 import type {
+  ChatGptProviderConfigurationState,
   GuardianTaskRecoveryCheckpoint,
   ProviderSessionState,
   RepositoryCheckpoint,
@@ -26,6 +27,32 @@ import {
   computeWorktreeFingerprint,
 } from './worktree-fingerprint.js'
 import { environmentVerificationFailure } from '../verification-evidence.js'
+
+function isChatGptReasoning(
+  value: unknown,
+): value is 'auto' | 'instant' | 'medium' | 'high' {
+  return value === 'auto' || value === 'instant' || value === 'medium' || value === 'high'
+}
+
+function readChatGptConfiguration(
+  value: unknown,
+): ChatGptProviderConfigurationState | undefined {
+  if (typeof value !== 'object' || value === null || !('degraded' in value)) return undefined
+  const source = value as Record<string, unknown>
+  if (typeof source.degraded !== 'boolean') return undefined
+
+  const configuration: ChatGptProviderConfigurationState = { degraded: source.degraded }
+  if (typeof source.requestedModel === 'string') configuration.requestedModel = source.requestedModel
+  if (typeof source.actualModel === 'string') configuration.actualModel = source.actualModel
+  if (isChatGptReasoning(source.requestedReasoning)) {
+    configuration.requestedReasoning = source.requestedReasoning
+  }
+  if (isChatGptReasoning(source.actualReasoning) || source.actualReasoning === 'unknown') {
+    configuration.actualReasoning = source.actualReasoning
+  }
+  if (typeof source.configuredAt === 'string') configuration.configuredAt = source.configuredAt
+  return configuration
+}
 
 export interface GuardianTaskBuilderOptions {
   maxIterations?: number
@@ -544,6 +571,10 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
             state.chatgptConversationUrl = url
           }
         }
+        if ('configuration' in brainState) {
+          const configuration = readChatGptConfiguration(brainState.configuration)
+          if (configuration !== undefined) state.chatgptConfiguration = configuration
+        }
       }
     }
 
@@ -612,6 +643,9 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
         staleTaskIds: mustStartFresh
           ? [checkpoint.task.id]
           : [],
+        ...(providerState.chatgptConfiguration === undefined
+          ? {}
+          : { configuration: providerState.chatgptConfiguration }),
       }
       brain.restoreProviderState(brainState)
     }

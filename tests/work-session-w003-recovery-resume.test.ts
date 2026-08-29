@@ -370,8 +370,8 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
     const firstReviewArgs = askBridge2.requests[0]?.args ?? []
     assert.strictEqual(firstReviewArgs.includes('--new'), true, 'Must create NEW ChatGPT conversation')
     assert.strictEqual(firstReviewArgs.includes('--session-url'), false, 'Must NOT use old conversation URL')
-    assert.strictEqual(firstReviewArgs.includes('--model'), true, 'New conversation may set model')
-    assert.strictEqual(firstReviewArgs.includes('--reasoning'), true, 'New conversation may set reasoning')
+    assert.strictEqual(firstReviewArgs.includes('--model'), false, 'New conversation must reuse sticky model')
+    assert.strictEqual(firstReviewArgs.includes('--reasoning'), false, 'New conversation must reuse sticky reasoning')
 
     const reviewerPrompt = firstReviewArgs.at(-1) ?? ''
     assert.ok(reviewerPrompt.includes('recovery_continuation'), 'prompt must carry recovery marker')

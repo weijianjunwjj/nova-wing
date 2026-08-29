@@ -128,6 +128,68 @@ test('ask-bridge brain creates a new task conversation then resumes the exact se
   assert.equal(requests[1]?.args.includes('--reasoning'), false)
 })
 
+test('sticky provider configuration is reused by a second Task and its new conversation', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: `Thread Link: https://chatgpt.com/c/sticky-task-${String(requests.length)}`,
+        stderr: '',
+      }
+    },
+  })
+
+  await brain.review({ task })
+  assert.equal(brain.captureConfigurationStatus('task-1')?.actualModel, 'GPT-5.6 Sol')
+  assert.equal(brain.captureConfigurationStatus('task-1')?.actualReasoning, 'high')
+  await brain.review({ task: { ...task, id: 'task-2' } })
+
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[0]?.args[requests[0]!.args.indexOf('--reasoning') + 1], 'high')
+  assert.equal(requests[1]?.args.includes('--new'), true)
+  assert.equal(requests[1]?.args.includes('--model'), false)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+  assert.equal(brain.captureConfigurationStatus('task-2')?.actualReasoning, 'high')
+})
+
+test('sticky high prevents a later Task from reaching a missing reasoning picker', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      if (requests.length > 1 && request.args.includes('--reasoning')) {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'reasoning-switch-failed: ChatGPT picker not found',
+        }
+      }
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: `Thread Link: https://chatgpt.com/c/no-picker-task-${String(requests.length)}`,
+        stderr: '',
+      }
+    },
+  })
+
+  await brain.review({ task })
+  const result = await brain.review({ task: { ...task, id: 'task-2' } })
+
+  assert.equal(result.verdict, 'proceed')
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+})
+
 test('ask-bridge brain classifies a switched Thread Link as a stale conversation', async () => {
   let call = 0
   const runner: AskBridgeCommandRunner = async (request) => {
@@ -169,6 +231,8 @@ test('missing continuation rotates to a fresh Reviewer conversation', async () =
   })
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
     commandRunner: async (request) => {
       requests.push(request)
       calls += 1
@@ -659,6 +723,8 @@ test('ask-bridge protocol retry reuses the Thread Link captured before malformed
   let calls = 0
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
     commandRunner: async (request) => {
       requests.push(request)
       calls += 1
@@ -679,6 +745,10 @@ test('ask-bridge protocol retry reuses the Thread Link captured before malformed
   assert.ok(retrySessionIndex >= 0)
   assert.equal(requests[1]?.args[retrySessionIndex + 1], sessionUrl)
   assert.equal(requests[1]?.args.includes('--new'), false)
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[1]?.args.includes('--model'), false)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
   assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
   assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
 })
@@ -698,6 +768,8 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
   let executorCalls = 0
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
     commandRunner: async (request) => {
       requests.push(request)
       const response = responses.shift()
@@ -730,11 +802,15 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
   assert.equal(requests.length, 3)
   assert.equal(executorCalls, 1)
   assert.equal(requests[0]?.args.includes('--new'), true)
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
   for (const request of requests.slice(1)) {
     const sessionIndex = request.args.indexOf('--session-url')
     assert.ok(sessionIndex >= 0)
     assert.equal(request.args[sessionIndex + 1], sessionUrl)
     assert.equal(request.args.includes('--new'), false)
+    assert.equal(request.args.includes('--model'), false)
+    assert.equal(request.args.includes('--reasoning'), false)
   }
   assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
   assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
@@ -855,6 +931,124 @@ test('ask-bridge rotation resets only one Task and records the fresh conversatio
   assert.equal(freshState.taskConversationUrls['task-2'], otherUrl)
 })
 
+test('conversation rotation keeps successful provider model and reasoning configuration sticky', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: `Thread Link: https://chatgpt.com/c/rotation-${String(requests.length)}`,
+        stderr: '',
+      }
+    },
+  })
+
+  await brain.review({ task })
+  brain.resetTaskReviewSession(task.id)
+  await brain.review({ task })
+
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[1]?.args.includes('--new'), true)
+  assert.equal(requests[1]?.args.includes('--model'), false)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+})
+
+test('Final Review inherits sticky provider configuration', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: 'Thread Link: https://chatgpt.com/c/sticky-final-review',
+        stderr: '',
+      }
+    },
+  })
+
+  await brain.review({ task })
+  await brain.review({
+    task: { ...task, state: 'REVIEWING', iteration: 1 },
+    report: {
+      summary: 'implementation complete',
+      changedFiles: ['src/complete.ts'],
+      commandsRun: ['npm test'],
+      verificationResults: [{ name: 'npm test', status: 'passed' }],
+      blockers: [],
+    },
+  })
+
+  assert.equal(requests[0]?.args.includes('--model'), true)
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[1]?.args.includes('--model'), false)
+  assert.equal(requests[1]?.args.includes('--reasoning'), false)
+})
+
+test('a requested reasoning change is applied once after restoring sticky provider state', async () => {
+  const firstBrain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      await writePacket(request)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/high-task', stderr: '' }
+    },
+  })
+  await firstBrain.review({ task })
+
+  const requests: AskBridgeCommandRequest[] = []
+  const changedBrain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    reasoning: 'medium',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/medium-task', stderr: '' }
+    },
+  })
+  changedBrain.restoreProviderState(firstBrain.captureProviderState())
+
+  await changedBrain.review({ task: { ...task, id: 'task-2' } })
+
+  assert.equal(requests[0]?.args.includes('--reasoning'), true)
+  assert.equal(requests[0]?.args[requests[0]!.args.indexOf('--reasoning') + 1], 'medium')
+  assert.equal(changedBrain.captureConfigurationStatus('task-2')?.actualReasoning, 'medium')
+})
+
+test('an explicit provider configuration resync re-applies otherwise sticky settings', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    model: 'GPT-5.6 Sol',
+    reasoning: 'high',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: `Thread Link: https://chatgpt.com/c/resync-${String(requests.length)}`,
+        stderr: '',
+      }
+    },
+  })
+
+  await brain.review({ task })
+  brain.requestConfigurationResync()
+  await brain.review({ task: { ...task, id: 'task-2' } })
+
+  assert.equal(requests[1]?.args.includes('--model'), true)
+  assert.equal(requests[1]?.args.includes('--reasoning'), true)
+})
+
 test('ask-bridge rotation never restores the old URL after the fresh review times out', async () => {
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
@@ -933,13 +1127,12 @@ test('ask-bridge rotation overrides an initially fixed conversation for that Tas
   assert.equal(brain.captureProviderState().taskConversationUrls['task-1'], 'https://chatgpt.com/c/fresh-session')
 })
 
-test('reasoning option failure degrades once and still sends the Brain prompt with the required model', async () => {
+test('reasoning picker failure degrades once and still sends the Brain prompt with the required model', async () => {
   const requests: AskBridgeCommandRequest[] = []
   const configurations: AskBridgeConfigurationStatus[] = []
   const reasoningFailure = [
-    'Error switching reasoning:',
-    'reasoning switch failed:',
-    'error: option not found;',
+    'reasoning-switch-failed:',
+    'ChatGPT picker not found;',
     'available options:',
     '能力, 高级, 模型, 推理强度, GPT-5.6 Sol, GPT-5.5, o3',
   ].join('\n')

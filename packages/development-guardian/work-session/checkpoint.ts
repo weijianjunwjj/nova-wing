@@ -5,6 +5,15 @@
 
 import type { GuardianTask } from '../model.js'
 
+export interface ChatGptProviderConfigurationState {
+  requestedModel?: string
+  actualModel?: string
+  requestedReasoning?: 'auto' | 'instant' | 'medium' | 'high'
+  actualReasoning?: 'auto' | 'instant' | 'medium' | 'high' | 'unknown'
+  configuredAt?: string
+  degraded: boolean
+}
+
 /**
  * Provider Session State
  * 用于 Exact Resume（优化路径）
@@ -17,6 +26,8 @@ export interface ProviderSessionState {
   chatgptConversationUrl?: string
   /** The previous Reviewer conversation is known stale and must not be restored. */
   chatgptConversationStale?: true
+  /** Last verified non-secret Browser/provider configuration evidence. */
+  chatgptConfiguration?: ChatGptProviderConfigurationState
   /** Claude session_id（如果可用） */
   claudeSessionId?: string
 }
