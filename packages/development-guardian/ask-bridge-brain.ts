@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianBrain } from './ports.js'
+import { DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS } from './brain-review-budget.js'
 import {
   GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
@@ -63,6 +64,57 @@ export type AskBridgeCommandRunner = (
   request: AskBridgeCommandRequest,
 ) => Promise<AskBridgeCommandResult>
 
+export type AskBridgeProcessTreeTerminator = (child: ChildProcess) => Promise<void>
+
+export interface AskBridgeProcessTreeCleanupOptions {
+  platform?: NodeJS.Platform
+  windowsTreeKill?: (pid: number) => Promise<boolean>
+}
+
+function runWindowsTreeKill(pid: number): Promise<boolean> {
+  return new Promise((resolveRun) => {
+    const systemRoot = process.env.SystemRoot?.trim() || 'C:\\Windows'
+    const killer = spawn(join(systemRoot, 'System32', 'taskkill.exe'), [
+      '/PID', String(pid), '/T', '/F',
+    ], {
+      shell: false,
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+    let settled = false
+    const finish = (success: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveRun(success)
+    }
+    killer.once('error', () => finish(false))
+    killer.once('exit', (code) => finish(code === 0))
+    const timer = setTimeout(() => {
+      killer.kill()
+      finish(false)
+    }, 5_000)
+    timer.unref()
+  })
+}
+
+/** Terminate only the process tree rooted at the ask-bridge process spawned for this request. */
+export async function terminateAskBridgeProcessTree(
+  child: ChildProcess,
+  options: AskBridgeProcessTreeCleanupOptions = {},
+): Promise<void> {
+  const platform = options.platform ?? process.platform
+  if (platform === 'win32' && child.pid !== undefined) {
+    const killed = await (options.windowsTreeKill ?? runWindowsTreeKill)(child.pid)
+    if (killed) return
+  }
+  child.kill()
+}
+
+export interface AskBridgeCommandRunnerOptions {
+  terminateProcessTree?: AskBridgeProcessTreeTerminator
+}
+
 export interface AskBridgeBrainOptions {
   command?: string
   conversationUrl?: string
@@ -94,8 +146,11 @@ function defaultAskBridgeCommand(): string {
     : 'ask-bridge'
 }
 
-function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBridgeCommandResult> {
-  return new Promise((resolve, reject) => {
+export function createAskBridgeCommandRunner(
+  options: AskBridgeCommandRunnerOptions = {},
+): AskBridgeCommandRunner {
+  const terminateProcessTree = options.terminateProcessTree ?? terminateAskBridgeProcessTree
+  return (request) => new Promise((resolve, reject) => {
     const startedAt = performance.now()
     const child = spawn(request.executable, [...request.args], {
       env: process.env,
@@ -167,13 +222,16 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
       }
       settled = true
       flushPending()
-      child.kill()
       closeCapturedStreams()
-      resolve({
-        exitCode: null,
-        stdout,
-        stderr: `${stderr}\nask-bridge timed out after ${String(request.timeoutMs)}ms`.trim(),
-      })
+      void terminateProcessTree(child)
+        .catch(() => { child.kill() })
+        .finally(() => {
+          resolve({
+            exitCode: null,
+            stdout,
+            stderr: `${stderr}\nask-bridge timed out after ${String(request.timeoutMs)}ms`.trim(),
+          })
+        })
     }, request.timeoutMs)
 
     child.once('error', (error) => {
@@ -202,6 +260,8 @@ function defaultCommandRunner(request: AskBridgeCommandRequest): Promise<AskBrid
   })
 }
 
+const defaultCommandRunner = createAskBridgeCommandRunner()
+
 const PERFORMANCE_ISSUE_MESSAGE = 'No handler registered for issue code PerformanceIssue'
 
 export function normalizeAskBridgeDiagnostics(value: string): string {
@@ -217,6 +277,13 @@ export function normalizeAskBridgeDiagnostics(value: string): string {
       continue
     }
     if (line === PERFORMANCE_ISSUE_MESSAGE) {
+      performanceIssueCount += 1
+      continue
+    }
+    if (
+      line === 'code PerformanceIssue' ||
+      line === `[chrome-devtools] ${PERFORMANCE_ISSUE_MESSAGE}`
+    ) {
       performanceIssueCount += 1
       continue
     }
@@ -286,10 +353,22 @@ function isTransientBrowserSessionTransportFailure(details: string): boolean {
     /\bcould not identify (?:the )?newly opened tab\b/iu.test(details) ||
     /\bnewly opened tab could not be identified\b/iu.test(details) ||
     /\b(?:error opening|failed to open) (?:a )?ChatGPT session\b/iu.test(details) ||
+    /\btext entry or submission failed\b/iu.test(details) ||
+    /\bsend button did not become active(?:\/enabled)?\b/iu.test(details) ||
     /\bbrowser\b.{0,80}\b(?:tab|session)\b.{0,80}\btransport\b.{0,80}\btemporarily unavailable\b/iu.test(
       details,
     )
   )
+}
+
+function transportFailureFingerprint(details: string): string | undefined {
+  if (/\bsend button did not become active(?:\/enabled)?\b/iu.test(details)) {
+    return 'brain-transport:browser-send-button-inactive'
+  }
+  if (/\bcould not identify (?:the )?newly opened tab\b/iu.test(details)) {
+    return 'brain-transport:browser-new-tab-unidentified'
+  }
+  return undefined
 }
 
 function isRejectedConversationContinuation(details: string): boolean {
@@ -340,7 +419,7 @@ export class AskBridgeBrain implements GuardianBrain {
 
   constructor(private readonly options: AskBridgeBrainOptions = {}) {
     this.runner = options.commandRunner ?? defaultCommandRunner
-    this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS
     this.command = options.command ?? defaultAskBridgeCommand()
     this.headless = options.headless ?? process.platform !== 'win32'
   }
@@ -447,6 +526,7 @@ export class AskBridgeBrain implements GuardianBrain {
     taskId: string,
     prompt: string,
     outputPath: string,
+    timeoutMs: number,
     omitReasoning = false,
   ): string[] {
     const args = ['--provider', 'chatgpt', `--headless=${String(this.headless)}`]
@@ -477,7 +557,7 @@ export class AskBridgeBrain implements GuardianBrain {
       args.push('--reasoning', this.options.reasoning)
     }
 
-    args.push('--timeout', String(Math.ceil(this.timeoutMs / 1000)), '--output', outputPath, prompt)
+    args.push('--timeout', String(Math.max(1, Math.ceil(timeoutMs / 1000))), '--output', outputPath, prompt)
     return args
   }
 
@@ -507,6 +587,7 @@ export class AskBridgeBrain implements GuardianBrain {
     task: GuardianTask
     report?: ExecutionReport
     protocolRepair?: boolean
+    transportTimeoutMs?: number
   }): Promise<DelegationPacket> {
     const taskId = input.task.id
     if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
@@ -516,14 +597,22 @@ export class AskBridgeBrain implements GuardianBrain {
     const prompt = buildGuardianBrainPrompt(input)
     const outputPath = join(tmpdir(), `novawing-ask-bridge-${randomUUID()}.md`)
     const startedAt = performance.now()
+    const operationTimeoutMs = Math.min(input.transportTimeoutMs ?? this.timeoutMs, this.timeoutMs)
 
     try {
       const runBridge = async (omitReasoning = false): Promise<AskBridgeCommandResult> => {
+        const remainingOperationMs = Math.max(
+          0,
+          Math.floor(operationTimeoutMs - (performance.now() - startedAt)),
+        )
+        if (remainingOperationMs < 1_000) {
+          return { exitCode: null, stdout: '', stderr: 'ask-bridge operation budget exhausted' }
+        }
         try {
           return await this.runner({
             executable: this.command,
-            args: this.buildArgs(taskId, prompt, outputPath, omitReasoning),
-            timeoutMs: this.timeoutMs + 15_000,
+            args: this.buildArgs(taskId, prompt, outputPath, remainingOperationMs, omitReasoning),
+            timeoutMs: remainingOperationMs,
             ...(this.options.onDiagnostic === undefined
               ? {}
               : {
@@ -591,12 +680,13 @@ export class AskBridgeBrain implements GuardianBrain {
         const isTimeout = result.exitCode === null
         if (isTimeout) {
           throw new RetryableGuardianBrainError(
-            `ChatGPT review timed out after ${this.timeoutMs}ms`,
+            `ChatGPT review timed out after ${operationTimeoutMs}ms`,
             'timeout',
             {
               ...this.failureContext(),
               failureType: 'BRAIN_TRANSPORT_FAILED',
               degraded: reasoningDegraded,
+              fingerprint: 'brain-transport:timeout',
             },
           )
         }
@@ -605,11 +695,13 @@ export class AskBridgeBrain implements GuardianBrain {
           throw this.conversationFailure(taskId, 'rejected')
         }
         if (isTransientBrowserSessionTransportFailure(details)) {
+          const fingerprint = transportFailureFingerprint(details)
           throw new RetryableGuardianBrainError(`ask-bridge failed: ${details}`, 'transport', {
             ...this.failureContext(),
             degraded: reasoningDegraded,
             rawError: details,
             failureType: 'BRAIN_TRANSPORT_FAILED',
+            ...(fingerprint === undefined ? {} : { fingerprint }),
           })
         }
         const authenticationFailure = isAuthenticationFailure(details)

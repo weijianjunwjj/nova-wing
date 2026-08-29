@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
+import type { ChildProcess } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
   AskBridgeBrain,
+  createAskBridgeCommandRunner,
   GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
   normalizeAskBridgeDiagnostics,
   runGuardianTask,
+  terminateAskBridgeProcessTree,
   type AskBridgeCommandRequest,
   type AskBridgeCommandRunner,
   type AskBridgeOutputEvent,
@@ -395,6 +398,70 @@ test('ask-bridge brain marks command-runner timeout as retryable', async () => {
       error.kind === 'timeout' &&
       error.message === 'ChatGPT review timed out after 120000ms',
   )
+})
+
+test('Guardian remaining budget overrides the configured AskBridge timeout for one operation', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    timeoutMs: 180_000,
+    commandRunner: (request) => {
+      requests.push(request)
+      return Promise.resolve({ exitCode: null, stdout: '', stderr: '' })
+    },
+  })
+
+  await assert.rejects(
+    brain.review({ task, transportTimeoutMs: 75_000 }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.message === 'ChatGPT review timed out after 75000ms',
+  )
+  const request = requests[0]
+  assert.ok(request)
+  assert.equal(request.timeoutMs <= 75_000, true)
+  const timeoutIndex = request.args.indexOf('--timeout')
+  assert.equal(request.args[timeoutIndex + 1], '75')
+})
+
+test('AskBridge timeout waits for cleanup of only the spawned process', async () => {
+  let cleanedPid: number | undefined
+  const runner = createAskBridgeCommandRunner({
+    terminateProcessTree: async (child) => {
+      cleanedPid = child.pid
+      child.kill()
+    },
+  })
+
+  const result = await runner({
+    executable: process.execPath,
+    args: ['-e', 'setInterval(() => undefined, 1000)'],
+    timeoutMs: 25,
+  })
+
+  assert.equal(result.exitCode, null)
+  assert.equal(typeof cleanedPid, 'number')
+  assert.match(result.stderr, /timed out after 25ms/u)
+})
+
+test('Windows AskBridge cleanup targets the exact spawned PID tree', async () => {
+  const treeKillPids: number[] = []
+  let directKills = 0
+  const child = {
+    pid: 4242,
+    kill() { directKills += 1; return true },
+  } as unknown as ChildProcess
+
+  await terminateAskBridgeProcessTree(child, {
+    platform: 'win32',
+    windowsTreeKill: async (pid) => {
+      treeKillPids.push(pid)
+      return true
+    },
+  })
+
+  assert.deepEqual(treeKillPids, [4242])
+  assert.equal(directKills, 0)
 })
 
 test('Finding #11: AskBridge newly-opened-tab transport failure is retryable', async () => {
@@ -978,4 +1045,33 @@ test('PerformanceIssue noise is collapsed while the real root cause is preserved
   assert.match(normalized, /PerformanceIssue × 87/)
   assert.equal(normalized.match(/No handler registered/gu)?.length, 1)
   assert.ok(normalized.length < 500)
+})
+
+test('T021 combined DevTools noise preserves the Send button transport fingerprint', async () => {
+  const stderr = [
+    'code PerformanceIssue',
+    ...Array.from(
+      { length: 55 },
+      () => '[chrome-devtools] No handler registered for issue code PerformanceIssue',
+    ),
+    'Error: "Text entry or submission failed: error: Send button did not become active/enabled"',
+  ].join('\n')
+  const normalized = normalizeAskBridgeDiagnostics(stderr)
+  assert.match(normalized, /Send button did not become active\/enabled/u)
+  assert.match(normalized, /PerformanceIssue × 56/u)
+  assert.equal(normalized.match(/No handler registered/gu)?.length, 1)
+
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({ exitCode: 1, stdout: '', stderr }),
+  })
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'transport' &&
+      error.failure.failureType === 'BRAIN_TRANSPORT_FAILED' &&
+      error.failure.fingerprint === 'brain-transport:browser-send-button-inactive' &&
+      error.failure.rawError?.includes('PerformanceIssue × 56') === true,
+  )
 })

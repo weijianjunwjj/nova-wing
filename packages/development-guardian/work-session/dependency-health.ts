@@ -6,6 +6,11 @@ import { join } from 'node:path'
 export const EXPECTED_GIT_BASH_EXECUTABLE = 'D:\\Git\\bin\\bash.exe'
 export const SHELL_ENVIRONMENT_INVALID = 'SHELL_ENVIRONMENT_INVALID'
 
+export function resolveAskBridgeExecutable(env: NodeJS.ProcessEnv): string {
+  return env.NOVAWING_ASK_BRIDGE_PATH?.trim() ||
+    join(homedir(), '.local', 'bin', 'ask-bridge.exe')
+}
+
 export type DependencyHealthState = 'READY' | 'UNAVAILABLE' | 'DEGRADED'
 export type DependencyHealthId = 'CORE' | 'SHELL' | 'BRAIN' | 'BRIDGE' | 'EXECUTOR' | 'GIT' | 'RUNTIME'
 
@@ -186,7 +191,7 @@ export async function runProductionDependencyPreflight(
     ]
   } else {
     const cwd = options.targetRepo
-    const askBridgeExecutable = env.NOVAWING_ASK_BRIDGE_PATH?.trim() || join(homedir(), '.local', 'bin', 'ask-bridge.exe')
+    const askBridgeExecutable = resolveAskBridgeExecutable(env)
     const [bridge, executor, git] = await Promise.all([
       Promise.all([
         probeCommand('BRIDGE', 'BRAIN_TRANSPORT_FAILED', 'AskBridge transport 不可用。', {
@@ -209,7 +214,11 @@ export async function runProductionDependencyPreflight(
       }, commandRunner),
     ])
     const brain: DependencyHealth = bridge.state === 'READY'
-      ? { id: 'BRAIN', state: 'READY' }
+      ? {
+          id: 'BRAIN',
+          state: 'DEGRADED',
+          safeMessage: 'Static preflight verifies the Bridge binary/config only; live Browser session transport is verified by the bounded Review operation.',
+        }
       : {
           id: 'BRAIN',
           state: 'UNAVAILABLE',
@@ -225,9 +234,10 @@ export async function runProductionDependencyPreflight(
   const shellInvalid = shell.state !== 'READY'
   const canStart = !shellInvalid && dependencies
     .filter((item) => item.id !== 'CORE')
-    .every((item) => item.state === 'READY')
+    .every((item) => item.state !== 'UNAVAILABLE')
+  const degraded = dependencies.some((item) => item.state === 'DEGRADED')
   return {
-    overall: shellInvalid ? 'ENVIRONMENT_REQUIRED' : canStart ? 'READY' : 'DEGRADED',
+    overall: shellInvalid ? 'ENVIRONMENT_REQUIRED' : canStart && !degraded ? 'READY' : 'DEGRADED',
     canStart,
     checkedAt: (options.now?.() ?? new Date()).toISOString(),
     dependencies,

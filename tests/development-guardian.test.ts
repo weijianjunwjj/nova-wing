@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE,
   runGuardianTask,
   RetryableGuardianBrainError,
   type DelegationPacket,
@@ -156,6 +157,120 @@ test('guardian stops after consecutive retryable Brain timeouts', async () => {
   assert.equal(result.task.brainFailure?.nextResumableAction, 'REVIEWING')
   assert.match(result.task.brainFailure?.timestamp ?? '', /^\d{4}-\d{2}-\d{2}T/u)
   assert.doesNotMatch(result.task.brainFailure?.safeMessage ?? '', /timeout/u)
+})
+
+test('Brain Review shares one wall-clock budget across normal, retry, and rotation operations', async () => {
+  let now = Date.parse('2026-08-29T00:00:00.000Z')
+  const operationTimeouts: number[] = []
+  let rotations = 0
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: {
+      async review(input) {
+        const timeoutMs = input.transportTimeoutMs ?? 0
+        operationTimeouts.push(timeoutMs)
+        now += timeoutMs
+        throw new RetryableGuardianBrainError('transport timeout', 'timeout', {
+          failureType: 'BRAIN_TRANSPORT_FAILED',
+          fingerprint: 'brain-transport:timeout',
+        })
+      },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+    brainReviewAttemptTimeoutMs: 180_000,
+    brainReviewTotalBudgetMs: 500_000,
+    minimumBrainReviewAttemptBudgetMs: 15_000,
+    brainReviewClock: { now: () => now },
+  })
+
+  assert.deepEqual(operationTimeouts, [180_000, 180_000, 140_000])
+  assert.equal(rotations, 1)
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.attempt, 3)
+  assert.deepEqual(
+    result.task.brainFailure?.attemptTimeline?.map((attempt) => ({
+      attempt: attempt.attempt,
+      operationKind: attempt.operationKind,
+      durationMs: attempt.durationMs,
+      outcome: attempt.outcome,
+      failureType: attempt.failureType,
+      fingerprint: attempt.fingerprint,
+      timeout: attempt.timeout,
+    })),
+    [
+      { attempt: 1, operationKind: 'normal', durationMs: 180_000, outcome: 'failure', failureType: 'BRAIN_TRANSPORT_FAILED', fingerprint: 'brain-transport:timeout', timeout: true },
+      { attempt: 2, operationKind: 'retry', durationMs: 180_000, outcome: 'failure', failureType: 'BRAIN_TRANSPORT_FAILED', fingerprint: 'brain-transport:timeout', timeout: true },
+      { attempt: 3, operationKind: 'rotation', durationMs: 140_000, outcome: 'failure', failureType: 'BRAIN_TRANSPORT_FAILED', fingerprint: 'brain-transport:timeout', timeout: true },
+    ],
+  )
+})
+
+test('protocol repair cannot start after consuming the shared Brain Review budget', async () => {
+  let now = Date.parse('2026-08-29T00:00:00.000Z')
+  const protocolRepairFlags: Array<boolean | undefined> = []
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: {
+      async review(input) {
+        protocolRepairFlags.push(input.protocolRepair)
+        now += 150_000
+        throw new RetryableGuardianBrainError(
+          'reviewer returned malformed Guardian JSON',
+          'protocol',
+          { failureType: 'BRAIN_RESPONSE_INVALID', fingerprint: 'brain-protocol:json-format' },
+        )
+      },
+    },
+    executor: { async execute() { throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    brainReviewAttemptTimeoutMs: 180_000,
+    brainReviewTotalBudgetMs: 200_000,
+    minimumBrainReviewAttemptBudgetMs: 60_000,
+    brainReviewClock: { now: () => now },
+  })
+
+  assert.deepEqual(protocolRepairFlags, [undefined])
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.failureType, 'BRAIN_TRANSPORT_FAILED')
+  assert.equal(result.task.brainFailure?.fingerprint, 'brain-transport:review-time-budget-exhausted')
+  assert.equal(result.task.brainFailure?.safeMessage, BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE)
+  assert.equal(result.task.brainFailure?.attemptTimeline?.length, 1)
+})
+
+test('conversation rotation does not mutate provider state when the shared budget is insufficient', async () => {
+  let now = Date.parse('2026-08-29T00:00:00.000Z')
+  let rotations = 0
+  let executorCalls = 0
+  const result = await runGuardianTask({
+    task: baseTask({ lastReport: report() }),
+    brain: {
+      async review() {
+        now += 150_000
+        throw new RetryableGuardianBrainError('stale conversation', 'conversation', {
+          failureType: 'BRAIN_CONVERSATION_MISMATCH',
+          fingerprint: 'brain-conversation:mismatch',
+        })
+      },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    executor: { async execute() { executorCalls += 1; throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+    brainReviewAttemptTimeoutMs: 180_000,
+    brainReviewTotalBudgetMs: 200_000,
+    minimumBrainReviewAttemptBudgetMs: 60_000,
+    brainReviewClock: { now: () => now },
+  })
+
+  assert.equal(rotations, 0)
+  assert.equal(executorCalls, 0)
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.stage, 'FINAL_REVIEW')
+  assert.equal(result.task.brainFailure?.safeMessage, BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE)
+  assert.deepEqual(result.task.lastReport, report())
 })
 
 test('guardian does not retry ordinary Brain errors', async () => {

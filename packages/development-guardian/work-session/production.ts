@@ -29,6 +29,7 @@ import {
 } from './control-ui/server.js'
 import {
   requireDependencyPreflightReady,
+  resolveAskBridgeExecutable,
   runProductionDependencyPreflight,
   type DependencyHealthReport,
 } from './dependency-health.js'
@@ -330,6 +331,7 @@ export async function createProductionWorkSessionUi(
 
   const createBrain = dependencies.createBrain ?? ((options) => new AskBridgeBrain(options))
   const brain = createBrain({
+    command: resolveAskBridgeExecutable(env),
     ...(env.NOVAWING_CHATGPT_MODEL?.trim()
       ? { model: env.NOVAWING_CHATGPT_MODEL.trim() }
       : {}),

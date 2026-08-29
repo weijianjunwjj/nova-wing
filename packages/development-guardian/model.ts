@@ -22,6 +22,19 @@ export type GuardianBrainFailureType =
   | 'BRAIN_CONVERSATION_MISMATCH'
   | 'BRAIN_RESPONSE_INVALID'
 
+export type GuardianBrainOperationKind = 'normal' | 'retry' | 'rotation'
+
+export interface GuardianBrainAttempt {
+  attempt: number
+  operationKind: GuardianBrainOperationKind
+  startedAt: string
+  durationMs: number
+  outcome: 'success' | 'failure'
+  failureType: GuardianBrainFailureType | null
+  fingerprint: string | null
+  timeout: boolean
+}
+
 /**
  * Provider-neutral Brain infrastructure failure. This is deliberately separate
  * from HUMAN_REQUIRED: no Reviewer decision exists when transport/configuration
@@ -49,6 +62,8 @@ export interface GuardianBrainFailure {
   lastReliableCheckpoint?: string
   nextResumableAction?: string
   rawOutputRef?: string
+  /** Safe provider-operation facts for this one Brain Review; never raw provider output. */
+  attemptTimeline?: readonly GuardianBrainAttempt[]
 }
 
 export type DelegationVerdict = 'proceed' | 'revise' | 'blocked' | 'done'

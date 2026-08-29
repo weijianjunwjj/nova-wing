@@ -451,6 +451,12 @@ export interface GuardianWorkSessionTaskRunnerOptions {
   maxBrainReviewRetries?: number
   /** Defaults to one bounded Brain provider-session rotation per review operation. */
   maxBrainReviewSessionRotations?: number
+  /** Hard timeout for one Brain provider operation. */
+  brainReviewAttemptTimeoutMs?: number
+  /** Shared wall-clock budget for one complete Brain Review. */
+  brainReviewTotalBudgetMs?: number
+  /** Minimum remaining wall-clock budget required before starting an operation. */
+  minimumBrainReviewAttemptBudgetMs?: number
 }
 
 /**
@@ -814,6 +820,16 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       ...(onProgress === undefined ? {} : { onProgress }),
       maxBrainReviewRetries: this.options.maxBrainReviewRetries ?? 1,
       maxBrainReviewSessionRotations: this.options.maxBrainReviewSessionRotations ?? 1,
+      ...(this.options.brainReviewAttemptTimeoutMs === undefined
+        ? {}
+        : { brainReviewAttemptTimeoutMs: this.options.brainReviewAttemptTimeoutMs }),
+      ...(this.options.brainReviewTotalBudgetMs === undefined
+        ? {}
+        : { brainReviewTotalBudgetMs: this.options.brainReviewTotalBudgetMs }),
+      ...(this.options.minimumBrainReviewAttemptBudgetMs === undefined
+        ? {}
+        : { minimumBrainReviewAttemptBudgetMs: this.options.minimumBrainReviewAttemptBudgetMs }),
+      ...(this.options.clock === undefined ? {} : { brainReviewClock: this.options.clock }),
     })
 
     // 映射结果

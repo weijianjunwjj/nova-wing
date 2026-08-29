@@ -98,11 +98,13 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       env: {
         NOVAWING_CHATGPT_MODEL: 'gpt-test',
         NOVAWING_CHATGPT_REASONING: 'high',
+        NOVAWING_ASK_BRIDGE_PATH: 'D:/Tools/ask-bridge-test.exe',
         NOVAWING_GIT_BASH_PATH: 'C:/Program Files/Git/bin/bash.exe',
       },
       createBrain(options) {
         assert.equal(options.model, 'gpt-test')
         assert.equal(options.reasoning, 'high')
+        assert.equal(options.command, 'D:/Tools/ask-bridge-test.exe')
         return {
           async review({ task }) {
             reviewedTasks.push(task)

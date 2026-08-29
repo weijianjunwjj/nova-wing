@@ -7,6 +7,8 @@ export interface GuardianBrain {
     report?: ExecutionReport
     /** True only for a bounded retry after a wire-format protocol failure. */
     protocolRepair?: boolean
+    /** Hard wall-clock allowance for this provider operation. */
+    transportTimeoutMs?: number
   }): Promise<DelegationPacket>
 
   /**

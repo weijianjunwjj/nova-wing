@@ -1,5 +1,11 @@
 export { GuardianStopError, runGuardianTask } from './guardian.js'
 export {
+  BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE,
+  DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS,
+  DEFAULT_BRAIN_REVIEW_TOTAL_BUDGET_MS,
+  MINIMUM_BRAIN_REVIEW_ATTEMPT_BUDGET_MS,
+} from './brain-review-budget.js'
+export {
   GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
   guardianBrainFailureFrom,
@@ -8,15 +14,22 @@ export type {
   GuardianBrainErrorOptions,
   GuardianBrainRetryKind,
 } from './brain-error.js'
-export { AskBridgeBrain } from './ask-bridge-brain.js'
-export { normalizeAskBridgeDiagnostics } from './ask-bridge-brain.js'
+export {
+  AskBridgeBrain,
+  createAskBridgeCommandRunner,
+  normalizeAskBridgeDiagnostics,
+  terminateAskBridgeProcessTree,
+} from './ask-bridge-brain.js'
 export type {
   AskBridgeBrainOptions,
+  AskBridgeCommandRunnerOptions,
   AskBridgeCommandRequest,
   AskBridgeCommandResult,
   AskBridgeCommandRunner,
   AskBridgeConfigurationStatus,
   AskBridgeOutputEvent,
+  AskBridgeProcessTreeCleanupOptions,
+  AskBridgeProcessTreeTerminator,
   AskBridgeReasoning,
   AskBridgeTimingEvent,
 } from './ask-bridge-brain.js'
@@ -68,6 +81,8 @@ export type {
   GuardianBrainFailure,
   GuardianBrainFailureCategory,
   GuardianBrainFailureType,
+  GuardianBrainAttempt,
+  GuardianBrainOperationKind,
   GuardianRunResult,
   GuardianTask,
   GuardianTaskState,

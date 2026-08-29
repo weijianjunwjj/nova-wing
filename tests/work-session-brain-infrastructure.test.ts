@@ -38,6 +38,16 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
         retryable: true,
         degraded: false,
         fingerprint: 'brain-transport:ask-bridge-unavailable',
+        attemptTimeline: [{
+          attempt: 1,
+          operationKind: 'normal',
+          startedAt: '2026-08-24T00:00:00.000Z',
+          durationMs: 180_000,
+          outcome: 'failure',
+          failureType: 'BRAIN_TRANSPORT_FAILED',
+          fingerprint: 'brain-transport:timeout',
+          timeout: true,
+        }],
       },
     },
     provider: {
@@ -98,6 +108,7 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
   assert.equal(suspended.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.equal(suspended.humanRequired, undefined)
   assert.equal(suspended.brainFailure?.stage, 'BRAIN_REVIEW')
+  assert.deepEqual(suspended.brainFailure?.attemptTimeline, checkpoint.task.brainFailure?.attemptTimeline)
   assert.equal(suspended.currentTaskCheckpoint?.task.iteration, 1)
   assert.equal(
     suspended.currentTaskCheckpoint?.task.lastReport?.summary,

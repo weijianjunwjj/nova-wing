@@ -2,14 +2,24 @@ import type { GuardianBrain, GuardianExecutor } from './ports.js'
 import type {
   DelegationPacket,
   ExecutionReport,
+  GuardianBrainAttempt,
+  GuardianBrainFailure,
+  GuardianBrainOperationKind,
   GuardianRunResult,
   GuardianTask,
 } from './model.js'
 import type { GuardianProgressObserver, GuardianProgressEvent } from './progress.js'
 import {
+  GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
   guardianBrainFailureFrom,
 } from './brain-error.js'
+import {
+  BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE,
+  DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS,
+  DEFAULT_BRAIN_REVIEW_TOTAL_BUDGET_MS,
+  MINIMUM_BRAIN_REVIEW_ATTEMPT_BUDGET_MS,
+} from './brain-review-budget.js'
 import { environmentVerificationFailure } from './verification-evidence.js'
 
 export const VERIFICATION_ENVIRONMENT_REQUIRED_STOP =
@@ -70,6 +80,14 @@ export async function runGuardianTask(options: {
   maxBrainReviewRetries?: number
   /** Additive bounded provider-session rotation budget per review operation. Defaults to zero. */
   maxBrainReviewSessionRotations?: number
+  /** Hard timeout for one Brain provider operation. */
+  brainReviewAttemptTimeoutMs?: number
+  /** Shared wall-clock budget across first attempt, retry, protocol repair, and rotation. */
+  brainReviewTotalBudgetMs?: number
+  /** Do not start a provider operation with less useful time than this. */
+  minimumBrainReviewAttemptBudgetMs?: number
+  /** Injectable epoch clock for deterministic Brain budget and timeline tests. */
+  brainReviewClock?: { now(): number }
 }): Promise<GuardianRunResult> {
   const reports: ExecutionReport[] = []
   let task = { ...options.task }
@@ -185,19 +203,82 @@ export async function runGuardianTask(options: {
     let packet: DelegationPacket
     let brainReviewAttempt = 0
     let protocolRepair = false
+    const brainClock = options.brainReviewClock ?? { now: () => Date.now() }
+    const reviewStartedAtMs = brainClock.now()
+    const reviewDeadlineAtMs = reviewStartedAtMs +
+      (options.brainReviewTotalBudgetMs ?? DEFAULT_BRAIN_REVIEW_TOTAL_BUDGET_MS)
+    const perAttemptTimeoutMs =
+      options.brainReviewAttemptTimeoutMs ?? DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS
+    const minimumAttemptBudgetMs = options.minimumBrainReviewAttemptBudgetMs ??
+      MINIMUM_BRAIN_REVIEW_ATTEMPT_BUDGET_MS
+    const attemptTimeline: GuardianBrainAttempt[] = []
+    let nextOperationKind: GuardianBrainOperationKind = 'normal'
+    let lastFailure: GuardianBrainFailure | undefined
+
+    const budgetExhaustedError = (): GuardianBrainInfrastructureError =>
+      new GuardianBrainInfrastructureError(BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE, {
+        category: 'TRANSPORT',
+        failureType: lastFailure?.failureType === 'BRAIN_UNAVAILABLE'
+          ? 'BRAIN_UNAVAILABLE'
+          : 'BRAIN_TRANSPORT_FAILED',
+        safeMessage: BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE,
+        adapter: lastFailure?.adapter ?? 'guardian-brain',
+        ...(lastFailure?.requestedModel === undefined
+          ? {}
+          : { requestedModel: lastFailure.requestedModel }),
+        ...(lastFailure?.requestedReasoning === undefined
+          ? {}
+          : { requestedReasoning: lastFailure.requestedReasoning }),
+        degraded: lastFailure?.degraded ?? false,
+        fingerprint: 'brain-transport:review-time-budget-exhausted',
+      })
+
+    const remainingBudgetForNextOperation = (): number => {
+      const remainingMs = reviewDeadlineAtMs - brainClock.now()
+      if (remainingMs < minimumAttemptBudgetMs) {
+        throw budgetExhaustedError()
+      }
+      return remainingMs
+    }
     try {
       let retriesRemaining = options.maxBrainReviewRetries ?? 0
       let rotationsRemaining = options.maxBrainReviewSessionRotations ?? 0
       while (true) {
+        const remainingBudgetMs = remainingBudgetForNextOperation()
+        const operationStartedAtMs = brainClock.now()
+        const operationKind = nextOperationKind
+        const transportTimeoutMs = Math.min(perAttemptTimeoutMs, remainingBudgetMs)
         try {
           brainReviewAttempt += 1
           packet = await options.brain.review({
             task,
             ...(task.lastReport === undefined ? {} : { report: task.lastReport }),
             ...(protocolRepair ? { protocolRepair: true } : {}),
+            transportTimeoutMs,
+          })
+          attemptTimeline.push({
+            attempt: brainReviewAttempt,
+            operationKind,
+            startedAt: new Date(operationStartedAtMs).toISOString(),
+            durationMs: Math.max(0, Math.round(brainClock.now() - operationStartedAtMs)),
+            outcome: 'success',
+            failureType: null,
+            fingerprint: null,
+            timeout: false,
           })
           break
         } catch (error) {
+          lastFailure = guardianBrainFailureFrom(error)
+          attemptTimeline.push({
+            attempt: brainReviewAttempt,
+            operationKind,
+            startedAt: new Date(operationStartedAtMs).toISOString(),
+            durationMs: Math.max(0, Math.round(brainClock.now() - operationStartedAtMs)),
+            outcome: 'failure',
+            failureType: lastFailure.failureType ?? null,
+            fingerprint: lastFailure.fingerprint,
+            timeout: error instanceof RetryableGuardianBrainError && error.kind === 'timeout',
+          })
           if (!(error instanceof RetryableGuardianBrainError)) {
             throw error
           }
@@ -213,10 +294,15 @@ export async function runGuardianTask(options: {
               if (stopForHardLimit() || stopForUserPause()) {
                 return { task, reports }
               }
+              remainingBudgetForNextOperation()
               options.brain.resetTaskReviewSession(task.id)
               rotationsRemaining -= 1
+              nextOperationKind = 'rotation'
               emitProgress(reviewPhase, 'active', 'rotating stale brain conversation')
               continue
+            }
+            if (reviewDeadlineAtMs - brainClock.now() < minimumAttemptBudgetMs) {
+              throw budgetExhaustedError()
             }
             throw error
           }
@@ -229,6 +315,8 @@ export async function runGuardianTask(options: {
             if (stopForHardLimit() || stopForUserPause()) {
               return { task, reports }
             }
+            remainingBudgetForNextOperation()
+            nextOperationKind = 'retry'
             emitProgress(reviewPhase, 'active', 'retrying retryable brain failure')
             continue
           }
@@ -242,12 +330,17 @@ export async function runGuardianTask(options: {
             if (stopForHardLimit() || stopForUserPause()) {
               return { task, reports }
             }
+            remainingBudgetForNextOperation()
             options.brain.resetTaskReviewSession(task.id)
             rotationsRemaining -= 1
+            nextOperationKind = 'rotation'
             emitProgress(reviewPhase, 'active', 'rotating retryable brain session')
             continue
           }
 
+          if (reviewDeadlineAtMs - brainClock.now() < minimumAttemptBudgetMs) {
+            throw budgetExhaustedError()
+          }
           throw error
         }
       }
@@ -259,10 +352,11 @@ export async function runGuardianTask(options: {
       const brainFailure = {
         ...classifiedFailure,
         stage: reviewPhase === 'FINAL_REVIEW' ? 'FINAL_REVIEW' as const : 'BRAIN_REVIEW' as const,
-        attempt: brainReviewAttempt,
-        timestamp: new Date().toISOString(),
+        ...(brainReviewAttempt === 0 ? {} : { attempt: brainReviewAttempt }),
+        timestamp: new Date(brainClock.now()).toISOString(),
         lastReliableCheckpoint: task.lastReport === undefined ? 'BEFORE_EXECUTOR' : 'AFTER_EXECUTOR_VERIFICATION',
         nextResumableAction: reviewPhase,
+        attemptTimeline,
       }
       task = {
         ...task,

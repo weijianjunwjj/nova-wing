@@ -21,7 +21,7 @@ function healthyRunner(requests: DependencyCommandRequest[]) {
   }
 }
 
-test('shell preflight: exact native Git Bash is READY and every command uses the explicit executable', async () => {
+test('preflight permits start but does not claim live Brain transport READY without a model call', async () => {
   const requests: DependencyCommandRequest[] = []
   const report = await runProductionDependencyPreflight({
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
@@ -30,12 +30,35 @@ test('shell preflight: exact native Git Bash is READY and every command uses the
     now: fixedNow,
   })
 
-  assert.equal(report.overall, 'READY')
+  assert.equal(report.overall, 'DEGRADED')
   assert.equal(report.canStart, true)
   assert.equal(report.dependencies.find((item) => item.id === 'SHELL')?.state, 'READY')
+  assert.equal(report.dependencies.find((item) => item.id === 'BRIDGE')?.state, 'READY')
+  const brain = report.dependencies.find((item) => item.id === 'BRAIN')
+  assert.equal(brain?.state, 'DEGRADED')
+  assert.match(brain?.safeMessage ?? '', /live Browser session transport/u)
   assert.ok(requests.length >= 5)
   assert.ok(requests.filter((request) => request.executable.toLowerCase().endsWith('bash.exe'))
     .every((request) => request.executable === EXPECTED_GIT_BASH_EXECUTABLE))
+})
+
+test('preflight uses the exact configured AskBridge executable without a real model health call', async () => {
+  const requests: DependencyCommandRequest[] = []
+  const askBridge = 'D:\\Tools\\ask-bridge-test.exe'
+  const report = await runProductionDependencyPreflight({
+    env: {
+      NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE,
+      NOVAWING_ASK_BRIDGE_PATH: askBridge,
+    },
+    commandRunner: healthyRunner(requests),
+    accessFile: async () => undefined,
+    now: fixedNow,
+  })
+
+  assert.equal(report.canStart, true)
+  const bridgeRequests = requests.filter((request) => request.executable === askBridge)
+  assert.deepEqual(bridgeRequests.map((request) => request.args), [['--version'], ['config']])
+  assert.equal(bridgeRequests.some((request) => request.args.includes('--provider')), false)
 })
 
 test('shell preflight: System32 bash fails closed before any dependency command', async () => {

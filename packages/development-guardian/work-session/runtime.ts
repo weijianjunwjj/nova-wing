@@ -168,6 +168,20 @@ const WorkflowStateSchema = z.object({
     lastReliableCheckpoint: z.string().optional(),
     nextResumableAction: z.string().optional(),
     rawOutputRef: z.string().optional(),
+    attemptTimeline: z.array(z.object({
+      attempt: z.number().int().positive(),
+      operationKind: z.enum(['normal', 'retry', 'rotation']),
+      startedAt: z.string(),
+      durationMs: z.number().nonnegative(),
+      outcome: z.enum(['success', 'failure']),
+      failureType: z.enum([
+        'BRAIN_UNAVAILABLE', 'BRAIN_TRANSPORT_FAILED', 'BRAIN_CONFIGURATION_FAILED',
+        'BRAIN_AUTH_REQUIRED', 'BRAIN_RATE_LIMITED', 'BRAIN_CONVERSATION_MISMATCH',
+        'BRAIN_RESPONSE_INVALID',
+      ]).nullable(),
+      fingerprint: z.string().nullable(),
+      timeout: z.boolean(),
+    }).strict()).optional(),
   }).optional(),
   humanRequiredGeneration: z.number().int().nonnegative().optional(),
   lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
@@ -1253,6 +1267,9 @@ export class WorkSessionRuntime {
                 ...(brainFailure.lastReliableCheckpoint === undefined ? {} : { lastReliableCheckpoint: brainFailure.lastReliableCheckpoint }),
                 ...(brainFailure.nextResumableAction === undefined ? {} : { nextResumableAction: brainFailure.nextResumableAction }),
                 ...(brainFailure.rawOutputRef === undefined ? {} : { rawOutputRef: brainFailure.rawOutputRef }),
+                ...(brainFailure.attemptTimeline === undefined
+                  ? {}
+                  : { attemptTimeline: brainFailure.attemptTimeline.map((attempt) => ({ ...attempt })) }),
               },
               suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
               currentTaskCheckpoint: result.checkpoint,
@@ -1464,6 +1481,9 @@ export class WorkSessionRuntime {
         ...(wfState.brainFailure.lastReliableCheckpoint === undefined ? {} : { lastReliableCheckpoint: wfState.brainFailure.lastReliableCheckpoint }),
         ...(wfState.brainFailure.nextResumableAction === undefined ? {} : { nextResumableAction: wfState.brainFailure.nextResumableAction }),
         ...(wfState.brainFailure.rawOutputRef === undefined ? {} : { rawOutputRef: wfState.brainFailure.rawOutputRef }),
+        ...(wfState.brainFailure.attemptTimeline === undefined
+          ? {}
+          : { attemptTimeline: wfState.brainFailure.attemptTimeline.map((attempt) => ({ ...attempt })) }),
       }
     }
     if (wfState.humanRequiredGeneration !== undefined) {

@@ -23,6 +23,10 @@ import {
   type DelegationPacket,
   type ExecutionReport,
 } from 'nova-wing/development-guardian'
+import {
+  GuardianBrainInfrastructureError,
+  RetryableGuardianBrainError,
+} from '../packages/development-guardian/brain-error.js'
 import type { GuardianTaskRecoveryCheckpoint } from '../packages/development-guardian/work-session/index.js'
 import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import { guardianShellTestCommand } from './guardian-shell-fixture.js'
@@ -230,6 +234,135 @@ await test('W003 CLOSURE: T2 checkpoint captures URL-2 and resume uses URL-2 (no
       assert.ok(sessionIdx >= 0, 'resume must continue T2 conversation via --session-url')
       assert.strictEqual(args[sessionIdx + 1], T2_URL, 'resume must use URL-2, not URL-1')
     }
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+await test('T021 incident: recovered final review exhausts bounded transport budget without rerunning Executor or changing repo checkpoint', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 't021-brain-budget-'))
+  const { repoPath, gitRunner } = await setupTestGitRepo(tempBase)
+  let executorInvocations = 0
+  const executor = {
+    async execute(): Promise<ExecutionReport> {
+      executorInvocations += 1
+      return {
+        summary: 'T021 Executor evidence is already complete',
+        changedFiles: ['apps/api/tests/test_approval_decision.py'],
+        commandsRun: ['.venv/Scripts/python.exe -m pytest', 'git diff --check'],
+        verificationResults: [
+          { name: '.venv/Scripts/python.exe -m pytest', status: 'passed' as const },
+          { name: 'git diff --check', status: 'passed' as const },
+        ],
+        blockers: [],
+      }
+    },
+    captureProviderState: () => ({ claudeSessionId: 'preserved-t021-executor' }),
+    restoreProviderState() {},
+    setRecoveryCheckpoint() {},
+  }
+
+  try {
+    let setupReviews = 0
+    const setupRunner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review({ task }) {
+          setupReviews += 1
+          if (setupReviews === 1) {
+            return {
+              verdict: 'proceed' as const,
+              goal: task.goal,
+              instructions: ['complete T021'],
+              constraints: [],
+              verification: ['git diff --check'],
+              doNotDo: [],
+            }
+          }
+          throw new GuardianBrainInfrastructureError('initial final review transport unavailable', {
+            category: 'TRANSPORT',
+            failureType: 'BRAIN_TRANSPORT_FAILED',
+            fingerprint: 'brain-transport:setup',
+          })
+        },
+      },
+      createExecutor: () => executor,
+      repoPath,
+      gitRunner,
+    })
+    const suspended = await setupRunner.run({ id: 'T021', goal: 'approval decision closure' })
+    assert.equal(suspended.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+    assert.equal(executorInvocations, 1)
+    assert.ok(suspended.checkpoint)
+    const checkpoint = suspended.checkpoint
+    const preservedReport = checkpoint.task.lastReport
+    const preservedRepo = { ...checkpoint.repo, changedFiles: [...checkpoint.repo.changedFiles] }
+
+    let now = Date.parse('2026-08-29T02:24:10.000Z')
+    let rotations = 0
+    const operationTimeouts: number[] = []
+    const recoveryRunner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review(input) {
+          const timeoutMs = input.transportTimeoutMs ?? 0
+          operationTimeouts.push(timeoutMs)
+          now += timeoutMs
+          throw new RetryableGuardianBrainError('ChatGPT response capture timed out', 'timeout', {
+            failureType: 'BRAIN_TRANSPORT_FAILED',
+            fingerprint: 'brain-transport:timeout',
+          })
+        },
+        resetTaskReviewSession() { rotations += 1 },
+      },
+      createExecutor: () => executor,
+      repoPath,
+      gitRunner,
+      clock: { now: () => now },
+      brainReviewAttemptTimeoutMs: 180_000,
+      brainReviewTotalBudgetMs: 500_000,
+      minimumBrainReviewAttemptBudgetMs: 15_000,
+    })
+
+    const recovered = await recoveryRunner.run(
+      { id: 'T021', goal: 'approval decision closure' },
+      undefined,
+      checkpoint,
+    )
+
+    assert.equal(recovered.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+    assert.equal(executorInvocations, 1, 'recovery must invoke Executor zero times')
+    assert.deepEqual(operationTimeouts, [180_000, 180_000, 140_000])
+    assert.equal(rotations, 1)
+    assert.equal(recovered.brainFailure?.fingerprint, 'brain-transport:review-time-budget-exhausted')
+    assert.deepEqual(recovered.checkpoint?.task.lastReport, preservedReport)
+    assert.deepEqual(recovered.checkpoint?.repo, preservedRepo)
+
+    assert.ok(recovered.checkpoint)
+    const repairedRunner = new GuardianWorkSessionTaskRunner({
+      brain: {
+        async review({ task }) {
+          return {
+            verdict: 'done' as const,
+            goal: task.goal,
+            instructions: [],
+            constraints: [],
+            verification: ['git diff --check'],
+            doNotDo: [],
+          }
+        },
+      },
+      createExecutor: () => executor,
+      repoPath,
+      gitRunner,
+    })
+    const completed = await repairedRunner.run(
+      { id: 'T021', goal: 'approval decision closure' },
+      undefined,
+      recovered.checkpoint,
+    )
+    assert.equal(completed.status, 'COMPLETED')
+    assert.equal(executorInvocations, 1, 'successful Brain recovery must still invoke Executor zero times')
+    assert.deepEqual(completed.completionEvidence?.changedFiles, preservedReport?.changedFiles)
+    assert.equal((await gitRunner('git rev-parse HEAD')).stdout.trim(), preservedRepo.headSha)
   } finally {
     await rm(tempBase, { recursive: true, force: true }).catch(() => {})
   }
