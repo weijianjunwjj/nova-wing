@@ -149,7 +149,8 @@ const WorkflowStateSchema = z.object({
     stage: z.enum(['BRAIN_REVIEW', 'FINAL_REVIEW']),
     failureType: z.enum([
       'BRAIN_UNAVAILABLE', 'BRAIN_TRANSPORT_FAILED', 'BRAIN_CONFIGURATION_FAILED',
-      'BRAIN_AUTH_REQUIRED', 'BRAIN_RATE_LIMITED', 'BRAIN_RESPONSE_INVALID',
+      'BRAIN_AUTH_REQUIRED', 'BRAIN_RATE_LIMITED', 'BRAIN_CONVERSATION_MISMATCH',
+      'BRAIN_RESPONSE_INVALID',
     ]).optional(),
     safeMessage: z.string().optional(),
     category: z.enum(['CONFIGURATION', 'TRANSPORT', 'PROTOCOL', 'RESPONSE']),

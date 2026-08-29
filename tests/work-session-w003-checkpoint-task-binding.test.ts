@@ -247,7 +247,10 @@ await test('W003 CLOSURE: checkpoint without repo verification capability fails 
       iteration: 1,
       maxIterations: 10,
     },
-    provider: { chatgptConversationUrl: 'https://chatgpt.com/c/must-not-restore' },
+    provider: {
+      chatgptConversationUrl: 'https://chatgpt.com/c/must-not-restore',
+      chatgptConversationStale: true,
+    },
     repo: {
       repoPath: '/does/not/matter',
       branch: 'main',

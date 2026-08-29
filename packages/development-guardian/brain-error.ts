@@ -4,7 +4,7 @@ import type {
   GuardianBrainFailureType,
 } from './model.js'
 
-export type GuardianBrainRetryKind = 'timeout' | 'protocol' | 'transport'
+export type GuardianBrainRetryKind = 'timeout' | 'protocol' | 'transport' | 'conversation'
 
 export interface GuardianBrainErrorOptions {
   category?: GuardianBrainFailureCategory
@@ -37,6 +37,7 @@ function defaultSafeMessage(failureType: GuardianBrainFailureType): string {
   if (failureType === 'BRAIN_AUTH_REQUIRED') return 'Brain 认证需要在 NovaWing 外完成；当前 checkpoint 已保留。'
   if (failureType === 'BRAIN_RATE_LIMITED') return 'Brain provider 当前受限；当前 checkpoint 已保留，可稍后 Resume。'
   if (failureType === 'BRAIN_CONFIGURATION_FAILED') return 'Brain 配置不可用；当前 checkpoint 已保留。'
+  if (failureType === 'BRAIN_CONVERSATION_MISMATCH') return 'Brain conversation 已失效；当前 checkpoint 已保留。'
   if (failureType === 'BRAIN_RESPONSE_INVALID') return 'Brain 返回了无效响应；当前 checkpoint 已保留。'
   return 'Brain transport 不可用；当前 checkpoint 已保留。'
 }

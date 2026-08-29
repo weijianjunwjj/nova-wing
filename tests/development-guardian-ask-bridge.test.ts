@@ -125,7 +125,7 @@ test('ask-bridge brain creates a new task conversation then resumes the exact se
   assert.equal(requests[1]?.args.includes('--reasoning'), false)
 })
 
-test('ask-bridge brain refuses to silently switch conversation inside one task', async () => {
+test('ask-bridge brain classifies a switched Thread Link as a stale conversation', async () => {
   let call = 0
   const runner: AskBridgeCommandRunner = async (request) => {
     call += 1
@@ -144,8 +144,188 @@ test('ask-bridge brain refuses to silently switch conversation inside one task',
   await brain.review({ task })
   await assert.rejects(
     brain.review({ task: { ...task, state: 'REVIEWING', iteration: 1 } }),
-    /switched ChatGPT conversation unexpectedly/,
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'conversation' &&
+      error.failure.failureType === 'BRAIN_CONVERSATION_MISMATCH' &&
+      error.failure.fingerprint === 'brain-conversation:mismatch' &&
+      !error.message.includes('https://'),
   )
+  const state = brain.captureProviderState()
+  assert.equal(state.taskConversationUrls['task-1'], undefined)
+  assert.deepEqual(state.staleTaskIds, ['task-1'])
+})
+
+test('missing continuation rotates to a fresh Reviewer conversation', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  let calls = 0
+  let executorCalls = 0
+  const donePacket = JSON.stringify({
+    verdict: 'done', goal: '完成最小任务', instructions: [], constraints: ['不得越界'],
+    verification: ['npm test'], do_not_do: ['不要提交'],
+  })
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      calls += 1
+      await writeResponse(request, calls === 1 ? packet : donePacket)
+      return calls === 1
+        ? { exitCode: 0, stdout: packet, stderr: '' }
+        : { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/fresh-missing-session', stderr: '' }
+    },
+  })
+
+  await brain.review({ task })
+  const result = await runGuardianTask({
+    task: {
+      ...task,
+      state: 'REVIEWING',
+      iteration: 1,
+      lastReport: {
+        summary: 'executor evidence', changedFiles: ['src/recovered.ts'], commandsRun: ['npm test'],
+        verificationResults: [{ name: 'npm test', status: 'passed' }], blockers: [],
+      },
+    },
+    brain,
+    executor: { async execute() { executorCalls += 1; throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(executorCalls, 0)
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1]?.args.includes('--new'), true)
+  assert.equal(requests[1]?.args.includes('--session-url'), false)
+})
+
+test('conversation mismatch rotates once with the complete recovered Review context and fenced JSON', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  let executorCalls = 0
+  const donePacket = JSON.stringify({
+    verdict: 'done', goal: 'preserve trusted task', instructions: [], constraints: ['keep constraint'],
+    verification: ['npm test'], do_not_do: ['do not widen scope'],
+  })
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writeResponse(request, requests.length === 1 ? donePacket : `\n\`\`\`json\n${donePacket}\n\`\`\`\n`)
+      return {
+        exitCode: 0,
+        stdout: requests.length === 1
+          ? 'Thread Link: https://chatgpt.com/c/wrong-task-session'
+          : 'Thread Link: https://chatgpt.com/c/fresh-reviewer-session',
+        stderr: '',
+      }
+    },
+  })
+  brain.restoreProviderState({
+    taskConversationUrls: { 'task-1': 'https://chatgpt.com/c/stale-reviewer-session' },
+    reviewedTaskIds: ['task-1'],
+  })
+  const recoveredTask = {
+    ...task,
+    state: 'REVIEWING' as const,
+    iteration: 2,
+    constraints: ['keep constraint'],
+    acceptanceCriteria: ['tests pass'],
+    doNotDo: ['do not widen scope'],
+    allowedPaths: ['src/**'],
+    forbiddenPaths: ['**/.env'],
+    recoveryContinuation: true,
+    lastReport: {
+      summary: 'executor evidence is retained',
+      changedFiles: ['src/recovered.ts'],
+      commandsRun: ['npm test'],
+      verificationResults: [{ name: 'npm test', status: 'passed' as const }],
+      blockers: [],
+    },
+  }
+
+  const result = await runGuardianTask({
+    task: recoveredTask,
+    brain,
+    executor: { async execute() { executorCalls += 1; throw new Error('must not execute') } },
+    maxBrainReviewRetries: 1,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(result.task.state, 'COMPLETED')
+  assert.equal(executorCalls, 0)
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0]?.args.includes('--session-url'), true)
+  assert.equal(requests[1]?.args.includes('--new'), true)
+  assert.equal(requests[1]?.args.includes('--session-url'), false)
+  const freshPrompt = requests[1]?.args.at(-1) ?? ''
+  assert.match(freshPrompt, /"id":"task-1"/)
+  assert.match(freshPrompt, /"iteration":2/)
+  assert.match(freshPrompt, /"allowed_paths":\["src\/\*\*"\]/)
+  assert.match(freshPrompt, /"forbidden_paths":\["\*\*\/\.env"\]/)
+  assert.match(freshPrompt, /"summary":"executor evidence is retained"/)
+  assert.deepEqual(result.task.lastReport, recoveredTask.lastReport)
+  const state = brain.captureProviderState()
+  assert.equal(state.taskConversationUrls['task-1'], 'https://chatgpt.com/c/fresh-reviewer-session')
+  assert.deepEqual(state.staleTaskIds, [])
+})
+
+test('provider continuation rejection is typed and marks the old conversation stale', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Reviewer conversation not found; continuation rejected',
+    }),
+  })
+  brain.restoreProviderState({
+    taskConversationUrls: { 'task-1': 'https://chatgpt.com/c/rejected-session' },
+    reviewedTaskIds: ['task-1'],
+  })
+
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) =>
+      error instanceof RetryableGuardianBrainError &&
+      error.kind === 'conversation' &&
+      error.failure.failureType === 'BRAIN_CONVERSATION_MISMATCH' &&
+      error.failure.fingerprint === 'brain-conversation:rejected',
+  )
+  assert.deepEqual(brain.captureProviderState().staleTaskIds, ['task-1'])
+})
+
+test('conversation rotation is bounded and never invokes Executor', async () => {
+  let reviews = 0
+  let rotations = 0
+  let executorCalls = 0
+  const result = await runGuardianTask({
+    task,
+    brain: {
+      async review() {
+        reviews += 1
+        throw new RetryableGuardianBrainError(
+          'Reviewer conversation cannot be continued safely',
+          'conversation',
+          {
+            failureType: 'BRAIN_CONVERSATION_MISMATCH',
+            fingerprint: 'brain-conversation:mismatch',
+          },
+        )
+      },
+      resetTaskReviewSession() { rotations += 1 },
+    },
+    executor: { async execute() { executorCalls += 1; throw new Error('must not execute') } },
+    maxBrainReviewRetries: 5,
+    maxBrainReviewSessionRotations: 1,
+  })
+
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 1)
+  assert.equal(executorCalls, 0)
+  assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.task.brainFailure?.failureType, 'BRAIN_CONVERSATION_MISMATCH')
+  assert.equal(result.task.brainFailure?.attempt, 2)
 })
 
 test('ask-bridge brain exposes verbose diagnostics and command timing', async () => {
@@ -624,6 +804,42 @@ test('ask-bridge rotation never restores the old URL after the fresh review time
   const state = brain.captureProviderState()
   assert.equal(state.taskConversationUrls['task-1'], undefined)
   assert.equal(state.reviewedTaskIds.includes('task-1'), false)
+  assert.deepEqual(state.staleTaskIds, ['task-1'])
+})
+
+test('ask-bridge restart keeps a stale conversation discarded and creates exactly one fresh thread', async () => {
+  const staleBrain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    conversationUrl: 'https://chatgpt.com/c/constructor-session',
+    commandRunner: async (request) => {
+      await writePacket(request)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/mismatched-session', stderr: '' }
+    },
+  })
+  await assert.rejects(staleBrain.review({ task }), RetryableGuardianBrainError)
+  const persisted = staleBrain.captureProviderState()
+
+  const requests: AskBridgeCommandRequest[] = []
+  const restoredBrain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    conversationUrl: 'https://chatgpt.com/c/constructor-session',
+    commandRunner: async (request) => {
+      requests.push(request)
+      await writePacket(request)
+      return { exitCode: 0, stdout: 'Thread Link: https://chatgpt.com/c/restart-fresh-session', stderr: '' }
+    },
+  })
+  restoredBrain.restoreProviderState(persisted)
+
+  await restoredBrain.review({ task })
+
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]?.args.includes('--new'), true)
+  assert.equal(requests[0]?.args.includes('--session-url'), false)
+  assert.equal(
+    restoredBrain.captureProviderState().taskConversationUrls['task-1'],
+    'https://chatgpt.com/c/restart-fresh-session',
+  )
 })
 
 test('ask-bridge rotation overrides an initially fixed conversation for that Task', async () => {

@@ -15,6 +15,8 @@ import type { GuardianTask } from '../model.js'
 export interface ProviderSessionState {
   /** ChatGPT conversation URL（如果可用） */
   chatgptConversationUrl?: string
+  /** The previous Reviewer conversation is known stale and must not be restored. */
+  chatgptConversationStale?: true
   /** Claude session_id（如果可用） */
   claudeSessionId?: string
 }

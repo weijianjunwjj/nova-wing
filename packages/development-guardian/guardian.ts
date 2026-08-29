@@ -202,6 +202,25 @@ export async function runGuardianTask(options: {
             throw error
           }
 
+          if (error.kind === 'conversation') {
+            if (
+              rotationsRemaining > 0 &&
+              options.brain.resetTaskReviewSession !== undefined
+            ) {
+              // A continuation identity failure cannot be repaired by retrying
+              // the same URL. Rotate once within the review-operation budget,
+              // then resubmit the unchanged Guardian task and execution evidence.
+              if (stopForHardLimit() || stopForUserPause()) {
+                return { task, reports }
+              }
+              options.brain.resetTaskReviewSession(task.id)
+              rotationsRemaining -= 1
+              emitProgress(reviewPhase, 'active', 'rotating stale brain conversation')
+              continue
+            }
+            throw error
+          }
+
           if (retriesRemaining > 0) {
             retriesRemaining -= 1
             if (error.kind === 'protocol') protocolRepair = true

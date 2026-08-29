@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import {
   GuardianWorkSessionTaskRunner,
+  GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
   WorkSessionRuntime,
   type DelegationPacket,
@@ -288,6 +289,131 @@ await test('W003 fresh-session timeout checkpoint never restores the discarded U
   assert.equal(result.checkpoint?.provider.chatgptConversationUrl, undefined)
   assert.equal(result.checkpoint?.provider.claudeSessionId, 'claude-session')
   assert.deepEqual(result.checkpoint?.repo, repo)
+})
+
+await test('W003 stale Reviewer state survives restart without changing checkpoint evidence', async () => {
+  const oldUrl = 'https://chatgpt.com/c/stale-task-session'
+  let conversationUrl: string | undefined
+  let stale = false
+  let reviews = 0
+  let rotations = 0
+  const brain: GuardianBrain & {
+    captureProviderState(): {
+      taskConversationUrls: Record<string, string>
+      reviewedTaskIds: string[]
+      staleTaskIds: string[]
+    }
+    restoreProviderState(state: {
+      taskConversationUrls: Record<string, string>
+      reviewedTaskIds: string[]
+      staleTaskIds?: string[]
+    }): void
+  } = {
+    restoreProviderState(state) {
+      conversationUrl = state.taskConversationUrls['T1']
+      stale = state.staleTaskIds?.includes('T1') === true
+    },
+    captureProviderState() {
+      return {
+        taskConversationUrls: conversationUrl === undefined ? {} : { T1: conversationUrl },
+        reviewedTaskIds: conversationUrl === undefined ? [] : ['T1'],
+        staleTaskIds: stale ? ['T1'] : [],
+      }
+    },
+    resetTaskReviewSession() {
+      conversationUrl = undefined
+      stale = true
+      rotations += 1
+    },
+    async review(input) {
+      reviews += 1
+      assert.equal(input.task.lastReport?.summary, 'executor returned normally')
+      assert.deepEqual(input.task.allowedPaths, ['src/**'])
+      if (conversationUrl !== undefined) {
+        throw new RetryableGuardianBrainError(
+          'Reviewer conversation cannot be continued safely',
+          'conversation',
+          {
+            failureType: 'BRAIN_CONVERSATION_MISMATCH',
+            fingerprint: 'brain-conversation:mismatch',
+          },
+        )
+      }
+      throw new GuardianBrainInfrastructureError('brain packet field is invalid', {
+        category: 'PROTOCOL',
+        failureType: 'BRAIN_RESPONSE_INVALID',
+        fingerprint: 'brain-protocol:packet-contract',
+      })
+    },
+  }
+  const executor = new RecordingExecutor()
+  const repo = {
+    repoPath: REPO, branch: BRANCH, headSha: HEAD, changedFiles: [] as readonly string[],
+    worktreeFingerprint: await computeWorktreeFingerprint(REPO, []),
+  }
+  const originalReport = report()
+  const checkpoint: GuardianTaskRecoveryCheckpoint = {
+    version: 1,
+    task: {
+      id: 'T1', goal: 'one', state: 'BRAIN_INFRASTRUCTURE_FAILED', iteration: 1, maxIterations: 10,
+      allowedPaths: ['src/**'], forbiddenPaths: ['**/.env'], lastReport: originalReport,
+    },
+    provider: { chatgptConversationUrl: oldUrl, claudeSessionId: 'claude-session' },
+    repo,
+    capturedAt: new Date().toISOString(),
+  }
+
+  const result = await adapter({ brain, executor }).run({ id: 'T1', goal: 'one' }, undefined, checkpoint)
+
+  assert.equal(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+  assert.equal(result.brainFailure?.failureType, 'BRAIN_RESPONSE_INVALID')
+  assert.equal(reviews, 2)
+  assert.equal(rotations, 1)
+  assert.equal(executor.calls, 0)
+  assert.equal(result.checkpoint?.provider.chatgptConversationUrl, undefined)
+  assert.equal(result.checkpoint?.provider.chatgptConversationStale, true)
+  assert.equal(result.checkpoint?.provider.claudeSessionId, 'claude-session')
+  assert.deepEqual(result.checkpoint?.repo, repo)
+  assert.deepEqual(result.checkpoint?.task.lastReport, originalReport)
+  assert.deepEqual(result.checkpoint?.task.allowedPaths, ['src/**'])
+  assert.deepEqual(result.checkpoint?.task.forbiddenPaths, ['**/.env'])
+
+  let restoredState: {
+    taskConversationUrls: Record<string, string>
+    reviewedTaskIds: string[]
+    staleTaskIds?: string[]
+  } | undefined
+  const restartedBrain: GuardianBrain & {
+    captureProviderState(): {
+      taskConversationUrls: Record<string, string>
+      reviewedTaskIds: string[]
+      staleTaskIds: string[]
+    }
+    restoreProviderState(state: {
+      taskConversationUrls: Record<string, string>
+      reviewedTaskIds: string[]
+      staleTaskIds?: string[]
+    }): void
+  } = {
+    restoreProviderState(state) { restoredState = state },
+    captureProviderState() {
+      return { taskConversationUrls: {}, reviewedTaskIds: [], staleTaskIds: ['T1'] }
+    },
+    async review() { return packet('blocked') },
+  }
+  const restartedExecutor = new RecordingExecutor()
+  const restarted = await adapter({ brain: restartedBrain, executor: restartedExecutor }).run(
+    { id: 'T1', goal: 'one' },
+    undefined,
+    result.checkpoint,
+  )
+
+  assert.equal(restarted.status, 'HUMAN_REQUIRED')
+  assert.deepEqual(restoredState?.taskConversationUrls, {})
+  assert.deepEqual(restoredState?.reviewedTaskIds, [])
+  assert.deepEqual(restoredState?.staleTaskIds, ['T1'])
+  assert.equal(restartedExecutor.calls, 0)
+  assert.deepEqual(restarted.checkpoint?.repo, repo)
 })
 
 await test('Work Session adapter allows session rotation to be disabled for tests', async () => {

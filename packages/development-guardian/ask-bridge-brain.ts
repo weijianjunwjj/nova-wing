@@ -84,6 +84,8 @@ export interface AskBridgeBrainOptions {
 export interface AskBridgeBrainProviderState {
   taskConversationUrls: Record<string, string>
   reviewedTaskIds: readonly string[]
+  /** Task conversations that must never become continuation truth after restart. */
+  staleTaskIds?: readonly string[]
 }
 
 function defaultAskBridgeCommand(): string {
@@ -290,9 +292,26 @@ function isTransientBrowserSessionTransportFailure(details: string): boolean {
   )
 }
 
-function extractThreadLink(stdout: string): string | undefined {
-  const match = /^Thread Link:\s+(https:\/\/chatgpt\.com\/c\/[^\s]+)\s*$/mu.exec(stdout)
-  return match?.[1]
+function isRejectedConversationContinuation(details: string): boolean {
+  return (
+    /\b(?:conversation|thread|session)(?: url)?\b.{0,80}\b(?:not found|does not exist|no longer exists|expired|invalid|mismatch|does not match|cannot be continued|could not be continued|continuation rejected)\b/iu.test(
+      details,
+    ) ||
+    /\b(?:failed|unable|refused) to (?:continue|resume)\b.{0,80}\b(?:conversation|thread|session)\b/iu.test(
+      details,
+    )
+  )
+}
+
+function extractThreadLinks(stdout: string): string[] {
+  return Array.from(
+    new Set(
+      Array.from(
+        stdout.matchAll(/^Thread Link:\s+(https:\/\/chatgpt\.com\/c\/[^\s]+)\s*$/gmu),
+        (match) => match[1],
+      ).filter((url): url is string => url !== undefined),
+    ),
+  )
 }
 
 async function readBridgeOutput(outputPath: string, fallbackStdout: string): Promise<string> {
@@ -314,6 +333,7 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly headless: boolean
   private readonly taskConversationUrls = new Map<string, string>()
   private readonly reviewedTaskIds = new Set<string>()
+  private readonly staleTaskIds = new Set<string>()
   private readonly configurationByTask = new Map<string, AskBridgeConfigurationStatus>()
   /** Tasks whose replaceable state must override the constructor's initial URL. */
   private readonly rotatedTaskIds = new Set<string>()
@@ -332,6 +352,7 @@ export class AskBridgeBrain implements GuardianBrain {
     return {
       taskConversationUrls: Object.fromEntries(this.taskConversationUrls),
       reviewedTaskIds: Array.from(this.reviewedTaskIds),
+      staleTaskIds: Array.from(this.staleTaskIds),
     }
   }
 
@@ -353,23 +374,53 @@ export class AskBridgeBrain implements GuardianBrain {
   restoreProviderState(state: AskBridgeBrainProviderState): void {
     this.taskConversationUrls.clear()
     this.reviewedTaskIds.clear()
+    this.staleTaskIds.clear()
     this.rotatedTaskIds.clear()
     this.configurationByTask.clear()
 
+    const staleTaskIds = new Set(state.staleTaskIds ?? [])
     for (const [taskId, url] of Object.entries(state.taskConversationUrls)) {
+      if (staleTaskIds.has(taskId)) continue
       this.taskConversationUrls.set(taskId, url)
       this.rotatedTaskIds.add(taskId)
     }
 
     for (const taskId of state.reviewedTaskIds) {
+      if (staleTaskIds.has(taskId)) continue
       this.reviewedTaskIds.add(taskId)
+    }
+
+    for (const taskId of staleTaskIds) {
+      this.staleTaskIds.add(taskId)
+      this.rotatedTaskIds.add(taskId)
     }
   }
 
   resetTaskReviewSession(taskId: string): void {
+    this.markTaskConversationStale(taskId)
+  }
+
+  private markTaskConversationStale(taskId: string): void {
     this.taskConversationUrls.delete(taskId)
     this.reviewedTaskIds.delete(taskId)
+    this.staleTaskIds.add(taskId)
     this.rotatedTaskIds.add(taskId)
+  }
+
+  private conversationFailure(
+    taskId: string,
+    reason: 'missing' | 'mismatch' | 'rejected' | 'ambiguous-thread-link',
+  ): RetryableGuardianBrainError {
+    this.markTaskConversationStale(taskId)
+    return new RetryableGuardianBrainError(
+      'ask-bridge Reviewer conversation cannot be continued safely',
+      'conversation',
+      {
+        ...this.failureContext(),
+        failureType: 'BRAIN_CONVERSATION_MISMATCH',
+        fingerprint: `brain-conversation:${reason}`,
+      },
+    )
   }
 
   private conversationUrlForTask(taskId: string): string | undefined {
@@ -432,12 +483,14 @@ export class AskBridgeBrain implements GuardianBrain {
 
   private rememberConversation(taskId: string, stdout: string): void {
     const expectedUrl = this.conversationUrlForTask(taskId)
-    const returnedUrl = extractThreadLink(stdout)
+    const returnedUrls = extractThreadLinks(stdout)
+    if (returnedUrls.length > 1) {
+      throw this.conversationFailure(taskId, 'ambiguous-thread-link')
+    }
+    const returnedUrl = returnedUrls[0]
 
     if (expectedUrl !== undefined && returnedUrl !== undefined && returnedUrl !== expectedUrl) {
-      throw new Error(
-        `ask-bridge switched ChatGPT conversation unexpectedly: expected ${expectedUrl}, got ${returnedUrl}`,
-      )
+      throw this.conversationFailure(taskId, 'mismatch')
     }
 
     if (
@@ -446,6 +499,7 @@ export class AskBridgeBrain implements GuardianBrain {
       returnedUrl !== undefined
     ) {
       this.taskConversationUrls.set(taskId, returnedUrl)
+      this.staleTaskIds.delete(taskId)
     }
   }
 
@@ -456,9 +510,7 @@ export class AskBridgeBrain implements GuardianBrain {
   }): Promise<DelegationPacket> {
     const taskId = input.task.id
     if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
-      throw new Error(
-        `cannot continue Guardian task ${taskId}: first ChatGPT review did not expose a Thread Link`,
-      )
+      throw this.conversationFailure(taskId, 'missing')
     }
 
     const prompt = buildGuardianBrainPrompt(input)
@@ -494,6 +546,7 @@ export class AskBridgeBrain implements GuardianBrain {
       }
 
       let reasoningDegraded = this.configurationByTask.get(taskId)?.degraded === true
+      const attemptedContinuation = this.conversationUrlForTask(taskId) !== undefined
       let result = await runBridge()
 
       if (
@@ -548,6 +601,9 @@ export class AskBridgeBrain implements GuardianBrain {
           )
         }
         const details = failureDetails(result)
+        if (attemptedContinuation && isRejectedConversationContinuation(details)) {
+          throw this.conversationFailure(taskId, 'rejected')
+        }
         if (isTransientBrowserSessionTransportFailure(details)) {
           throw new RetryableGuardianBrainError(`ask-bridge failed: ${details}`, 'transport', {
             ...this.failureContext(),

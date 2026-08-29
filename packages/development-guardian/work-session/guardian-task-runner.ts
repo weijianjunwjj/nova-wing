@@ -518,8 +518,20 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     if ('captureProviderState' in brain && typeof brain.captureProviderState === 'function') {
       const brainState = brain.captureProviderState()
       if (typeof brainState === 'object' && brainState !== null) {
+        const staleTaskIds: readonly unknown[] =
+          'staleTaskIds' in brainState && Array.isArray(brainState.staleTaskIds)
+          ? brainState.staleTaskIds
+          : []
+        const conversationIsStale = staleTaskIds.some((value) => value === taskId)
+        if (conversationIsStale) {
+          state.chatgptConversationStale = true
+        }
         // 通用处理：不依赖 AskBridgeBrain 具体结构，但显式按 taskId 读取
-        if ('taskConversationUrls' in brainState && typeof brainState.taskConversationUrls === 'object') {
+        if (
+          !conversationIsStale &&
+          'taskConversationUrls' in brainState &&
+          typeof brainState.taskConversationUrls === 'object'
+        ) {
           const urls = brainState.taskConversationUrls as Record<string, string | undefined>
           const url = urls[taskId]
           if (url !== undefined) {
@@ -578,16 +590,22 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
     // 恢复 brain state（如 ChatGPT conversation URL）
     if (
-      providerState.chatgptConversationUrl !== undefined &&
       'restoreProviderState' in brain &&
       typeof brain.restoreProviderState === 'function'
     ) {
+      const mustStartFresh = providerState.chatgptConversationStale === true ||
+        providerState.chatgptConversationUrl === undefined
       // 通用处理：不依赖 AskBridgeBrain 具体类型
       const brainState = {
-        taskConversationUrls: {
-          [checkpoint.task.id]: providerState.chatgptConversationUrl,
-        },
-        reviewedTaskIds: [checkpoint.task.id],
+        taskConversationUrls: mustStartFresh
+          ? {}
+          : { [checkpoint.task.id]: providerState.chatgptConversationUrl as string },
+        reviewedTaskIds: mustStartFresh
+          ? []
+          : [checkpoint.task.id],
+        staleTaskIds: mustStartFresh
+          ? [checkpoint.task.id]
+          : [],
       }
       brain.restoreProviderState(brainState)
     }

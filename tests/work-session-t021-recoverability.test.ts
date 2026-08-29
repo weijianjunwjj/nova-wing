@@ -276,10 +276,16 @@ await test('T021 repeated resumeInterrupted 不创建两个活动 Runner', async
     await runtime1.close()
     void startPromise
 
+    let freshReviewerConversations = 0
     const runtime2 = new WorkSessionRuntime({
       definition: session,
       storageUrl,
-      taskRunner: completedRunner(new Map()),
+      taskRunner: {
+        async run(): Promise<WorkSessionTaskResult> {
+          freshReviewerConversations += 1
+          return { status: 'COMPLETED' }
+        },
+      },
     })
     await runtime2.loadPersistedState()
 
@@ -287,6 +293,7 @@ await test('T021 repeated resumeInterrupted 不创建两个活动 Runner', async
     await assert.rejects(runtime2.resumeInterrupted(), /already in progress/)
     const resumed = await first
     assert.equal(resumed.state, 'COMPLETED')
+    assert.equal(freshReviewerConversations, 1, 'duplicate Resume must not create another Reviewer conversation')
     await runtime2.close()
   })
 })
