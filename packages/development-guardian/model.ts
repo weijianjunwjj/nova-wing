@@ -180,6 +180,12 @@ export interface GuardianTask {
     decision?: string
     approval?: boolean
   }
+  /**
+   * Runtime-owned, one-shot fact for the current Guardian run. It tells the
+   * Reviewer that one exact deterministic verifier may proceed; it is neither
+   * user_resume_input nor an Executor tool capability and is never checkpointed.
+   */
+  approvedVerificationCommand?: string
 }
 
 export interface GuardianRunResult {

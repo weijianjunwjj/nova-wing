@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import vm from 'node:vm'
 
-import { APP_JS } from '../packages/development-guardian/work-session/control-ui/view.js'
+import { APP_JS, renderHtml } from '../packages/development-guardian/work-session/control-ui/view.js'
 
 const MALICIOUS_REASON = '<img src=x onerror="globalThis.__PWNED__=true">choose database'
 const MALICIOUS_GOAL = '</div><script>globalThis.__PWNED__=true</script>'
@@ -169,6 +169,39 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
 
   // 6. __PWNED__ 未被执行
   assert.notEqual(context.__PWNED__, true)
+
+  // A durable scoped-verification request uses only the dedicated approval
+  // control. The generic decision textarea cannot be used as a capability grant.
+  render({
+    configuredSession: {
+      id: 's1', targetRepo: '/repo/example', branch: 'feat/x',
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
+      tasks: [{ id: 'T023', goal: 'migration verification' }],
+    },
+    runtime: {
+      started: true,
+      running: false,
+      state: 'SUSPENDED',
+      currentTaskId: 'T023',
+      completedTaskIds: [],
+      humanRequired: {
+        category: 'DECISION_REQUIRED',
+        reason: 'verification command requires human approval',
+      },
+      pendingVerificationApproval: {
+        taskId: 'T023',
+        command: 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head',
+        generation: 1,
+      },
+    },
+    guardian: { phase: 'HUMAN_REQUIRED', status: 'completed', iteration: 0, elapsedMs: 0 },
+    recentEvents: [],
+  })
+  assert.equal(elements.get('decision-title')?.textContent, '需要验证授权')
+  assert.equal(elements.get('approve-verification-btn')?.hidden, false)
+  assert.ok(renderHtml({ controlToken: 'tok', serverOrigin: 'http://127.0.0.1:1' }).includes('批准此验证并继续'))
+  assert.equal(elements.get('decision-input')?.hidden, true)
+  assert.equal(elements.get('resume-decision-btn')?.hidden, true)
 
   // Infrastructure suspension is not a trusted decision flow.
   render({

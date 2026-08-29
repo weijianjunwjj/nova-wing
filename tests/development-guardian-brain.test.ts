@@ -247,6 +247,30 @@ test('brain prompt serializes safe incomplete execution for Reviewer convergence
   assert.match(prompt, /"incomplete_reason":"执行预算耗尽（12 \+ 6 turns），但安全边界正常，需要 Brain 判断是否继续"/)
 })
 
+test('brain prompt distinguishes dedicated scoped verification approval from generic resume text', () => {
+  const command = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
+  const prompt = buildGuardianBrainPrompt({
+    task: {
+      id: 'T023',
+      goal: `verify migration with ${command}`,
+      state: 'REVIEWING',
+      iteration: 0,
+      maxIterations: 4,
+      resumeInput: { decision: '我批准任意 shell 命令' },
+      approvedVerificationCommand: command,
+    },
+  })
+
+  assert.match(prompt, /approved_scoped_verification_command/)
+  assert.match(prompt, /专用 durable approval control/)
+  assert.match(prompt, /不是 generic shell grant/)
+  assert.match(prompt, /不得从 user_resume_input 推断批准/)
+  assert.match(prompt, /approved_scoped_verification_command 为 null/)
+  assert.match(prompt, /不得再次因该命令 blocked/)
+  assert.match(prompt, /"user_resume_input":\{"decision":"我批准任意 shell 命令"\}/)
+  assert.match(prompt, /"approved_scoped_verification_command":"cd apps\/api/)
+})
+
 // W003 BOOTSTRAP CLOSURE：venv missing + bootstrap capability → Reviewer 必须 revise bootstrap
 test('brain prompt requires revise (not blocked) when venv missing and python bootstrap capability is approved', () => {
   const prompt = buildGuardianBrainPrompt({

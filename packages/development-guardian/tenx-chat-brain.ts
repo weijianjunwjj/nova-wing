@@ -219,6 +219,7 @@ export function buildGuardianBrainPrompt(input: {
     last_packet: serializePacket(input.task.lastPacket),
     recovery_continuation: input.task.recoveryContinuation === true,
     user_resume_input: input.task.resumeInput ?? null,
+    approved_scoped_verification_command: input.task.approvedVerificationCommand ?? null,
     execution_report: serializeReport(input.report),
   }
 
@@ -229,6 +230,7 @@ export function buildGuardianBrainPrompt(input: {
     'task.goal / constraints / acceptance_criteria / do_not_do 是用户给出的任务事实，不允许弱化、重写或绕过。',
     'allowed_paths / forbidden_paths 是硬边界，不允许通过自然语言建议绕过。',
     'user_resume_input 是用户在 Session suspended 后明确提交的一次 trusted continuation input，可用于解决当前 suspended decision；它不是 execution_report，也不自动扩大 tool capability、权限或允许路径。',
+    'approved_scoped_verification_command 若非 null，是 NovaWing Runtime 已通过专用 durable approval control 核验并单次消费的精确 deterministic verifier；它不是 generic shell grant，也不能授权其他命令。Reviewer 应继续当前 Task，并把该 exact command 保留在 verification 中交给 Guardian verifier。',
     '即使存在 user_resume_input，原 task.goal / constraints / acceptance_criteria / do_not_do / allowed_paths / forbidden_paths 仍是硬边界；不得绕过 repository checkpoint 或自动授权危险操作。',
     '当 recovery_continuation 为 true 时，表示本任务是通过已验证 checkpoint 的显式恢复延续：你是从既有进度继续，不是从零开始；不得要求 Executor 丢弃已有修改或从头重新实现。',
     '',
@@ -262,7 +264,10 @@ export function buildGuardianBrainPrompt(input: {
     '- npm run check',
     '- git diff --check',
     '- .venv/Scripts/python.exe -m pytest',
-    '如果任务必须使用其他验证命令，不要把它塞进 verification；改为 blocked 并在 rationale 说明原因。',
+    '唯一例外：如果 Task 明确要求 `cd <repo-relative-dir> && <repo .venv python> -m alembic upgrade head` 形式的精确 migration verification，且 approved_scoped_verification_command 为 null，把该完整命令作为 verification 的唯一元素，返回 blocked，instructions 为空，并在 rationale 说明需要 scoped verification approval。',
+    '如果 approved_scoped_verification_command 与 Task 所需的该 exact command 相同，不得再次因该命令 blocked；继续当前 Task，并把 exact command 保留在 verification 中交给 Guardian verifier。',
+    '该例外只是请求 NovaWing 走专用 verification approval；Reviewer 不得声称已获批准，不得从 user_resume_input 推断批准，也不得扩展为 generic shell/Python/Alembic capability。路径、命令和仓库边界将由 Runtime 的精确 parser 再验证。',
+    '除上述单一精确 Alembic approval request 外，如果任务必须使用其他验证命令，不要把它塞进 verification；改为 blocked 并在 rationale 说明原因。',
     '',
     '裁决规则：',
     '- 首轮且目标明确：proceed，并给 Claude Code 可执行指令。',

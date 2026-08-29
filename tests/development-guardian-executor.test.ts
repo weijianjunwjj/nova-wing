@@ -255,6 +255,46 @@ test('executor blocks verification command outside MVP allowlist', async () => {
   assert.equal(runner.requests.length, 4)
 })
 
+test('runtime-approved exact verification command is executable only once', async () => {
+  const command = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
+  const runner = new QueueRunner([
+    result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('migration passed'),
+    result(claudeJson({ result: 'revised' })), result(' M src/a.ts\n'), result('diff clean'),
+  ])
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo',
+    commandRunner: runner.run,
+    approvedVerificationCommand: command,
+  })
+
+  const first = await executor.execute({ task: task(0), packet: packet([command]) })
+  const second = await executor.execute({
+    task: task(1),
+    packet: { ...packet([command]), verdict: 'revise' },
+  })
+
+  assert.equal(first.verificationResults.find((item) => item.name === command)?.status, 'passed')
+  assert.deepEqual(
+    second.verificationResults.find((item) => item.name === command),
+    {
+      name: command,
+      status: 'skipped',
+      details: 'verification command is not in the MVP allowlist',
+    },
+  )
+  assert.equal(
+    runner.requests.filter((request) => request.args.includes(command)).length,
+    1,
+  )
+  const claudeRequests = runner.requests.filter((request) =>
+    request.args.some((entry) => entry.includes('claude')),
+  )
+  assert.ok(
+    claudeRequests.every((request) => !request.args.includes(command)),
+    'verification approval must not become a Claude shell/tool grant',
+  )
+})
+
 test('executor stops before verification when changed files leave allowed scope', async () => {
   const runner = new QueueRunner([
     result(''),

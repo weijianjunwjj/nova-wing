@@ -618,11 +618,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   private sessionId: string | undefined
   private allowedCheckpoint: RepositoryCheckpoint | undefined
   private activeTaskId: string | undefined
+  private approvedVerificationCommandAvailable: boolean
 
   constructor(private readonly options: ClaudeCodeExecutorOptions) {
     this.runner = options.commandRunner ?? defaultCommandRunner
     this.timeoutMs = options.timeoutMs ?? 20 * 60 * 1000
     this.maxTurns = options.maxTurns ?? 12
+    this.approvedVerificationCommandAvailable = options.approvedVerificationCommand !== undefined
   }
 
   /**
@@ -900,7 +902,8 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       if (command.length === 0) {
         continue
       }
-      const runtimeApproved = this.options.approvedVerificationCommand === command
+      const runtimeApproved = this.approvedVerificationCommandAvailable &&
+        this.options.approvedVerificationCommand === command
       if (!ALLOWED_VERIFICATION_COMMANDS.has(command) && !runtimeApproved) {
         results.push({
           name: command,
@@ -911,6 +914,11 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         continue
       }
 
+      if (runtimeApproved) {
+        // Consume before spawning the verifier. Provider retries/revise loops
+        // cannot turn one durable approval into repeated command execution.
+        this.approvedVerificationCommandAvailable = false
+      }
       commandsRun.push(command)
       this.options.onVerification?.({ command, status: 'running', iteration: task.iteration, index })
       const startedAt = performance.now()

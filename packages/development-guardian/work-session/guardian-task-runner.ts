@@ -27,6 +27,7 @@ import {
   computeWorktreeFingerprint,
 } from './worktree-fingerprint.js'
 import { environmentVerificationFailure } from '../verification-evidence.js'
+import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 
 function isChatGptReasoning(
   value: unknown,
@@ -403,10 +404,11 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   }
 
   // Verification 需要额外授权
-  if (pendingVerificationCommand(task) !== undefined) {
+  const verificationCommand = pendingVerificationCommand(task)
+  if (verificationCommand !== undefined) {
     return {
       category: 'DECISION_REQUIRED',
-      reason,
+      reason: `${VERIFICATION_APPROVAL_BLOCKER}${verificationCommand}`,
     }
   }
 
@@ -601,9 +603,14 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     if (repoCheckpoint === undefined) {
       return undefined
     }
+    const checkpointTask = { ...task }
+    // Runtime consumed this approval before starting the current Guardian run.
+    // Persisting it would incorrectly turn a one-shot verifier fact into a
+    // reusable recovery capability.
+    delete checkpointTask.approvedVerificationCommand
     return {
       version: 1,
-      task,
+      task: checkpointTask,
       provider: this.captureProviderSessionState(
         workSessionTask.id,
         this.options.brain,
@@ -834,6 +841,13 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
       guardianTask = { ...guardianTask, resumeInput: sanitizedResumeInput }
     }
 
+    if (context?.approvedVerificationCommand !== undefined) {
+      guardianTask = {
+        ...guardianTask,
+        approvedVerificationCommand: context.approvedVerificationCommand,
+      }
+    }
+
     // 运行 Guardian
     // W004-B: context.hardDeadlineAtMs + 可测试 clock → 构造 shouldStopAutonomousWork。
     // 未提供 deadline 时不注入 hook，现有 Guardian behavior 100% 不变。
@@ -980,16 +994,28 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 }
 
 /**
- * Only expose an approval candidate when Guardian itself produced the precise
- * deterministic-verification blocker and the report names exactly one command.
+ * Only expose one structured Reviewer request before Executor, or one precise
+ * deterministic-verification blocker after Executor. Runtime performs the
+ * authoritative repo-scoped command parse before persisting any approval.
  */
 function pendingVerificationCommand(task: GuardianTask): string | undefined {
+  // A first-pass Reviewer has no ExecutionReport yet. Its blocked packet may
+  // carry one exact verification command as a structured scoped-approval
+  // request. Runtime remains the authority that parses repo scope, fingerprints
+  // the command, and decides whether a durable approval can exist.
+  if (
+    task.lastReport === undefined &&
+    task.lastPacket?.verdict === 'blocked' &&
+    task.lastPacket.verification.length === 1
+  ) {
+    return task.lastPacket.verification[0]
+  }
+
   const report = task.lastReport
   if (report === undefined) return undefined
-  const prefix = 'verification command requires human approval: '
   const commands = report.blockers
-    .filter((blocker) => blocker.startsWith(prefix))
-    .map((blocker) => blocker.slice(prefix.length))
+    .filter((blocker) => blocker.startsWith(VERIFICATION_APPROVAL_BLOCKER))
+    .map((blocker) => blocker.slice(VERIFICATION_APPROVAL_BLOCKER.length))
   if (commands.length !== 1 || commands[0] === undefined) return undefined
   const command = commands[0]
   return report.verificationResults.some(
