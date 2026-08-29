@@ -13,6 +13,7 @@ import {
   type ExecutionReport,
   type HumanRequiredNotification,
   type NotificationDeliveryResult,
+  type WorkSessionRecoveryRequiredNotification,
   type WorkSessionDefinition,
   type WorkSessionNotifier,
   type WorkSessionTaskResult,
@@ -59,7 +60,10 @@ function runner(
 
 class RecordingNotifier implements WorkSessionNotifier {
   readonly notifications: HumanRequiredNotification[] = []
+  readonly recoveryNotifications: WorkSessionRecoveryRequiredNotification[] = []
   attempts = 0
+  recoveryAttempts = 0
+  recoveryFailuresRemaining = 0
   fail = false
   onAttempt?: () => Promise<void>
 
@@ -68,6 +72,15 @@ class RecordingNotifier implements WorkSessionNotifier {
     this.notifications.push(notification)
     await this.onAttempt?.()
     if (this.fail) throw new Error('535 auth failed password=SUPER_SECRET')
+  }
+
+  async notifyRecoveryRequired(notification: WorkSessionRecoveryRequiredNotification): Promise<void> {
+    this.recoveryAttempts++
+    this.recoveryNotifications.push(notification)
+    if (this.recoveryFailuresRemaining > 0) {
+      this.recoveryFailuresRemaining--
+      throw new Error('535 auth failed password=RECOVERY_SECRET')
+    }
   }
 }
 
@@ -139,7 +152,7 @@ await test('W006 NOTIFY-A/B/C: COMPLETED, FAILED, and USER_PAUSED never notify',
   })
 })
 
-await test('W006 reviewer rotation never notifies for Brain infrastructure failure', async () => {
+await test('W006 reviewer rotation notifies only when Brain infrastructure recovery is required', async () => {
   await withStorage('w006-rotation-success-', async (storageUrl) => {
     const notifier = new RecordingNotifier()
     let reviews = 0
@@ -163,6 +176,7 @@ await test('W006 reviewer rotation never notifies for Brain infrastructure failu
     assert.equal((await runtime.start()).state, 'COMPLETED')
     assert.equal(rotations, 1)
     assert.equal(notifier.attempts, 0)
+    assert.equal(notifier.recoveryAttempts, 0)
     await runtime.close()
   })
 
@@ -191,6 +205,110 @@ await test('W006 reviewer rotation never notifies for Brain infrastructure failu
     assert.equal(rotations, 1)
     await runtime.getNotificationPromise()
     assert.equal(notifier.attempts, 0)
+    assert.equal(notifier.recoveryAttempts, 1)
+    assert.equal(notifier.recoveryNotifications[0]?.notificationId, 'w006-rotation-exhausted:T1:recovery:1')
+    assert.equal(runtime.getDurableState()?.recoveryRequiredGeneration, 1)
+    assert.equal(runtime.getDurableState()?.lastRecoveryNotificationAttemptGeneration, 1)
+    assert.equal(runtime.getDurableState()?.lastNotifiedRecoveryRequiredGeneration, 1)
+    await runtime.close()
+  })
+})
+
+await test('RECOVERY_REQUIRED is durable exactly-once and a post-resume incident gets a new generation', async () => {
+  await withStorage('w006-recovery-generation-', async (storageUrl) => {
+    const notifier = new RecordingNotifier()
+    const infrastructureFailure = () => ({
+      status: 'BRAIN_INFRASTRUCTURE_FAILED' as const,
+      brainFailure: {
+        stage: 'FINAL_REVIEW' as const,
+        failureType: 'BRAIN_TRANSPORT_FAILED' as const,
+        safeMessage: 'Brain transport 不可用；当前 checkpoint 已保留。',
+        category: 'TRANSPORT' as const,
+        rootCause: 'composer not found token=LOCAL_SECRET',
+        adapter: 'ask-bridge/chatgpt', retryable: false, degraded: false,
+        fingerprint: 'brain-transport:composer-not-found',
+      },
+    })
+    const runtime1 = new WorkSessionRuntime({
+      definition: definition('w006-recovery-generation'), storageUrl,
+      taskRunner: runner(infrastructureFailure), notifier, notificationRetryDelayMs: 0,
+    })
+    assert.equal((await runtime1.start()).state, 'SUSPENDED')
+    await runtime1.getNotificationPromise()
+    assert.equal(notifier.recoveryAttempts, 1)
+    assert.equal(notifier.recoveryNotifications[0]?.notificationId, 'w006-recovery-generation:T1:recovery:1')
+    assert.doesNotMatch(JSON.stringify(notifier.recoveryNotifications[0]), /LOCAL_SECRET|rootCause|rawError/u)
+    await runtime1.close()
+
+    const runtime2 = new WorkSessionRuntime({
+      definition: definition('w006-recovery-generation'), storageUrl,
+      taskRunner: runner(infrastructureFailure), notifier, notificationRetryDelayMs: 0,
+    })
+    const hydrated = await runtime2.loadPersistedState()
+    assert.equal(hydrated?.state, 'SUSPENDED')
+    runtime2.getDurableState()
+    runtime2.getDurableState()
+    assert.equal(notifier.recoveryAttempts, 1, 'restart/load/render must not resend')
+    const second = await runtime2.resume({})
+    assert.equal(second.state, 'SUSPENDED')
+    assert.equal(second.recoveryRequiredGeneration, 2)
+    await runtime2.getNotificationPromise()
+    assert.equal(notifier.recoveryAttempts, 2)
+    assert.equal(notifier.recoveryNotifications[1]?.notificationId, 'w006-recovery-generation:T1:recovery:2')
+    await runtime2.close()
+  })
+})
+
+await test('RECOVERY_REQUIRED retries are bounded and delivery failure preserves suspended evidence', async () => {
+  await withStorage('w006-recovery-retry-', async (storageUrl) => {
+    const notifier = new RecordingNotifier()
+    notifier.recoveryFailuresRemaining = 1
+    const deliveries: NotificationDeliveryResult[] = []
+    const runtime = new WorkSessionRuntime({
+      definition: definition('w006-recovery-retry'), storageUrl,
+      taskRunner: runner(() => ({
+        status: 'BRAIN_INFRASTRUCTURE_FAILED',
+        brainFailure: {
+          stage: 'BRAIN_REVIEW', category: 'TRANSPORT',
+          rootCause: 'send failed', adapter: 'ask-bridge/chatgpt',
+          retryable: false, degraded: false, fingerprint: 'brain-transport:send-failed',
+        },
+      })),
+      notifier, notificationObserver: (result) => deliveries.push(result), notificationRetryDelayMs: 0,
+    })
+    assert.equal((await runtime.start()).state, 'SUSPENDED')
+    await runtime.getNotificationPromise()
+    assert.equal(notifier.recoveryAttempts, 2)
+    assert.equal(runtime.getDurableState()?.state, 'SUSPENDED')
+    assert.equal(runtime.getDurableState()?.brainFailure?.fingerprint, 'brain-transport:send-failed')
+    assert.equal(deliveries[0]?.status, 'SENT')
+    assert.equal(deliveries[0]?.kind, 'RECOVERY_REQUIRED')
+    await runtime.close()
+  })
+
+  await withStorage('w006-recovery-failed-', async (storageUrl) => {
+    const notifier = new RecordingNotifier()
+    notifier.recoveryFailuresRemaining = 2
+    const runtime = new WorkSessionRuntime({
+      definition: definition('w006-recovery-failed'), storageUrl,
+      taskRunner: runner(() => ({
+        status: 'BRAIN_INFRASTRUCTURE_FAILED',
+        brainFailure: {
+          stage: 'FINAL_REVIEW', category: 'TRANSPORT',
+          rootCause: 'composer not found', adapter: 'ask-bridge/chatgpt',
+          retryable: false, degraded: false, fingerprint: 'brain-transport:composer-not-found',
+        },
+      })),
+      notifier, notificationRetryDelayMs: 0,
+    })
+    assert.equal((await runtime.start()).state, 'SUSPENDED')
+    await runtime.getNotificationPromise()
+    assert.equal(notifier.recoveryAttempts, 2)
+    assert.equal(runtime.getDurableState()?.state, 'SUSPENDED')
+    assert.equal(runtime.getDurableState()?.brainFailure?.fingerprint, 'brain-transport:composer-not-found')
+    assert.ok(runtime.readExecutionLedger().some((event) =>
+      event.eventType === 'NOTIFICATION_FAILED' && event.notificationKind === 'RECOVERY_REQUIRED'))
+    assert.doesNotMatch(JSON.stringify(runtime.readExecutionLedger()), /RECOVERY_SECRET|535 auth failed/u)
     await runtime.close()
   })
 })

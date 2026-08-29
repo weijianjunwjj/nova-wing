@@ -5,6 +5,7 @@ import {
   projectNameFromNotification,
   type WorkSessionCompletedNotification,
   type WorkSessionFailedNotification,
+  type WorkSessionRecoveryRequiredNotification,
   type HumanRequiredNotification,
   type WorkSessionNotifier,
 } from './notifier.js'
@@ -76,6 +77,15 @@ export class SmtpWorkSessionNotifier implements WorkSessionNotifier {
       to: this.to,
       subject: renderFailedNotificationSubject(notification),
       text: renderFailedNotificationText(notification),
+    })
+  }
+
+  async notifyRecoveryRequired(notification: WorkSessionRecoveryRequiredNotification): Promise<void> {
+    await this.transport.sendMail({
+      from: this.from,
+      to: this.to,
+      subject: renderRecoveryRequiredNotificationSubject(notification),
+      text: renderRecoveryRequiredNotificationText(notification),
     })
   }
 }
@@ -191,6 +201,40 @@ export function renderFailedNotificationText(
     '',
     '安全失败原因：',
     notification.safeReason,
+    '',
+    '控制台：',
+    control,
+  ].join('\n')
+}
+
+export function renderRecoveryRequiredNotificationSubject(
+  notification: WorkSessionRecoveryRequiredNotification,
+): string {
+  const task = notification.currentTaskId === null ? '' : `：${singleLine(notification.currentTaskId)}`
+  return `[NovaWing] 需要恢复基础设施${task}`
+}
+
+export function renderRecoveryRequiredNotificationText(
+  notification: WorkSessionRecoveryRequiredNotification,
+): string {
+  const control = notification.control.localUrl ?? '请在此机器上打开本地 NovaWing Work Session 控制台。'
+  const stage = notification.stage === 'FINAL_REVIEW' ? 'Final Review' : 'Brain Review'
+  return [
+    'NovaWing Work Session 因 Brain 基础设施故障暂停。',
+    '',
+    `项目：${projectNameFromNotification(notification)}`,
+    `分支：${notification.session.branch}`,
+    `Work Session：${notification.session.id}`,
+    `当前 Task：${notification.currentTaskId ?? '无'}`,
+    '状态：RECOVERY_REQUIRED',
+    `阶段：${stage}`,
+    `类别：${notification.category}`,
+    '',
+    '安全信息：',
+    notification.safeMessage,
+    '',
+    '建议操作：',
+    notification.recommendation,
     '',
     '控制台：',
     control,

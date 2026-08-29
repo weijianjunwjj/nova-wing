@@ -34,7 +34,11 @@ export type ExecutionLedgerEventType =
   | 'NOTIFICATION_SENT'
   | 'NOTIFICATION_FAILED'
 
-export type ExecutionLedgerNotificationKind = 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED'
+export type ExecutionLedgerNotificationKind =
+  | 'HUMAN_REQUIRED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'RECOVERY_REQUIRED'
 export type CheckpointRecoveryKind = 'GIT_PUSH'
 export type CheckpointRecoveryAction =
   | 'REMOTE_ALREADY_MATCHED'

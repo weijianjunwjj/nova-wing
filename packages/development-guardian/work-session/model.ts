@@ -83,6 +83,12 @@ export interface WorkSessionDurableState {
   lastNotificationAttemptGeneration?: number
   /** W006: 最近成功送达通知的 generation。 */
   lastNotifiedHumanRequiredGeneration?: number
+  /** Each independent Brain infrastructure suspension increments this durable identity. */
+  recoveryRequiredGeneration?: number
+  /** Bounded delivery was attempted for this recovery generation. */
+  lastRecoveryNotificationAttemptGeneration?: number
+  /** Recovery notification was delivered for this generation. */
+  lastNotifiedRecoveryRequiredGeneration?: number
   /** Completion email delivery claim; intentionally independent from HUMAN_REQUIRED generations. */
   completionNotificationAttempted?: boolean
   /** Completion email delivery succeeded after the durable attempt claim. */

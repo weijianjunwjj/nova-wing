@@ -30,6 +30,7 @@ export type {
   HumanRequiredNotification,
   WorkSessionCompletedNotification,
   WorkSessionFailedNotification,
+  WorkSessionRecoveryRequiredNotification,
   WorkSessionNotifier,
   NotificationDeliveryStatus,
   NotificationDeliveryResult,

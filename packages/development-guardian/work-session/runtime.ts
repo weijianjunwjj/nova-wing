@@ -24,6 +24,7 @@ import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
   createWorkSessionCompletedNotification,
   createWorkSessionFailedNotification,
+  createWorkSessionRecoveryRequiredNotification,
   createHumanRequiredNotification,
   type NotificationDeliveryObserver,
   type NotificationDeliveryResult,
@@ -186,6 +187,9 @@ const WorkflowStateSchema = z.object({
   humanRequiredGeneration: z.number().int().nonnegative().optional(),
   lastNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
   lastNotifiedHumanRequiredGeneration: z.number().int().nonnegative().optional(),
+  recoveryRequiredGeneration: z.number().int().nonnegative().optional(),
+  lastRecoveryNotificationAttemptGeneration: z.number().int().nonnegative().optional(),
+  lastNotifiedRecoveryRequiredGeneration: z.number().int().nonnegative().optional(),
   completionNotificationAttempted: z.boolean().optional(),
   completionNotified: z.boolean().optional(),
   failureNotificationAttempted: z.boolean().optional(),
@@ -1236,6 +1240,7 @@ export class WorkSessionRuntime {
             if (brainFailure === undefined) {
               throw new Error('Brain infrastructure suspension requires structured failure data')
             }
+            const nextRecoveryGeneration = (currentState.recoveryRequiredGeneration ?? 0) + 1
             const suspendedState: WorkflowState = {
               ...currentState,
               state: 'SUSPENDED',
@@ -1272,6 +1277,7 @@ export class WorkSessionRuntime {
                   : { attemptTimeline: brainFailure.attemptTimeline.map((attempt) => ({ ...attempt })) }),
               },
               suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
+              recoveryRequiredGeneration: nextRecoveryGeneration,
               currentTaskCheckpoint: result.checkpoint,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               ...self.settleActiveTime(currentState),
@@ -1494,6 +1500,15 @@ export class WorkSessionRuntime {
     }
     if (wfState.lastNotifiedHumanRequiredGeneration !== undefined) {
       result.lastNotifiedHumanRequiredGeneration = wfState.lastNotifiedHumanRequiredGeneration
+    }
+    if (wfState.recoveryRequiredGeneration !== undefined) {
+      result.recoveryRequiredGeneration = wfState.recoveryRequiredGeneration
+    }
+    if (wfState.lastRecoveryNotificationAttemptGeneration !== undefined) {
+      result.lastRecoveryNotificationAttemptGeneration = wfState.lastRecoveryNotificationAttemptGeneration
+    }
+    if (wfState.lastNotifiedRecoveryRequiredGeneration !== undefined) {
+      result.lastNotifiedRecoveryRequiredGeneration = wfState.lastNotifiedRecoveryRequiredGeneration
     }
     if (wfState.completionNotificationAttempted !== undefined) {
       result.completionNotificationAttempted = wfState.completionNotificationAttempted
@@ -1836,8 +1851,80 @@ export class WorkSessionRuntime {
     forceSafeReason: boolean,
   ): void {
     this.scheduleHumanRequiredNotification(state, forceSafeReason)
+    this.scheduleRecoveryRequiredNotification(state)
     this.scheduleCompletedNotification(state)
     this.scheduleFailedNotification(state)
+  }
+
+  private scheduleRecoveryRequiredNotification(state: WorkSessionDurableState): void {
+    if (
+      this.config.notifier?.notifyRecoveryRequired === undefined ||
+      state.state !== 'SUSPENDED' ||
+      state.suspensionReason !== 'BRAIN_INFRASTRUCTURE_FAILED' ||
+      state.brainFailure === undefined ||
+      state.recoveryRequiredGeneration === undefined ||
+      state.lastRecoveryNotificationAttemptGeneration === state.recoveryRequiredGeneration
+    ) {
+      return
+    }
+    const previous = this.notificationPromise ?? Promise.resolve()
+    this.notificationPromise = previous
+      .then(() => this.deliverRecoveryRequiredNotification(state))
+      .catch(() => {
+        // Infrastructure alert delivery cannot change or discard the suspended checkpoint.
+      })
+  }
+
+  private async deliverRecoveryRequiredNotification(state: WorkSessionDurableState): Promise<void> {
+    const notifier = this.config.notifier
+    const generation = state.recoveryRequiredGeneration
+    if (notifier?.notifyRecoveryRequired === undefined || generation === undefined || state.brainFailure === undefined) {
+      return
+    }
+    const localControlUrl = this.config.localControlUrl?.()
+    const notification = createWorkSessionRecoveryRequiredNotification({
+      definition: this.config.definition,
+      state,
+      generation,
+      ...(localControlUrl === undefined ? {} : { localControlUrl }),
+    })
+    const claimed = await this.persistRecoveryNotificationGeneration(
+      generation,
+      'lastRecoveryNotificationAttemptGeneration',
+    )
+    if (!claimed) return
+
+    let sent = false
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await notifier.notifyRecoveryRequired(notification)
+        sent = true
+        break
+      } catch {
+        if (attempt === 0) {
+          await (this.config.notificationWait ?? defaultNotificationWait)(
+            this.config.notificationRetryDelayMs ?? 1_000,
+          )
+        }
+      }
+    }
+    if (sent) {
+      try {
+        await this.persistRecoveryNotificationGeneration(
+          generation,
+          'lastNotifiedRecoveryRequiredGeneration',
+        )
+      } catch {
+        // The durable attempt marker remains authoritative for restart dedupe.
+      }
+    }
+    this.observeNotification({
+      status: sent ? 'SENT' : 'FAILED',
+      notificationId: notification.notificationId,
+      taskId: state.currentTaskId,
+      category: state.brainFailure.category,
+      kind: 'RECOVERY_REQUIRED',
+    })
   }
 
   private scheduleHumanRequiredNotification(
@@ -2167,6 +2254,46 @@ export class WorkSessionRuntime {
     if (
       this.latestState?.state === 'SUSPENDED' &&
       this.latestState.humanRequiredGeneration === generation
+    ) {
+      this.latestState = updated
+    }
+    return true
+  }
+
+  private async persistRecoveryNotificationGeneration(
+    generation: number,
+    field: 'lastRecoveryNotificationAttemptGeneration' | 'lastNotifiedRecoveryRequiredGeneration',
+  ): Promise<boolean> {
+    const storage = this.mastra.getStorage()
+    if (storage === undefined) return false
+    const workflows = await storage.getStore('workflows')
+    if (workflows === undefined) return false
+    const workflowName = `work-session-${this.config.definition.id}`
+    const runId = this.config.definition.id
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') return false
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (
+      !parsed.success ||
+      parsed.data.state !== 'SUSPENDED' ||
+      parsed.data.suspensionReason !== 'BRAIN_INFRASTRUCTURE_FAILED' ||
+      parsed.data.brainFailure === undefined ||
+      parsed.data.recoveryRequiredGeneration !== generation ||
+      parsed.data[field] === generation
+    ) {
+      return false
+    }
+    const updated: WorkflowState = {
+      ...parsed.data,
+      [field]: generation,
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = updated as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
+    if (
+      this.latestState?.state === 'SUSPENDED' &&
+      this.latestState.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' &&
+      this.latestState.recoveryRequiredGeneration === generation
     ) {
       this.latestState = updated
     }

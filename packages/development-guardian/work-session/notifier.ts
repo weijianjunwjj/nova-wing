@@ -53,12 +53,29 @@ export interface WorkSessionFailedNotification {
   control: { localUrl?: string }
 }
 
+export interface WorkSessionRecoveryRequiredNotification {
+  notificationId: string
+  session: {
+    id: string
+    targetRepo: string
+    branch: string
+  }
+  currentTaskId: string | null
+  stage: 'BRAIN_REVIEW' | 'FINAL_REVIEW'
+  category: string
+  safeMessage: string
+  recommendation: string
+  control: { localUrl?: string }
+}
+
 export interface WorkSessionNotifier {
   notifyHumanRequired(notification: HumanRequiredNotification): Promise<void>
   /** Additive so existing test/local notifiers remain compatible. Production SMTP implements it. */
   notifyCompleted?(notification: WorkSessionCompletedNotification): Promise<void>
   /** Additive FAILED terminal capability; production SMTP implements it. */
   notifyFailed?(notification: WorkSessionFailedNotification): Promise<void>
+  /** Additive infrastructure-recovery capability; production SMTP implements it. */
+  notifyRecoveryRequired?(notification: WorkSessionRecoveryRequiredNotification): Promise<void>
 }
 
 export type NotificationDeliveryStatus = 'SENT' | 'FAILED'
@@ -68,7 +85,7 @@ export interface NotificationDeliveryResult {
   notificationId: string
   taskId: string | null
   category: string
-  kind?: 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED'
+  kind?: 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED' | 'RECOVERY_REQUIRED'
 }
 
 export type NotificationDeliveryObserver = (
@@ -134,6 +151,51 @@ export function notificationIdForCompleted(sessionId: string): string {
 
 export function notificationIdForFailed(sessionId: string): string {
   return `${sessionId}:failed`
+}
+
+export function notificationIdForRecoveryRequired(
+  sessionId: string,
+  currentTaskId: string | null,
+  generation: number,
+): string {
+  return `${sessionId}:${currentTaskId ?? 'none'}:recovery:${generation}`
+}
+
+export function createWorkSessionRecoveryRequiredNotification(input: {
+  definition: WorkSessionDefinition
+  state: WorkSessionDurableState
+  generation: number
+  localControlUrl?: string
+}): WorkSessionRecoveryRequiredNotification {
+  const failure = input.state.brainFailure
+  if (
+    input.state.state !== 'SUSPENDED' ||
+    input.state.suspensionReason !== 'BRAIN_INFRASTRUCTURE_FAILED' ||
+    failure === undefined
+  ) {
+    throw new Error('recovery notification requires Brain infrastructure suspension')
+  }
+  const localUrl = safeLocalControlUrl(input.localControlUrl)
+  return {
+    notificationId: notificationIdForRecoveryRequired(
+      input.definition.id,
+      input.state.currentTaskId,
+      input.generation,
+    ),
+    session: {
+      id: input.definition.id,
+      targetRepo: input.definition.targetRepo,
+      branch: input.definition.branch,
+    },
+    currentTaskId: input.state.currentTaskId,
+    stage: failure.stage,
+    category: failure.category,
+    safeMessage: safeFailureMessage(
+      failure.safeMessage ?? 'Brain 暂时不可用；当前 checkpoint 已保留。',
+    ),
+    recommendation: 'NovaWing 已保留 checkpoint。修复 Browser/Bridge 后打开本地控制台恢复。',
+    control: { ...(localUrl === undefined ? {} : { localUrl }) },
+  }
 }
 
 export function createWorkSessionCompletedNotification(input: {

@@ -8,6 +8,8 @@ import test from 'node:test'
 import {
   WorkSessionRuntime,
   type GuardianTaskRecoveryCheckpoint,
+  type WorkSessionRecoveryRequiredNotification,
+  type WorkSessionNotifier,
   type WorkSessionTaskRunner,
 } from 'nova-wing/development-guardian'
 
@@ -64,6 +66,16 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
     capturedAt: '2026-08-24T00:00:00.000Z',
   }
   let calls = 0
+  let notificationAttempts = 0
+  const recoveryNotifications: WorkSessionRecoveryRequiredNotification[] = []
+  const notifier: WorkSessionNotifier = {
+    async notifyHumanRequired() {},
+    async notifyRecoveryRequired(notification) {
+      notificationAttempts++
+      recoveryNotifications.push(notification)
+      throw new Error('smtp password=CHECKPOINT_SECRET')
+    },
+  }
   const seenCheckpoints: Array<GuardianTaskRecoveryCheckpoint | undefined> = []
   const runner: WorkSessionTaskRunner = {
     async run(_task, _resumeData, restoredCheckpoint) {
@@ -88,6 +100,8 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
       limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
     },
     taskRunner: runner,
+    notifier,
+    notificationRetryDelayMs: 0,
     storageUrl: new URL(`file:///${join(temp, 'session.db').replaceAll('\\', '/')}`).href,
   })
   t.after(async () => {
@@ -115,6 +129,15 @@ test('Brain infrastructure suspension preserves checkpoint and resumes the faile
     'Executor changes already complete',
   )
   assert.deepEqual(suspended.currentTaskCheckpoint?.repo, checkpoint.repo)
+  await runtime.getNotificationPromise()
+  assert.equal(notificationAttempts, 2)
+  assert.equal(runtime.getDurableState()?.state, 'SUSPENDED')
+  assert.deepEqual(runtime.getDurableState()?.currentTaskCheckpoint, checkpoint)
+  assert.deepEqual(runtime.getDurableState()?.brainFailure?.attemptTimeline, checkpoint.task.brainFailure?.attemptTimeline)
+  assert.equal(recoveryNotifications[0]?.notificationId, 'brain-infrastructure-recovery:T1:recovery:1')
+  assert.ok(runtime.readExecutionLedger().some((event) =>
+    event.eventType === 'NOTIFICATION_FAILED' && event.notificationKind === 'RECOVERY_REQUIRED'))
+  assert.doesNotMatch(JSON.stringify(runtime.readExecutionLedger()), /CHECKPOINT_SECRET|smtp password/u)
 
   const completed = await runtime.resume({})
   assert.equal(completed.state, 'COMPLETED')
