@@ -322,7 +322,9 @@ function renderRecoverable(rt) {
   setText('recoverable-current-task', summary.currentTaskId || '—')
   setText('recoverable-phase', displayValue(summary.currentPhase, GUARDIAN_PHASE_LABELS))
   setText('recoverable-checkpoint', summary.lastReliableCheckpoint || '—')
-  setText('recoverable-next', summary.nextResumableAction || '—')
+  setText('recoverable-next', rt.durableVerificationRecovery
+    ? rt.durableVerificationRecovery.message
+    : (summary.nextResumableAction || '—'))
 }
 
 function renderTasks(cfg, rt) {
@@ -497,6 +499,12 @@ function renderDecision(rt) {
     rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
   var checkpointRecovery = rt.recovery && rt.recovery.available === true
   var verificationApproval = rt.pendingVerificationApproval
+  var durableVerificationRecovery = rt.durableVerificationRecovery &&
+    rt.durableVerificationRecovery.available === true
+  if (durableVerificationRecovery) {
+    card.hidden = true
+    return
+  }
   if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery) {
     card.hidden = false
     setText('decision-title', verificationApproval ? '需要验证授权' : checkpointRecovery

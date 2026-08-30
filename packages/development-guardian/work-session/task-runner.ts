@@ -81,6 +81,10 @@ export interface WorkSessionTaskRunContext {
 }
 
 export interface WorkSessionTaskRunner {
+  /** Optional shared preflight used by durable approval reconciliation. */
+  verifyRecoveryCheckpoint?(
+    checkpoint: GuardianTaskRecoveryCheckpoint,
+  ): Promise<{ ok: boolean; reason?: string; category?: string }>
   run(
     task: WorkSessionTask,
     resumeData?: any,

@@ -171,6 +171,45 @@ await test('W005-B RESUME-C: non-SUSPENDED state returns 409', async () => {
   }
 })
 
+await test('resume-recoverable keeps unresolved decisions gated but accepts domain-reconciled approval', async () => {
+  const unresolved = await startServer()
+  try {
+    unresolved.runtime.state = makeState({
+      state: 'SUSPENDED', currentTaskId: 'T023',
+      humanRequired: { category: 'DECISION_REQUIRED', reason: 'choose migration policy' },
+    })
+    const rejected = await postControl(unresolved, '/api/session/resume-recoverable', {
+      token: unresolved.token, origin: unresolved.address.url,
+      contentType: 'application/json', body: '{}',
+    })
+    assert.equal(rejected.status, 409)
+    assert.match(rejected.body, /a decision is required/u)
+    assert.equal(unresolved.runtime.durableVerificationRecoveryCalls, 0)
+  } finally {
+    await unresolved.server.close()
+  }
+
+  const recoverable = await startServer()
+  try {
+    recoverable.runtime.state = makeState({
+      state: 'SUSPENDED', currentTaskId: 'T023',
+      humanRequired: { category: 'DECISION_REQUIRED', reason: 'stale verification blocker' },
+    })
+    recoverable.runtime.durableVerificationRecoveryAvailable = true
+    const accepted = await postControl(recoverable, '/api/session/resume-recoverable', {
+      token: recoverable.token, origin: recoverable.address.url,
+      contentType: 'application/json', body: '{}',
+    })
+    assert.equal(accepted.status, 202)
+    await recoverable.controller.getResumePromise()
+    assert.equal(recoverable.runtime.durableVerificationRecoveryCalls, 1)
+    assert.equal(recoverable.runtime.resumeCalls, 0)
+    assert.deepEqual(recoverable.runtime.resumeInputs, [], 'must not fabricate user resume input')
+  } finally {
+    await recoverable.server.close()
+  }
+})
+
 await test('W005-B resume policy accepts only category-specific safe input', async () => {
   const allowed = [
     { category: 'DECISION_REQUIRED', body: { decision: 'docker' } },

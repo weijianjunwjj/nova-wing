@@ -130,6 +130,25 @@ async function removePendingApproval(runtime: WorkSessionRuntime): Promise<void>
   })
 }
 
+async function restoreLegacyDecisionBlocker(runtime: WorkSessionRuntime): Promise<void> {
+  const internal = runtime as unknown as {
+    mastra: { getStorage(): { getStore(name: string): Promise<any> } | undefined }
+    workflowId: string
+  }
+  const workflows = await internal.mastra.getStorage()?.getStore('workflows')
+  assert.ok(workflows)
+  const runId = runtime.getDefinition().id
+  const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: internal.workflowId, runId })
+  assert.ok(snapshot)
+  const value = snapshot.value as Record<string, unknown>
+  value.humanRequired = {
+    category: 'DECISION_REQUIRED',
+    reason: `verification command requires human approval: ${COMMAND}`,
+  }
+  delete value.suspensionReason
+  await workflows.persistWorkflowSnapshot({ workflowName: internal.workflowId, runId, snapshot })
+}
+
 async function replaceCheckpointVerificationCommand(
   runtime: WorkSessionRuntime,
   command: string,
@@ -324,11 +343,13 @@ await test('legacy premature CONSUMED is restored only from matching durable app
     assert.ok(generation)
     appendLegacyPrematureConsumption(first, generation)
     await removePendingApproval(first)
+    await restoreLegacyDecisionBlocker(first)
     await first.close()
 
     const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
     assert.equal((await restarted.loadPersistedState())?.pendingVerificationApproval, undefined)
-    const recovered = await restarted.resume({})
+    assert.equal(restarted.canResumeWithDurableVerificationApproval(), true)
+    const recovered = await restarted.resumeWithDurableVerificationApproval()
     assert.equal(recovered.pendingVerificationApproval?.status, 'APPROVED')
     assert.equal(recovered.pendingVerificationApproval?.generation, generation)
     assert.equal(recovered.pendingVerificationApproval?.command, COMMAND)
@@ -373,9 +394,60 @@ await test('historical approval cannot authorize a changed command fingerprint',
     await first.close()
 
     const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await restarted.loadPersistedState()
+    assert.equal(restarted.canResumeWithDurableVerificationApproval(), false)
     const state = await restarted.resume({})
     assert.equal(state.pendingVerificationApproval, undefined)
     assert.deepEqual(approvals, [undefined, COMMAND, undefined])
+    await restarted.close()
+  })
+})
+
+await test('repository drift rejects historical approval before reconciliation or task execution', async () => {
+  await withStorage(async (storageUrl) => {
+    let calls = 0
+    const runner = {
+      async verifyRecoveryCheckpoint(): Promise<{ ok: boolean; reason: string }> {
+        return { ok: false, reason: 'REPO_DRIFT: worktree files changed since checkpoint' }
+      },
+      async run(): Promise<WorkSessionTaskResult> {
+        calls += 1
+        if (calls === 1) return {
+          status: 'HUMAN_REQUIRED',
+          humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
+          pendingVerificationCommand: COMMAND,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        if (calls === 2) return {
+          status: 'BRAIN_INFRASTRUCTURE_FAILED', brainFailure: BRAIN_FAILURE,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        throw new Error('task must not execute after drift')
+      },
+    }
+    const sessionDefinition = {
+      ...definition('historical-repo-drift'), tasks: [{ id: 'T023', goal: 'migration' }],
+    }
+    const first = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await first.start()
+    const suspended = await first.approvePendingVerificationAndContinue()
+    const generation = suspended.pendingVerificationApproval?.generation
+    assert.ok(generation)
+    appendLegacyPrematureConsumption(first, generation)
+    await removePendingApproval(first)
+    await restoreLegacyDecisionBlocker(first)
+    await first.close()
+
+    const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await restarted.loadPersistedState()
+    assert.equal(restarted.canResumeWithDurableVerificationApproval(), true)
+    await assert.rejects(
+      () => restarted.resumeWithDurableVerificationApproval(),
+      /REPO_DRIFT/u,
+    )
+    assert.equal(calls, 2)
+    assert.equal(restarted.getDurableState()?.pendingVerificationApproval, undefined)
+    assert.equal(restarted.getDurableState()?.humanRequired?.category, 'DECISION_REQUIRED')
     await restarted.close()
   })
 })
@@ -431,6 +503,7 @@ await test('failed verifier result supersedes approval and remains durable witho
     assert.equal(hydrated?.pendingVerificationApproval, undefined)
     assert.deepEqual(hydrated?.verificationFailure, failedVerification)
     assert.deepEqual(hydrated?.verificationResults, [failedVerification])
+    assert.equal(restarted.canResumeWithDurableVerificationApproval(), false)
     const resumed = await restarted.resume({})
     assert.equal(resumed.pendingVerificationApproval, undefined)
     await restarted.close()

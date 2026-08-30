@@ -678,7 +678,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
    * - 也不会因为没有 provider session 而要求 worktree clean。
    * 只读 git 命令，绝无 reset/clean/restore/checkout 等破坏性操作。
    */
-  private async verifyResumeCheckpoint(
+  async verifyRecoveryCheckpoint(
     checkpoint: GuardianTaskRecoveryCheckpoint,
   ): Promise<{ ok: boolean; reason?: string; category?: string }> {
     const repoPath = this.options.repoPath
@@ -788,7 +788,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
     // W003: 如果有 checkpoint，先做 repo gate —— 任何 provider execution 之前
     if (checkpoint !== undefined) {
-      const gate = await this.verifyResumeCheckpoint(checkpoint)
+      const gate = await this.verifyRecoveryCheckpoint(checkpoint)
       if (!gate.ok) {
         return {
           status: 'HUMAN_REQUIRED',

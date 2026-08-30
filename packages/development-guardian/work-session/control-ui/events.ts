@@ -121,6 +121,11 @@ export interface WorkSessionControlSnapshot {
       command: string
       generation: number
     }
+    /** A stale decision blocker is satisfied by an exact durable scoped approval. */
+    durableVerificationRecovery?: {
+      available: true
+      message: string
+    }
     brainFailure?: {
       stage: 'BRAIN_REVIEW' | 'FINAL_REVIEW'
       failureType?: string
@@ -166,6 +171,10 @@ export interface WorkSessionControlRuntime {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
   resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
+  /** Domain-owned query; the control layer must not reproduce approval validation. */
+  canResumeWithDurableVerificationApproval?(): boolean
+  /** Reconcile an exact durable approval and resume without user decision data. */
+  resumeWithDurableVerificationApproval?(): Promise<WorkSessionDurableState>
   approvePendingVerificationAndContinue?(): Promise<WorkSessionDurableState>
   recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
   /** T021: 当前进程内是否真正启动/恢复过执行；用于区分持久化 state 与 runtime liveness。 */

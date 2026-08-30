@@ -323,6 +323,39 @@ export class WorkSessionControlController {
       return { accepted: false, reason: 'session already has an active runner' }
     }
     if (state.state === 'SUSPENDED') {
+      if (this.runtime.canResumeWithDurableVerificationApproval?.() === true) {
+        if (
+          input.decision !== undefined || input.approval !== undefined ||
+          this.runtime.resumeWithDurableVerificationApproval === undefined
+        ) {
+          return { accepted: false, reason: 'durable verification recovery accepts no decision data' }
+        }
+        if (this.resumePromise !== undefined) {
+          return { accepted: false, reason: 'resume already in progress' }
+        }
+        const safeEventData = {
+          taskId: state.currentTaskId,
+          category: 'VERIFICATION_APPROVAL_RECOVERY',
+        }
+        this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+        this.broadcastSnapshot()
+        const resumeOperation = this.beforeResume === undefined
+          ? this.runtime.resumeWithDurableVerificationApproval()
+          : Promise.resolve()
+              .then(() => this.beforeResume!())
+              .then(() => this.runtime.resumeWithDurableVerificationApproval!())
+        this.resumePromise = resumeOperation
+          .then(() => {
+            this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
+            this.broadcastSnapshot()
+          })
+          .catch(() => {
+            this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } })
+            this.broadcastSnapshot()
+          })
+          .finally(() => { this.resumePromise = undefined })
+        return { accepted: true }
+      }
       return this.resume(input)
     }
     if (this.runtime.resumeInterrupted === undefined) {
@@ -419,6 +452,14 @@ export class WorkSessionControlController {
       displayState === 'RECOVERABLE' && state !== undefined
         ? deriveRecoverySummary(definition, state, fullLedger ?? [])
         : undefined
+    const durableVerificationRecovery =
+      state?.state === 'SUSPENDED' &&
+      this.runtime.canResumeWithDurableVerificationApproval?.() === true
+        ? {
+            available: true as const,
+            message: '已找到此前的验证授权，将从 checkpoint 继续，无需再次批准。',
+          }
+        : undefined
 
     return {
       server: { ...this.serverInfo },
@@ -494,6 +535,9 @@ export class WorkSessionControlController {
                     generation: state.pendingVerificationApproval.generation,
                   } }
                 : {}),
+              ...(durableVerificationRecovery === undefined
+                ? {}
+                : { durableVerificationRecovery }),
               ...(state.brainFailure !== undefined
                 ? { brainFailure: this.safeBrainFailure(state) }
                 : {}),

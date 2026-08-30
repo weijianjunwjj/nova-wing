@@ -487,6 +487,70 @@ export class WorkSessionRuntime {
     return this.suspendedResumePromise
   }
 
+  /**
+   * Control-plane-safe capability query. All identity, scope, generation and
+   * result checks remain owned by the verification approval domain.
+   */
+  canResumeWithDurableVerificationApproval(): boolean {
+    const state = this.latestState
+    const taskId = state?.currentTaskId
+    if (
+      state === undefined || state.state !== 'SUSPENDED' || taskId === null ||
+      (state.humanRequired?.category !== 'DECISION_REQUIRED' &&
+        state.pendingVerificationApproval?.status !== 'APPROVED')
+    ) return false
+    const checkpoint = state.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint | undefined
+    if (
+      checkpoint === undefined ||
+      checkpoint.task.id !== taskId ||
+      checkpoint.repo.repoPath !== this.config.definition.targetRepo ||
+      checkpoint.repo.branch !== this.config.definition.branch
+    ) return false
+    return this.resolveDurableApprovedVerification(state, taskId) !== undefined
+  }
+
+  /**
+   * Reconciles a stale DECISION_REQUIRED blocker from durable approval facts,
+   * then resumes with an empty payload. Repository drift is still checked by
+   * the TaskRunner checkpoint gate before any provider or verifier execution.
+   */
+  async resumeWithDurableVerificationApproval(): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('verification recovery storage unavailable')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') {
+      throw new Error('verification recovery requires a suspended session')
+    }
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success) throw new Error('verification recovery state is invalid')
+    const state = parsed.data
+    this.latestState = state
+    if (!this.canResumeWithDurableVerificationApproval() || state.currentTaskId === null) {
+      throw new Error('durable verification approval is not recoverable')
+    }
+    const approved = this.resolveDurableApprovedVerification(state, state.currentTaskId)
+    if (approved === undefined) throw new Error('durable verification approval is not recoverable')
+    const checkpoint = state.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint | undefined
+    if (checkpoint === undefined) throw new Error('durable verification checkpoint is unavailable')
+    const checkpointVerification =
+      await this.config.taskRunner.verifyRecoveryCheckpoint?.(checkpoint)
+    if (checkpointVerification !== undefined && !checkpointVerification.ok) {
+      throw new Error(checkpointVerification.reason ?? 'repository checkpoint drifted')
+    }
+    const reconciled: WorkflowState = {
+      ...state,
+      humanRequired: undefined,
+      pendingVerificationApproval: approved,
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = reconciled as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
+    this.latestState = reconciled
+    return this.resume({})
+  }
+
   private async doResume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
 

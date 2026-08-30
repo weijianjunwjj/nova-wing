@@ -49,6 +49,8 @@ export class FakeRuntime implements WorkSessionControlRuntime {
   loadPersistedStateCalls = 0
   startCalls = 0
   resumeCalls = 0
+  durableVerificationRecoveryCalls = 0
+  durableVerificationRecoveryAvailable = false
   resumeInputs: Array<{ decision?: string; approval?: boolean }> = []
   pauseRequested = false
   stopAfterTaskRequested = false
@@ -93,6 +95,16 @@ export class FakeRuntime implements WorkSessionControlRuntime {
     if (this.resumeDeferred !== undefined) {
       return this.resumeDeferred.promise
     }
+    return this.state ?? makeState({ state: 'RUNNING' })
+  }
+
+  canResumeWithDurableVerificationApproval(): boolean {
+    return this.durableVerificationRecoveryAvailable
+  }
+
+  async resumeWithDurableVerificationApproval(): Promise<WorkSessionDurableState> {
+    this.durableVerificationRecoveryCalls++
+    if (this.resumeDeferred !== undefined) return this.resumeDeferred.promise
     return this.state ?? makeState({ state: 'RUNNING' })
   }
 

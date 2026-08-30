@@ -203,6 +203,55 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   assert.equal(elements.get('decision-input')?.hidden, true)
   assert.equal(elements.get('resume-decision-btn')?.hidden, true)
 
+  // A historical approval recovery has one primary action. Its stale generic
+  // DECISION_REQUIRED card must not compete with the recoverable card.
+  render({
+    configuredSession: {
+      id: 's1', targetRepo: '/repo/example', branch: 'feat/x',
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
+      tasks: [{ id: 'T023', goal: 'migration verification' }],
+    },
+    runtime: {
+      started: true, running: false, displayState: 'RECOVERABLE',
+      state: 'SUSPENDED', currentTaskId: 'T023', completedTaskIds: [],
+      humanRequired: { category: 'DECISION_REQUIRED', reason: 'stale verification blocker' },
+      durableVerificationRecovery: {
+        available: true,
+        message: '已找到此前的验证授权，将从 checkpoint 继续，无需再次批准。',
+      },
+      recoverableSummary: {
+        currentTaskId: 'T023', currentPhase: 'HUMAN_REQUIRED',
+        lastReliableCheckpoint: 'T023 checkpoint', nextResumableAction: 'resume',
+      },
+    },
+    guardian: {}, recentEvents: [],
+  })
+  assert.equal(elements.get('recoverable-card')?.hidden, false)
+  assert.equal(elements.get('decision-card')?.hidden, true)
+  assert.equal(
+    elements.get('recoverable-next')?.textContent,
+    '已找到此前的验证授权，将从 checkpoint 继续，无需再次批准。',
+  )
+
+  // A normal unresolved decision continues to expose only its textarea/action.
+  render({
+    configuredSession: {
+      id: 's1', targetRepo: '/repo/example', branch: 'feat/x',
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
+      tasks: [{ id: 'T023', goal: 'migration verification' }],
+    },
+    runtime: {
+      started: true, running: false, displayState: 'SUSPENDED',
+      state: 'SUSPENDED', currentTaskId: 'T023', completedTaskIds: [],
+      humanRequired: { category: 'DECISION_REQUIRED', reason: 'choose migration policy' },
+    },
+    guardian: {}, recentEvents: [],
+  })
+  assert.equal(elements.get('recoverable-card')?.hidden, true)
+  assert.equal(elements.get('decision-card')?.hidden, false)
+  assert.equal(elements.get('decision-input')?.hidden, false)
+  assert.equal(elements.get('resume-decision-btn')?.hidden, false)
+
   // Infrastructure suspension is not a trusted decision flow.
   render({
     configuredSession: {
