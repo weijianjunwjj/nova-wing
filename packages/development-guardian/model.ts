@@ -24,6 +24,17 @@ export type GuardianBrainFailureType =
 
 export type GuardianBrainOperationKind = 'normal' | 'retry' | 'rotation'
 
+export interface GuardianBrainTransportMetrics {
+  promptChars: number
+  inputMode: 'normal' | 'big-paste' | 'unknown'
+  composerSettleMs?: number | undefined
+  sendReadyWaitMs?: number | undefined
+  pasteCount: number
+  submitCount: number
+  submissionReached: boolean
+  reusedSubmission: boolean
+}
+
 export interface GuardianBrainAttempt {
   attempt: number
   operationKind: GuardianBrainOperationKind
@@ -33,6 +44,8 @@ export interface GuardianBrainAttempt {
   failureType: GuardianBrainFailureType | null
   fingerprint: string | null
   timeout: boolean
+  /** Safe composer telemetry only; never prompt text or provider output. */
+  transport?: GuardianBrainTransportMetrics | undefined
 }
 
 /**

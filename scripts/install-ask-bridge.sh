@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.11"
-ASSET="ask-bridge-x86_64-pc-windows-msvc.zip"
-URL="https://github.com/doggy8088/ask-bridge/releases/download/v${VERSION}/${ASSET}"
+VERSION="0.2.13"
+SOURCE_URL="https://github.com/doggy8088/ask-bridge.git"
 INSTALL_DIR="${HOME}/.local/bin"
 TMP_DIR="$(mktemp -d)"
-ZIP_PATH="${TMP_DIR}/${ASSET}"
+SOURCE_DIR="${TMP_DIR}/ask-bridge"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_PATH="${SCRIPT_DIR}/../patches/ask-bridge-v0.2.13-composer-state.patch"
 
 cleanup() {
   rm -rf "${TMP_DIR}"
@@ -18,49 +19,40 @@ if [[ "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* && "$(uname -s)" != CYGW
   exit 1
 fi
 
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required." >&2
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required." >&2
   exit 1
 fi
 
-if ! command -v unzip >/dev/null 2>&1; then
-  echo "unzip is required by this Git Bash installer." >&2
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo is required to build the pinned AskBridge patch." >&2
   exit 1
 fi
 
-echo "Downloading ask-bridge v${VERSION}..."
-# GitHub release assets may transiently reset TLS connections on Windows/Git Bash.
-# Retry all transport errors and force HTTP/1.1 to avoid failing the whole Guardian setup on one reset.
-curl \
-  -fL \
-  --http1.1 \
-  --retry 8 \
-  --retry-all-errors \
-  --retry-delay 3 \
-  --connect-timeout 20 \
-  --max-time 300 \
-  "${URL}" \
-  -o "${ZIP_PATH}"
+if [[ ! -f "${PATCH_PATH}" ]]; then
+  echo "Pinned AskBridge patch is missing: ${PATCH_PATH}" >&2
+  exit 1
+fi
+
+echo "Building patched ask-bridge v${VERSION}..."
+git clone --quiet --depth 1 --branch "v${VERSION}" "${SOURCE_URL}" "${SOURCE_DIR}"
+git -C "${SOURCE_DIR}" apply --check "${PATCH_PATH}"
+git -C "${SOURCE_DIR}" apply "${PATCH_PATH}"
+cargo test --locked --manifest-path "${SOURCE_DIR}/Cargo.toml"
+cargo build --locked --release --manifest-path "${SOURCE_DIR}/Cargo.toml" --bin ask-bridge
+
+EXE_PATH="${SOURCE_DIR}/target/release/ask-bridge.exe"
+if [[ ! -f "${EXE_PATH}" ]]; then
+  echo "Patched ask-bridge.exe was not produced." >&2
+  exit 1
+fi
 
 mkdir -p "${INSTALL_DIR}"
-unzip -q "${ZIP_PATH}" -d "${TMP_DIR}/extract"
-
-EXE_PATH="$(find "${TMP_DIR}/extract" -type f -name 'ask-bridge.exe' -print -quit)"
-if [[ -z "${EXE_PATH}" ]]; then
-  echo "ask-bridge.exe was not found in the release archive." >&2
-  exit 1
-fi
-
 cp "${EXE_PATH}" "${INSTALL_DIR}/ask-bridge.exe"
 cp "${EXE_PATH}" "${INSTALL_DIR}/ask.exe"
 chmod +x "${INSTALL_DIR}/ask-bridge.exe" "${INSTALL_DIR}/ask.exe"
 
-UPDATE_PATH="$(find "${TMP_DIR}/extract" -type f -name 'ask-bridge-update.exe' -print -quit)"
-if [[ -n "${UPDATE_PATH}" ]]; then
-  cp "${UPDATE_PATH}" "${INSTALL_DIR}/ask-bridge-update.exe"
-  chmod +x "${INSTALL_DIR}/ask-bridge-update.exe"
-fi
-
 "${INSTALL_DIR}/ask-bridge.exe" --version
+"${INSTALL_DIR}/ask-bridge.exe" --help | grep -q -- '--operation-id'
 
 echo "Installed to ${INSTALL_DIR}/ask-bridge.exe"

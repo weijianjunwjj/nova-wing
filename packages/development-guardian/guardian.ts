@@ -256,6 +256,7 @@ export async function runGuardianTask(options: {
             ...(protocolRepair ? { protocolRepair: true } : {}),
             transportTimeoutMs,
           })
+          const transport = options.brain.captureLastTransportMetrics?.()
           attemptTimeline.push({
             attempt: brainReviewAttempt,
             operationKind,
@@ -265,10 +266,12 @@ export async function runGuardianTask(options: {
             failureType: null,
             fingerprint: null,
             timeout: false,
+            ...(transport === undefined ? {} : { transport }),
           })
           break
         } catch (error) {
           lastFailure = guardianBrainFailureFrom(error)
+          const transport = options.brain.captureLastTransportMetrics?.()
           attemptTimeline.push({
             attempt: brainReviewAttempt,
             operationKind,
@@ -278,6 +281,7 @@ export async function runGuardianTask(options: {
             failureType: lastFailure.failureType ?? null,
             fingerprint: lastFailure.fingerprint,
             timeout: error instanceof RetryableGuardianBrainError && error.kind === 'timeout',
+            ...(transport === undefined ? {} : { transport }),
           })
           if (!(error instanceof RetryableGuardianBrainError)) {
             throw error

@@ -1,4 +1,9 @@
-import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
+import type {
+  DelegationPacket,
+  ExecutionReport,
+  GuardianBrainTransportMetrics,
+  GuardianTask,
+} from './model.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
 export interface GuardianBrain {
@@ -16,6 +21,9 @@ export interface GuardianBrain {
    * next review starts a fresh provider session with the same Guardian evidence.
    */
   resetTaskReviewSession?(taskId: string): void
+
+  /** Safe metrics from the most recent provider operation; never prompt content. */
+  captureLastTransportMetrics?(): GuardianBrainTransportMetrics | undefined
 }
 
 export interface GuardianExecutor {

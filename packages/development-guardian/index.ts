@@ -17,6 +17,7 @@ export type {
 export {
   AskBridgeBrain,
   createAskBridgeCommandRunner,
+  extractAskBridgeSubmissionMetrics,
   normalizeAskBridgeDiagnostics,
   terminateAskBridgeProcessTree,
 } from './ask-bridge-brain.js'
@@ -83,6 +84,7 @@ export type {
   GuardianBrainFailureCategory,
   GuardianBrainFailureType,
   GuardianBrainAttempt,
+  GuardianBrainTransportMetrics,
   GuardianBrainOperationKind,
   GuardianRunResult,
   GuardianTask,

@@ -1,0 +1,542 @@
+warning: in the working copy of 'src/main.rs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/src/main.rs b/src/main.rs
+index 1b76bfe..1810208 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -680,6 +680,14 @@ struct Cli {
+     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
+     timeout: u64,
+ 
++    /// Stable identity for one logical submission across transport retries.
++    #[arg(long = "operation-id", value_name = "ID")]
++    operation_id: Option<String>,
++
++    /// Non-sensitive prompt fingerprint used to resume an accepted composer payload.
++    #[arg(long = "prompt-fingerprint", value_name = "HASH")]
++    prompt_fingerprint: Option<String>,
++
+     /// Switch the provider model before sending the prompt.
+     /// Match the primary menu label case- and punctuation-insensitively;
+     /// subtitles and badges are ignored.
+@@ -3018,6 +3026,15 @@ fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<()
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn prompt_fingerprint_is_stable_and_contains_no_prompt_text() {
++        let first = safe_prompt_fingerprint("sensitive prompt body");
++        assert_eq!(first, safe_prompt_fingerprint("sensitive prompt body"));
++        assert_ne!(first, safe_prompt_fingerprint("different prompt body"));
++        assert!(first.starts_with("fnv1a64-"));
++        assert!(!first.contains("sensitive"));
++    }
++
+     #[test]
+     fn validates_chrome_devtools_mcp_node_versions() {
+         for version in [
+@@ -6097,14 +6114,15 @@ fn switch_reasoning(
+     )
+ }
+ 
+-fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
+-    let mut wait_cycles = 0;
++fn wait_for_submit_status(config_path: &str, timeout: Duration) -> Result<String, String> {
++    let started_at = Instant::now();
+     let mut status = String::from("pending");
+ 
+-    // Page-side submission scripts may wait up to 15s for ChatGPT/Gemini to
+-    // enable the send button, so keep this host-side polling window longer.
+-    while status == "pending" && wait_cycles < 180 {
+-        thread::sleep(Duration::from_millis(100));
++    while status == "pending" && started_at.elapsed() < timeout {
++        thread::sleep(std::cmp::min(
++            Duration::from_millis(100),
++            timeout.saturating_sub(started_at.elapsed()),
++        ));
+         let check_res = call_mcp_tool(
+             config_path,
+             "evaluate_script",
+@@ -6118,7 +6136,6 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
+         {
+             status = s;
+         }
+-        wait_cycles += 1;
+     }
+ 
+     if status.starts_with("error:") {
+@@ -6132,6 +6149,15 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
+     Ok(status)
+ }
+ 
++fn safe_prompt_fingerprint(prompt: &str) -> String {
++    let mut hash = 0xcbf29ce484222325_u64;
++    for byte in prompt.as_bytes() {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x100000001b3);
++    }
++    format!("fnv1a64-{hash:016x}")
++}
++
+ fn focus_and_clear_composer(config_path: &str, provider: Provider) -> Result<(), String> {
+     let js = r#"() => {
+             const composerSelectors = __COMPOSER_SELECTORS__;
+@@ -6290,9 +6316,18 @@ fn submit_regular_prompt(
+     config_path: &str,
+     provider: Provider,
+     prompt: &str,
++    operation_id: &str,
++    prompt_fingerprint: &str,
++    initial_assistant_count: usize,
++    timeout: Duration,
+ ) -> Result<String, String> {
+     let prompt_json = serde_json::to_string(prompt)
+         .map_err(|e| format!("Failed to serialize prompt text: {}", e))?;
++    let operation_id_json = serde_json::to_string(operation_id)
++        .map_err(|e| format!("Failed to serialize operation identity: {}", e))?;
++    let fingerprint_json = serde_json::to_string(prompt_fingerprint)
++        .map_err(|e| format!("Failed to serialize prompt fingerprint: {}", e))?;
++    let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX));
+     let set_and_submit_js = r#"() => {
+             window.__submit_status = 'pending';
+             (async () => {
+@@ -6300,6 +6335,12 @@ fn submit_regular_prompt(
+                     const composerSelectors = __COMPOSER_SELECTORS__;
+                     const sendSelectors = __SEND_SELECTORS__;
+                     const stopSelectors = __STOP_SELECTORS__;
++                    const operationId = __OPERATION_ID__;
++                    const promptFingerprint = __PROMPT_FINGERPRINT__;
++                    const promptChars = __PROMPT_CHARS__;
++                    const initialAssistantCount = __INITIAL_ASSISTANT_COUNT__;
++                    const deadline = Date.now() + __TIMEOUT_MS__;
++                    const storageKey = 'ask-bridge-submission:' + operationId;
+                     const isVisible = (el) => {
+                         if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                         const style = window.getComputedStyle(el);
+@@ -6310,6 +6351,39 @@ fn submit_regular_prompt(
+                     const isStopButton = (el) => stopSelectors.some((s) => {
+                         try { return el.matches(s); } catch (e) { return false; }
+                     });
++                    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
++                    const now = () => Date.now();
++                    const readStoredState = () => {
++                        try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); }
++                        catch (e) { return null; }
++                    };
++                    const safeMetrics = (state) => ({
++                        operationId: state.operationId,
++                        promptFingerprint: state.promptFingerprint,
++                        state: state.state,
++                        promptChars: state.promptChars,
++                        inputMode: state.inputMode,
++                        composerSettleMs: state.inputEnteredAt && state.composerSettledAt
++                            ? Math.max(0, state.composerSettledAt - state.inputEnteredAt) : null,
++                        sendReadyWaitMs: state.inputEnteredAt && state.sendReadyAt
++                            ? Math.max(0, state.sendReadyAt - state.inputEnteredAt) : null,
++                        pasteCount: state.pasteCount,
++                        submitCount: state.submitCount,
++                        submissionReached: ['SUBMITTING', 'SUBMITTED', 'WAITING_RESPONSE'].includes(state.state),
++                        reusedSubmission: Boolean(state.reusedSubmission),
++                        initialAssistantCount: state.initialAssistantCount
++                    });
++                    const saveState = (state) => {
++                        localStorage.setItem(storageKey, JSON.stringify(state));
++                        return state;
++                    };
++                    const finishSuccess = (state) => {
++                        window.__submit_status = 'success:' + JSON.stringify(safeMetrics(state));
++                    };
++                    const finishError = (message, state) => {
++                        const metrics = state ? JSON.stringify(safeMetrics(state)) : '{}';
++                        window.__submit_status = 'error: ' + message + ' submissionMetrics=' + metrics;
++                    };
+ 
+                     const el = composerSelectors.map((s) => document.querySelector(s)).find(Boolean);
+                     if (!el) {
+@@ -6317,10 +6391,79 @@ fn submit_regular_prompt(
+                         return;
+                     }
+                     el.focus();
+-                    
++
+                     const value = __PROMPT__;
+-                    el.focus();
+-                    
++                    const composerText = () => (typeof el.value !== 'undefined'
++                        ? el.value : (el.innerText || el.textContent || '')).trim();
++                    const composerRoot = el.closest('form') || el.parentElement?.parentElement || el.parentElement || el;
++                    const bigPasteSelectors = [
++                        '[data-testid*="attachment"]',
++                        '[data-testid*="file"]',
++                        '[data-testid*="paste"]',
++                        '[data-attachment-id]',
++                        '[data-file-id]',
++                        '[aria-busy="true"]'
++                    ];
++                    const bigPasteElement = () => bigPasteSelectors
++                        .map(selector => composerRoot.querySelector(selector))
++                        .find(candidate => candidate && candidate !== el) || null;
++                    const hasPayload = () => composerText().length > 0 || Boolean(bigPasteElement());
++                    const explicitError = () => Array.from(document.querySelectorAll(
++                        '[role="alert"], [data-testid*="error"], [data-state="error"]'
++                    )).find(candidate => isVisible(candidate) && (candidate.innerText || candidate.textContent || '').trim().length > 0);
++                    const findSendButton = () => {
++                        for (const selector of sendSelectors) {
++                            const button = document.querySelector(selector);
++                            if (isVisible(button) && !isStopButton(button)) return button;
++                        }
++                        return null;
++                    };
++                    const submissionProof = () => {
++                        const stopVisible = stopSelectors.some(selector => {
++                            try { return isVisible(document.querySelector(selector)); } catch (e) { return false; }
++                        });
++                        const assistantCount = document.querySelectorAll(__ASSISTANT_SELECTOR__).length;
++                        return stopVisible || assistantCount > initialAssistantCount || !hasPayload();
++                    };
++
++                    let state = readStoredState();
++                    if (state && (state.operationId !== operationId || state.promptFingerprint !== promptFingerprint)) {
++                        finishError('composer belongs to a different submission operation', state);
++                        return;
++                    }
++                    if (!state) {
++                        state = saveState({
++                            operationId,
++                            promptFingerprint,
++                            state: 'INPUT_NOT_STARTED',
++                            promptChars,
++                            inputMode: 'normal',
++                            inputStartedAt: now(),
++                            inputEnteredAt: null,
++                            composerSettledAt: null,
++                            sendReadyAt: null,
++                            submittedAt: null,
++                            pasteCount: 0,
++                            submitCount: 0,
++                            initialAssistantCount,
++                            reusedSubmission: false
++                        });
++                    } else {
++                        state.reusedSubmission = true;
++                        saveState(state);
++                    }
++
++                    if (['SUBMITTING', 'SUBMITTED', 'WAITING_RESPONSE'].includes(state.state)) {
++                        while (now() < deadline && !submissionProof()) await delay(100);
++                        state.state = submissionProof() ? 'WAITING_RESPONSE' : state.state;
++                        saveState(state);
++                        if (state.state === 'WAITING_RESPONSE') finishSuccess(state);
++                        else finishError('submission outcome remains unknown; refusing duplicate submit', state);
++                        return;
++                    }
++
++                    if (state.state === 'INPUT_NOT_STARTED') {
++                        el.focus();
+                     try {
+                         const range = document.createRange();
+                         range.selectNodeContents(el);
+@@ -6329,7 +6472,7 @@ fn submit_regular_prompt(
+                         sel.addRange(range);
+                     } catch (e) {}
+                     
+-                    let pasted = false;
++                        let entered = false;
+                     try {
+                         const dataTransfer = new DataTransfer();
+                         dataTransfer.setData('text/plain', value);
+@@ -6343,17 +6486,17 @@ fn submit_regular_prompt(
+                             configurable: true
+                         });
+                         el.dispatchEvent(event);
+-                        // 等待 React 非同步處理 paste 事件，避免同步讀取仍為空而誤判
+-                        // paste 失敗，導致 insertText fallback 重複插入文字（pingping）。
+-                        await new Promise(r => setTimeout(r, 50));
+-                        
+-                        const currentText = typeof el.value !== 'undefined' ? el.value : el.textContent;
+-                        if (currentText && currentText.trim().length > 0) {
+-                            pasted = true;
+-                        }
++                            state.pasteCount += 1;
++                            saveState(state);
++                            const entryDeadline = Math.min(deadline, now() + 2000);
++                            while (now() < entryDeadline && !entered) {
++                                const text = composerText();
++                                entered = text === value.trim() || text.includes(value.trim()) || Boolean(bigPasteElement());
++                                if (!entered) await delay(50);
++                            }
+                     } catch (e) {}
+-                    
+-                    if (!pasted) {
++
++                        if (!entered) {
+                         const success = document.execCommand('insertText', false, value);
+                         if (!success) {
+                             if (typeof el.value !== 'undefined') {
+@@ -6367,37 +6510,74 @@ fn submit_regular_prompt(
+                             el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+                             el.dispatchEvent(new Event('change', { bubbles: true }));
+                         }
+-                    }
+-                    
+-                    const findAndClickSendButton = () => {
+-                        for (const s of sendSelectors) {
+-                            const btn = document.querySelector(s);
+-                            // ChatGPT 的送出/停止按鈕共用 #composer-submit-button，
+-                            // 必須排除停止型態，否則會誤點成「停止回應」。
+-                            if (isVisible(btn) && !isStopButton(btn)) {
+-                                btn.click();
+-                                return { ok: true, clicked: true, buttonLabel: btn.getAttribute('aria-label') };
++                            const fallbackDeadline = Math.min(deadline, now() + 2000);
++                            while (now() < fallbackDeadline && !entered) {
++                                const text = composerText();
++                                entered = text === value.trim() || text.includes(value.trim()) || Boolean(bigPasteElement());
++                                if (!entered) await delay(50);
+                             }
+                         }
+-                        return null;
+-                    };
+-                    
+-                    let result = findAndClickSendButton();
+-                    if (result) {
+-                        window.__submit_status = 'success:' + JSON.stringify(result);
+-                        return;
++
++                        if (!entered) {
++                            finishError('composer is empty after input attempt', state);
++                            return;
++                        }
++                        state.state = 'INPUT_ENTERED';
++                        state.inputEnteredAt = now();
++                        state.inputMode = bigPasteElement() ? 'big-paste' : 'normal';
++                        saveState(state);
+                     }
+ 
+-                    for (let i = 0; i < 150; i++) {
+-                        await new Promise(r => setTimeout(r, 100));
+-                        result = findAndClickSendButton();
+-                        if (result) {
+-                            window.__submit_status = 'success:' + JSON.stringify(result);
++                    state.state = 'COMPOSER_SETTLING';
++                    saveState(state);
++                    let payloadMissingSince = null;
++                    let sendButton = null;
++                    while (now() < deadline) {
++                        const pageError = explicitError();
++                        if (pageError) {
++                            finishError('provider reported an explicit composer error', state);
+                             return;
+                         }
++                        const pasteElement = bigPasteElement();
++                        if (pasteElement) state.inputMode = 'big-paste';
++                        if (hasPayload()) payloadMissingSince = null;
++                        else if (payloadMissingSince === null) payloadMissingSince = now();
++                        else if (now() - payloadMissingSince >= 2000) {
++                            finishError('composer payload disappeared before submission', state);
++                            return;
++                        }
++                        sendButton = findSendButton();
++                        if (sendButton) break;
++                        saveState(state);
++                        await delay(100);
+                     }
+-                    
+-                    window.__submit_status = 'error: Send button did not become active/enabled';
++
++                    if (!sendButton) {
++                        finishError('composer settle budget exhausted before send became ready', state);
++                        return;
++                    }
++                    state.state = 'SEND_READY';
++                    state.composerSettledAt = now();
++                    state.sendReadyAt = now();
++                    saveState(state);
++
++                    state.state = 'SUBMITTING';
++                    state.submitCount += 1;
++                    saveState(state);
++                    sendButton.click();
++
++                    const confirmationDeadline = Math.min(deadline, now() + 10000);
++                    while (now() < confirmationDeadline && !submissionProof()) await delay(100);
++                    if (!submissionProof()) {
++                        finishError('submission outcome remains unknown; refusing duplicate submit', state);
++                        return;
++                    }
++                    state.state = 'SUBMITTED';
++                    state.submittedAt = now();
++                    saveState(state);
++                    state.state = 'WAITING_RESPONSE';
++                    saveState(state);
++                    finishSuccess(state);
+                 } catch (e) {
+                     window.__submit_status = 'error: ' + e.message;
+                 }
+@@ -6407,6 +6587,12 @@ fn submit_regular_prompt(
+     .replace("__COMPOSER_SELECTORS__", provider.composer_selectors_json())
+     .replace("__SEND_SELECTORS__", provider.send_button_selectors_json())
+     .replace("__STOP_SELECTORS__", provider.stop_button_selectors_json())
++    .replace("__ASSISTANT_SELECTOR__", &serde_json::to_string(provider.assistant_selector()).unwrap())
++    .replace("__OPERATION_ID__", &operation_id_json)
++    .replace("__PROMPT_FINGERPRINT__", &fingerprint_json)
++    .replace("__PROMPT_CHARS__", &prompt.chars().count().to_string())
++    .replace("__INITIAL_ASSISTANT_COUNT__", &initial_assistant_count.to_string())
++    .replace("__TIMEOUT_MS__", &timeout_ms.to_string())
+     .replace("__PROMPT__", &prompt_json);
+ 
+     let start_res = call_mcp_tool(
+@@ -6422,13 +6608,14 @@ fn submit_regular_prompt(
+         return Err("Failed to initiate text entry and submission script".to_string());
+     }
+ 
+-    wait_for_submit_status(config_path)
++    wait_for_submit_status(config_path, timeout)
+ }
+ 
+ fn submit_chatgpt_agent_prompt(
+     config_path: &str,
+     parts: &ChatGptAgentPrompt<'_>,
+     verbose: bool,
++    timeout: Duration,
+ ) -> Result<String, String> {
+     if verbose {
+         println!(
+@@ -6595,7 +6782,7 @@ fn submit_chatgpt_agent_prompt(
+         return Err("Failed to initiate ChatGPT agent prompt submission script".to_string());
+     }
+ 
+-    wait_for_submit_status(config_path)
++    wait_for_submit_status(config_path, timeout)
+ }
+ 
+ fn submit_prompt_to_provider(
+@@ -6603,14 +6790,26 @@ fn submit_prompt_to_provider(
+     provider: Provider,
+     prompt: &str,
+     verbose: bool,
++    operation_id: &str,
++    prompt_fingerprint: &str,
++    initial_assistant_count: usize,
++    timeout: Duration,
+ ) -> Result<String, String> {
+     if provider == Provider::ChatGpt
+         && let Some(parts) = parse_chatgpt_agent_prompt(prompt)
+     {
+-        return submit_chatgpt_agent_prompt(config_path, &parts, verbose);
++        return submit_chatgpt_agent_prompt(config_path, &parts, verbose, timeout);
+     }
+ 
+-    submit_regular_prompt(config_path, provider, prompt)
++    submit_regular_prompt(
++        config_path,
++        provider,
++        prompt,
++        operation_id,
++        prompt_fingerprint,
++        initial_assistant_count,
++        timeout,
++    )
+ }
+ 
+ fn ensure_provider_tab(
+@@ -7465,6 +7664,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+         std::process::exit(0);
+     }
+ 
++    let provider_operation_started_at = Instant::now();
++    let prompt_fingerprint = cli
++        .prompt_fingerprint
++        .clone()
++        .unwrap_or_else(|| safe_prompt_fingerprint(&prompt));
++    let operation_id = cli
++        .operation_id
++        .clone()
++        .unwrap_or_else(|| format!("askbridge-{}-{}", std::process::id(), prompt_fingerprint));
++
+     if let Some((session_provider, session_url)) = &session_target {
+         if let Err(e) = open_url_tab(
+             &config_path,
+@@ -7565,7 +7774,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+             "function": format!("() => document.querySelectorAll({}).length", assistant_selector)
+         }),
+     )?;
+-    let initial_assistant_count = parse_script_result(&count_res)
++    let mut initial_assistant_count = parse_script_result(&count_res)
+         .ok()
+         .and_then(|v| v.as_u64())
+         .unwrap_or(0) as usize;
+@@ -7573,13 +7782,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+     if command_verbose {
+         println!("Setting prompt text and submitting...");
+     }
+-    let status = submit_prompt_to_provider(&config_path, provider, &prompt, command_verbose)
+-        .map_err(|e| format!("Text entry or submission failed: {}", e))?;
++    let composer_settle_budget =
++        Duration::from_secs(cli.timeout).saturating_sub(provider_operation_started_at.elapsed());
++    if composer_settle_budget.is_zero() {
++        return Err("Transport budget exhausted before composer submission".into());
++    }
++    let status = submit_prompt_to_provider(
++        &config_path,
++        provider,
++        &prompt,
++        command_verbose,
++        &operation_id,
++        &prompt_fingerprint,
++        initial_assistant_count,
++        composer_settle_budget,
++    )
++    .map_err(|e| format!("Text entry or submission failed: {}", e))?;
+ 
+     if command_verbose {
+         println!("Prompt submitted successfully: {}", status);
+     }
+ 
++    if let Some(metrics) = status.strip_prefix("success:") {
++        eprintln!("Submission Metrics: {}", metrics);
++    }
++
++    if let Some(metrics) = status
++        .strip_prefix("success:")
++        .and_then(|json| serde_json::from_str::<Value>(json).ok())
++        && let Some(stored_count) = metrics.get("initialAssistantCount").and_then(Value::as_u64)
++    {
++        initial_assistant_count = usize::try_from(stored_count).unwrap_or(usize::MAX);
++    }
++
++    let thread_link_deadline = Instant::now() + Duration::from_secs(5);
++    while Instant::now() < thread_link_deadline {
++        let submitted_url = call_mcp_tool(
++            &config_path,
++            "evaluate_script",
++            serde_json::json!({ "function": "() => window.location.href" }),
++        )
++        .ok()
++        .and_then(|url_val| parse_script_result(&url_val).ok())
++        .and_then(|url| url.as_str().map(str::to_string));
++        if let Some(url) = submitted_url
++            && let Ok(parsed_url) = Url::parse(&url)
++            && provider.owns_conversation_url(&parsed_url)
++            && !url.contains("/c/WEB:")
++        {
++            println!("Thread Link: {}", url);
++            break;
++        }
++        thread::sleep(Duration::from_millis(100));
++    }
++
+     if command_verbose {
+         println!("Waiting for {} response...", provider.display_name());
+     }
+@@ -7592,8 +7848,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+     let spinner_frames = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+     let mut spinner_idx = 0;
+ 
++    let response_wait_budget =
++        Duration::from_secs(cli.timeout).saturating_sub(provider_operation_started_at.elapsed());
+     let max_wait_cycles: usize =
+-        usize::try_from(cli.timeout.saturating_mul(10)).unwrap_or(usize::MAX);
++        usize::try_from(response_wait_budget.as_millis() / 100).unwrap_or(usize::MAX);
+     while !finished && wait_cycles < max_wait_cycles {
+         // Max wait time: timeout seconds (timeout * 10 * 100ms)
+         if is_terminal {
+

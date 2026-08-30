@@ -1,10 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
+import type {
+  DelegationPacket,
+  ExecutionReport,
+  GuardianBrainTransportMetrics,
+  GuardianTask,
+} from './model.js'
 import type { GuardianBrain } from './ports.js'
 import { DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS } from './brain-review-budget.js'
 import {
@@ -308,6 +313,46 @@ function failureDetails(result: AskBridgeCommandResult): string {
   return normalizeAskBridgeDiagnostics(raw)
 }
 
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+export function extractAskBridgeSubmissionMetrics(
+  value: string,
+): GuardianBrainTransportMetrics | undefined {
+  const matches = Array.from(value.matchAll(
+    /(?:Submission Metrics:\s*|submissionMetrics=)(\{[^\r\n]*\})/gu,
+  ))
+  const raw = matches.at(-1)?.[1]
+  if (raw === undefined) return undefined
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const promptChars = finiteNonNegative(parsed.promptChars)
+    const pasteCount = finiteNonNegative(parsed.pasteCount)
+    const submitCount = finiteNonNegative(parsed.submitCount)
+    if (promptChars === undefined || pasteCount === undefined || submitCount === undefined) {
+      return undefined
+    }
+    const inputMode = parsed.inputMode === 'normal' || parsed.inputMode === 'big-paste'
+      ? parsed.inputMode
+      : 'unknown'
+    const composerSettleMs = finiteNonNegative(parsed.composerSettleMs)
+    const sendReadyWaitMs = finiteNonNegative(parsed.sendReadyWaitMs)
+    return {
+      promptChars,
+      inputMode,
+      ...(composerSettleMs === undefined ? {} : { composerSettleMs }),
+      ...(sendReadyWaitMs === undefined ? {} : { sendReadyWaitMs }),
+      pasteCount,
+      submitCount,
+      submissionReached: parsed.submissionReached === true,
+      reusedSubmission: parsed.reusedSubmission === true,
+    }
+  } catch {
+    return undefined
+  }
+}
+
 function isPerformanceIssueNoise(line: string): boolean {
   const trimmed = line.trim()
   return trimmed === '[chrome-devtools]' || trimmed === PERFORMANCE_ISSUE_MESSAGE
@@ -360,6 +405,7 @@ function isTransientBrowserSessionTransportFailure(details: string): boolean {
     /\bnewly opened tab could not be identified\b/iu.test(details) ||
     /\b(?:error opening|failed to open) (?:a )?ChatGPT session\b/iu.test(details) ||
     /\btext entry or submission failed\b/iu.test(details) ||
+    /\bcomposer is empty after input attempt\b/iu.test(details) ||
     /\bsend button did not become active(?:\/enabled)?\b/iu.test(details) ||
     /\bbrowser\b.{0,80}\b(?:tab|session)\b.{0,80}\btransport\b.{0,80}\btemporarily unavailable\b/iu.test(
       details,
@@ -421,6 +467,7 @@ export class AskBridgeBrain implements GuardianBrain {
   private readonly staleTaskIds = new Set<string>()
   private providerConfiguration: AskBridgeProviderConfigurationState | undefined
   private configurationResyncRequested = false
+  private lastTransportMetrics: GuardianBrainTransportMetrics | undefined
   /** Tasks whose replaceable state must override the constructor's initial URL. */
   private readonly rotatedTaskIds = new Set<string>()
 
@@ -452,6 +499,10 @@ export class AskBridgeBrain implements GuardianBrain {
           taskId,
           ...this.cloneProviderConfiguration(this.providerConfiguration),
         }
+  }
+
+  captureLastTransportMetrics(): GuardianBrainTransportMetrics | undefined {
+    return this.lastTransportMetrics === undefined ? undefined : { ...this.lastTransportMetrics }
   }
 
   /** Explicitly require the next review to re-apply the requested provider configuration. */
@@ -619,6 +670,7 @@ export class AskBridgeBrain implements GuardianBrain {
 
   private buildArgs(
     taskId: string,
+    iteration: number,
     prompt: string,
     outputPath: string,
     timeoutMs: number,
@@ -646,7 +698,17 @@ export class AskBridgeBrain implements GuardianBrain {
       args.push('--reasoning', this.options.reasoning)
     }
 
-    args.push('--timeout', String(Math.max(1, Math.ceil(timeoutMs / 1000))), '--output', outputPath, prompt)
+    const promptFingerprint = createHash('sha256').update(prompt).digest('hex')
+    const operationId = createHash('sha256')
+      .update(`${taskId}\0${String(iteration)}\0${promptFingerprint}`)
+      .digest('hex')
+    args.push(
+      '--operation-id', `novawing-${operationId}`,
+      '--prompt-fingerprint', `sha256-${promptFingerprint}`,
+      '--timeout', String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+      '--output', outputPath,
+      prompt,
+    )
     return args
   }
 
@@ -679,6 +741,7 @@ export class AskBridgeBrain implements GuardianBrain {
     transportTimeoutMs?: number
   }): Promise<DelegationPacket> {
     const taskId = input.task.id
+    this.lastTransportMetrics = undefined
     this.syncRequestedConfiguration()
     if (this.reviewedTaskIds.has(taskId) && this.conversationUrlForTask(taskId) === undefined) {
       throw this.conversationFailure(taskId, 'missing')
@@ -709,7 +772,14 @@ export class AskBridgeBrain implements GuardianBrain {
           }
         }
         try {
-          const args = this.buildArgs(taskId, prompt, outputPath, remainingOperationMs, omitReasoning)
+          const args = this.buildArgs(
+            taskId,
+            input.task.iteration,
+            prompt,
+            outputPath,
+            remainingOperationMs,
+            omitReasoning,
+          )
           const result = await this.runner({
             executable: this.command,
             args,
@@ -724,6 +794,9 @@ export class AskBridgeBrain implements GuardianBrain {
                   },
                 }),
           })
+          this.lastTransportMetrics = extractAskBridgeSubmissionMetrics(
+            `${result.stderr}\n${result.stdout}`,
+          ) ?? this.lastTransportMetrics
           return { result, args }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -793,6 +866,7 @@ export class AskBridgeBrain implements GuardianBrain {
       })
 
       if (result.exitCode !== 0) {
+        this.rememberConversation(taskId, result.stdout)
         const isTimeout = result.exitCode === null
         if (isTimeout) {
           throw new RetryableGuardianBrainError(

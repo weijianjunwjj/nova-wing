@@ -159,6 +159,37 @@ test('guardian stops after consecutive retryable Brain timeouts', async () => {
   assert.doesNotMatch(result.task.brainFailure?.safeMessage ?? '', /timeout/u)
 })
 
+test('guardian attempt timeline persists safe composer metrics without prompt content', async () => {
+  const secretPromptMarker = 'DO-NOT-PERSIST-THIS-PROMPT'
+  const result = await runGuardianTask({
+    task: baseTask(),
+    brain: {
+      async review() {
+        throw new RetryableGuardianBrainError('transport failed', 'transport', {
+          failureType: 'BRAIN_TRANSPORT_FAILED',
+          fingerprint: 'brain-transport:test',
+        })
+      },
+      captureLastTransportMetrics() {
+        return {
+          promptChars: secretPromptMarker.length,
+          inputMode: 'big-paste' as const,
+          composerSettleMs: 21_608,
+          sendReadyWaitMs: 21_608,
+          pasteCount: 1,
+          submitCount: 1,
+          submissionReached: true,
+          reusedSubmission: false,
+        }
+      },
+    },
+    executor: { async execute() { throw new Error('must not execute') } },
+  })
+
+  assert.equal(result.task.brainFailure?.attemptTimeline?.[0]?.transport?.promptChars, 26)
+  assert.doesNotMatch(JSON.stringify(result.task.brainFailure), new RegExp(secretPromptMarker, 'u'))
+})
+
 test('Brain Review shares one wall-clock budget across normal, retry, and rotation operations', async () => {
   let now = Date.parse('2026-08-29T00:00:00.000Z')
   const operationTimeouts: number[] = []

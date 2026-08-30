@@ -6,6 +6,7 @@ import test from 'node:test'
 import {
   AskBridgeBrain,
   createAskBridgeCommandRunner,
+  extractAskBridgeSubmissionMetrics,
   GuardianBrainInfrastructureError,
   RetryableGuardianBrainError,
   normalizeAskBridgeDiagnostics,
@@ -73,7 +74,7 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
   assert.equal(result.verdict, 'proceed')
   assert.equal(requests.length, 1)
   assert.equal(requests[0]?.executable, 'ask-bridge.exe')
-  assert.deepEqual(requests[0]?.args.slice(0, 11), [
+  assert.deepEqual(requests[0]?.args.slice(0, 9), [
     '--provider',
     'chatgpt',
     '--headless=false',
@@ -83,9 +84,14 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
     'GPT-5.6 Sol',
     '--reasoning',
     'high',
-    '--timeout',
-    '120',
   ])
+  const operationIndex = requests[0]?.args.indexOf('--operation-id') ?? -1
+  const fingerprintIndex = requests[0]?.args.indexOf('--prompt-fingerprint') ?? -1
+  assert.ok(operationIndex >= 0)
+  assert.ok(fingerprintIndex >= 0)
+  assert.match(requests[0]?.args[operationIndex + 1] ?? '', /^novawing-[a-f0-9]{64}$/u)
+  assert.match(requests[0]?.args[fingerprintIndex + 1] ?? '', /^sha256-[a-f0-9]{64}$/u)
+  assert.equal(requests[0]?.args[requests[0]?.args.indexOf('--timeout') + 1], '120')
   assert.ok(requests[0]?.args.includes('--output'))
   assert.match(requests[0]?.args.at(-1) ?? '', /唯一 Brain/)
 })
@@ -1267,4 +1273,91 @@ test('T021 combined DevTools noise preserves the Send button transport fingerpri
       error.failure.fingerprint === 'brain-transport:browser-send-button-inactive' &&
       error.failure.rawError?.includes('PerformanceIssue × 56') === true,
   )
+})
+
+test('AskBridge submission metrics parser keeps only bounded non-content composer facts', () => {
+  const metrics = extractAskBridgeSubmissionMetrics([
+    'private prompt must never persist',
+    'Submission Metrics: {"operationId":"op","promptFingerprint":"sha256-x","promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false,"initialAssistantCount":0}',
+  ].join('\n'))
+
+  assert.deepEqual(metrics, {
+    promptChars: 12634,
+    inputMode: 'big-paste',
+    composerSettleMs: 21608,
+    sendReadyWaitMs: 21608,
+    pasteCount: 1,
+    submitCount: 1,
+    submissionReached: true,
+    reusedSubmission: false,
+  })
+  assert.doesNotMatch(JSON.stringify(metrics), /private prompt|operationId|promptFingerprint/u)
+})
+
+test('transport retry reuses one deterministic submission operation and captured Thread Link', async () => {
+  const requests: AskBridgeCommandRequest[] = []
+  const sessionUrl = 'https://chatgpt.com/c/exactly-once-retry'
+  const firstMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false}'
+  const secondMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":true}'
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: async (request) => {
+      requests.push(request)
+      if (requests.length === 1) {
+        return {
+          exitCode: 1,
+          stdout: `Thread Link: ${sessionUrl}`,
+          stderr: `Text entry or submission failed: response wait interrupted submissionMetrics=${firstMetrics}`,
+        }
+      }
+      await writePacket(request)
+      return {
+        exitCode: 0,
+        stdout: `Thread Link: ${sessionUrl}`,
+        stderr: `Submission Metrics: ${secondMetrics}`,
+      }
+    },
+  })
+
+  await assert.rejects(brain.review({ task }), RetryableGuardianBrainError)
+  await brain.review({ task })
+
+  const argument = (request: AskBridgeCommandRequest, name: string): string => {
+    const index = request.args.indexOf(name)
+    assert.ok(index >= 0)
+    return request.args[index + 1] ?? ''
+  }
+  assert.equal(argument(requests[0]!, '--operation-id'), argument(requests[1]!, '--operation-id'))
+  assert.equal(
+    argument(requests[0]!, '--prompt-fingerprint'),
+    argument(requests[1]!, '--prompt-fingerprint'),
+  )
+  assert.equal(argument(requests[1]!, '--session-url'), sessionUrl)
+  assert.equal(requests[0]?.args.at(-1), requests[1]?.args.at(-1))
+  assert.deepEqual(brain.captureLastTransportMetrics(), {
+    promptChars: 12634,
+    inputMode: 'big-paste',
+    composerSettleMs: 21608,
+    sendReadyWaitMs: 21608,
+    pasteCount: 1,
+    submitCount: 1,
+    submissionReached: true,
+    reusedSubmission: true,
+  })
+})
+
+test('empty composer input failure remains retryable without pretending submission occurred', async () => {
+  const brain = new AskBridgeBrain({
+    command: 'ask-bridge.exe',
+    commandRunner: () => Promise.resolve({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Text entry or submission failed: error: composer is empty after input attempt submissionMetrics={"promptChars":10,"inputMode":"normal","pasteCount":1,"submitCount":0,"submissionReached":false,"reusedSubmission":false}',
+    }),
+  })
+  await assert.rejects(
+    brain.review({ task }),
+    (error: unknown) => error instanceof RetryableGuardianBrainError && error.kind === 'transport',
+  )
+  assert.equal(brain.captureLastTransportMetrics()?.submitCount, 0)
 })
