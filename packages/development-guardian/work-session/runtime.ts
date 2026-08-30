@@ -15,9 +15,15 @@ import type {
   WorkSessionDefinition,
   WorkSessionDurableState,
   WorkSessionCompletionReason,
+  PendingVerificationApproval,
 } from './model.js'
 import type { GuardianProgressEvent } from '../progress.js'
-import type { WorkSessionTaskRunner, WorkSessionTaskRunContext } from './task-runner.js'
+import type { VerificationResult } from '../model.js'
+import type {
+  WorkSessionTaskResult,
+  WorkSessionTaskRunner,
+  WorkSessionTaskRunContext,
+} from './task-runner.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import {
   createWorkSessionCompletedNotification,
@@ -177,6 +183,7 @@ const WorkflowStateSchema = z.object({
   failureNotified: z.boolean().optional(),
   currentTaskCheckpoint: z.any().optional(), // W003: GuardianTaskRecoveryCheckpoint
   verificationFailure: z.any().optional(),
+  verificationResults: z.array(z.any()).optional(),
   checkpointCommits: z.record(z.string(), z.string()).optional(), // W004-A
   checkpointPushes: z.record(z.string(), z.string()).optional(), // W004-B
   failureReason: z.string().optional(), // W004-A FINAL
@@ -222,6 +229,21 @@ function validateWorkSessionLimits(limits: WorkSessionDefinition['limits']): voi
   if (limits.hardMinutes < limits.softMinutes) {
     throw new Error('WorkSession limits.hardMinutes must be >= softMinutes')
   }
+}
+
+function persistedVerificationResult(
+  result: WorkSessionTaskResult,
+  command: string,
+): VerificationResult | undefined {
+  const verificationResults = [
+    ...(result.completionEvidence?.verificationResults ?? []),
+    ...(result.checkpoint?.task.lastReport?.verificationResults ?? []),
+    ...(result.verificationFailure === undefined ? [] : [result.verificationFailure]),
+  ]
+  return verificationResults.find(
+    (verification) => verification.name === command &&
+      (verification.status === 'passed' || verification.status === 'failed'),
+  )
 }
 
 export class WorkSessionRuntime {
@@ -577,6 +599,7 @@ export class WorkSessionRuntime {
       eventType: 'VERIFICATION_APPROVED', sessionId: runId, taskId: pending.taskId,
       timestamp: this.ledgerTimestamp(), status: 'APPROVED',
       commandFingerprint: pending.commandFingerprint,
+      approvalGeneration: pending.generation,
     }, `verification-approved:${pending.taskId}:${pending.generation}:${pending.commandFingerprint}`)
     return this.resume({})
   }
@@ -962,6 +985,7 @@ export class WorkSessionRuntime {
                 humanRequired: undefined,
                 currentTaskCheckpoint: undefined,
                 verificationFailure: undefined,
+                verificationResults: undefined,
                 pendingVerificationApproval: undefined,
                 stopAfterTaskRequested: undefined,
                 ...self.settleActiveTime(currentState),
@@ -1018,22 +1042,57 @@ export class WorkSessionRuntime {
           // W003: 传递 checkpoint 给 TaskRunner
           // W004-B: 同时传递 hard deadline（clock 帧内），供 Guardian adapter 构造 stop hook
           const checkpoint = currentState.currentTaskCheckpoint
-          const approvedVerification = currentState.pendingVerificationApproval
+          const approvedVerification = self.resolveDurableApprovedVerification(currentState, task.id)
+          if (
+            approvedVerification !== undefined &&
+            (
+              currentState.pendingVerificationApproval?.status !== 'APPROVED' ||
+              currentState.pendingVerificationApproval.generation !== approvedVerification.generation ||
+              currentState.pendingVerificationApproval.commandFingerprint !== approvedVerification.commandFingerprint
+            )
+          ) {
+            const restoredApprovalState: WorkflowState = {
+              ...currentState,
+              pendingVerificationApproval: approvedVerification,
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(restoredApprovalState)
+            currentState = restoredApprovalState
+            self.latestState = restoredApprovalState
+          }
           const approvedVerificationCommand =
             approvedVerification?.status === 'APPROVED' &&
             approvedVerification.sessionId === currentState.sessionId &&
             approvedVerification.taskId === task.id &&
-            approvedVerification.generation === currentState.humanRequiredGeneration &&
             approvedVerification.commandFingerprint === verificationCommandFingerprint(approvedVerification.command) &&
             isEligibleScopedVerificationCommand(approvedVerification.command, self.config.definition.targetRepo)
               ? approvedVerification.command
               : undefined
-          // Consume before starting Guardian work. A crash/restart cannot turn a
-          // persisted approval into a second execution of the command.
-          if (approvedVerificationCommand !== undefined) {
+          const runContext: WorkSessionTaskRunContext = {
+            hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
+            shouldPauseAutonomousWork: () => self.pauseRequested,
+            onProgress: (event) => self.recordGuardianProgress(task.id, event),
+            ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+          }
+          const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          const approvedVerificationResult = approvedVerificationCommand === undefined
+            ? undefined
+            : persistedVerificationResult(result, approvedVerificationCommand)
+
+          if (
+            approvedVerificationCommand !== undefined &&
+            approvedVerification !== undefined &&
+            approvedVerificationResult !== undefined
+          ) {
             const consumedState: WorkflowState = {
               ...currentState,
               pendingVerificationApproval: undefined,
+              verificationResults: [
+                ...(currentState.verificationResults ?? []).filter(
+                  (verification: VerificationResult) => verification.name !== approvedVerificationCommand,
+                ),
+                approvedVerificationResult,
+              ],
               updatedAt: new Date().toISOString(),
             }
             await setState(consumedState)
@@ -1042,16 +1101,10 @@ export class WorkSessionRuntime {
             self.recordLedger({
               eventType: 'VERIFICATION_APPROVAL_CONSUMED', sessionId: consumedState.sessionId,
               taskId: task.id, timestamp: self.ledgerTimestamp(), status: 'CONSUMED',
-              commandFingerprint: approvedVerification!.commandFingerprint,
-            }, `verification-consumed:${task.id}:${approvedVerification!.generation}:${approvedVerification!.commandFingerprint}`)
+              commandFingerprint: approvedVerification.commandFingerprint,
+              approvalGeneration: approvedVerification.generation,
+            }, `verification-consumed:${task.id}:${approvedVerification.generation}:${approvedVerification.commandFingerprint}`)
           }
-          const runContext: WorkSessionTaskRunContext = {
-            hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
-            shouldPauseAutonomousWork: () => self.pauseRequested,
-            onProgress: (event) => self.recordGuardianProgress(task.id, event),
-            ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
-          }
-          const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
 
           if (result.status === 'COMPLETED') {
             const completionEvidence = result.completionEvidence
@@ -1183,6 +1236,7 @@ export class WorkSessionRuntime {
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               verificationFailure: undefined,
+              verificationResults: undefined,
               pendingVerificationApproval: undefined,
               currentTaskBaseHeadSha: undefined,
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
@@ -1310,7 +1364,7 @@ export class WorkSessionRuntime {
             // 需要人工介入，suspend workflow
             const nextGeneration = (currentState.humanRequiredGeneration ?? 0) + 1
             const requestedCommand = result.pendingVerificationCommand
-            const pendingVerificationApproval =
+            const newVerificationApproval =
               requestedCommand !== undefined &&
               result.humanRequired?.category === 'DECISION_REQUIRED' &&
               result.humanRequired.reason.includes(VERIFICATION_APPROVAL_BLOCKER) &&
@@ -1324,6 +1378,18 @@ export class WorkSessionRuntime {
                     status: 'REQUESTED' as const,
                   }
                 : undefined
+            const existingVerificationApproval = currentState.pendingVerificationApproval
+            const sameApprovedCommand =
+              existingVerificationApproval?.status === 'APPROVED' &&
+              requestedCommand !== undefined &&
+              existingVerificationApproval.commandFingerprint ===
+                verificationCommandFingerprint(requestedCommand)
+            const invalidateApproval = result.humanRequired?.category === 'REPO_DRIFT'
+            const pendingVerificationApproval = invalidateApproval
+              ? undefined
+              : sameApprovedCommand
+                ? existingVerificationApproval
+                : newVerificationApproval ?? existingVerificationApproval
             const suspendedState: WorkflowState = {
               ...currentState,
               state: 'SUSPENDED',
@@ -1351,11 +1417,12 @@ export class WorkSessionRuntime {
                 : { activeElapsedMs: suspendedState.activeElapsedMs }),
               safeMessage: safeFailureMessage(result.humanRequired?.reason ?? 'human required'),
             }, `human-required:${task.id}:${suspendedState.humanRequiredGeneration ?? 0}`)
-            if (pendingVerificationApproval !== undefined) {
+            if (newVerificationApproval !== undefined && pendingVerificationApproval === newVerificationApproval) {
               self.recordLedger({
                 eventType: 'VERIFICATION_APPROVAL_REQUESTED', sessionId: suspendedState.sessionId,
                 taskId: task.id, timestamp: self.ledgerTimestamp(), status: 'REQUESTED',
                 commandFingerprint: pendingVerificationApproval.commandFingerprint,
+                approvalGeneration: pendingVerificationApproval.generation,
               }, `verification-requested:${task.id}:${pendingVerificationApproval.generation}:${pendingVerificationApproval.commandFingerprint}`)
             }
 
@@ -1382,6 +1449,7 @@ export class WorkSessionRuntime {
               humanRequired: undefined,
               currentTaskCheckpoint: undefined,
               verificationFailure: undefined,
+              verificationResults: undefined,
               pendingVerificationApproval: undefined,
               ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
@@ -1406,6 +1474,7 @@ export class WorkSessionRuntime {
           humanRequired: undefined,
           currentTaskCheckpoint: undefined,
           verificationFailure: undefined,
+          verificationResults: undefined,
           pendingVerificationApproval: undefined,
           stopAfterTaskRequested: undefined,
           ...self.settleActiveTime(currentState), // W004-B: 结算最后 segment
@@ -1523,6 +1592,9 @@ export class WorkSessionRuntime {
     if (wfState.verificationFailure !== undefined) {
       result.verificationFailure = wfState.verificationFailure
     }
+    if (wfState.verificationResults !== undefined) {
+      result.verificationResults = wfState.verificationResults
+    }
     // W004-A: 传递 checkpoint commits
     if (wfState.checkpointCommits !== undefined) {
       result.checkpointCommits = wfState.checkpointCommits
@@ -1599,6 +1671,109 @@ export class WorkSessionRuntime {
       return this.ledger?.read(this.config.definition.id) ?? []
     } catch {
       return []
+    }
+  }
+
+  private resolveDurableApprovedVerification(
+    state: WorkflowState,
+    taskId: string,
+  ): PendingVerificationApproval | undefined {
+    const checkpoint = state.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint | undefined
+    if (
+      state.sessionId !== this.config.definition.id ||
+      state.currentTaskId !== taskId
+    ) {
+      return undefined
+    }
+
+    const persisted = state.pendingVerificationApproval as PendingVerificationApproval | undefined
+    if (
+      persisted !== undefined &&
+      (persisted.sessionId !== state.sessionId || persisted.taskId !== taskId)
+    ) {
+      return undefined
+    }
+    const historicalRecovery = persisted?.status !== 'APPROVED'
+    if (
+      historicalRecovery &&
+      (
+        checkpoint?.task.id !== taskId ||
+        checkpoint.repo.repoPath !== this.config.definition.targetRepo ||
+        checkpoint.repo.branch !== this.config.definition.branch
+      )
+    ) {
+      return undefined
+    }
+    const packetCommands = checkpoint?.task.lastPacket?.verification ?? []
+    const command = persisted?.command ?? (packetCommands.length === 1 ? packetCommands[0] : undefined)
+    if (
+      command === undefined ||
+      !isEligibleScopedVerificationCommand(command, this.config.definition.targetRepo)
+    ) {
+      return undefined
+    }
+    const commandFingerprint = verificationCommandFingerprint(command)
+    if (persisted !== undefined && persisted.commandFingerprint !== commandFingerprint) {
+      return undefined
+    }
+    if (packetCommands.length > 0 && !packetCommands.includes(command)) {
+      return undefined
+    }
+    const snapshotVerificationResults = [
+      ...(checkpoint?.task.lastReport?.verificationResults ?? []),
+      ...(state.verificationResults ?? []),
+      ...(state.verificationFailure === undefined ? [] : [state.verificationFailure]),
+    ]
+    if (snapshotVerificationResults.some((verification) =>
+      verification.name === command &&
+      (verification.status === 'passed' || verification.status === 'failed'),
+    )) {
+      return undefined
+    }
+    if (persisted?.status === 'APPROVED') return persisted
+
+    const events = this.readExecutionLedger()
+    const approvals = events.filter((event) =>
+      event.eventType === 'VERIFICATION_APPROVED' &&
+      event.sessionId === state.sessionId &&
+      event.taskId === taskId &&
+      event.commandFingerprint === commandFingerprint &&
+      'approvalGeneration' in event &&
+      event.approvalGeneration !== undefined,
+    )
+    const approved = approvals.at(-1)
+    if (
+      approved === undefined ||
+      !('approvalGeneration' in approved) ||
+      approved.approvalGeneration === undefined
+    ) return undefined
+    const approvalGeneration = approved.approvalGeneration
+    const requested = events.some((event) =>
+      event.eventType === 'VERIFICATION_APPROVAL_REQUESTED' &&
+      event.sessionId === state.sessionId &&
+      event.taskId === taskId &&
+      event.commandFingerprint === commandFingerprint &&
+      'approvalGeneration' in event &&
+      event.approvalGeneration === approvalGeneration,
+    )
+    if (!requested) return undefined
+
+    const resultAlreadyPersisted = events.some((event) =>
+      event.eventId > approved.eventId &&
+      event.taskId === taskId &&
+      'verificationCommand' in event &&
+      event.verificationCommand === command &&
+      (event.verificationStatus === 'passed' || event.verificationStatus === 'failed'),
+    )
+    if (resultAlreadyPersisted) return undefined
+
+    return {
+      sessionId: state.sessionId,
+      taskId,
+      command,
+      commandFingerprint,
+      generation: approvalGeneration,
+      status: 'APPROVED',
     }
   }
 

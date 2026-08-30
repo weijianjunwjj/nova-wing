@@ -95,6 +95,7 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       taskId: string
       status: 'REQUESTED' | 'APPROVED' | 'CONSUMED'
       commandFingerprint: string
+      approvalGeneration: number
     }
   | {
       eventType: 'SESSION_COMPLETED'
@@ -483,6 +484,9 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalString(row, 'notification_kind') === null ? {} : { notificationKind: optionalString(row, 'notification_kind')! }),
     ...(optionalString(row, 'notification_id') === null ? {} : { notificationId: optionalString(row, 'notification_id')! }),
     ...(optionalString(row, 'command_fingerprint') === null ? {} : { commandFingerprint: optionalString(row, 'command_fingerprint')! }),
+    ...(approvalGenerationFromDedupeKey(row) === undefined
+      ? {}
+      : { approvalGeneration: approvalGenerationFromDedupeKey(row)! }),
     ...(optionalString(row, 'verification_classification') === null ? {} : { verificationClassification: optionalString(row, 'verification_classification')! }),
     ...(optionalString(row, 'raw_output_ref') === null ? {} : { rawOutputRef: optionalString(row, 'raw_output_ref')! }),
     ...(optionalString(row, 'first_failure_title') === null ? {} : { firstFailureTitle: optionalString(row, 'first_failure_title')! }),
@@ -493,6 +497,22 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalInteger(row, 'affected_tests') === null ? {} : { affectedTests: optionalInteger(row, 'affected_tests')! }),
   }
   return { ...base, ...optional } as ExecutionLedgerEvent
+}
+
+function approvalGenerationFromDedupeKey(row: SqlRow): number | undefined {
+  const eventType = optionalString(row, 'event_type')
+  if (
+    eventType !== 'VERIFICATION_APPROVAL_REQUESTED' &&
+    eventType !== 'VERIFICATION_APPROVED' &&
+    eventType !== 'VERIFICATION_APPROVAL_CONSUMED'
+  ) {
+    return undefined
+  }
+  const dedupeKey = optionalString(row, 'dedupe_key')
+  const match = dedupeKey?.match(/:(\d+):[a-f0-9]{64}$/u)
+  if (match?.[1] === undefined) return undefined
+  const generation = Number(match[1])
+  return Number.isSafeInteger(generation) && generation > 0 ? generation : undefined
 }
 
 function requiredString(row: SqlRow, key: string): string {

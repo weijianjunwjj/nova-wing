@@ -101,6 +101,8 @@ export interface WorkSessionDurableState {
   currentTaskCheckpoint?: GuardianTaskRecoveryCheckpoint
   /** Product-safe evidence retained for a suspended deterministic verifier. */
   verificationFailure?: VerificationResult
+  /** Durable proof that the approved exact verifier actually produced a result. */
+  verificationResults?: readonly VerificationResult[]
   /**
    * W004-A: 每个已完成 Task 对应的 commit SHA。
    * 连续 Task 需要区分 T1→sha1 / T2→sha2 / T3→sha3，故不保存单一 lastCommitSha。

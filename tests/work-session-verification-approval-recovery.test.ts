@@ -9,11 +9,59 @@ import {
   WorkSessionRuntime,
   type DelegationPacket,
   type ExecutionReport,
+  type GuardianTaskRecoveryCheckpoint,
   type WorkSessionDefinition,
   type WorkSessionTaskResult,
 } from 'nova-wing/development-guardian'
 
 const COMMAND = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
+
+function recoveryCheckpoint(
+  taskId: string,
+  verificationResults: ExecutionReport['verificationResults'] = [],
+): GuardianTaskRecoveryCheckpoint {
+  return {
+    version: 1,
+    task: {
+      id: taskId,
+      goal: 'migration',
+      constraints: [],
+      state: 'HUMAN_REQUIRED',
+      iteration: 1,
+      maxIterations: 3,
+      lastPacket: {
+        verdict: 'blocked', goal: 'migration', instructions: [], constraints: [],
+        verification: [COMMAND], doNotDo: [], rationale: 'verification required',
+      },
+      ...(verificationResults.length === 0
+        ? {}
+        : {
+            lastReport: {
+              summary: 'verification completed', changedFiles: [], commandsRun: [COMMAND],
+              verificationResults, blockers: [],
+            },
+          }),
+    },
+    provider: {},
+    repo: {
+      repoPath: process.cwd(), branch: 'feat/work-session-mvp',
+      headSha: 'a'.repeat(40), changedFiles: [], worktreeFingerprint: 'b'.repeat(64),
+    },
+    capturedAt: '2026-08-30T00:00:00.000Z',
+  }
+}
+
+const BRAIN_FAILURE = {
+  stage: 'FINAL_REVIEW' as const,
+  failureType: 'BRAIN_TRANSPORT_FAILED' as const,
+  safeMessage: 'Brain transport unavailable',
+  category: 'TRANSPORT' as const,
+  rootCause: 'review timed out',
+  adapter: 'ask-bridge/chatgpt',
+  retryable: true,
+  degraded: false,
+  fingerprint: 'brain-transport:timeout',
+}
 
 async function withStorage(run: (storageUrl: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'verification-approval-'))
@@ -59,6 +107,65 @@ async function mutatePendingApproval(
     runId,
     snapshot,
   })
+}
+
+async function removePendingApproval(runtime: WorkSessionRuntime): Promise<void> {
+  const internal = runtime as unknown as {
+    mastra: { getStorage(): { getStore(name: string): Promise<any> } | undefined }
+    workflowId: string
+  }
+  const workflows = await internal.mastra.getStorage()?.getStore('workflows')
+  assert.ok(workflows)
+  const runId = runtime.getDefinition().id
+  const snapshot = await workflows.loadWorkflowSnapshot({
+    workflowName: internal.workflowId,
+    runId,
+  })
+  assert.ok(snapshot)
+  delete (snapshot.value as Record<string, unknown>).pendingVerificationApproval
+  await workflows.persistWorkflowSnapshot({
+    workflowName: internal.workflowId,
+    runId,
+    snapshot,
+  })
+}
+
+async function replaceCheckpointVerificationCommand(
+  runtime: WorkSessionRuntime,
+  command: string,
+): Promise<void> {
+  const internal = runtime as unknown as {
+    mastra: { getStorage(): { getStore(name: string): Promise<any> } | undefined }
+    workflowId: string
+  }
+  const workflows = await internal.mastra.getStorage()?.getStore('workflows')
+  assert.ok(workflows)
+  const runId = runtime.getDefinition().id
+  const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: internal.workflowId, runId })
+  assert.ok(snapshot)
+  const checkpoint = (snapshot.value as Record<string, any>).currentTaskCheckpoint
+  checkpoint.task.lastPacket.verification = [command]
+  await workflows.persistWorkflowSnapshot({ workflowName: internal.workflowId, runId, snapshot })
+}
+
+function appendLegacyPrematureConsumption(runtime: WorkSessionRuntime, generation: number): void {
+  const internal = runtime as unknown as {
+    ledger?: { append(input: Record<string, unknown>, dedupeKey: string): unknown }
+  }
+  assert.ok(internal.ledger)
+  const sessionId = runtime.getDefinition().id
+  const approved = runtime.readExecutionLedger().find(
+    (event) => event.eventType === 'VERIFICATION_APPROVED',
+  )
+  const fingerprint = approved !== undefined && 'commandFingerprint' in approved
+    ? approved.commandFingerprint
+    : undefined
+  assert.ok(fingerprint)
+  internal.ledger.append({
+    eventType: 'VERIFICATION_APPROVAL_CONSUMED', sessionId, taskId: 'T023',
+    timestamp: '2026-08-30T00:01:00.000Z', status: 'CONSUMED',
+    commandFingerprint: fingerprint, approvalGeneration: generation,
+  }, `verification-consumed:T023:${generation}:${fingerprint}`)
 }
 
 await test('Reviewer pre-executor scoped Alembic request becomes dedicated approval without running Executor', async () => {
@@ -136,6 +243,200 @@ await test('Reviewer pre-executor scoped Alembic request becomes dedicated appro
   })
 })
 
+await test('approved exact command survives Brain transport, restart, and budget pause until execution', async () => {
+  await withStorage(async (storageUrl) => {
+    const approvals: Array<string | undefined> = []
+    let calls = 0
+    const runner = {
+      async run(_task: { id: string }, _resume?: unknown, _checkpoint?: unknown, context?: { approvedVerificationCommand?: string }): Promise<WorkSessionTaskResult> {
+        calls += 1
+        approvals.push(context?.approvedVerificationCommand)
+        if (calls === 1) return {
+          status: 'HUMAN_REQUIRED',
+          humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
+          pendingVerificationCommand: COMMAND,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        if (calls === 2) return {
+          status: 'BRAIN_INFRASTRUCTURE_FAILED', brainFailure: BRAIN_FAILURE,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        return { status: 'PAUSED', checkpoint: recoveryCheckpoint('T023') }
+      },
+    }
+    const sessionDefinition = {
+      ...definition('approval-survives-recovery'), tasks: [{ id: 'T023', goal: 'migration' }],
+    }
+    const first = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await first.start()
+    const transportSuspended = await first.approvePendingVerificationAndContinue()
+    assert.equal(transportSuspended.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
+    assert.equal(transportSuspended.pendingVerificationApproval?.status, 'APPROVED')
+    assert.equal(transportSuspended.pendingVerificationApproval?.command, COMMAND)
+    assert.equal(first.readExecutionLedger().some(
+      (event) => event.eventType === 'VERIFICATION_APPROVAL_CONSUMED',
+    ), false)
+    await first.close()
+
+    const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    const hydrated = await restarted.loadPersistedState()
+    assert.equal(hydrated?.pendingVerificationApproval?.status, 'APPROVED')
+    const paused = await restarted.resume({})
+    assert.equal(paused.suspensionReason, 'USER_PAUSED')
+    assert.equal(paused.pendingVerificationApproval?.status, 'APPROVED')
+    assert.deepEqual(approvals, [undefined, COMMAND, COMMAND])
+    const approvalEvents = restarted.readExecutionLedger().filter(
+      (event) => event.eventType === 'VERIFICATION_APPROVAL_REQUESTED',
+    )
+    assert.equal(approvalEvents.length, 1, 'recovery must not request the same approval again')
+    await restarted.close()
+  })
+})
+
+await test('legacy premature CONSUMED is restored only from matching durable approval and checkpoint', async () => {
+  await withStorage(async (storageUrl) => {
+    const approvals: Array<string | undefined> = []
+    let calls = 0
+    const runner = {
+      async run(_task: { id: string }, _resume?: unknown, _checkpoint?: unknown, context?: { approvedVerificationCommand?: string }): Promise<WorkSessionTaskResult> {
+        calls += 1
+        approvals.push(context?.approvedVerificationCommand)
+        if (calls === 1) return {
+          status: 'HUMAN_REQUIRED',
+          humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
+          pendingVerificationCommand: COMMAND,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        if (calls === 2) return {
+          status: 'BRAIN_INFRASTRUCTURE_FAILED', brainFailure: BRAIN_FAILURE,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        return { status: 'PAUSED', checkpoint: recoveryCheckpoint('T023') }
+      },
+    }
+    const sessionDefinition = {
+      ...definition('legacy-consumed-recovery'), tasks: [{ id: 'T023', goal: 'migration' }],
+    }
+    const first = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await first.start()
+    const suspended = await first.approvePendingVerificationAndContinue()
+    const generation = suspended.pendingVerificationApproval?.generation
+    assert.ok(generation)
+    appendLegacyPrematureConsumption(first, generation)
+    await removePendingApproval(first)
+    await first.close()
+
+    const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    assert.equal((await restarted.loadPersistedState())?.pendingVerificationApproval, undefined)
+    const recovered = await restarted.resume({})
+    assert.equal(recovered.pendingVerificationApproval?.status, 'APPROVED')
+    assert.equal(recovered.pendingVerificationApproval?.generation, generation)
+    assert.equal(recovered.pendingVerificationApproval?.command, COMMAND)
+    assert.deepEqual(approvals, [undefined, COMMAND, COMMAND])
+    assert.equal(restarted.readExecutionLedger().filter(
+      (event) => event.eventType === 'VERIFICATION_APPROVAL_REQUESTED',
+    ).length, 1)
+    await restarted.close()
+  })
+})
+
+await test('historical approval cannot authorize a changed command fingerprint', async () => {
+  await withStorage(async (storageUrl) => {
+    const changedCommand = 'cd apps/api/subdir && ../../../.venv/Scripts/python.exe -m alembic upgrade head'
+    let calls = 0
+    const approvals: Array<string | undefined> = []
+    const runner = {
+      async run(_task: { id: string }, _resume?: unknown, _checkpoint?: unknown, context?: { approvedVerificationCommand?: string }): Promise<WorkSessionTaskResult> {
+        calls += 1
+        approvals.push(context?.approvedVerificationCommand)
+        if (calls === 1) return {
+          status: 'HUMAN_REQUIRED',
+          humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
+          pendingVerificationCommand: COMMAND,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        if (calls === 2) return {
+          status: 'BRAIN_INFRASTRUCTURE_FAILED', brainFailure: BRAIN_FAILURE,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        return { status: 'PAUSED', checkpoint: recoveryCheckpoint('T023') }
+      },
+    }
+    const sessionDefinition = {
+      ...definition('historical-fingerprint-mismatch'), tasks: [{ id: 'T023', goal: 'migration' }],
+    }
+    const first = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await first.start()
+    await first.approvePendingVerificationAndContinue()
+    await removePendingApproval(first)
+    await replaceCheckpointVerificationCommand(first, changedCommand)
+    await first.close()
+
+    const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    const state = await restarted.resume({})
+    assert.equal(state.pendingVerificationApproval, undefined)
+    assert.deepEqual(approvals, [undefined, COMMAND, undefined])
+    await restarted.close()
+  })
+})
+
+await test('failed verifier result supersedes approval and remains durable without reapproval', async () => {
+  await withStorage(async (storageUrl) => {
+    let calls = 0
+    const failedVerification = {
+      name: COMMAND, status: 'failed' as const, exitCode: 1,
+      details: 'migration verification failed',
+    }
+    const runner = {
+      async run(_task: { id: string }, _resume?: unknown, _checkpoint?: unknown, context?: { approvedVerificationCommand?: string }): Promise<WorkSessionTaskResult> {
+        calls += 1
+        if (calls === 1) return {
+          status: 'HUMAN_REQUIRED',
+          humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
+          pendingVerificationCommand: COMMAND,
+          checkpoint: recoveryCheckpoint('T023'),
+        }
+        if (calls === 2) {
+          assert.equal(context?.approvedVerificationCommand, COMMAND)
+          return {
+            status: 'HUMAN_REQUIRED',
+            humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: 'verification environment failed' },
+            verificationFailure: failedVerification,
+            checkpoint: recoveryCheckpoint('T023', [failedVerification]),
+          }
+        }
+        assert.equal(context?.approvedVerificationCommand, undefined)
+        return { status: 'PAUSED', checkpoint: recoveryCheckpoint('T023') }
+      },
+    }
+    const sessionDefinition = {
+      ...definition('failed-verification-evidence'), tasks: [{ id: 'T023', goal: 'migration' }],
+    }
+    const runtime = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    await runtime.start()
+    const failed = await runtime.approvePendingVerificationAndContinue()
+    assert.equal(failed.pendingVerificationApproval, undefined)
+    assert.deepEqual(failed.verificationFailure, failedVerification)
+    assert.deepEqual(failed.verificationResults, [failedVerification])
+    assert.equal(runtime.readExecutionLedger().filter(
+      (event) => event.eventType === 'VERIFICATION_APPROVAL_CONSUMED',
+    ).length, 1)
+    assert.equal(runtime.readExecutionLedger().filter(
+      (event) => event.eventType === 'VERIFICATION_APPROVAL_REQUESTED',
+    ).length, 1)
+    await runtime.close()
+
+    const restarted = new WorkSessionRuntime({ definition: sessionDefinition, storageUrl, taskRunner: runner })
+    const hydrated = await restarted.loadPersistedState()
+    assert.equal(hydrated?.pendingVerificationApproval, undefined)
+    assert.deepEqual(hydrated?.verificationFailure, failedVerification)
+    assert.deepEqual(hydrated?.verificationResults, [failedVerification])
+    const resumed = await restarted.resume({})
+    assert.equal(resumed.pendingVerificationApproval, undefined)
+    await restarted.close()
+  })
+})
+
 await test('verification approval is durable, exact, single-use, and advances the next task', async () => {
   await withStorage(async (storageUrl) => {
     let t016Calls = 0
@@ -147,7 +448,14 @@ await test('verification approval is durable, exact, single-use, and advances th
           return { status: 'COMPLETED' }
         }
         t016Calls++
-        if (context?.approvedVerificationCommand === COMMAND) return { status: 'COMPLETED' }
+        if (context?.approvedVerificationCommand === COMMAND) return {
+          status: 'COMPLETED',
+          completionEvidence: {
+            changedFiles: [], blockers: [], finalReviewerVerdict: 'done',
+            requiredVerification: [COMMAND],
+            verificationResults: [{ name: COMMAND, status: 'passed' }],
+          },
+        }
         return {
           status: 'HUMAN_REQUIRED',
           humanRequired: { category: 'DECISION_REQUIRED', reason: `verification command requires human approval: ${COMMAND}` },
