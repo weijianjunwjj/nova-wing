@@ -1278,7 +1278,7 @@ test('T021 combined DevTools noise preserves the Send button transport fingerpri
 test('AskBridge submission metrics parser keeps only bounded non-content composer facts', () => {
   const metrics = extractAskBridgeSubmissionMetrics([
     'private prompt must never persist',
-    'Submission Metrics: {"operationId":"op","promptFingerprint":"sha256-x","promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false,"initialAssistantCount":0}',
+    'Submission Metrics: {"operationId":"op","promptFingerprint":"sha256-x","promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false,"conversationReuse":"fresh","conversationIdentityMatched":false,"conversationIdentityHash":"conversation-fnv1a64-0123456789abcdef","submissionGeneration":1,"initialAssistantCount":0}',
   ].join('\n'))
 
   assert.deepEqual(metrics, {
@@ -1290,6 +1290,10 @@ test('AskBridge submission metrics parser keeps only bounded non-content compose
     submitCount: 1,
     submissionReached: true,
     reusedSubmission: false,
+    conversationReuse: 'fresh',
+    conversationIdentityMatched: false,
+    conversationIdentityHash: 'conversation-fnv1a64-0123456789abcdef',
+    submissionGeneration: 1,
   })
   assert.doesNotMatch(JSON.stringify(metrics), /private prompt|operationId|promptFingerprint/u)
 })
@@ -1297,8 +1301,8 @@ test('AskBridge submission metrics parser keeps only bounded non-content compose
 test('transport retry reuses one deterministic submission operation and captured Thread Link', async () => {
   const requests: AskBridgeCommandRequest[] = []
   const sessionUrl = 'https://chatgpt.com/c/exactly-once-retry'
-  const firstMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false}'
-  const secondMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":true}'
+  const firstMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":false,"conversationReuse":"fresh","conversationIdentityMatched":false,"conversationIdentityHash":"conversation-fnv1a64-0123456789abcdef","submissionGeneration":1}'
+  const secondMetrics = '{"promptChars":12634,"inputMode":"big-paste","composerSettleMs":21608,"sendReadyWaitMs":21608,"pasteCount":1,"submitCount":1,"submissionReached":true,"reusedSubmission":true,"conversationReuse":"same","conversationIdentityMatched":true,"conversationIdentityHash":"conversation-fnv1a64-0123456789abcdef","submissionGeneration":1}'
   const brain = new AskBridgeBrain({
     command: 'ask-bridge.exe',
     commandRunner: async (request) => {
@@ -1343,6 +1347,10 @@ test('transport retry reuses one deterministic submission operation and captured
     submitCount: 1,
     submissionReached: true,
     reusedSubmission: true,
+    conversationReuse: 'same',
+    conversationIdentityMatched: true,
+    conversationIdentityHash: 'conversation-fnv1a64-0123456789abcdef',
+    submissionGeneration: 1,
   })
 })
 

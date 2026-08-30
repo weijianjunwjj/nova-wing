@@ -1,9 +1,56 @@
 warning: in the working copy of 'src/main.rs', LF will be replaced by CRLF the next time Git touches it
 diff --git a/src/main.rs b/src/main.rs
-index 1b76bfe..1810208 100644
+index 1b76bfe..e2d8327 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -680,6 +680,14 @@ struct Cli {
+@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ use std::thread;
+-use std::time::{Duration, Instant};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+ use tokio::sync::{Mutex, oneshot};
+ use url::Url;
+@@ -137,6 +137,22 @@ impl Provider {
+             .any(|segments| segments[0] == marker && !segments[1].is_empty())
+     }
+ 
++    fn conversation_marker(self) -> &'static str {
++        match self {
++            Provider::ChatGpt => "c",
++            Provider::Gemini => "app",
++            Provider::Claude => "chat",
++        }
++    }
++
++    fn conversation_namespace(self) -> &'static str {
++        match self {
++            Provider::ChatGpt => "chatgpt",
++            Provider::Gemini => "gemini",
++            Provider::Claude => "claude",
++        }
++    }
++
+     fn ready_check_js(self) -> &'static str {
+         match self {
+             Provider::ChatGpt => r#"() => document.getElementById('prompt-textarea') !== null"#,
+@@ -319,6 +335,14 @@ impl Provider {
+         }
+     }
+ 
++    fn user_selector(self) -> &'static str {
++        match self {
++            Provider::ChatGpt => "[data-message-author-role=\"user\"]",
++            Provider::Gemini => "user-query",
++            Provider::Claude => "[data-testid=\"user-message\"]",
++        }
++    }
++
+     fn latest_response_selector(self) -> &'static str {
+         match self {
+             Provider::ChatGpt => {
+@@ -680,6 +704,14 @@ struct Cli {
      #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
      timeout: u64,
  
@@ -18,7 +65,7 @@ index 1b76bfe..1810208 100644
      /// Switch the provider model before sending the prompt.
      /// Match the primary menu label case- and punctuation-insensitively;
      /// subtitles and badges are ignored.
-@@ -3018,6 +3026,15 @@ fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<()
+@@ -3018,6 +3050,69 @@ fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<()
  mod tests {
      use super::*;
  
@@ -31,10 +78,64 @@ index 1b76bfe..1810208 100644
 +        assert!(!first.contains("sensitive"));
 +    }
 +
++    #[test]
++    fn canonical_conversation_identity_uses_provider_and_thread_id_only() {
++        let first = canonical_conversation_identity(
++            Provider::ChatGpt,
++            "https://chatgpt.com/c/thread-a?temporary=true#fragment",
++        );
++        let same = canonical_conversation_identity(
++            Provider::ChatGpt,
++            "https://www.chatgpt.com/c/thread-a",
++        );
++        assert_eq!(first.as_deref(), Some("chatgpt:thread-a"));
++        assert_eq!(first, same);
++        assert_eq!(
++            canonical_conversation_identity(Provider::ChatGpt, "https://chatgpt.com/"),
++            None
++        );
++        assert_eq!(
++            canonical_conversation_identity(
++                Provider::ChatGpt,
++                "https://chatgpt.com/c/WEB:temporary-client-id",
++            ),
++            None
++        );
++    }
++
++    #[test]
++    fn submission_storage_key_scopes_one_logical_operation_to_conversation() {
++        let operation_id = "logical-operation";
++        let first = safe_conversation_fingerprint("chatgpt:thread-a");
++        let retry = safe_conversation_fingerprint("chatgpt:thread-a");
++        let rotated = safe_conversation_fingerprint("chatgpt:thread-b");
++        assert_eq!(
++            submission_storage_key(operation_id, &first),
++            submission_storage_key(operation_id, &retry),
++        );
++        assert_ne!(
++            submission_storage_key(operation_id, &first),
++            submission_storage_key(operation_id, &rotated),
++        );
++        assert!(!submission_storage_key(operation_id, &first).contains("thread-a"));
++    }
++
++    #[test]
++    fn fresh_blank_pages_receive_distinct_provisional_submission_scopes() {
++        let first = provisional_conversation_identity();
++        std::thread::sleep(Duration::from_millis(1));
++        let second = provisional_conversation_identity();
++        assert_ne!(first, second);
++        assert_ne!(
++            safe_conversation_fingerprint(&first),
++            safe_conversation_fingerprint(&second),
++        );
++    }
++
      #[test]
      fn validates_chrome_devtools_mcp_node_versions() {
          for version in [
-@@ -6097,14 +6114,15 @@ fn switch_reasoning(
+@@ -6097,14 +6192,15 @@ fn switch_reasoning(
      )
  }
  
@@ -56,7 +157,7 @@ index 1b76bfe..1810208 100644
          let check_res = call_mcp_tool(
              config_path,
              "evaluate_script",
-@@ -6118,7 +6136,6 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
+@@ -6118,7 +6214,6 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
          {
              status = s;
          }
@@ -64,7 +165,7 @@ index 1b76bfe..1810208 100644
      }
  
      if status.starts_with("error:") {
-@@ -6132,6 +6149,15 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
+@@ -6132,6 +6227,177 @@ fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
      Ok(status)
  }
  
@@ -77,10 +178,172 @@ index 1b76bfe..1810208 100644
 +    format!("fnv1a64-{hash:016x}")
 +}
 +
++fn safe_conversation_fingerprint(identity: &str) -> String {
++    format!("conversation-{}", safe_prompt_fingerprint(identity))
++}
++
++fn canonical_conversation_identity(provider: Provider, raw_url: &str) -> Option<String> {
++    let url = Url::parse(raw_url).ok()?;
++    if !provider.owns_conversation_url(&url) {
++        return None;
++    }
++    let segments: Vec<&str> = url
++        .path_segments()?
++        .filter(|segment| !segment.is_empty())
++        .collect();
++    let marker = provider.conversation_marker();
++    let id = segments
++        .windows(2)
++        .find(|parts| parts[0] == marker && !parts[1].is_empty())?[1];
++    if provider == Provider::ChatGpt && id.starts_with("WEB:") {
++        return None;
++    }
++    Some(format!("{}:{id}", provider.conversation_namespace()))
++}
++
++fn provisional_conversation_identity() -> String {
++    let timestamp = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    format!("provisional:{}:{timestamp}", std::process::id())
++}
++
++fn submission_storage_key(operation_id: &str, conversation_fingerprint: &str) -> String {
++    format!("ask-bridge-submission:v2:{operation_id}:{conversation_fingerprint}")
++}
++
++fn current_page_url(config_path: &str) -> Option<String> {
++    call_mcp_tool(
++        config_path,
++        "evaluate_script",
++        serde_json::json!({ "function": "() => window.location.href" }),
++    )
++    .ok()
++    .and_then(|value| parse_script_result(&value).ok())
++    .and_then(|value| value.as_str().map(str::to_string))
++}
++
++fn migrate_submission_to_canonical_conversation(
++    config_path: &str,
++    operation_id: &str,
++    prompt_fingerprint: &str,
++    previous_conversation_fingerprint: &str,
++    canonical_conversation_fingerprint: &str,
++) -> Result<(), String> {
++    if previous_conversation_fingerprint == canonical_conversation_fingerprint {
++        return Ok(());
++    }
++    let previous_key = submission_storage_key(operation_id, previous_conversation_fingerprint);
++    let canonical_key = submission_storage_key(operation_id, canonical_conversation_fingerprint);
++    let script = r#"() => {
++            const previousKey = __PREVIOUS_KEY__;
++            const canonicalKey = __CANONICAL_KEY__;
++            const operationId = __OPERATION_ID__;
++            const promptFingerprint = __PROMPT_FINGERPRINT__;
++            const canonicalConversationFingerprint = __CANONICAL_FINGERPRINT__;
++            const parse = (key) => {
++                try { return JSON.parse(localStorage.getItem(key) || 'null'); }
++                catch (e) { return null; }
++            };
++            const previous = parse(previousKey);
++            const existing = parse(canonicalKey);
++            const state = previous || existing;
++            if (!state || state.operationId !== operationId ||
++                state.promptFingerprint !== promptFingerprint) {
++                return { ok: false, reason: 'submission state unavailable for canonical migration' };
++            }
++            if (existing && previous &&
++                existing.submissionGeneration !== previous.submissionGeneration) {
++                return { ok: false, reason: 'canonical conversation has a different submission generation' };
++            }
++            state.conversationIdentityHash = canonicalConversationFingerprint;
++            state.conversationIdentityKnown = true;
++            localStorage.setItem(canonicalKey, JSON.stringify(state));
++            if (previousKey !== canonicalKey) localStorage.removeItem(previousKey);
++            return { ok: true };
++        }"#
++    .replace("__PREVIOUS_KEY__", &serde_json::to_string(&previous_key).unwrap())
++    .replace("__CANONICAL_KEY__", &serde_json::to_string(&canonical_key).unwrap())
++    .replace("__OPERATION_ID__", &serde_json::to_string(operation_id).unwrap())
++    .replace(
++        "__PROMPT_FINGERPRINT__",
++        &serde_json::to_string(prompt_fingerprint).unwrap(),
++    )
++    .replace(
++        "__CANONICAL_FINGERPRINT__",
++        &serde_json::to_string(canonical_conversation_fingerprint).unwrap(),
++    );
++    let result = call_mcp_tool(
++        config_path,
++        "evaluate_script",
++        serde_json::json!({ "function": script }),
++    )?;
++    let parsed = parse_script_result(&result)?;
++    if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
++        Ok(())
++    } else {
++        Err(parsed
++            .get("reason")
++            .and_then(Value::as_str)
++            .unwrap_or("canonical conversation migration failed")
++            .to_string())
++    }
++}
++
++fn finalize_submission_conversation(
++    config_path: &str,
++    provider: Provider,
++    operation_id: &str,
++    prompt_fingerprint: &str,
++    initial_conversation_fingerprint: &str,
++    initial_conversation_known: bool,
++    status: String,
++    timeout: Duration,
++) -> Result<String, String> {
++    let Some(raw_metrics) = status.strip_prefix("success:") else {
++        return Ok(status);
++    };
++    if initial_conversation_known {
++        return Ok(status);
++    }
++    let started_at = Instant::now();
++    while started_at.elapsed() < timeout {
++        let canonical_fingerprint = current_page_url(config_path)
++            .and_then(|url| canonical_conversation_identity(provider, &url))
++            .map(|identity| safe_conversation_fingerprint(&identity));
++        if let Some(canonical_fingerprint) = canonical_fingerprint {
++            let mut metrics = serde_json::from_str::<Value>(raw_metrics).map_err(|_| {
++                "submission metrics were invalid after successful submit".to_string()
++            })?;
++            let metrics_fingerprint = metrics
++                .get("conversationIdentityHash")
++                .and_then(Value::as_str)
++                .unwrap_or(initial_conversation_fingerprint);
++            migrate_submission_to_canonical_conversation(
++                config_path,
++                operation_id,
++                prompt_fingerprint,
++                metrics_fingerprint,
++                &canonical_fingerprint,
++            )?;
++            metrics["conversationIdentityHash"] = Value::String(canonical_fingerprint);
++            return Ok(format!("success:{}", metrics));
++        }
++        thread::sleep(std::cmp::min(
++            Duration::from_millis(100),
++            timeout.saturating_sub(started_at.elapsed()),
++        ));
++    }
++    Err(format!(
++        "canonical conversation identity unavailable after submission submissionMetrics={raw_metrics}"
++    ))
++}
++
  fn focus_and_clear_composer(config_path: &str, provider: Provider) -> Result<(), String> {
      let js = r#"() => {
              const composerSelectors = __COMPOSER_SELECTORS__;
-@@ -6290,9 +6316,18 @@ fn submit_regular_prompt(
+@@ -6290,9 +6556,37 @@ fn submit_regular_prompt(
      config_path: &str,
      provider: Provider,
      prompt: &str,
@@ -89,17 +352,36 @@ index 1b76bfe..1810208 100644
 +    initial_assistant_count: usize,
 +    timeout: Duration,
  ) -> Result<String, String> {
++    let submission_started_at = Instant::now();
      let prompt_json = serde_json::to_string(prompt)
          .map_err(|e| format!("Failed to serialize prompt text: {}", e))?;
 +    let operation_id_json = serde_json::to_string(operation_id)
 +        .map_err(|e| format!("Failed to serialize operation identity: {}", e))?;
 +    let fingerprint_json = serde_json::to_string(prompt_fingerprint)
 +        .map_err(|e| format!("Failed to serialize prompt fingerprint: {}", e))?;
++    let canonical_identity = current_page_url(config_path)
++        .and_then(|url| canonical_conversation_identity(provider, &url));
++    let conversation_identity_known = canonical_identity.is_some();
++    let conversation_identity =
++        canonical_identity.unwrap_or_else(provisional_conversation_identity);
++    let conversation_fingerprint = safe_conversation_fingerprint(&conversation_identity);
++    let conversation_fingerprint_json = serde_json::to_string(&conversation_fingerprint)
++        .map_err(|e| format!("Failed to serialize conversation fingerprint: {}", e))?;
++    let storage_key = submission_storage_key(operation_id, &conversation_fingerprint);
++    let storage_key_json = serde_json::to_string(&storage_key)
++        .map_err(|e| format!("Failed to serialize submission storage key: {}", e))?;
++    let storage_prefix = format!("ask-bridge-submission:v2:{operation_id}:");
++    let storage_prefix_json = serde_json::to_string(&storage_prefix)
++        .map_err(|e| format!("Failed to serialize submission storage prefix: {}", e))?;
++    let conversation_namespace_json = serde_json::to_string(provider.conversation_namespace())
++        .map_err(|e| format!("Failed to serialize conversation namespace: {}", e))?;
++    let conversation_marker_json = serde_json::to_string(provider.conversation_marker())
++        .map_err(|e| format!("Failed to serialize conversation marker: {}", e))?;
 +    let timeout_ms = timeout.as_millis().min(u128::from(u64::MAX));
      let set_and_submit_js = r#"() => {
              window.__submit_status = 'pending';
              (async () => {
-@@ -6300,6 +6335,12 @@ fn submit_regular_prompt(
+@@ -6300,6 +6594,17 @@ fn submit_regular_prompt(
                      const composerSelectors = __COMPOSER_SELECTORS__;
                      const sendSelectors = __SEND_SELECTORS__;
                      const stopSelectors = __STOP_SELECTORS__;
@@ -108,19 +390,65 @@ index 1b76bfe..1810208 100644
 +                    const promptChars = __PROMPT_CHARS__;
 +                    const initialAssistantCount = __INITIAL_ASSISTANT_COUNT__;
 +                    const deadline = Date.now() + __TIMEOUT_MS__;
-+                    const storageKey = 'ask-bridge-submission:' + operationId;
++                    const storagePrefix = __STORAGE_PREFIX__;
++                    let storageKey = __STORAGE_KEY__;
++                    const initialConversationIdentityHash = __CONVERSATION_FINGERPRINT__;
++                    const initialConversationIdentityKnown = __CONVERSATION_IDENTITY_KNOWN__;
++                    const conversationNamespace = __CONVERSATION_NAMESPACE__;
++                    const conversationMarker = __CONVERSATION_MARKER__;
                      const isVisible = (el) => {
                          if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
                          const style = window.getComputedStyle(el);
-@@ -6310,6 +6351,39 @@ fn submit_regular_prompt(
+@@ -6310,6 +6615,111 @@ fn submit_regular_prompt(
                      const isStopButton = (el) => stopSelectors.some((s) => {
                          try { return el.matches(s); } catch (e) { return false; }
                      });
 +                    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 +                    const now = () => Date.now();
-+                    const readStoredState = () => {
-+                        try { return JSON.parse(localStorage.getItem(storageKey) || 'null'); }
++                    const keyForConversation = (identityHash) => storagePrefix + identityHash;
++                    const parseStoredState = (key) => {
++                        try { return JSON.parse(localStorage.getItem(key) || 'null'); }
 +                        catch (e) { return null; }
++                    };
++                    const readStoredState = () => {
++                        if (!initialConversationIdentityKnown) return null;
++                        return parseStoredState(storageKey);
++                    };
++                    const nextSubmissionGeneration = () => {
++                        let maxGeneration = 0;
++                        for (let index = 0; index < localStorage.length; index += 1) {
++                            const key = localStorage.key(index);
++                            if (!key || !key.startsWith(storagePrefix)) continue;
++                            const candidate = parseStoredState(key);
++                            if (candidate?.operationId !== operationId ||
++                                candidate?.promptFingerprint !== promptFingerprint) continue;
++                            const generation = Number(candidate.submissionGeneration);
++                            if (Number.isInteger(generation) && generation > maxGeneration) {
++                                maxGeneration = generation;
++                            }
++                        }
++                        return maxGeneration + 1;
++                    };
++                    const conversationFingerprint = (identity) => {
++                        let hash = 0xcbf29ce484222325n;
++                        for (const byte of new TextEncoder().encode(identity)) {
++                            hash ^= BigInt(byte);
++                            hash = BigInt.asUintN(64, hash * 0x100000001b3n);
++                        }
++                        return 'conversation-fnv1a64-' + hash.toString(16).padStart(16, '0');
++                    };
++                    const canonicalConversationIdentityHash = () => {
++                        const segments = location.pathname.split('/').filter(Boolean);
++                        const markerIndex = segments.findIndex((segment, index) =>
++                            segment === conversationMarker && Boolean(segments[index + 1]));
++                        if (markerIndex < 0) return null;
++                        const conversationId = segments[markerIndex + 1];
++                        if (conversationNamespace === 'chatgpt' && conversationId.startsWith('WEB:')) {
++                            return null;
++                        }
++                        return conversationFingerprint(
++                            conversationNamespace + ':' + conversationId
++                        );
 +                    };
 +                    const safeMetrics = (state) => ({
 +                        operationId: state.operationId,
@@ -136,10 +464,41 @@ index 1b76bfe..1810208 100644
 +                        submitCount: state.submitCount,
 +                        submissionReached: ['SUBMITTING', 'SUBMITTED', 'WAITING_RESPONSE'].includes(state.state),
 +                        reusedSubmission: Boolean(state.reusedSubmission),
-+                        initialAssistantCount: state.initialAssistantCount
++                        conversationReuse: state.conversationReuse || 'unknown',
++                        conversationIdentityMatched: Boolean(state.conversationIdentityMatched),
++                        conversationIdentityHash: state.conversationIdentityHash || null,
++                        submissionGeneration: state.submissionGeneration,
++                        initialAssistantCount: state.initialAssistantCount,
++                        initialUserCount: state.initialUserCount
 +                    });
 +                    const saveState = (state) => {
++                        storageKey = keyForConversation(state.conversationIdentityHash);
 +                        localStorage.setItem(storageKey, JSON.stringify(state));
++                        return state;
++                    };
++                    const migrateToCanonicalConversation = async (state) => {
++                        const migrationDeadline = Math.min(deadline, now() + 5000);
++                        let canonicalHash = canonicalConversationIdentityHash();
++                        while (!canonicalHash && now() < migrationDeadline) {
++                            await delay(100);
++                            canonicalHash = canonicalConversationIdentityHash();
++                        }
++                        if (!canonicalHash || canonicalHash === state.conversationIdentityHash) {
++                            return state;
++                        }
++                        const previousKey = storageKey;
++                        const canonicalKey = keyForConversation(canonicalHash);
++                        const existing = parseStoredState(canonicalKey);
++                        if (existing && (existing.operationId !== operationId ||
++                            existing.promptFingerprint !== promptFingerprint ||
++                            existing.submissionGeneration !== state.submissionGeneration)) {
++                            throw new Error('canonical conversation already belongs to a different submission');
++                        }
++                        state.conversationIdentityHash = canonicalHash;
++                        state.conversationIdentityKnown = true;
++                        storageKey = canonicalKey;
++                        localStorage.setItem(storageKey, JSON.stringify(state));
++                        if (previousKey !== storageKey) localStorage.removeItem(previousKey);
 +                        return state;
 +                    };
 +                    const finishSuccess = (state) => {
@@ -152,7 +511,7 @@ index 1b76bfe..1810208 100644
  
                      const el = composerSelectors.map((s) => document.querySelector(s)).find(Boolean);
                      if (!el) {
-@@ -6317,10 +6391,79 @@ fn submit_regular_prompt(
+@@ -6317,10 +6727,94 @@ fn submit_regular_prompt(
                          return;
                      }
                      el.focus();
@@ -186,12 +545,15 @@ index 1b76bfe..1810208 100644
 +                        }
 +                        return null;
 +                    };
-+                    const submissionProof = () => {
++                    const submissionProof = (state) => {
 +                        const stopVisible = stopSelectors.some(selector => {
 +                            try { return isVisible(document.querySelector(selector)); } catch (e) { return false; }
 +                        });
 +                        const assistantCount = document.querySelectorAll(__ASSISTANT_SELECTOR__).length;
-+                        return stopVisible || assistantCount > initialAssistantCount || !hasPayload();
++                        const userCount = document.querySelectorAll(__USER_SELECTOR__).length;
++                        return stopVisible ||
++                            assistantCount > state.initialAssistantCount ||
++                            userCount > state.initialUserCount;
 +                    };
 +
 +                    let state = readStoredState();
@@ -214,19 +576,31 @@ index 1b76bfe..1810208 100644
 +                            pasteCount: 0,
 +                            submitCount: 0,
 +                            initialAssistantCount,
-+                            reusedSubmission: false
++                            initialUserCount: document.querySelectorAll(__USER_SELECTOR__).length,
++                            reusedSubmission: false,
++                            conversationReuse: 'fresh',
++                            conversationIdentityMatched: false,
++                            conversationIdentityKnown: initialConversationIdentityKnown,
++                            conversationIdentityHash: initialConversationIdentityHash,
++                            submissionGeneration: nextSubmissionGeneration()
 +                        });
 +                    } else {
++                        if (state.conversationIdentityHash !== initialConversationIdentityHash) {
++                            finishError('stored submission conversation identity does not match current conversation', state);
++                            return;
++                        }
 +                        state.reusedSubmission = true;
++                        state.conversationReuse = 'same';
++                        state.conversationIdentityMatched = true;
 +                        saveState(state);
 +                    }
 +
 +                    if (['SUBMITTING', 'SUBMITTED', 'WAITING_RESPONSE'].includes(state.state)) {
-+                        while (now() < deadline && !submissionProof()) await delay(100);
-+                        state.state = submissionProof() ? 'WAITING_RESPONSE' : state.state;
++                        while (now() < deadline && !submissionProof(state)) await delay(100);
++                        state.state = submissionProof(state) ? 'WAITING_RESPONSE' : state.state;
 +                        saveState(state);
 +                        if (state.state === 'WAITING_RESPONSE') finishSuccess(state);
-+                        else finishError('submission outcome remains unknown; refusing duplicate submit', state);
++                        else finishError('stored submission is not present in current conversation; refusing duplicate submit', state);
 +                        return;
 +                    }
 +
@@ -235,7 +609,7 @@ index 1b76bfe..1810208 100644
                      try {
                          const range = document.createRange();
                          range.selectNodeContents(el);
-@@ -6329,7 +6472,7 @@ fn submit_regular_prompt(
+@@ -6329,7 +6823,7 @@ fn submit_regular_prompt(
                          sel.addRange(range);
                      } catch (e) {}
                      
@@ -244,7 +618,7 @@ index 1b76bfe..1810208 100644
                      try {
                          const dataTransfer = new DataTransfer();
                          dataTransfer.setData('text/plain', value);
-@@ -6343,17 +6486,17 @@ fn submit_regular_prompt(
+@@ -6343,17 +6837,17 @@ fn submit_regular_prompt(
                              configurable: true
                          });
                          el.dispatchEvent(event);
@@ -272,7 +646,7 @@ index 1b76bfe..1810208 100644
                          const success = document.execCommand('insertText', false, value);
                          if (!success) {
                              if (typeof el.value !== 'undefined') {
-@@ -6367,37 +6510,74 @@ fn submit_regular_prompt(
+@@ -6367,37 +6861,75 @@ fn submit_regular_prompt(
                              el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
                              el.dispatchEvent(new Event('change', { bubbles: true }));
                          }
@@ -357,39 +731,63 @@ index 1b76bfe..1810208 100644
 +                    sendButton.click();
 +
 +                    const confirmationDeadline = Math.min(deadline, now() + 10000);
-+                    while (now() < confirmationDeadline && !submissionProof()) await delay(100);
-+                    if (!submissionProof()) {
++                    while (now() < confirmationDeadline && !submissionProof(state)) await delay(100);
++                    if (!submissionProof(state)) {
 +                        finishError('submission outcome remains unknown; refusing duplicate submit', state);
 +                        return;
 +                    }
 +                    state.state = 'SUBMITTED';
 +                    state.submittedAt = now();
 +                    saveState(state);
++                    state = await migrateToCanonicalConversation(state);
 +                    state.state = 'WAITING_RESPONSE';
 +                    saveState(state);
 +                    finishSuccess(state);
                  } catch (e) {
                      window.__submit_status = 'error: ' + e.message;
                  }
-@@ -6407,6 +6587,12 @@ fn submit_regular_prompt(
+@@ -6407,6 +6939,19 @@ fn submit_regular_prompt(
      .replace("__COMPOSER_SELECTORS__", provider.composer_selectors_json())
      .replace("__SEND_SELECTORS__", provider.send_button_selectors_json())
      .replace("__STOP_SELECTORS__", provider.stop_button_selectors_json())
 +    .replace("__ASSISTANT_SELECTOR__", &serde_json::to_string(provider.assistant_selector()).unwrap())
++    .replace("__USER_SELECTOR__", &serde_json::to_string(provider.user_selector()).unwrap())
 +    .replace("__OPERATION_ID__", &operation_id_json)
 +    .replace("__PROMPT_FINGERPRINT__", &fingerprint_json)
 +    .replace("__PROMPT_CHARS__", &prompt.chars().count().to_string())
 +    .replace("__INITIAL_ASSISTANT_COUNT__", &initial_assistant_count.to_string())
++    .replace("__STORAGE_PREFIX__", &storage_prefix_json)
++    .replace("__STORAGE_KEY__", &storage_key_json)
++    .replace("__CONVERSATION_FINGERPRINT__", &conversation_fingerprint_json)
++    .replace("__CONVERSATION_IDENTITY_KNOWN__", if conversation_identity_known { "true" } else { "false" })
++    .replace("__CONVERSATION_NAMESPACE__", &conversation_namespace_json)
++    .replace("__CONVERSATION_MARKER__", &conversation_marker_json)
 +    .replace("__TIMEOUT_MS__", &timeout_ms.to_string())
      .replace("__PROMPT__", &prompt_json);
  
      let start_res = call_mcp_tool(
-@@ -6422,13 +6608,14 @@ fn submit_regular_prompt(
+@@ -6422,13 +6967,30 @@ fn submit_regular_prompt(
          return Err("Failed to initiate text entry and submission script".to_string());
      }
  
 -    wait_for_submit_status(config_path)
-+    wait_for_submit_status(config_path, timeout)
++    let status = wait_for_submit_status(config_path, timeout)?;
++    let remaining = timeout.saturating_sub(submission_started_at.elapsed());
++    if !conversation_identity_known && remaining.is_zero() {
++        return Err(format!(
++            "canonical conversation identity unavailable after submission {status}"
++        ));
++    }
++    finalize_submission_conversation(
++        config_path,
++        provider,
++        operation_id,
++        prompt_fingerprint,
++        &conversation_fingerprint,
++        conversation_identity_known,
++        status,
++        std::cmp::min(remaining, Duration::from_secs(10)),
++    )
  }
  
  fn submit_chatgpt_agent_prompt(
@@ -400,7 +798,7 @@ index 1b76bfe..1810208 100644
  ) -> Result<String, String> {
      if verbose {
          println!(
-@@ -6595,7 +6782,7 @@ fn submit_chatgpt_agent_prompt(
+@@ -6595,7 +7157,7 @@ fn submit_chatgpt_agent_prompt(
          return Err("Failed to initiate ChatGPT agent prompt submission script".to_string());
      }
  
@@ -409,7 +807,7 @@ index 1b76bfe..1810208 100644
  }
  
  fn submit_prompt_to_provider(
-@@ -6603,14 +6790,26 @@ fn submit_prompt_to_provider(
+@@ -6603,14 +7165,26 @@ fn submit_prompt_to_provider(
      provider: Provider,
      prompt: &str,
      verbose: bool,
@@ -438,7 +836,7 @@ index 1b76bfe..1810208 100644
  }
  
  fn ensure_provider_tab(
-@@ -7465,6 +7664,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -7465,6 +8039,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          std::process::exit(0);
      }
  
@@ -455,7 +853,7 @@ index 1b76bfe..1810208 100644
      if let Some((session_provider, session_url)) = &session_target {
          if let Err(e) = open_url_tab(
              &config_path,
-@@ -7565,7 +7774,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -7565,7 +8149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              "function": format!("() => document.querySelectorAll({}).length", assistant_selector)
          }),
      )?;
@@ -464,7 +862,7 @@ index 1b76bfe..1810208 100644
          .ok()
          .and_then(|v| v.as_u64())
          .unwrap_or(0) as usize;
-@@ -7573,13 +7782,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -7573,13 +8157,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
      if command_verbose {
          println!("Setting prompt text and submitting...");
      }
@@ -495,13 +893,27 @@ index 1b76bfe..1810208 100644
 +        eprintln!("Submission Metrics: {}", metrics);
 +    }
 +
-+    if let Some(metrics) = status
++    let parsed_submission_metrics = status
 +        .strip_prefix("success:")
-+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
-+        && let Some(stored_count) = metrics.get("initialAssistantCount").and_then(Value::as_u64)
++        .and_then(|json| serde_json::from_str::<Value>(json).ok());
++    if let Some(stored_count) = parsed_submission_metrics
++        .as_ref()
++        .and_then(|metrics| metrics.get("initialAssistantCount"))
++        .and_then(Value::as_u64)
 +    {
 +        initial_assistant_count = usize::try_from(stored_count).unwrap_or(usize::MAX);
 +    }
++    let initial_user_count = parsed_submission_metrics
++        .as_ref()
++        .and_then(|metrics| metrics.get("initialUserCount"))
++        .and_then(Value::as_u64)
++        .and_then(|count| usize::try_from(count).ok())
++        .unwrap_or(0);
++    let expected_conversation_identity_hash = parsed_submission_metrics
++        .as_ref()
++        .and_then(|metrics| metrics.get("conversationIdentityHash"))
++        .and_then(Value::as_str)
++        .map(str::to_string);
 +
 +    let thread_link_deadline = Instant::now() + Duration::from_secs(5);
 +    while Instant::now() < thread_link_deadline {
@@ -527,7 +939,11 @@ index 1b76bfe..1810208 100644
      if command_verbose {
          println!("Waiting for {} response...", provider.display_name());
      }
-@@ -7592,8 +7848,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -7589,11 +8234,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+     let mut finished = false;
+     let mut wait_cycles = 0;
+     let mut stable_done_checks = 0;
++    let mut response_association_error: Option<String> = None;
      let spinner_frames = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
      let mut spinner_idx = 0;
  
@@ -539,4 +955,109 @@ index 1b76bfe..1810208 100644
      while !finished && wait_cycles < max_wait_cycles {
          // Max wait time: timeout seconds (timeout * 10 * 100ms)
          if is_terminal {
+@@ -7611,8 +8259,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+             let stop_selectors = provider.stop_button_selectors_json();
+             let assistant_selector = serde_json::to_string(provider.assistant_selector())
+                 .map_err(|e| format!("Failed to serialize assistant selector: {}", e))?;
++            let user_selector = serde_json::to_string(provider.user_selector())
++                .map_err(|e| format!("Failed to serialize user selector: {}", e))?;
++            let expected_conversation_hash_json =
++                serde_json::to_string(&expected_conversation_identity_hash).map_err(|e| {
++                    format!("Failed to serialize expected conversation identity: {}", e)
++                })?;
++            let conversation_namespace =
++                serde_json::to_string(provider.conversation_namespace())
++                    .map_err(|e| format!("Failed to serialize conversation namespace: {}", e))?;
++            let conversation_marker = serde_json::to_string(provider.conversation_marker())
++                .map_err(|e| format!("Failed to serialize conversation marker: {}", e))?;
+             let response_check_js = r#"() => {
+                     const stopSelectors = __STOP_SELECTORS__;
++                    const expectedConversationHash = __EXPECTED_CONVERSATION_HASH__;
++                    const conversationNamespace = __CONVERSATION_NAMESPACE__;
++                    const conversationMarker = __CONVERSATION_MARKER__;
+                     const isVisible = (el) => {
+                         if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                         const style = window.getComputedStyle(el);
+@@ -7620,23 +8282,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+                         const rect = el.getBoundingClientRect();
+                         return rect.width > 0 && rect.height > 0;
+                     };
++                    const conversationFingerprint = (identity) => {
++                        let hash = 0xcbf29ce484222325n;
++                        for (const byte of new TextEncoder().encode(identity)) {
++                            hash ^= BigInt(byte);
++                            hash = BigInt.asUintN(64, hash * 0x100000001b3n);
++                        }
++                        return 'conversation-fnv1a64-' + hash.toString(16).padStart(16, '0');
++                    };
++                    const segments = location.pathname.split('/').filter(Boolean);
++                    const markerIndex = segments.findIndex((segment, index) =>
++                        segment === conversationMarker && Boolean(segments[index + 1]));
++                    const conversationId = markerIndex < 0 ? null : segments[markerIndex + 1];
++                    const provisionalChatGptConversation = conversationNamespace === 'chatgpt' &&
++                        conversationId?.startsWith('WEB:');
++                    const currentConversationHash = !conversationId || provisionalChatGptConversation
++                        ? null
++                        : conversationFingerprint(conversationNamespace + ':' + conversationId);
++                    if (expectedConversationHash && currentConversationHash !== expectedConversationHash) {
++                        return { status: "conversation_mismatch", isNew: false };
++                    }
+                     const stopButton = stopSelectors.map((selector) => document.querySelector(selector)).find(isVisible);
+                     const messages = document.querySelectorAll(__ASSISTANT_SELECTOR__);
++                    const userMessages = document.querySelectorAll(__USER_SELECTOR__);
+                     const isNew = messages.length > __INITIAL_COUNT__;
++                    const submissionPresent = userMessages.length > __INITIAL_USER_COUNT__ || isNew;
+                     
+                     if (isVisible(stopButton)) {
+-                        return { status: "generating", isNew: isNew };
++                        return { status: "generating", isNew: isNew, submissionPresent };
+                     }
+                     
+-                    if (isNew) {
+-                        return { status: "done", isNew: isNew };
++                    if (isNew && submissionPresent) {
++                        return { status: "done", isNew: isNew, submissionPresent };
+                     }
+                     
+-                    return { status: "waiting", isNew: isNew };
++                    return { status: "waiting", isNew: isNew, submissionPresent };
+                 }"#
+             .replace("__STOP_SELECTORS__", stop_selectors)
+             .replace("__ASSISTANT_SELECTOR__", &assistant_selector)
+-            .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string());
++            .replace("__USER_SELECTOR__", &user_selector)
++            .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string())
++            .replace("__INITIAL_USER_COUNT__", &initial_user_count.to_string())
++            .replace("__EXPECTED_CONVERSATION_HASH__", &expected_conversation_hash_json)
++            .replace("__CONVERSATION_NAMESPACE__", &conversation_namespace)
++            .replace("__CONVERSATION_MARKER__", &conversation_marker);
+             let check_res = match call_mcp_tool(
+                 &config_path,
+                 "evaluate_script",
+@@ -7663,7 +8352,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+                 let status = parsed["status"].as_str().unwrap_or("waiting");
+                 let is_new = parsed["isNew"].as_bool().unwrap_or(false);
+ 
+-                if status == "done" && is_new {
++                if status == "conversation_mismatch" {
++                    response_association_error = Some(
++                        "current conversation changed while waiting for the submitted response"
++                            .to_string(),
++                    );
++                    break;
++                } else if status == "done" && is_new {
+                     stable_done_checks += 1;
+                     if stable_done_checks >= 3 {
+                         finished = true;
+@@ -7683,6 +8378,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+         io::stdout().flush()?;
+     }
+ 
++    if let Some(error) = response_association_error {
++        return Err(error.into());
++    }
++
+     if !finished {
+         eprintln!(
+             "\nWarning: Output stream did not complete within the timeout period ({} seconds).",
 

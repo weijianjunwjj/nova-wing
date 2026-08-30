@@ -33,6 +33,14 @@ export interface GuardianBrainTransportMetrics {
   submitCount: number
   submissionReached: boolean
   reusedSubmission: boolean
+  /** Whether this browser submission reused the same conversation or created a fresh one. */
+  conversationReuse: 'same' | 'fresh' | 'unknown'
+  /** True only when persisted submission state matched the current canonical conversation. */
+  conversationIdentityMatched: boolean
+  /** Monotonic browser submission generation within one logical Brain operation. */
+  submissionGeneration: number
+  /** Non-sensitive hash of the canonical/provisional conversation identity. */
+  conversationIdentityHash?: string | undefined
 }
 
 export interface GuardianBrainAttempt {

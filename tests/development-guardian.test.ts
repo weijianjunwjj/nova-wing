@@ -180,6 +180,10 @@ test('guardian attempt timeline persists safe composer metrics without prompt co
           submitCount: 1,
           submissionReached: true,
           reusedSubmission: false,
+          conversationReuse: 'fresh' as const,
+          conversationIdentityMatched: false,
+          submissionGeneration: 1,
+          conversationIdentityHash: 'conversation-fnv1a64-0123456789abcdef',
         }
       },
     },
@@ -194,10 +198,12 @@ test('Brain Review shares one wall-clock budget across normal, retry, and rotati
   let now = Date.parse('2026-08-29T00:00:00.000Z')
   const operationTimeouts: number[] = []
   let rotations = 0
+  let reviews = 0
   const result = await runGuardianTask({
     task: baseTask(),
     brain: {
       async review(input) {
+        reviews += 1
         const timeoutMs = input.transportTimeoutMs ?? 0
         operationTimeouts.push(timeoutMs)
         now += timeoutMs
@@ -205,6 +211,25 @@ test('Brain Review shares one wall-clock budget across normal, retry, and rotati
           failureType: 'BRAIN_TRANSPORT_FAILED',
           fingerprint: 'brain-transport:timeout',
         })
+      },
+      captureLastTransportMetrics() {
+        const freshRotation = reviews === 3
+        return {
+          promptChars: 20_512,
+          inputMode: 'big-paste' as const,
+          composerSettleMs: 5_567,
+          sendReadyWaitMs: 5_567,
+          pasteCount: 1,
+          submitCount: 1,
+          submissionReached: true,
+          reusedSubmission: reviews === 2,
+          conversationReuse: freshRotation ? 'fresh' as const : reviews === 2 ? 'same' as const : 'fresh' as const,
+          conversationIdentityMatched: reviews === 2,
+          submissionGeneration: freshRotation ? 2 : 1,
+          conversationIdentityHash: freshRotation
+            ? 'conversation-fnv1a64-bbbbbbbbbbbbbbbb'
+            : 'conversation-fnv1a64-aaaaaaaaaaaaaaaa',
+        }
       },
       resetTaskReviewSession() { rotations += 1 },
     },
@@ -221,6 +246,21 @@ test('Brain Review shares one wall-clock budget across normal, retry, and rotati
   assert.equal(rotations, 1)
   assert.equal(result.task.state, 'BRAIN_INFRASTRUCTURE_FAILED')
   assert.equal(result.task.brainFailure?.attempt, 3)
+  assert.deepEqual(
+    result.task.brainFailure?.attemptTimeline?.map((attempt) => ({
+      operationKind: attempt.operationKind,
+      reusedSubmission: attempt.transport?.reusedSubmission,
+      conversationReuse: attempt.transport?.conversationReuse,
+      conversationIdentityMatched: attempt.transport?.conversationIdentityMatched,
+      submissionGeneration: attempt.transport?.submissionGeneration,
+      conversationIdentityHash: attempt.transport?.conversationIdentityHash,
+    })),
+    [
+      { operationKind: 'normal', reusedSubmission: false, conversationReuse: 'fresh', conversationIdentityMatched: false, submissionGeneration: 1, conversationIdentityHash: 'conversation-fnv1a64-aaaaaaaaaaaaaaaa' },
+      { operationKind: 'retry', reusedSubmission: true, conversationReuse: 'same', conversationIdentityMatched: true, submissionGeneration: 1, conversationIdentityHash: 'conversation-fnv1a64-aaaaaaaaaaaaaaaa' },
+      { operationKind: 'rotation', reusedSubmission: false, conversationReuse: 'fresh', conversationIdentityMatched: false, submissionGeneration: 2, conversationIdentityHash: 'conversation-fnv1a64-bbbbbbbbbbbbbbbb' },
+    ],
+  )
   assert.deepEqual(
     result.task.brainFailure?.attemptTimeline?.map((attempt) => ({
       attempt: attempt.attempt,

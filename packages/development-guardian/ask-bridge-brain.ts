@@ -317,6 +317,11 @@ function finiteNonNegative(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
+function finiteNonNegativeInteger(value: unknown): number | undefined {
+  const number = finiteNonNegative(value)
+  return number !== undefined && Number.isInteger(number) ? number : undefined
+}
+
 export function extractAskBridgeSubmissionMetrics(
   value: string,
 ): GuardianBrainTransportMetrics | undefined {
@@ -338,6 +343,14 @@ export function extractAskBridgeSubmissionMetrics(
       : 'unknown'
     const composerSettleMs = finiteNonNegative(parsed.composerSettleMs)
     const sendReadyWaitMs = finiteNonNegative(parsed.sendReadyWaitMs)
+    const conversationReuse = parsed.conversationReuse === 'same' || parsed.conversationReuse === 'fresh'
+      ? parsed.conversationReuse
+      : 'unknown'
+    const submissionGeneration = finiteNonNegativeInteger(parsed.submissionGeneration) ?? 0
+    const conversationIdentityHash = typeof parsed.conversationIdentityHash === 'string' &&
+      /^conversation-fnv1a64-[a-f0-9]{16}$/u.test(parsed.conversationIdentityHash)
+      ? parsed.conversationIdentityHash
+      : undefined
     return {
       promptChars,
       inputMode,
@@ -347,6 +360,10 @@ export function extractAskBridgeSubmissionMetrics(
       submitCount,
       submissionReached: parsed.submissionReached === true,
       reusedSubmission: parsed.reusedSubmission === true,
+      conversationReuse,
+      conversationIdentityMatched: parsed.conversationIdentityMatched === true,
+      submissionGeneration,
+      ...(conversationIdentityHash === undefined ? {} : { conversationIdentityHash }),
     }
   } catch {
     return undefined
