@@ -994,34 +994,44 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 }
 
 /**
- * Only expose one structured Reviewer request before Executor, or one precise
- * deterministic-verification blocker after Executor. Runtime performs the
- * authoritative repo-scoped command parse before persisting any approval.
+ * Resolve the one unambiguous scoped-verification candidate supplied either by
+ * a blocked Reviewer packet or by Executor's deterministic-verification
+ * evidence. Runtime performs the authoritative repo-scoped command parse
+ * before persisting any approval.
  */
-function pendingVerificationCommand(task: GuardianTask): string | undefined {
-  // A first-pass Reviewer has no ExecutionReport yet. Its blocked packet may
-  // carry one exact verification command as a structured scoped-approval
-  // request. Runtime remains the authority that parses repo scope, fingerprints
-  // the command, and decides whether a durable approval can exist.
-  if (
-    task.lastReport === undefined &&
-    task.lastPacket?.verdict === 'blocked' &&
-    task.lastPacket.verification.length === 1
-  ) {
-    return task.lastPacket.verification[0]
-  }
+export function pendingVerificationCommand(task: GuardianTask): string | undefined {
+  // A blocked Reviewer may ask for one exact verifier both before Executor and
+  // during Final Review. This is only an untrusted candidate: Runtime remains
+  // the authority that parses repo scope, fingerprints the command, and decides
+  // whether a durable approval can exist.
+  const packet = task.lastPacket
+  // A Reviewer that supplies more than one verifier is ambiguous even if an
+  // Executor report happens to name one of them. Never select from that set.
+  if (packet?.verdict === 'blocked' && packet.verification.length > 1) return undefined
+  const packetCommand =
+    packet?.verdict === 'blocked' &&
+    packet.instructions.length === 0 &&
+    packet.verification.length === 1
+      ? packet.verification[0]
+      : undefined
 
   const report = task.lastReport
-  if (report === undefined) return undefined
-  const commands = report.blockers
-    .filter((blocker) => blocker.startsWith(VERIFICATION_APPROVAL_BLOCKER))
-    .map((blocker) => blocker.slice(VERIFICATION_APPROVAL_BLOCKER.length))
-  if (commands.length !== 1 || commands[0] === undefined) return undefined
-  const command = commands[0]
-  return report.verificationResults.some(
-    (result) => result.name === command && result.status === 'skipped' &&
-      result.details === 'verification command is not in the MVP allowlist',
-  ) ? command : undefined
+  const reportCommands = report === undefined
+    ? []
+    : report.blockers
+      .filter((blocker) => blocker.startsWith(VERIFICATION_APPROVAL_BLOCKER))
+      .map((blocker) => blocker.slice(VERIFICATION_APPROVAL_BLOCKER.length))
+      .filter((command) => report.verificationResults.some(
+        (result) => result.name === command && result.status === 'skipped' &&
+          result.details === 'verification command is not in the MVP allowlist',
+      ))
+  const reportCommand = reportCommands.length === 1 ? reportCommands[0] : undefined
+
+  // Two distinct sources must agree. Ambiguity never creates an approval.
+  if (packetCommand !== undefined && reportCommand !== undefined) {
+    return packetCommand === reportCommand ? packetCommand : undefined
+  }
+  return packetCommand ?? reportCommand
 }
 
 function sanitizeResumeInput(value: unknown): { decision?: string; approval?: boolean } {

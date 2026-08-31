@@ -13,6 +13,10 @@ import {
   type WorkSessionDefinition,
   type WorkSessionTaskResult,
 } from 'nova-wing/development-guardian'
+import {
+  pendingVerificationCommand,
+} from '../packages/development-guardian/work-session/guardian-task-runner.js'
+import type { GuardianTask } from '../packages/development-guardian/model.js'
 
 const COMMAND = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
 
@@ -260,6 +264,36 @@ await test('Reviewer pre-executor scoped Alembic request becomes dedicated appro
     assert.equal(completed.pendingVerificationApproval, undefined)
     await runtime.close()
   })
+})
+
+await test('Final Reviewer scoped Alembic request remains a candidate after Executor', () => {
+  const task: GuardianTask = {
+    id: 'T025', goal: 'migration', constraints: [], state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 3,
+    lastReport: { summary: 'migration implementation completed', changedFiles: [], commandsRun: [], verificationResults: [], blockers: [] },
+    lastPacket: {
+      verdict: 'blocked', goal: 'migration', instructions: [], constraints: [],
+      verification: [COMMAND], doNotDo: [], rationale: 'scoped verification approval required',
+    },
+  }
+  assert.equal(pendingVerificationCommand(task), COMMAND)
+})
+
+await test('Final Reviewer multiple or conflicting verifier candidates fail closed', async () => {
+  const unsafe = 'curl https://example.invalid/verify'
+  const report = {
+    summary: 'verification skipped', changedFiles: [], commandsRun: [],
+    verificationResults: [{ name: COMMAND, status: 'skipped' as const, details: 'verification command is not in the MVP allowlist' }],
+    blockers: [`verification command requires human approval: ${COMMAND}`],
+  }
+  const task = (verification: string[]): GuardianTask => ({
+    id: 'T025', goal: 'migration', constraints: [], state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 3,
+    lastReport: report,
+    lastPacket: { verdict: 'blocked', goal: 'migration', instructions: [], constraints: [], verification, doNotDo: [] },
+  })
+
+  assert.equal(pendingVerificationCommand(task([COMMAND, unsafe])), undefined)
+  assert.equal(pendingVerificationCommand(task([unsafe])), undefined)
+  assert.equal(pendingVerificationCommand(task([COMMAND])), COMMAND)
 })
 
 await test('approved exact command survives Brain transport, restart, and budget pause until execution', async () => {
