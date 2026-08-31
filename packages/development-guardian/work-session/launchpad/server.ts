@@ -15,6 +15,7 @@ import {
   type TrustedWorkSessionConfig,
 } from '../production.js'
 import { WorkSessionRuntime } from '../runtime.js'
+import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
 import {
   deriveDisplayState,
   type WorkSessionDisplayState,
@@ -64,6 +65,8 @@ const DEFAULT_GUARDIAN_POLICY = {
 } as const
 
 export interface LaunchpadConfigSummary {
+  scheduledStartAt?: string | null
+  scheduleSource?: ScheduleSource
   configId: string
   project: string
   taskId: string
@@ -92,7 +95,10 @@ export interface NovaWingLaunchpadAddress {
 }
 
 interface ManagedWorkSessionApp {
-  controller: { start(): { started: boolean } }
+  controller: {
+    start(): { started: boolean }
+    getSnapshot?(): { runtime: { displayState?: WorkSessionDisplayState } }
+  }
   start(): Promise<{ url: string }>
   /** Whether the local control server is still accepting connections. */
   isLive(): boolean
@@ -128,6 +134,8 @@ interface LaunchResult {
 }
 
 interface ComposerRequest {
+  scheduledStartAt: string | null
+  scheduleSource: ScheduleSource
   requestId: string
   targetRepo: string
   tasks: Array<{
@@ -169,6 +177,7 @@ type ComposerError =
   | 'AUTO_PUSH_REMOTE_UNAVAILABLE'
   | 'INVALID_PUSH_REMOTE'
   | 'INVALID_REQUEST'
+  | 'INVALID_SCHEDULE'
   | 'IDEMPOTENCY_CONFLICT'
 
 const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', string> = {
@@ -186,6 +195,7 @@ const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', str
   AUTO_PUSH_REMOTE_UNAVAILABLE: '无法确定 Auto Push 的 origin 远端，请填写有效的远端配置。',
   INVALID_PUSH_REMOTE: 'Auto Push remote 配置无效。',
   INVALID_REQUEST: '创建请求无效。',
+  INVALID_SCHEDULE: '开始时间无效，请提供包含时区的 ISO 时间。',
   IDEMPOTENCY_CONFLICT: '该 requestId 已用于不同的创建请求。',
   SESSION_START_FAILED: SAFE_LAUNCH_ERROR,
 }
@@ -214,6 +224,8 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
   if (firstTask === undefined) throw new Error('trusted config has no tasks')
   return {
     configId,
+    scheduledStartAt: config.session.scheduledStartAt ?? null,
+    scheduleSource: config.session.scheduleSource ?? 'immediate',
     project: titleCaseProject(basename(config.session.targetRepo)),
     taskId: firstTask.id,
     goal: firstTask.goal,
@@ -330,6 +342,8 @@ export class NovaWingLaunchpad {
 
   private address: NovaWingLaunchpadAddress | undefined
   private closed = false
+  private scheduleRecoveryTimer: NodeJS.Timeout | undefined
+  private scheduleRecovery: Promise<void> | undefined
   private dependencyHealth: DependencyHealthReport = {
     overall: 'READY', canStart: true, checkedAt: new Date(0).toISOString(), dependencies: [],
   }
@@ -364,7 +378,7 @@ export class NovaWingLaunchpad {
 
   getConfigs(): readonly LaunchpadConfigSummary[] {
     return [...this.configs.values()].map((config) => {
-      const status = this.statuses.get(config.summary.configId)
+      const status = this.liveApps.get(config.summary.configId)?.app.controller.getSnapshot?.().runtime.displayState ?? this.statuses.get(config.summary.configId)
       return { ...config.summary, ...(status === undefined ? {} : { status }) }
     })
   }
@@ -420,12 +434,34 @@ export class NovaWingLaunchpad {
       port: address.port,
       url: `http://${LOOPBACK_HOST}:${address.port}`,
     }
+    await this.recoverScheduledSessions()
+    this.scheduleRecoveryTimer = setInterval(() => { void this.recoverScheduledSessions() }, 5_000)
+    this.scheduleRecoveryTimer.unref()
     return this.address
+  }
+
+  /** Only scheduled configs are automatically reopened. Existing interrupted runs stay manual. */
+  private async recoverScheduledSessions(): Promise<void> {
+    if (this.closed || this.scheduleRecovery !== undefined) return
+    this.scheduleRecovery = (async () => {
+      for (const [id, entry] of this.configs) {
+        if (this.closed) break
+        if (entry.config.session.scheduledStartAt == null || this.liveApps.has(id) || this.activeDeletes.has(id)) continue
+        try {
+          const status = await this.readSessionStatus(entry.config)
+          this.statuses.set(id, status)
+          if (status === 'SCHEDULED') await this.startWorkSession(id)
+        } catch { /* Storage/dependency outage: keep the durable gate, retry opening later. */ }
+      }
+    })()
+    try { await this.scheduleRecovery } finally { this.scheduleRecovery = undefined }
   }
 
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    if (this.scheduleRecoveryTimer !== undefined) clearInterval(this.scheduleRecoveryTimer)
+    await bounded(this.scheduleRecovery ?? Promise.resolve(), this.shutdownTimeoutMs)
     if (this.address !== undefined) {
       const closeListener = new Promise<void>((resolveClose) => {
         this.server.close(() => resolveClose())
@@ -466,6 +502,10 @@ export class NovaWingLaunchpad {
       this.serveAsset(response, 'text/javascript; charset=utf-8', LAUNCHPAD_APP_JS)
       return
     }
+    if (method === 'GET' && path === '/api/session/configs') {
+      this.respondJson(response, 200, this.getConfigs())
+      return
+    }
     if (method === 'GET' && path === '/styles.css') {
       this.serveAsset(response, 'text/css; charset=utf-8', LAUNCHPAD_STYLES_CSS)
       return
@@ -489,7 +529,7 @@ export class NovaWingLaunchpad {
 
     const knownPaths = new Set([
       '/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
-      '/api/session/delete', '/api/session/branch',
+      '/api/session/delete', '/api/session/branch', '/api/session/configs',
     ])
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
       error: knownPaths.has(path) ? 'method not allowed' : 'not found',
@@ -767,7 +807,7 @@ export class NovaWingLaunchpad {
       await existing.app.close().catch(() => undefined)
     }
     const config = await this.loadConfig(discovered.configPath)
-    await this.assertDependenciesReady(config.session.targetRepo)
+    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo)
     const env = await this.resolveEnvironment(config)
     const app = await this.createWorkSession(config, { env, serverPort: 0 })
     if (this.closed) {
@@ -840,7 +880,7 @@ export class NovaWingLaunchpad {
     if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
       throw new ComposerLaunchError('INVALID_PROJECT_PATH')
     }
-    await this.assertDependenciesReady(targetRepo)
+    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo)
     const branch = await this.readCurrentBranch(targetRepo)
     const sessionId = createSessionId(targetRepo)
     const config = await validateTrustedWorkSessionConfig({
@@ -848,6 +888,9 @@ export class NovaWingLaunchpad {
         id: sessionId,
         targetRepo,
         branch,
+        scheduledStartAt: input.scheduledStartAt !== null && Date.parse(input.scheduledStartAt) > Date.now() ? input.scheduledStartAt : null,
+        scheduleSource: input.scheduleSource,
+        createdAt: new Date().toISOString(),
         limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: input.tasks.length },
       },
       tasks: input.tasks.map((task) => ({
@@ -988,6 +1031,8 @@ function canonicalComposerPayload(input: ComposerRequest): string {
     pushRemote: input.pushRemote,
     emailEnabled: input.emailEnabled,
     guardian: input.guardian,
+    scheduledStartAt: input.scheduledStartAt,
+    scheduleSource: input.scheduleSource,
   })
 }
 
@@ -1081,8 +1126,17 @@ function parseComposerBody(body: string): ComposerParseResult {
   const allowed = new Set([
     'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
+    'scheduled_start_at', 'schedule_source',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
+  let scheduledStartAt: string | null
+  try { scheduledStartAt = normalizeScheduledStart(record.scheduled_start_at) } catch {
+    return { ok: false, error: 'INVALID_SCHEDULE' }
+  }
+  const scheduleSource = record.schedule_source ?? (scheduledStartAt === null ? 'immediate' : 'custom')
+  if (scheduleSource !== 'immediate' && scheduleSource !== 'custom' && scheduleSource !== 'deepseek_off_peak') {
+    return { ok: false, error: 'INVALID_SCHEDULE' }
+  }
   if (typeof record.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/u.test(record.requestId)) {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
@@ -1122,6 +1176,8 @@ function parseComposerBody(body: string): ComposerParseResult {
     ok: true,
     value: {
       requestId: record.requestId,
+      scheduledStartAt,
+      scheduleSource,
       targetRepo: record.targetRepo.trim(),
       tasks,
       executorModel: executorModel.trim(),
@@ -1294,7 +1350,7 @@ async function readProductionSessionStatus(
     .then((entry) => entry.isFile())
     .catch(() => false)
   if (!exists) {
-    return 'READY'
+    return config.session.scheduledStartAt == null ? 'READY' : 'SCHEDULED'
   }
 
   const definition = {
@@ -1303,6 +1359,9 @@ async function readProductionSessionStatus(
     branch: config.session.branch,
     tasks: config.tasks.map((task) => ({ id: task.id, goal: task.goal })),
     limits: { ...config.session.limits },
+    scheduledStartAt: config.session.scheduledStartAt ?? null,
+    scheduleSource: config.session.scheduleSource ?? 'immediate',
+    ...(config.session.createdAt === undefined ? {} : { createdAt: config.session.createdAt }),
   }
   const runtime = new WorkSessionRuntime({
     definition,

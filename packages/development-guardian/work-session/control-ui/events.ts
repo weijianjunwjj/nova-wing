@@ -33,6 +33,7 @@ export type ControlEventType =
   | 'PAUSE_REQUESTED'
   | 'SESSION_PAUSED'
   | 'STOP_AFTER_TASK_REQUESTED'
+  | 'SCHEDULE_CANCELLED'
   | 'SESSION_RESUME_REQUESTED'
   | 'SESSION_RESUMED'
   | 'CHECKPOINT_RECOVERY_REQUESTED'
@@ -92,6 +93,11 @@ export interface WorkSessionControlSnapshot {
     /** T021: 派生展示状态（持久化 state 与 runtime liveness 分离后的单一来源）。 */
     displayState?: WorkSessionDisplayState
     state?: string
+    createdAt?: string
+    scheduledStartAt?: string | null
+    scheduleSource?: string
+    startedAt?: string | null
+    completedAt?: string | null
     currentTaskId?: string | null
     completedTaskIds?: readonly string[]
     checkpointCommits?: Record<string, string>

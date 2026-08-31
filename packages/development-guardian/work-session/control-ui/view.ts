@@ -80,6 +80,16 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <span id="resume-note" class="note"></span>
   </section>
 
+  <section class="card" aria-label="开始时间">
+    <h2>开始时间</h2>
+    <div class="row"><span class="label">创建 / Created</span><span id="created-at" class="value">—</span></div>
+    <div class="row"><span class="label">计划 / Scheduled Start</span><span id="scheduled-at" class="value">—</span></div>
+    <div class="row"><span class="label">来源 / Reason</span><span id="schedule-source" class="value">—</span></div>
+    <div class="row"><span class="label">实际 / Actual Start</span><span id="started-at" class="value">—</span></div>
+    <div class="row"><span class="label">完成 / Completed</span><span id="completed-at" class="value">—</span></div>
+    <p id="schedule-note" class="note"></p>
+  </section>
+
   <section id="recoverable-card" class="card decision" hidden>
     <h2 id="recoverable-title">可恢复的 Work Session</h2>
     <div class="row">
@@ -200,6 +210,7 @@ function formatTime(iso) {
 
 var BADGE_CLASS = {
   READY: 'badge-ready',
+  SCHEDULED: 'badge-ready',
   RUNNING: 'badge-running',
   SUSPENDED: 'badge-suspended',
   RECOVERABLE: 'badge-recoverable',
@@ -210,6 +221,7 @@ var BADGE_CLASS = {
 
 var STATE_LABELS = {
   READY: '就绪',
+  SCHEDULED: 'Scheduled · 等待开始',
   RUNNING: '运行中',
   SUSPENDED: '已暂停',
   RECOVERABLE: '可恢复',
@@ -259,6 +271,13 @@ function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
   var guardian = snapshot.guardian || {}
+  var localTime = (value) => value ? new Date(value).toLocaleString() : '—'
+  setText('created-at', localTime(rt.createdAt))
+  setText('scheduled-at', localTime(rt.scheduledStartAt))
+  setText('started-at', localTime(rt.startedAt))
+  setText('completed-at', localTime(rt.completedAt))
+  setText('schedule-source', rt.scheduleSource === 'deepseek_off_peak' ? 'DeepSeek 闲时 · Off-Peak' : rt.scheduleSource === 'custom' ? '自定义时间' : '立即开始')
+  setText('schedule-note', rt.state === 'SCHEDULED' ? '到点自动开始；等待不计执行时长。请保持 NovaWing 运行；关闭后将在重新打开时补启动。' : '')
 
   setText('project', cfg.targetRepo)
   setText('branch', cfg.branch)
@@ -289,7 +308,7 @@ function renderControls(rt, controls) {
   var pauseBtn = el('pause-btn')
   var stopBtn = el('stop-btn')
   if (startBtn) {
-    startBtn.hidden = rt.started === true
+    startBtn.hidden = rt.started === true || displayState === 'SCHEDULED' || displayState === 'CANCELLED'
   }
   if (pauseBtn) {
     pauseBtn.hidden = displayState !== 'RUNNING'
@@ -297,11 +316,11 @@ function renderControls(rt, controls) {
     pauseBtn.textContent = controls.pauseRequested === true ? '已请求暂停' : '暂停'
   }
   if (stopBtn) {
-    stopBtn.hidden = displayState !== 'RUNNING'
+    stopBtn.hidden = displayState !== 'RUNNING' && displayState !== 'SCHEDULED'
     stopBtn.disabled = controls.stopAfterTaskRequested === true
     stopBtn.textContent = controls.stopAfterTaskRequested === true
       ? '已请求停止'
-      : '当前 Task 完成后停止'
+      : displayState === 'SCHEDULED' ? '取消计划' : '当前 Task 完成后停止'
   }
   if (displayState === 'SUSPENDED' && rt.suspensionReason === 'USER_PAUSED') {
     setText('start-note', '已由你暂停')
@@ -345,7 +364,7 @@ function renderTasks(cfg, rt) {
 
     var label = document.createElement('span')
     label.className = 'task-label'
-    label.textContent = task.id + ' ' + task.goal
+    label.textContent = task.id + ' ' + task.goal + (rt.state === 'SCHEDULED' ? ' · Scheduled' : '')
 
     li.appendChild(marker)
     li.appendChild(label)
@@ -386,6 +405,7 @@ function summarizeEvent(ev) {
   }
   var eventLabels = {
     SESSION_STARTED: 'Work Session 已开始', SESSION_STATE_CHANGED: 'Work Session 状态已更新',
+    SCHEDULE_CANCELLED: '计划已取消',
     TASK_STARTED: 'Task 已开始', TASK_COMPLETED: 'Task 已完成',
     CHECKPOINT_COMMITTED: 'Git checkpoint 已提交', CHECKPOINT_PUSHED: 'Git checkpoint 已推送',
     HUMAN_REQUIRED: '需要人工处理', SESSION_COMPLETED: 'Work Session 已完成',

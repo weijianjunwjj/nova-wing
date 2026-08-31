@@ -13,6 +13,7 @@ import {
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
+import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
 import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
 import {
@@ -47,6 +48,9 @@ const TrustedConfigSchema = z.object({
     id: z.string(),
     targetRepo: z.string(),
     branch: z.string(),
+    scheduledStartAt: z.string().nullable().optional(),
+    scheduleSource: z.enum(['immediate', 'custom', 'deepseek_off_peak']).optional(),
+    createdAt: z.string().optional(),
     limits: z.object({
       softMinutes: z.number(),
       hardMinutes: z.number(),
@@ -122,6 +126,10 @@ export async function validateTrustedWorkSessionConfig(
 ): Promise<TrustedWorkSessionConfig> {
   assertNoCredentialLikeKeys(input)
   const config = TrustedConfigSchema.parse(input)
+  if (config.session.scheduledStartAt !== undefined) {
+    config.session.scheduledStartAt = normalizeScheduledStart(config.session.scheduledStartAt)
+  }
+  if (config.session.createdAt !== undefined) config.session.createdAt = normalizeScheduledStart(config.session.createdAt)!
   if (config.notification?.email.enabled === false && config.notification.email.notifyOnCompleted === true) {
     throw new Error('notification.email.notifyOnCompleted requires notification.email.enabled=true')
   }
@@ -320,6 +328,9 @@ export async function createProductionWorkSessionUi(
     branch: trusted.session.branch,
     tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal })),
     limits: { ...trusted.session.limits },
+    ...(trusted.session.scheduledStartAt === undefined ? {} : { scheduledStartAt: trusted.session.scheduledStartAt }),
+    ...(trusted.session.scheduleSource === undefined ? {} : { scheduleSource: trusted.session.scheduleSource }),
+    ...(trusted.session.createdAt === undefined ? {} : { createdAt: trusted.session.createdAt }),
   }
   const storageUrl = trusted.storageUrl ?? defaultStorageUrl(trusted.session.id, env)
   const storagePath = storagePathFromUrl(storageUrl)

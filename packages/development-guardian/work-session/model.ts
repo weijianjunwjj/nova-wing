@@ -5,6 +5,7 @@
  */
 
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
+import type { ScheduleSource } from './schedule-policy.js'
 import type { GuardianBrainFailure, VerificationResult } from '../model.js'
 import type {
   WorkSessionFailureCategory,
@@ -13,6 +14,7 @@ import type {
 
 export type WorkSessionState =
   | 'READY'
+  | 'SCHEDULED'
   | 'RUNNING'
   | 'SUSPENDED'
   | 'COMPLETED'
@@ -49,6 +51,10 @@ export interface WorkSessionDefinition {
   branch: string
   tasks: readonly WorkSessionTask[]
   limits: WorkSessionLimits
+  /** One creation starts an ordered task batch; the gate precedes its first Task. */
+  scheduledStartAt?: string | null
+  scheduleSource?: ScheduleSource
+  createdAt?: string
 }
 
 export interface HumanRequired {
@@ -137,5 +143,9 @@ export interface WorkSessionDurableState {
   /** Sanitized product-safe failure presentation; never raw stderr/provider output. */
   safeFailureMessage?: string
   createdAt: Date
+  scheduledStartAt?: string | null
+  scheduleSource?: ScheduleSource
+  startedAt?: Date
+  completedAt?: Date
   updatedAt: Date
 }

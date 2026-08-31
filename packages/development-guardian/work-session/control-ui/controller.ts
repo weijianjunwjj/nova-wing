@@ -99,6 +99,7 @@ export class WorkSessionControlController {
   private readonly beforeResume: (() => Promise<void>) | undefined
 
   private started = false
+  private scheduleCheckAt = 0
   private closed = false
 
   private readonly recentEvents: ControlEvent[] = []
@@ -188,7 +189,7 @@ export class WorkSessionControlController {
     if (state === undefined) {
       return undefined
     }
-    this.started = true
+    this.started = state.state !== 'SCHEDULED'
     this.prevState = state
     this.prevSignature = this.signatureOf(state)
     this.prevElapsedSecond = this.elapsedSecondOf(state)
@@ -204,17 +205,29 @@ export class WorkSessionControlController {
       return { started: false }
     }
     this.started = true
-    this.emit({ type: 'SESSION_STARTED' })
+    const scheduled = this.runtime.getDurableState()?.state === 'SCHEDULED'
+    if (!scheduled) this.emit({ type: 'SESSION_STARTED' })
 
     // 异步启动；真正的运行结果经 polling + SSE 暴露，不 await 整场 Work Session。
     // 明确持有 rejection：fake/真实 runtime 的 start() 失败不得产生 unhandled rejection。
     // 原始 error.message 可能包含 credential/provider payload，因此绝不进入 Web event。
-    this.startPromise = this.runtime
-      .start()
+    const due = scheduled && Date.parse(this.runtime.getDurableState()?.scheduledStartAt ?? '') <= (this.clock?.now() ?? Date.now())
+    const operation = due && this.beforeResume !== undefined
+      ? Promise.resolve().then(() => this.beforeResume!()).then(() => {
+          if (this.closed) throw new Error('Controller closed before dispatch')
+          return this.runtime.start()
+        })
+      : this.runtime.start()
+    this.startPromise = operation
       .then(() => {
         // 状态变化由 polling 观察，无需在此处理。
       })
       .catch(() => {
+        if (this.runtime.getDurableState()?.state === 'SCHEDULED') {
+          // Dependency/storage unavailability is not execution failure or retry.
+          this.scheduleCheckAt = (this.clock?.now() ?? Date.now()) + 30_000
+          return
+        }
         this.emit({
           type: 'SESSION_FAILED',
           data: { message: SAFE_SESSION_FAILED_MESSAGE },
@@ -223,6 +236,7 @@ export class WorkSessionControlController {
       })
       .finally(() => {
         this.startPromise = undefined
+        if (this.runtime.getDurableState()?.state === 'SCHEDULED') this.started = false
       })
 
     return { started: true }
@@ -238,10 +252,11 @@ export class WorkSessionControlController {
   }
 
   requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    const scheduled = this.runtime.getDurableState()?.state === 'SCHEDULED'
     const result = this.runtime.requestStopAfterTask()
     if (result.accepted) {
       this.emit({
-        type: 'STOP_AFTER_TASK_REQUESTED',
+        type: scheduled ? 'SCHEDULE_CANCELLED' : 'STOP_AFTER_TASK_REQUESTED',
         data: { control: 'stop-after-task' },
       })
       this.broadcastSnapshot()
@@ -482,6 +497,11 @@ export class WorkSessionControlController {
         ...(state !== undefined
           ? {
               state: state.state,
+              createdAt: state.createdAt.toISOString(),
+              scheduledStartAt: state.scheduledStartAt ?? null,
+              scheduleSource: state.scheduleSource ?? 'immediate',
+              startedAt: state.startedAt?.toISOString() ?? null,
+              completedAt: state.completedAt?.toISOString() ?? null,
               currentTaskId: state.currentTaskId,
               completedTaskIds: state.completedTaskIds,
               ...(state.checkpointCommits !== undefined
@@ -630,6 +650,12 @@ export class WorkSessionControlController {
     }
 
     const prev = this.prevState
+    const now = this.clock?.now() ?? Date.now()
+    if (state.state === 'SCHEDULED' && !this.hasActiveOperation() && now >= this.scheduleCheckAt &&
+      Date.parse(state.scheduledStartAt ?? '') <= now) {
+      this.scheduleCheckAt = now + 1_000
+      this.start()
+    }
     this.prevState = state
 
     if (prev === undefined) {

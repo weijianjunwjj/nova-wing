@@ -54,6 +54,8 @@ import {
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
 import { isTerminalWorkSessionState } from './recoverability.js'
+import { ScheduledStartStore } from './scheduled-start-store.js'
+import { normalizeScheduledStart } from './schedule-policy.js'
 import {
   isEligibleScopedVerificationCommand,
   VERIFICATION_APPROVAL_BLOCKER,
@@ -106,7 +108,7 @@ export interface RecoveryCheckpointResumeOptions {
 // Workflow state schema
 const WorkflowStateSchema = z.object({
   sessionId: z.string(),
-  state: z.enum(['READY', 'RUNNING', 'SUSPENDED', 'COMPLETED', 'FAILED', 'CANCELLED']),
+  state: z.enum(['READY', 'SCHEDULED', 'RUNNING', 'SUSPENDED', 'COMPLETED', 'FAILED', 'CANCELLED']),
   currentTaskIndex: z.number(),
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
@@ -207,6 +209,10 @@ const WorkflowStateSchema = z.object({
   cancellationReason: z.enum(['STOP_AFTER_TASK']).optional(), // W005-B
   stopAfterTaskRequested: z.boolean().optional(), // W005-B durability closure
   createdAt: z.string(),
+  scheduledStartAt: z.string().nullable().optional(),
+  scheduleSource: z.enum(['immediate', 'custom', 'deepseek_off_peak']).optional(),
+  startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
   updatedAt: z.string(),
 })
 
@@ -260,6 +266,9 @@ export class WorkSessionRuntime {
   private checkpointRecoveryPromise: Promise<WorkSessionDurableState> | undefined
   /** T021: 本进程内是否真正启动/恢复过 workflow 执行。loadPersistedState 只 hydrate，不置位。 */
   private executionStarted = false
+  private scheduleStore: ScheduledStartStore | undefined
+  private startOperation: Promise<WorkSessionDurableState> | undefined
+  private closed = false
   /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
   private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
   /** Direct runtime idempotency guard; the control layer also rejects duplicate clicks. */
@@ -271,6 +280,12 @@ export class WorkSessionRuntime {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
     validateWorkSessionLimits(config.definition.limits)
     this.config = config
+    const scheduledStartAt = normalizeScheduledStart(config.definition.scheduledStartAt)
+    if (scheduledStartAt !== null) {
+      this.scheduleStore = new ScheduledStartStore(config.storageUrl)
+      this.scheduleStore.ensure(config.definition.id, scheduledStartAt,
+        config.definition.scheduleSource ?? 'custom', config.definition.createdAt ?? new Date(this.now()).toISOString())
+    }
     // runId = sessionId，简化 identity 管理
     this.workflowId = `work-session-${config.definition.id}`
 
@@ -357,7 +372,7 @@ export class WorkSessionRuntime {
    */
   async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
     const persisted = await this.readPersistedWorkflowSnapshot()
-    if (persisted === undefined) return undefined
+    if (persisted === undefined) return this.loadScheduledState()
 
     let hydratedState = persisted.state
     if (persisted.state.state === 'FAILED') {
@@ -389,6 +404,46 @@ export class WorkSessionRuntime {
   }
 
   async start(): Promise<WorkSessionDurableState> {
+    if (this.startOperation !== undefined) return this.startOperation
+    const operation = this.startWhenDue()
+    this.startOperation = operation
+    try { return await operation } finally { this.startOperation = undefined }
+  }
+
+  private loadScheduledState(): WorkSessionDurableState | undefined {
+    const row = this.scheduleStore?.read(this.config.definition.id)
+    if (row === undefined) return undefined
+    this.latestState = {
+      sessionId: row.session_id, state: row.status === 'CANCELLED' ? 'CANCELLED' : 'SCHEDULED',
+      currentTaskIndex: 0, currentTaskId: null, completedTaskIds: [], activeElapsedMs: 0,
+      createdAt: row.created_at, updatedAt: row.created_at,
+      scheduledStartAt: row.scheduled_start_at, scheduleSource: row.schedule_source,
+    }
+    return this.convertWorkflowStateToDurableState(this.latestState)
+  }
+
+  private async startWhenDue(): Promise<WorkSessionDurableState> {
+    if (this.closed) throw new Error('Work Session runtime is closed')
+    if (this.scheduleStore !== undefined) {
+      const persisted = await this.readPersistedWorkflowSnapshot()
+      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
+      if (persisted !== undefined) {
+        this.latestState = persisted.state
+        return this.convertWorkflowStateToDurableState(persisted.state)
+      }
+      const waiting = this.loadScheduledState()!
+      if (!this.scheduleStore.claim(this.config.definition.id, new Date(this.now()).toISOString())) return waiting
+    }
+    try { return await this.startExecution() } catch (error) {
+      if (!this.executionStarted) {
+        this.scheduleStore?.releaseUnstarted(this.config.definition.id)
+        this.loadScheduledState()
+      }
+      throw error
+    }
+  }
+
+  private async startExecution(): Promise<WorkSessionDurableState> {
     const initialState: WorkflowState = {
       sessionId: this.config.definition.id,
       state: 'RUNNING',
@@ -398,7 +453,10 @@ export class WorkSessionRuntime {
       checkpointCommits: {},
       activeElapsedMs: 0,
       activeSegmentStartedAt: this.now(),
-      createdAt: new Date().toISOString(),
+      createdAt: this.latestState?.createdAt ?? this.config.definition.createdAt ?? new Date(this.now()).toISOString(),
+      scheduledStartAt: this.latestState?.scheduledStartAt ?? this.config.definition.scheduledStartAt ?? null,
+      scheduleSource: this.latestState?.scheduleSource ?? this.config.definition.scheduleSource ?? 'immediate',
+      startedAt: new Date(this.now()).toISOString(),
       updatedAt: new Date().toISOString(),
     }
 
@@ -431,9 +489,11 @@ export class WorkSessionRuntime {
 
     try {
       // 使用 sessionId 作为 runId
+      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
       const run = await workflow.createRun({
         runId,
       })
+      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
 
       this.recordLedger({
         eventType: 'SESSION_STARTED',
@@ -1044,6 +1104,7 @@ export class WorkSessionRuntime {
               const limitState: WorkflowState = {
                 ...currentState,
                 state: 'COMPLETED',
+                completedAt: new Date(self.now()).toISOString(),
                 currentTaskId: null,
                 completionReason: limitReason,
                 humanRequired: undefined,
@@ -1531,6 +1592,7 @@ export class WorkSessionRuntime {
         const finalState: WorkflowState = {
           ...currentState,
           state: 'COMPLETED',
+          completedAt: new Date(self.now()).toISOString(),
           currentTaskId: null,
           completionReason: 'ALL_TASKS_COMPLETED',
           suspensionReason: undefined,
@@ -1579,6 +1641,10 @@ export class WorkSessionRuntime {
       completedTaskIds: wfState.completedTaskIds,
       createdAt: new Date(wfState.createdAt),
       updatedAt: new Date(wfState.updatedAt),
+      scheduledStartAt: wfState.scheduledStartAt ?? null,
+      ...(wfState.scheduleSource === undefined ? {} : { scheduleSource: wfState.scheduleSource }),
+      ...(wfState.startedAt === undefined ? {} : { startedAt: new Date(wfState.startedAt) }),
+      ...(wfState.completedAt === undefined ? {} : { completedAt: new Date(wfState.completedAt) }),
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
@@ -1705,9 +1771,15 @@ export class WorkSessionRuntime {
   }
 
   async close(): Promise<void> {
+    this.closed = true
+    if (this.scheduleStore !== undefined && !this.executionStarted) {
+      await this.startOperation?.catch(() => undefined)
+    }
     await this.notificationPromise
     this.ledger?.close()
     this.ledger = undefined
+    this.scheduleStore?.close()
+    this.scheduleStore = undefined
     const storage = this.mastra.getStorage()
     if (storage) {
       await storage.close()
@@ -1853,6 +1925,11 @@ export class WorkSessionRuntime {
   }
 
   requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    if (this.latestState?.state === 'SCHEDULED') {
+      const accepted = this.scheduleStore?.cancel(this.config.definition.id) === true
+      this.loadScheduledState()
+      return { accepted }
+    }
     if (this.latestState?.state !== 'RUNNING') {
       return { accepted: false, reason: 'session is not running' }
     }

@@ -19,6 +19,7 @@ import type { ExecutionLedgerEvent } from './execution-ledger.js'
 
 export type WorkSessionDisplayState =
   | 'READY'
+  | 'SCHEDULED'
   | 'RUNNING'
   | 'SUSPENDED'
   | 'RECOVERABLE'
@@ -44,6 +45,7 @@ export function deriveDisplayState(
   if (persistedState === undefined) {
     return 'READY'
   }
+  if (persistedState.state === 'SCHEDULED') return 'SCHEDULED'
   if (isTerminalWorkSessionState(persistedState.state)) {
     return persistedState.state as WorkSessionDisplayState
   }

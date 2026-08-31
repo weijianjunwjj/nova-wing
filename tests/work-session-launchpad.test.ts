@@ -53,6 +53,47 @@ function trustedConfig(overrides: {
   }
 }
 
+test('Composer schedule API normalizes UTC, accepts old requests, and rejects invalid dates before launch', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    for (const [index, schedule] of [undefined, null, '2000-01-01T00:00:00Z', '2099-08-31T18:00:00+08:00'].entries()) {
+      const response = await postCreate(launchpad, composerRequest(`scheduled-request-valid-${index}`, {
+        ...(schedule === undefined ? {} : { scheduled_start_at: schedule }),
+        ...(index === 3 ? { schedule_source: 'deepseek_off_peak' } : {}),
+      }), auth)
+      assert.equal(response.status, 202)
+      const config = state.receivedConfigs[index]!
+      assert.equal(config.session.scheduledStartAt, index === 3 ? '2099-08-31T10:00:00.000Z' : null)
+      assert.ok(config.session.createdAt)
+      if (index === 3) assert.equal(config.session.scheduleSource, 'deepseek_off_peak')
+    }
+    for (const [index, value] of ['tomorrow', '2026-08-31T18:00', '2026-02-30T00:00:00Z', 42, {}].entries()) {
+      const response = await postCreate(launchpad, composerRequest(`scheduled-request-invalid-${index}`, { scheduled_start_at: value }), auth)
+      assert.equal(response.status, 400)
+    }
+    const conflict = await postCreate(launchpad, composerRequest('scheduled-request-valid-3', {
+      scheduled_start_at: '2099-09-01T10:00:00Z', schedule_source: 'deepseek_off_peak',
+    }), auth)
+    assert.equal(conflict.status, 409)
+    assert.equal(state.createCalls, 4)
+    const configs = await discoverTrustedWorkSessionConfigs(directory)
+    assert.ok(configs.some((entry) => entry.config.session.scheduledStartAt === '2099-08-31T10:00:00.000Z'))
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 async function createConfigDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'novawing-launchpad-'))
   await writeFile(join(directory, 'fly-weave.json'), JSON.stringify(trustedConfig()), 'utf8')

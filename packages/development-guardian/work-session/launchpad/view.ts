@@ -1,5 +1,6 @@
 import type { LaunchpadConfigSummary } from './server.js'
 import type { DependencyHealthReport } from '../dependency-health.js'
+import { DEEPSEEK_PRICING_SCHEDULE, getDeepSeekPricingPeriod } from '../schedule-policy.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -44,6 +45,8 @@ function renderCard(config: LaunchpadConfigSummary): string {
       </div>
 
       <dl class="details">
+        ${config.scheduledStartAt == null ? '' : `<div><dt>计划开始</dt><dd><time data-local-time datetime="${escapeHtml(config.scheduledStartAt)}">${escapeHtml(config.scheduledStartAt)}</time></dd></div>`}
+        ${config.scheduleSource === 'deepseek_off_peak' ? '<div><dt>调度来源</dt><dd>DeepSeek 闲时 · Off-Peak</dd></div>' : ''}
         <div><dt>Branch</dt><dd title="${escapeHtml(config.branch)}">${escapeHtml(config.branch)}</dd></div>
         <div><dt>Reviewer</dt><dd>${escapeHtml(config.reviewer)}</dd></div>
         <div><dt>Executor</dt><dd>${escapeHtml(config.executor)}</dd></div>
@@ -132,6 +135,18 @@ export function renderLaunchpadHtml(input: {
           <label>Hard Limit（分钟）<input name="hardMinutes" type="number" min="1" max="1440" value="90" required></label>
         </div>
         <div class="checks">
+          <fieldset class="start-time">
+            <legend>开始时间 / Start Time</legend>
+            <div class="schedule-options">
+              <label><input type="radio" name="startMode" value="immediate" checked>立即开始</label>
+              <label><input type="radio" name="startMode" value="deepseek_off_peak">DeepSeek 闲时 <small data-off-peak-label></small></label>
+              <label><input type="radio" name="startMode" value="custom">自定义时间</label>
+            </div>
+            <label data-custom-time hidden>本地开始时间<input type="datetime-local" name="customStartAt"><span class="field-hint" data-local-zone></span></label>
+            <p class="field-hint" data-schedule-hint>默认立即开始，不改变现有执行方式。</p>
+          </fieldset>
+        </div>
+        <div class="checks">
           <label><input name="autoCommit" type="checkbox" checked> Auto Commit</label>
           <label><input name="autoPush" type="checkbox"> Auto Push</label>
           <label><input name="emailEnabled" type="checkbox"> 邮件通知（完成 / 失败 / 需人工）</label>
@@ -161,6 +176,8 @@ export function renderLaunchpadHtml(input: {
 export const LAUNCHPAD_APP_JS = `
 (() => {
   'use strict'
+  const DEEPSEEK_PRICING_SCHEDULE = ${JSON.stringify(DEEPSEEK_PRICING_SCHEDULE)}
+  const getDeepSeekPricingPeriod = ${getDeepSeekPricingPeriod.toString()}
 
   const bootstrapElement = document.getElementById('novawing-bootstrap')
   if (!bootstrapElement) return
@@ -176,6 +193,21 @@ export const LAUNCHPAD_APP_JS = `
     'Content-Type': 'application/json',
     'X-NovaWing-Launchpad-Token': bootstrap.launchToken,
   })
+  for (const time of document.querySelectorAll('[data-local-time]')) {
+    time.textContent = new Date(time.getAttribute('datetime')).toLocaleString()
+  }
+  if (typeof setInterval === 'function') setInterval(async () => {
+    try {
+      const response = await fetch('/api/session/configs')
+      if (!response.ok) return
+      const configs = await response.json()
+      for (const card of document.querySelectorAll('[data-config-card]')) {
+        const config = configs.find((item) => item.configId === card.dataset.configCard)
+        const state = card.querySelector('[data-card-state]')
+        if (config && state) state.textContent = config.status || 'READY'
+      }
+    } catch { /* A disconnected page does not own scheduling. */ }
+  }, 10000)
   const buttons = Array.from(document.querySelectorAll('[data-config-id]'))
   for (const button of buttons) {
     button.addEventListener('click', async () => {
@@ -260,6 +292,34 @@ export const LAUNCHPAD_APP_JS = `
   const toggle = document.querySelector('[data-composer-toggle]')
   const form = document.querySelector('[data-composer-form]')
   if (!toggle || !form) return
+  const customTime = form.elements.customStartAt
+  const customLabel = form.querySelector('[data-custom-time]')
+  const scheduleHint = form.querySelector('[data-schedule-hint]')
+  const pricingLabel = form.querySelector('[data-off-peak-label]')
+  const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  form.querySelector('[data-local-zone]').textContent = '时区：' + localZone + '；过去或当前时间将立即开始。'
+  const updateSchedule = () => {
+    const mode = form.elements.startMode.value
+    const pricing = getDeepSeekPricingPeriod(new Date())
+    pricingLabel.textContent = pricing.nextOffPeakAt
+      ? pricing.nextOffPeakAt.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) + ' 开始（北京时间）· 省约 50%'
+      : pricing.reason === 'weekend' ? '周末全天闲时' : '当前已是闲时'
+    customLabel.hidden = mode !== 'custom'
+    if (mode === 'custom' && !customTime.value) {
+      const now = new Date()
+      const pad = (n) => String(n).padStart(2, '0')
+      customTime.value = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + 'T' + pad(now.getHours()) + ':' + pad(now.getMinutes())
+    }
+    scheduleHint.textContent = mode === 'deepseek_off_peak'
+      ? '按北京时间计算；闲时 API 单价约为高峰的一半。此快捷项不会切换模型，仅适用于实际使用 DeepSeek API 的调用；任务跨入高峰后按当时价格计费。'
+      : mode === 'custom' ? '到点自动开始；等待不计入执行时限。NovaWing 关闭期间不执行，重新打开后补启动。'
+      : '默认立即开始，不改变现有执行方式。'
+    form.querySelector('[data-composer-submit]').textContent = mode === 'immediate' || (mode === 'deepseek_off_peak' && !pricing.nextOffPeakAt)
+      ? '创建并启动' : '创建并安排'
+  }
+  for (const radio of form.querySelectorAll('[name="startMode"]')) radio.addEventListener('change', updateSchedule)
+  updateSchedule()
+  setInterval(updateSchedule, 30000)
   toggle.addEventListener('click', () => {
     const open = form.hidden
     form.hidden = !open
@@ -422,10 +482,17 @@ export const LAUNCHPAD_APP_JS = `
     }
     const requestId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/[^a-zA-Z0-9_-]/g, '')
     try {
+      const mode = form.elements.startMode.value
+      const instant = mode === 'deepseek_off_peak'
+        ? getDeepSeekPricingPeriod(new Date()).nextOffPeakAt
+        : mode === 'custom' ? new Date(customTime.value) : null
+      if (instant && !Number.isFinite(instant.getTime())) throw new Error('请选择有效的自定义开始时间。')
       const response = await fetch('/api/session/create', {
         method: 'POST', headers: mutationHeaders(),
         body: JSON.stringify({
           requestId, targetRepo: targetRepo.value, tasks,
+          scheduled_start_at: instant ? instant.toISOString() : null,
+          schedule_source: mode,
           executorModel: form.elements.executorModel.value,
           softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
           autoCommit: autoCommit.checked, autoPush: autoPush.checked,
@@ -559,6 +626,13 @@ body {
 .composer-grid label { margin: 0; }
 .checks { display: flex; flex-wrap: wrap; gap: 18px; margin: 20px 0; color: #c7cfdb; font-size: 13px; }
 .checks label { display: flex; align-items: center; gap: 7px; margin: 0; }
+.start-time { width: 100%; border: 1px solid rgba(151,170,202,.2); border-radius: 10px; padding: 14px; }
+.schedule-options { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 14px; }
+.schedule-options label { padding: 10px; border: 1px solid rgba(151,170,202,.2); border-radius: 8px; cursor: pointer; flex-wrap: wrap; }
+.schedule-options label:has(input:checked) { border-color: #92b7ff; background: rgba(146,183,255,.1); }
+.schedule-options small { color: #9eacc1; }
+.start-time input[type="datetime-local"] { color-scheme: dark; padding: 8px; border: 1px solid #52627c; border-radius: 6px; background: #111925; color: #e8eef8; }
+.start-time .field-hint { line-height: 1.6; }
 .push-remote { margin: -8px 0 18px; color: #a9c7ff; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .composer details { border-top: 1px solid rgba(151, 170, 202, .1); padding-top: 18px; }
 .composer summary { cursor: pointer; color: #a9c7ff; font-size: 13px; }
