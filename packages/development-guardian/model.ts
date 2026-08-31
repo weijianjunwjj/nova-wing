@@ -153,6 +153,7 @@ export interface PermissionDenialEvidence {
 }
 
 export interface ExecutionReport {
+  execution?: import('./coding-executor-config.js').CodingExecutionMetadata
   summary: string
   changedFiles: readonly string[]
   commandsRun: readonly string[]

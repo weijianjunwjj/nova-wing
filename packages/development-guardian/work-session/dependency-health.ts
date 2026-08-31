@@ -2,6 +2,9 @@ import { access } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { inspectCodexLocal } from '../codex-executor.js'
+import { classifyCodexError } from '../codex-error.js'
+import type { ExecutorMode } from '../coding-executor-config.js'
 
 export const EXPECTED_GIT_BASH_EXECUTABLE = 'D:\\Git\\bin\\bash.exe'
 export const SHELL_ENVIRONMENT_INVALID = 'SHELL_ENVIRONMENT_INVALID'
@@ -54,6 +57,9 @@ export interface ProductionDependencyPreflightOptions {
   accessFile?: (path: string) => Promise<void>
   timeoutMs?: number
   now?: () => Date
+  /** Omitted preserves the legacy DeepSeek-only preflight contract. */
+  executorModes?: readonly ExecutorMode[]
+  inspectCodex?: () => Promise<unknown>
 }
 
 const SAFE_SHELL_REMEDIATION =
@@ -201,11 +207,25 @@ export async function runProductionDependencyPreflight(
           executable: askBridgeExecutable, args: ['config'], timeoutMs,
         }, commandRunner),
       ]).then(([transport, configuration]) => transport.state === 'READY' ? configuration : transport),
-      probeCommand('EXECUTOR', 'EXECUTOR_UNAVAILABLE', 'Executor provider 不可用。', {
+      (async (): Promise<DependencyHealth> => {
+        const modes = options.executorModes ?? ['deepseek']
+        if (modes.length === 0) return { id: 'EXECUTOR', state: 'DEGRADED', safeMessage: 'Executor 在 Task 启动/恢复时按持久化路由检查。' }
+        if (modes.some((mode) => mode !== 'deepseek')) {
+          try { await (options.inspectCodex?.() ?? inspectCodexLocal(env, options.targetRepo)) }
+          catch (error) {
+            const classified = classifyCodexError(error)
+            return { id: 'EXECUTOR', state: 'UNAVAILABLE', failureType: classified.kind,
+              safeMessage: classified.message,
+              safeRemediation: classified.kind === 'auth_required' ? '请在本机 Codex 使用 ChatGPT 登录；不要配置 OPENAI_API_KEY。' : '检查 NovaWing Codex Local 配置；不会自动改用其他 OpenAI 模型或 API。' }
+          }
+        }
+        if (!modes.includes('deepseek')) return { id: 'EXECUTOR', state: 'READY' }
+        return probeCommand('EXECUTOR', 'EXECUTOR_UNAVAILABLE', 'DeepSeek runtime 不可用。', {
         executable: actualExecutable,
         args: ['--noprofile', '--norc', '-lc', 'command -v claude >/dev/null && claude --version >/dev/null'],
         timeoutMs,
-      }, commandRunner),
+        }, commandRunner)
+      })(),
       probeCommand('GIT', 'GIT_UNAVAILABLE', 'Git 或目标仓库不可用。', {
         executable: actualExecutable,
         args: ['--noprofile', '--norc', '-lc', cwd === undefined ? 'git --version >/dev/null' : 'git rev-parse --is-inside-work-tree >/dev/null'],

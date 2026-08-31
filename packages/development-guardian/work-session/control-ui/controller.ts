@@ -44,6 +44,7 @@ export type WorkSessionRuntimeFactory = (
 ) => WorkSessionControlRuntime
 
 export interface WorkSessionControlControllerOptions {
+  readCodingExecutions?: () => NonNullable<WorkSessionControlSnapshot['codingExecutions']>
   createRuntime: WorkSessionRuntimeFactory
   /** Revalidates external dependencies immediately before a recoverable resume. */
   beforeResume?: () => Promise<void>
@@ -92,6 +93,7 @@ interface GuardianPhaseSnapshot {
 }
 
 export class WorkSessionControlController {
+  private readonly readCodingExecutions: WorkSessionControlControllerOptions['readCodingExecutions']
   private readonly runtime: WorkSessionControlRuntime
   private readonly pollIntervalMs: number
   private readonly maxRecentEvents: number
@@ -128,6 +130,7 @@ export class WorkSessionControlController {
   }
 
   constructor(options: WorkSessionControlControllerOptions) {
+    this.readCodingExecutions = options.readCodingExecutions
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.maxRecentEvents = options.maxRecentEvents ?? DEFAULT_MAX_RECENT_EVENTS
     this.clock = options.clock
@@ -478,6 +481,7 @@ export class WorkSessionControlController {
 
     return {
       server: { ...this.serverInfo },
+      ...(this.readCodingExecutions === undefined ? {} : { codingExecutions: this.readCodingExecutions() }),
       configuredSession: {
         id: definition.id,
         targetRepo: definition.targetRepo,

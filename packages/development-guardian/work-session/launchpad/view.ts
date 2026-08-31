@@ -1,6 +1,7 @@
 import type { LaunchpadConfigSummary } from './server.js'
 import type { DependencyHealthReport } from '../dependency-health.js'
 import { DEEPSEEK_PRICING_SCHEDULE, getDeepSeekPricingPeriod } from '../schedule-policy.js'
+import { CODING_EXECUTOR_DEFAULTS } from '../../coding-executor-config.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -49,7 +50,7 @@ function renderCard(config: LaunchpadConfigSummary): string {
         ${config.scheduleSource === 'deepseek_off_peak' ? '<div><dt>调度来源</dt><dd>DeepSeek 闲时 · Off-Peak</dd></div>' : ''}
         <div><dt>Branch</dt><dd title="${escapeHtml(config.branch)}">${escapeHtml(config.branch)}</dd></div>
         <div><dt>Reviewer</dt><dd>${escapeHtml(config.reviewer)}</dd></div>
-        <div><dt>Executor</dt><dd>${escapeHtml(config.executor)}</dd></div>
+        <div><dt>Executor</dt><dd>${escapeHtml(config.executorMode ?? 'deepseek')} · ${escapeHtml(config.executorMode === 'deepseek' || config.executorMode === undefined ? config.executor : (config.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model) + ' · ' + (config.codexReasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort))}</dd></div>
         <div><dt>Git</dt><dd>${escapeHtml(gitLabel)}</dd></div>
         <div><dt>Notification</dt><dd>${escapeHtml(emailLabel)}</dd></div>
       </dl>
@@ -130,7 +131,8 @@ export function renderLaunchpadHtml(input: {
         <button class="task-add" type="button" data-add-task>＋ 添加 Task</button>
         <label>允许修改路径<textarea name="allowedPaths" rows="3" placeholder="apps/api/**\ntests/**" required></textarea><span class="field-hint">每行一条，相对于仓库根目录。</span></label>
         <div class="composer-grid">
-          <label>Executor<input name="executorModel" type="text" value="sonnet" required></label>
+          <label>Executor<select name="executorMode"><option value="auto" selected>Auto</option><option value="codex">Codex</option><option value="deepseek">DeepSeek</option></select><span class="field-hint" data-executor-hint>优先使用 Codex，额度不可用时由 DeepSeek 接力</span></label>
+          <label data-deepseek-model>DeepSeek runtime model alias<input name="executorModel" type="text" value="sonnet" required><span class="field-hint">沿用本机 Claude CLI → DeepSeek 配置</span></label>
           <label>Soft Limit（分钟）<input name="softMinutes" type="number" min="0" max="1440" value="45" required></label>
           <label>Hard Limit（分钟）<input name="hardMinutes" type="number" min="1" max="1440" value="90" required></label>
         </div>
@@ -139,7 +141,7 @@ export function renderLaunchpadHtml(input: {
             <legend>开始时间 / Start Time</legend>
             <div class="schedule-options">
               <label><input type="radio" name="startMode" value="immediate" checked>立即开始</label>
-              <label><input type="radio" name="startMode" value="deepseek_off_peak">DeepSeek 闲时 <small data-off-peak-label></small></label>
+              <label data-off-peak-option hidden><input type="radio" name="startMode" value="deepseek_off_peak">DeepSeek 闲时 <small data-off-peak-label></small></label>
               <label><input type="radio" name="startMode" value="custom">自定义时间</label>
             </div>
             <label data-custom-time hidden>本地开始时间<input type="datetime-local" name="customStartAt"><span class="field-hint" data-local-zone></span></label>
@@ -299,6 +301,14 @@ export const LAUNCHPAD_APP_JS = `
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   form.querySelector('[data-local-zone]').textContent = '时区：' + localZone + '；过去或当前时间将立即开始。'
   const updateSchedule = () => {
+    const executor = form.elements.executorMode.value
+    form.querySelector('[data-deepseek-model]').hidden = executor === 'codex'
+    form.querySelector('[data-off-peak-option]').hidden = executor !== 'deepseek'
+    form.querySelector('[data-executor-hint]').textContent = executor === 'auto'
+      ? '优先使用 Codex，只有确认额度耗尽才由 DeepSeek 接力'
+      : executor === 'codex' ? '${CODING_EXECUTOR_DEFAULTS.codex.model} · ${CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort} · 仅使用 Codex'
+      : 'DeepSeek API · 沿用本机执行配置'
+    if (executor !== 'deepseek' && form.elements.startMode.value === 'deepseek_off_peak') form.querySelector('[name="startMode"][value="immediate"]').checked = true
     const mode = form.elements.startMode.value
     const pricing = getDeepSeekPricingPeriod(new Date())
     pricingLabel.textContent = pricing.nextOffPeakAt
@@ -318,6 +328,7 @@ export const LAUNCHPAD_APP_JS = `
       ? '创建并启动' : '创建并安排'
   }
   for (const radio of form.querySelectorAll('[name="startMode"]')) radio.addEventListener('change', updateSchedule)
+  form.elements.executorMode.addEventListener('change', updateSchedule)
   updateSchedule()
   setInterval(updateSchedule, 30000)
   toggle.addEventListener('click', () => {
@@ -494,6 +505,7 @@ export const LAUNCHPAD_APP_JS = `
           scheduled_start_at: instant ? instant.toISOString() : null,
           schedule_source: mode,
           executorModel: form.elements.executorModel.value,
+          executorMode: form.elements.executorMode.value,
           softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
           autoCommit: autoCommit.checked, autoPush: autoPush.checked,
           ...(autoPush.checked ? { pushRemote: discoveredPushRemote } : {}),
@@ -613,7 +625,7 @@ body {
 .composer-heading { margin: 5px 0 22px; }
 .composer-heading h2, .existing-heading { font-size: 20px; }
 .composer-form label { display: grid; gap: 8px; margin: 15px 0; color: #b9c4d4; font-size: 13px; }
-.composer-form input[type="text"], .composer-form input[type="number"], .composer-form textarea {
+.composer-form input[type="text"], .composer-form input[type="number"], .composer-form textarea, .composer-form select {
   width: 100%; border: 1px solid rgba(151, 170, 202, .2); border-radius: 9px;
   padding: 11px 12px; background: rgba(7, 10, 15, .55); color: #e8eef8;
   font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -622,7 +634,9 @@ body {
 .composer-form [aria-invalid="true"] { border-color: #ef9b9b; box-shadow: 0 0 0 2px rgba(239, 155, 155, .15); }
 .composer-form input[readonly] { color: #8ea0b9; }
 .field-hint { color: #7f899a; font-size: 12px; }
-.composer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+.composer-form select { color-scheme: dark; }
+.composer-grid { display: grid; grid-template-columns: 2fr 2fr 1fr 1fr; gap: 14px; align-items: start; }
+.composer-grid:has([data-deepseek-model][hidden]) { grid-template-columns: 2fr 1fr 1fr; }
 .composer-grid label { margin: 0; }
 .checks { display: flex; flex-wrap: wrap; gap: 18px; margin: 20px 0; color: #c7cfdb; font-size: 13px; }
 .checks label { display: flex; align-items: center; gap: 7px; margin: 0; }
@@ -820,7 +834,7 @@ footer {
   body { min-width: 0; }
   .shell { width: min(100% - 32px, 680px); padding-top: 28px; }
   .session-grid { grid-template-columns: 1fr; }
-  .composer-grid { grid-template-columns: 1fr; }
+  .composer-grid, .composer-grid:has([data-deepseek-model][hidden]) { grid-template-columns: 1fr; }
   .system-ready span { display: none; }
 }
 

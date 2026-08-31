@@ -130,3 +130,17 @@ test('dependency preflight is bounded and reports degradation rather than throwi
   assert.equal(report.canStart, false)
   assert.equal(requests.length, 5, 'one shell fingerprint plus bounded Bridge/config/Executor/Git probes')
 })
+
+test('Codex/Auto preflight checks ChatGPT authentication without requiring the DeepSeek CLI', async () => {
+  const requests: DependencyCommandRequest[] = []
+  let inspected = 0
+  const options = { env: {}, accessFile: async () => undefined, commandRunner: healthyRunner(requests),
+    executorModes: ['auto', 'codex'] as const, inspectCodex: async () => { inspected++ } }
+  const ready = await runProductionDependencyPreflight(options)
+  assert.equal(ready.canStart, true)
+  assert.equal(inspected, 1)
+  assert.equal(requests.some((r) => r.args.join(' ').includes('claude')), false)
+  const blocked = await runProductionDependencyPreflight({ ...options, inspectCodex: async () => { throw { code: 'auth_required' } } })
+  assert.equal(blocked.canStart, false)
+  assert.equal(blocked.dependencies.find((d) => d.id === 'EXECUTOR')?.failureType, 'auth_required')
+})

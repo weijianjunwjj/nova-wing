@@ -100,6 +100,37 @@ async function createConfigDirectory(): Promise<string> {
   return directory
 }
 
+test('Composer executor defaults Auto, persists explicit modes, and confines Off-Peak to DeepSeek', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    for (const [index, mode] of [undefined, 'auto', 'codex', 'deepseek'].entries()) {
+      const result = await postCreate(launchpad, composerRequest(`executor-mode-valid-${index}`, {
+        ...(mode === undefined ? {} : { executorMode: mode }),
+      }), auth)
+      assert.equal(result.status, 202)
+      assert.equal(state.receivedConfigs[index]?.executor.defaultMode, mode ?? 'auto')
+    }
+    for (const mode of ['auto', 'codex']) {
+      const result = await postCreate(launchpad, composerRequest(`executor-off-peak-invalid-${mode}`, {
+        executorMode: mode, schedule_source: 'deepseek_off_peak', scheduled_start_at: '2099-08-31T10:00:00Z',
+      }), auth)
+      assert.equal(result.status, 400)
+    }
+    assert.equal((await postCreate(launchpad, composerRequest('executor-off-peak-valid-ds', {
+      executorMode: 'deepseek', schedule_source: 'deepseek_off_peak', scheduled_start_at: '2099-08-31T10:00:00Z',
+    }), auth)).status, 202)
+    assert.equal((await postCreate(launchpad, composerRequest('executor-mode-invalid-value', { executorMode: 'other' }), auth)).status, 400)
+    assert.equal((await postCreate(launchpad, composerRequest('executor-mode-valid-0', { executorMode: 'deepseek' }), auth)).status, 409)
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 interface FakeWorkSessionState {
   createCalls: number
   startCalls: number

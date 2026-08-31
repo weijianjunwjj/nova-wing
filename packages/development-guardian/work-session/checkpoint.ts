@@ -22,6 +22,7 @@ export interface ChatGptProviderConfigurationState {
  * 不包含 executor-instance ephemeral binding（如 activeTaskId）。
  */
 export interface ProviderSessionState {
+  codingExecution?: import('../coding-executor-config.js').CodingExecutionMetadata
   /** ChatGPT conversation URL（如果可用） */
   chatgptConversationUrl?: string
   /** The previous Reviewer conversation is known stale and must not be restored. */

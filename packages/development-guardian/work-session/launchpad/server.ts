@@ -16,6 +16,7 @@ import {
 } from '../production.js'
 import { WorkSessionRuntime } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
+import { CODING_EXECUTOR_DEFAULTS, type ExecutorMode } from '../../coding-executor-config.js'
 import {
   deriveDisplayState,
   type WorkSessionDisplayState,
@@ -65,6 +66,9 @@ const DEFAULT_GUARDIAN_POLICY = {
 } as const
 
 export interface LaunchpadConfigSummary {
+  executorMode?: ExecutorMode
+  codexModel?: string
+  codexReasoningEffort?: string
   scheduledStartAt?: string | null
   scheduleSource?: ScheduleSource
   configId: string
@@ -134,6 +138,7 @@ interface LaunchResult {
 }
 
 interface ComposerRequest {
+  executorMode: ExecutorMode
   scheduledStartAt: string | null
   scheduleSource: ScheduleSource
   requestId: string
@@ -224,6 +229,9 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
   if (firstTask === undefined) throw new Error('trusted config has no tasks')
   return {
     configId,
+    executorMode: firstTask.executorMode ?? config.executor.defaultMode ?? (config.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode),
+    codexModel: config.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
+    codexReasoningEffort: config.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort,
     scheduledStartAt: config.session.scheduledStartAt ?? null,
     scheduleSource: config.session.scheduleSource ?? 'immediate',
     project: titleCaseProject(basename(config.session.targetRepo)),
@@ -910,6 +918,7 @@ export class NovaWingLaunchpad {
         ...(input.autoPush ? { pushRemote: input.pushRemote } : {}),
       },
       executor: {
+        defaultMode: input.executorMode,
         model: input.executorModel,
         maxTurns: 10,
         allowNpmInstall: false,
@@ -1024,6 +1033,7 @@ function canonicalComposerPayload(input: ComposerRequest): string {
     targetRepo: input.targetRepo,
     tasks: input.tasks,
     executorModel: input.executorModel,
+    executorMode: input.executorMode,
     softMinutes: input.softMinutes,
     hardMinutes: input.hardMinutes,
     autoCommit: input.autoCommit,
@@ -1050,6 +1060,9 @@ export async function createNovaWingLaunchpad(options: {
         ...options.dependencies,
         preflight: options.dependencies?.preflight ?? ((targetRepo?: string) =>
           runProductionDependencyPreflight({
+            // The runtime checks the persisted active executor (including sticky failover).
+            // Launchpad cannot infer it from the original Composer choice alone.
+            executorModes: [],
             ...(options.env === undefined ? {} : { env: options.env }),
             ...(targetRepo === undefined ? {} : { targetRepo }),
           })),
@@ -1126,7 +1139,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   const allowed = new Set([
     'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
-    'scheduled_start_at', 'schedule_source',
+    'scheduled_start_at', 'schedule_source', 'executorMode',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
   let scheduledStartAt: string | null
@@ -1137,6 +1150,10 @@ function parseComposerBody(body: string): ComposerParseResult {
   if (scheduleSource !== 'immediate' && scheduleSource !== 'custom' && scheduleSource !== 'deepseek_off_peak') {
     return { ok: false, error: 'INVALID_SCHEDULE' }
   }
+  // Legacy off-peak requests implied DeepSeek; explicit Auto/Codex must never imply it.
+  const executorMode = record.executorMode ?? (scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)
+  if (executorMode !== 'auto' && executorMode !== 'codex' && executorMode !== 'deepseek') return { ok: false, error: 'INVALID_REQUEST' }
+  if (scheduleSource === 'deepseek_off_peak' && executorMode !== 'deepseek') return { ok: false, error: 'INVALID_SCHEDULE' }
   if (typeof record.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/u.test(record.requestId)) {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
@@ -1181,6 +1198,7 @@ function parseComposerBody(body: string): ComposerParseResult {
       targetRepo: record.targetRepo.trim(),
       tasks,
       executorModel: executorModel.trim(),
+      executorMode,
       softMinutes,
       hardMinutes,
       autoCommit,

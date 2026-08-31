@@ -46,6 +46,8 @@ export interface GuardianExecutor {
  * 不要通过 duck typing 或依赖 executor.options 实现恢复逻辑。
  */
 export interface GuardianRecoverableExecutor extends GuardianExecutor {
+  /** False means a timed-out local process may still write; retain the local ownership guard. */
+  hasReleasedExecutionOwnership?(): boolean
   /**
    * 捕获 provider 会话状态（如 Claude sessionId、ChatGPT conversationUrl）
    */

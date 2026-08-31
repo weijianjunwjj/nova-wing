@@ -60,6 +60,12 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     </div>
   </section>
 
+  <section class="card" aria-label="Execution">
+    <h2>Execution</h2>
+    <p id="coding-execution" class="note">尚未选择 Executor</p>
+    <p id="coding-failover" class="note"></p>
+  </section>
+
   <section id="decision-card" class="card decision" hidden>
     <h2 id="decision-title">需要人工决策</h2>
     <div class="row">
@@ -271,6 +277,14 @@ function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
   var guardian = snapshot.guardian || {}
+  var executions = snapshot.codingExecutions || []
+  var execution = executions.find((entry) => entry.taskId === rt.currentTaskId) || executions[executions.length - 1]
+  setText('coding-execution', execution ? execution.taskId + ' · ' + execution.mode.toUpperCase() + ' · '
+    + (execution.activeExecutor || '等待开始') + (execution.model ? ' · ' + execution.model : '')
+    + (execution.reasoningEffort ? ' · ' + execution.reasoningEffort : '') : '尚未选择 Executor')
+  setText('coding-failover', execution && execution.failoverReason
+    ? 'Codex quota exhausted → DeepSeek 接力（本 Task 保持 DeepSeek）'
+    : execution && execution.lastError || '')
   var localTime = (value) => value ? new Date(value).toLocaleString() : '—'
   setText('created-at', localTime(rt.createdAt))
   setText('scheduled-at', localTime(rt.scheduledStartAt))

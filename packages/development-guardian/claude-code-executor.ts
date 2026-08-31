@@ -34,6 +34,7 @@ export interface GuardianCommandRequest {
 }
 
 export interface GuardianCommandResult {
+  terminationConfirmed?: boolean
   exitCode: number | null
   signal: NodeJS.Signals | null
   stdout: string
@@ -87,6 +88,18 @@ export interface MaxTurnRecoveryDecision {
 }
 
 export interface ClaudeCodeExecutorOptions {
+  /** Observable engineering handoff, supplied by the router, never private model context. */
+  additionalExecutionContext?: string
+  /** Internal provider seam: keep the existing scope/recovery/verifier contract. */
+  codingRuntime?: {
+    label: string
+    run(input: { task: GuardianTask; packet: DelegationPacket }): Promise<{
+      summary: string
+      commandsRun: readonly string[]
+      blockers: readonly string[]
+      incompleteReason?: string
+    }>
+  }
   cwd: string
   maxTurns?: number
   timeoutMs?: number
@@ -346,6 +359,7 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
       resolve({
         exitCode: null,
         signal: 'SIGTERM',
+        terminationConfirmed: false,
         stdout,
         stderr: `${stderr}\ncommand timed out after ${request.timeoutMs}ms`.trim(),
       })
@@ -508,7 +522,7 @@ function isIgnoredScopePath(path: string): boolean {
     .some((segment) => SCOPE_IGNORED_DIR_SEGMENTS.has(segment))
 }
 
-function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): string[] {
+export function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): string[] {
   const blockers: string[] = []
   if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
     for (const path of changedFiles) {
@@ -567,7 +581,7 @@ export async function runStagedEquivalentDiffCheck(cwd: string, timeoutMs: numbe
     child.stderr.on('data', (chunk: string) => { commandStderr += chunk })
     const timer = setTimeout(() => {
       child.kill()
-      resolve({ exitCode: null, signal: 'SIGTERM', stdout: commandStdout, stderr: `${commandStderr}\ncommand timed out after ${timeoutMs}ms`.trim() })
+      resolve({ exitCode: null, signal: 'SIGTERM', terminationConfirmed: false, stdout: commandStdout, stderr: `${commandStderr}\ncommand timed out after ${timeoutMs}ms`.trim() })
     }, timeoutMs)
     child.once('error', (error) => {
       clearTimeout(timer)
@@ -612,6 +626,8 @@ export async function runStagedEquivalentDiffCheck(cwd: string, timeoutMs: numbe
 }
 
 export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
+  private executionOwnershipReleased = true
+  hasReleasedExecutionOwnership(): boolean { return this.executionOwnershipReleased }
   private readonly runner: GuardianCommandRunner
   private readonly timeoutMs: number
   private readonly maxTurns: number
@@ -621,7 +637,12 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   private approvedVerificationCommandAvailable: boolean
 
   constructor(private readonly options: ClaudeCodeExecutorOptions) {
-    this.runner = options.commandRunner ?? defaultCommandRunner
+    const runner = options.commandRunner ?? defaultCommandRunner
+    this.runner = async (request) => {
+      const result = await runner(request)
+      if (result.terminationConfirmed === false) this.executionOwnershipReleased = false
+      return result
+    }
     this.timeoutMs = options.timeoutMs ?? 20 * 60 * 1000
     this.maxTurns = options.maxTurns ?? 12
     this.approvedVerificationCommandAvailable = options.approvedVerificationCommand !== undefined
@@ -845,7 +866,8 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     const maxTurns = mode === 'max-turn-recovery' ? 6 : this.maxTurns
     const args = [
       '-p',
-      useContinuationPrompt ? buildContinuationPrompt(task, packet) : buildClaudePrompt(task, packet),
+      [useContinuationPrompt ? buildContinuationPrompt(task, packet) : buildClaudePrompt(task, packet),
+        this.options.additionalExecutionContext ?? ''].filter(Boolean).join('\n\n'),
       '--output-format',
       'json',
       '--permission-mode',
@@ -929,6 +951,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         ? await runStagedEquivalentDiffCheck(this.options.cwd, this.timeoutMs)
         : await this.runBash(command)
       const durationMs = performance.now() - startedAt
+      if (result.terminationConfirmed === false) this.executionOwnershipReleased = false
       this.emitTiming(task, 'verification', durationMs, { command })
       const status = result.exitCode === 0 ? 'passed' : 'failed'
       const rawOutputRef = status === 'failed'
@@ -1240,7 +1263,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       })
       if (startCheck.blocker !== undefined) {
         return {
-          summary: 'Claude Code 未启动。',
+          summary: `${this.options.codingRuntime?.label ?? 'Claude Code'} 未启动。`,
           changedFiles: [],
           commandsRun: ['git status --porcelain'],
           verificationResults: [],
@@ -1250,6 +1273,26 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
 
       // 记录当前 active task，用于后续 revise 判断
       this.activeTaskId = input.task.id
+
+      if (this.options.codingRuntime !== undefined) {
+        const result = await this.options.codingRuntime.run(input)
+        const changed = await this.readChangedFiles()
+        const blockers = [...result.blockers, ...scopeBlockers(input.task, changed.changedFiles),
+          ...(changed.blocker === undefined ? [] : [changed.blocker])]
+        const verification = blockers.length === 0 && result.incompleteReason === undefined
+          ? await this.verify(input.task, input.packet.verification)
+          : { results: [], blockers: [], commandsRun: [] }
+        return {
+          summary: result.summary,
+          changedFiles: changed.changedFiles,
+          commandsRun: [...result.commandsRun, ...verification.commandsRun],
+          verificationResults: verification.results,
+          blockers: [...blockers, ...verification.blockers],
+          ...(result.incompleteReason === undefined ? {} : { incompleteReason: result.incompleteReason }),
+          executorCapabilities: ['list_files', 'read_file', 'write_file', 'delete_file', 'git_status', 'git_diff_summary'],
+          deterministicVerificationCapabilities: getDeterministicVerificationCapabilities(),
+        }
+      }
 
       // 第一次 Claude invocation 的 mode：
       // - checkpoint 验证通过（startCheck.continuation）→ task-continuation（Exact / Recovery Resume）

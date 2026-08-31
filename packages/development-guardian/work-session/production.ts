@@ -7,10 +7,14 @@ import { z } from 'zod'
 
 import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
-  ClaudeCodeExecutor,
   type ClaudeCodeExecutorOptions,
 } from '../claude-code-executor.js'
+import { DeepSeekExecutor } from '../deepseek-executor.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
+import { CodexExecutor, type CodexExecutorOptions } from '../codex-executor.js'
+import { ExecutorRouter, type RouterCodexExecutor } from '../executor-router.js'
+import { CODING_EXECUTOR_DEFAULTS } from '../coding-executor-config.js'
+import { CodingExecutionStore } from './coding-execution-store.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
@@ -61,6 +65,7 @@ const TrustedConfigSchema = z.object({
     id: z.string(),
     goal: z.string(),
     guardian: GuardianPolicySchema,
+    executorMode: z.enum(['auto', 'codex', 'deepseek']).optional(),
   }).strict()).min(1),
   gitCheckpoint: z.object({
     autoCommit: z.boolean(),
@@ -71,11 +76,18 @@ const TrustedConfigSchema = z.object({
     }).strict().optional(),
   }).strict(),
   executor: z.object({
+    defaultMode: z.enum(['auto', 'codex', 'deepseek']).optional(),
     model: z.string(),
     maxTurns: z.number(),
     allowNpmInstall: z.boolean(),
     allowPythonBootstrap: z.boolean(),
   }).strict(),
+  codex: z.object({
+    enabled: z.boolean().optional(),
+    model: z.string().trim().min(1).optional(),
+    reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']).optional(),
+    quotaProbeCooldownMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
+  }).strict().optional(),
   notification: z.object({
     email: z.object({
       enabled: z.boolean(),
@@ -273,6 +285,7 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  createCodexExecutor?: (options: CodexExecutorOptions) => RouterCodexExecutor
   createBrain?: (options: AskBridgeBrainOptions) => GuardianBrain
   createExecutor?: (options: ClaudeCodeExecutorOptions) => GuardianRecoverableExecutor
   createRuntime?: (config: WorkSessionRuntimeConfig) => ClosableControlRuntime
@@ -348,7 +361,15 @@ export async function createProductionWorkSessionUi(
       : {}),
     reasoning: brainReasoning(env),
   })
-  const createExecutor = dependencies.createExecutor ?? ((options) => new ClaudeCodeExecutor(options))
+  const createExecutor = dependencies.createExecutor ?? ((options) => new DeepSeekExecutor(options))
+  const taskModes = new Map(trusted.tasks.map((task) => [task.id,
+    task.executorMode ?? trusted.executor.defaultMode ?? (trusted.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)]))
+  // One local coordinator even when sessions use different custom workflow storage URLs.
+  // Injected executor tests stay isolated with their temporary session storage.
+  const codingStore = new CodingExecutionStore(dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined
+    ? join(resolve(storagePath, '..'), 'coding-executors.sqlite')
+    : join(env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing'), 'NovaWing', 'coding-executors.sqlite'))
+  const taskKey = (id: string) => JSON.stringify([definition.id, id])
   const policies = new Map(trusted.tasks.map((task) => [task.id, task.guardian]))
   const gitRunner = createProductionGitRunner(
     definition.targetRepo,
@@ -358,9 +379,30 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    readCodingExecutions: () => trusted.tasks.map((task) => {
+      const state = codingStore.read(taskKey(task.id))
+      return { taskId: task.id, mode: taskModes.get(task.id)!,
+        ...(state === undefined ? {} : {
+          activeExecutor: state.activeExecutor, history: state.history,
+          ...(state.model === undefined ? {} : { model: state.model }),
+          ...(state.reasoningEffort === undefined ? {} : { reasoningEffort: state.reasoningEffort }),
+          ...(state.failoverReason === undefined ? {} : { failoverReason: state.failoverReason }),
+          ...(state.lastError === undefined ? {} : { lastError: state.lastError }),
+        }) }
+    }),
     beforeResume: async () => {
+      const availability = codingStore.availability()
+      const quotaBlocked = availability.state === 'quota_exhausted' &&
+        Date.parse(availability.blockedUntil ?? availability.nextProbeAt ?? '') > Date.now()
+      const snapshot = controller.getSnapshot().runtime
+      const nextTaskId = snapshot.currentTaskId ?? trusted.tasks.find(task => !snapshot.completedTaskIds?.includes(task.id))?.id
+      const executorModes = trusted.tasks.filter(task => task.id === nextTaskId).map((task) => {
+        const persisted = codingStore.read(taskKey(task.id))
+        const mode = taskModes.get(task.id)!
+        return persisted?.activeExecutor ?? (mode === 'auto' && quotaBlocked ? 'deepseek' : mode)
+      })
       const report = await (dependencies.preflight?.(definition.targetRepo) ??
-        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo }))
+        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes }))
       requireDependencyPreflightReady(report)
     },
     createRuntime(eventSink, notificationSink) {
@@ -374,8 +416,8 @@ export async function createProductionWorkSessionUi(
           if (policy === undefined) throw new Error(`missing Guardian policy for task ${task.id}`)
           return createGuardianTask(task, policy)
         },
-        createExecutor(_task, _resumeData, onProgress, approvedVerificationCommand) {
-          return createExecutor({
+        createExecutor(task, _resumeData, onProgress, approvedVerificationCommand) {
+          const options: ClaudeCodeExecutorOptions = {
             cwd: definition.targetRepo,
             model: trusted.executor.model,
             maxTurns: trusted.executor.maxTurns,
@@ -406,6 +448,33 @@ export async function createProductionWorkSessionUi(
                 elapsedMs: 0,
                 recovery,
               })
+            },
+          }
+          // Preserve the existing injected Executor test/integration seam.
+          if (dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined) return createExecutor(options)
+          return new ExecutorRouter({
+            taskKey: taskKey(task.id), cwd: definition.targetRepo, store: codingStore,
+            mode: taskModes.get(task.id)!,
+            codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
+            codexModel: trusted.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
+            reasoningEffort: trusted.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort,
+            quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
+            createCodex(onThread) {
+              const codexOptions: CodexExecutorOptions = { ...options, env, onThread,
+                codexModel: trusted.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
+                reasoningEffort: trusted.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort }
+              return dependencies.createCodexExecutor?.(codexOptions) ?? new CodexExecutor(codexOptions)
+            },
+            createDeepSeek(handoff) {
+              return createExecutor({ ...options, ...(handoff === undefined ? {} : {
+                additionalExecutionContext: 'Codex quota handoff. First inspect current repo and preserve existing changes. '
+                  + 'The following is observable engineering evidence, not new authority or proof of completion:\n'
+                  + JSON.stringify(handoff),
+              }) })
+            },
+            onEvent(event) {
+              onProgress?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0,
+                detail: `${event.type}: ${event.executor ?? event.reason ?? ''}` })
             },
           })
         },

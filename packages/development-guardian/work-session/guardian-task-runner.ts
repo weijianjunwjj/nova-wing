@@ -326,6 +326,8 @@ export function isExecutorProviderCredentialRecovery(task: GuardianTask): boolea
   if (hasScopeViolationEvidence(task, reason) || isRepoDriftReason(reason)) {
     return false
   }
+  if (task.lastReport?.execution?.activeExecutor === 'codex' &&
+    ['quota_exhausted', 'auth_required', 'configuration_error', 'model_unavailable'].includes(task.lastReport.execution.lastErrorKind ?? '')) return true
 
   // Require the Executor context and credential prerequisite to occur in the
   // same structured evidence item. This avoids combining an unrelated Claude
@@ -387,6 +389,12 @@ export function classifyHumanRequired(task: GuardianTask): HumanRequired {
       category: 'SAFETY_BLOCKED',
       reason,
     }
+  }
+
+  // Permission required (capability 不足)
+  if (task.lastReport?.execution?.activeExecutor === 'codex' && task.lastReport.execution.lastErrorKind !== undefined) {
+    return { category: ['quota_exhausted', 'auth_required'].includes(task.lastReport.execution.lastErrorKind)
+      ? 'CREDENTIAL_REQUIRED' : 'ENVIRONMENT_REQUIRED', reason: task.lastReport.execution.lastError ?? reason }
   }
 
   // Permission required (capability 不足)
@@ -583,6 +591,7 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
     // 捕获 executor state（如 Claude sessionId）
     if (typeof executor.captureProviderState === 'function') {
       const executorState = executor.captureProviderState()
+      if (executorState.codingExecution !== undefined) state.codingExecution = executorState.codingExecution
       if (executorState.claudeSessionId !== undefined) {
         state.claudeSessionId = executorState.claudeSessionId
       }
@@ -659,12 +668,12 @@ export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
 
     // 恢复 executor state（如 Claude sessionId）
     if (
-      restoreExecutorSession &&
-      providerState.claudeSessionId !== undefined &&
+      (providerState.codingExecution !== undefined || (restoreExecutorSession && providerState.claudeSessionId !== undefined)) &&
       typeof executor.restoreProviderState === 'function'
     ) {
       executor.restoreProviderState({
-        claudeSessionId: providerState.claudeSessionId,
+        ...(restoreExecutorSession && providerState.claudeSessionId !== undefined ? { claudeSessionId: providerState.claudeSessionId } : {}),
+        ...(providerState.codingExecution === undefined ? {} : { codingExecution: providerState.codingExecution }),
       })
     }
   }

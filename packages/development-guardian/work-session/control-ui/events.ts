@@ -69,6 +69,7 @@ export interface ControlEventInput {
  * - 任何 secret / control token / env。
  */
 export interface WorkSessionControlSnapshot {
+  codingExecutions?: readonly CodingExecutionView[]
   server: {
     host: string
     port: number
@@ -167,6 +168,17 @@ export interface WorkSessionControlSnapshot {
   recentEvents: ControlEvent[]
   /** Durable SAFE PRODUCT DATA; never contains raw provider/error detail. */
   executionLedger?: readonly ExecutionLedgerEvent[]
+}
+
+export interface CodingExecutionView {
+  taskId: string
+  mode: 'auto' | 'codex' | 'deepseek'
+  activeExecutor?: 'codex' | 'deepseek'
+  history?: readonly string[]
+  model?: string
+  reasoningEffort?: string
+  failoverReason?: string
+  lastError?: string
 }
 
 /**
