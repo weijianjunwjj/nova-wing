@@ -298,16 +298,18 @@ export class WorkSessionControlController {
 
     // W005-B: resume is background-owned just like start. The user's decision is
     // passed only to the runtime/provider path and never copied into events/status.
+    const dispatchResume = (): Promise<WorkSessionDurableState> => {
+      this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
+      this.broadcastSnapshot()
+      return this.runtime.resume(validated.input ?? {})
+    }
     const resumeOperation = this.beforeResume === undefined
-      ? this.runtime.resume(validated.input ?? {})
+      ? dispatchResume()
       : Promise.resolve()
           .then(() => this.beforeResume!())
-          .then(() => this.runtime.resume(validated.input ?? {}))
+          .then(dispatchResume)
     this.resumePromise = resumeOperation
-      .then(() => {
-        this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
-        this.broadcastSnapshot()
-      })
+      .then(() => {})
       .catch(() => {
         this.emit({
           type: 'SESSION_FAILED',

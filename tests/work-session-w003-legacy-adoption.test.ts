@@ -426,7 +426,7 @@ await test('W003 Legacy Adoption CASE C: adopted checkpoint feeds existing Recov
     assert.strictEqual(firstReviewArgs.includes('--model'), true, 'New conversation may set model')
     assert.strictEqual(firstReviewArgs.includes('--reasoning'), true, 'New conversation may set reasoning')
 
-    const reviewerPrompt = firstReviewArgs.at(-1) ?? ''
+    const reviewerPrompt = askBridge.requests[0]?.stdin ?? ''
     assert.ok(reviewerPrompt.includes('Legacy 恢复实现 feature'), 'prompt must carry task goal')
     assert.ok(reviewerPrompt.includes('保持 src 内部一致性'), 'prompt must carry constraints')
     assert.ok(reviewerPrompt.includes('npm run typecheck 通过'), 'prompt must carry acceptance criteria')

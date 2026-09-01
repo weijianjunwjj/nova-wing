@@ -93,7 +93,22 @@ test('ask-bridge brain drives fixed ChatGPT session and parses packet from outpu
   assert.match(requests[0]?.args[fingerprintIndex + 1] ?? '', /^sha256-[a-f0-9]{64}$/u)
   assert.equal(requests[0]?.args[requests[0]?.args.indexOf('--timeout') + 1], '120')
   assert.ok(requests[0]?.args.includes('--output'))
-  assert.match(requests[0]?.args.at(-1) ?? '', /唯一 Brain/)
+  assert.match(requests[0]?.stdin ?? '', /唯一 Brain/)
+  assert.equal(requests[0]?.args.some((arg) => arg.includes('唯一 Brain')), false)
+})
+
+test('ask-bridge command runner streams a Windows-command-line-sized prompt over stdin', async () => {
+  const prompt = 'review-evidence-'.repeat(4_000)
+  const runner = createAskBridgeCommandRunner()
+  const result = await runner({
+    executable: process.execPath,
+    args: ['-e', 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>process.stdout.write(String(s.length)))'],
+    stdin: prompt,
+    timeoutMs: 10_000,
+  })
+
+  assert.equal(result.exitCode, 0)
+  assert.equal(result.stdout, String(prompt.length))
 })
 
 test('ask-bridge brain creates a new task conversation then resumes the exact session without resetting model options', async () => {
@@ -331,7 +346,7 @@ test('conversation mismatch rotates once with the complete recovered Review cont
   assert.equal(requests[0]?.args.includes('--session-url'), true)
   assert.equal(requests[1]?.args.includes('--new'), true)
   assert.equal(requests[1]?.args.includes('--session-url'), false)
-  const freshPrompt = requests[1]?.args.at(-1) ?? ''
+  const freshPrompt = requests[1]?.stdin ?? ''
   assert.match(freshPrompt, /"id":"task-1"/)
   assert.match(freshPrompt, /"iteration":2/)
   assert.match(freshPrompt, /"allowed_paths":\["src\/\*\*"\]/)
@@ -755,8 +770,8 @@ test('ask-bridge protocol retry reuses the Thread Link captured before malformed
   assert.equal(requests[0]?.args.includes('--reasoning'), true)
   assert.equal(requests[1]?.args.includes('--model'), false)
   assert.equal(requests[1]?.args.includes('--reasoning'), false)
-  assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
-  assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
+  assert.doesNotMatch(requests[0]?.stdin ?? '', /协议修复/)
+  assert.match(requests[1]?.stdin ?? '', /只返回合法 JSON object/)
 })
 
 test('guardian protocol retry keeps the AskBridge Thread Link through final review', async () => {
@@ -818,9 +833,9 @@ test('guardian protocol retry keeps the AskBridge Thread Link through final revi
     assert.equal(request.args.includes('--model'), false)
     assert.equal(request.args.includes('--reasoning'), false)
   }
-  assert.doesNotMatch(requests[0]?.args.at(-1) ?? '', /协议修复/)
-  assert.match(requests[1]?.args.at(-1) ?? '', /只返回合法 JSON object/)
-  assert.doesNotMatch(requests[2]?.args.at(-1) ?? '', /协议修复/)
+  assert.doesNotMatch(requests[0]?.stdin ?? '', /协议修复/)
+  assert.match(requests[1]?.stdin ?? '', /只返回合法 JSON object/)
+  assert.doesNotMatch(requests[2]?.stdin ?? '', /协议修复/)
 })
 
 test('recovered final review accepts fenced JSON without invoking Executor again', async () => {
@@ -1169,7 +1184,7 @@ test('reasoning picker failure degrades once and still sends the Brain prompt wi
   assert.equal(requests[1]?.args.includes('--reasoning'), false)
   assert.equal(requests[1]?.args.includes('--model'), true)
   assert.equal(requests[1]?.args[requests[1]!.args.indexOf('--model') + 1], 'GPT-5.6 Sol')
-  assert.equal(requests[0]?.args.at(-1), requests[1]?.args.at(-1), 'the same Brain prompt must be submitted')
+  assert.equal(requests[0]?.stdin, requests[1]?.stdin, 'the same Brain prompt must be submitted')
   const status = brain.captureConfigurationStatus('task-1')
   assert.equal(status?.requestedReasoning, 'high')
   assert.equal(status?.actualReasoning, 'unknown')
@@ -1337,7 +1352,7 @@ test('transport retry reuses one deterministic submission operation and captured
     argument(requests[1]!, '--prompt-fingerprint'),
   )
   assert.equal(argument(requests[1]!, '--session-url'), sessionUrl)
-  assert.equal(requests[0]?.args.at(-1), requests[1]?.args.at(-1))
+  assert.equal(requests[0]?.stdin, requests[1]?.stdin)
   assert.deepEqual(brain.captureLastTransportMetrics(), {
     promptChars: 12634,
     inputMode: 'big-paste',

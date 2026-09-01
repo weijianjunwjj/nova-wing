@@ -373,7 +373,7 @@ await test('W003 Recovery Resume: lost provider sessions still continue dirty wo
     assert.strictEqual(firstReviewArgs.includes('--model'), false, 'New conversation must reuse sticky model')
     assert.strictEqual(firstReviewArgs.includes('--reasoning'), false, 'New conversation must reuse sticky reasoning')
 
-    const reviewerPrompt = firstReviewArgs.at(-1) ?? ''
+    const reviewerPrompt = askBridge2.requests[0]?.stdin ?? ''
     assert.ok(reviewerPrompt.includes('recovery_continuation'), 'prompt must carry recovery marker')
     assert.ok(reviewerPrompt.includes('"recovery_continuation":true'), 'recovery_continuation must be true')
     assert.ok(reviewerPrompt.includes('last_packet'), 'prompt must carry last DelegationPacket')

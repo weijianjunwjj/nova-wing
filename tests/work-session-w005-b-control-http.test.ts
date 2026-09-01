@@ -140,7 +140,10 @@ await test('W005-B RESUME-B/C/D: background resume is non-echoing and concurrenc
     const status = await fetch(`${server.address.url}/api/status`).then((response) => response.text())
     const observations = JSON.stringify(server.controller.getRecentEvents()) + status
     assert.doesNotMatch(observations, /Authorization: Bearer SECRET/)
-    assert.equal(server.controller.getRecentEvents().at(-1)?.type, 'SESSION_RESUME_REQUESTED')
+    assert.deepEqual(
+      server.controller.getRecentEvents().slice(-2).map((event) => event.type),
+      ['SESSION_RESUME_REQUESTED', 'SESSION_RESUMED'],
+    )
     assert.deepEqual(server.controller.getRecentEvents().at(-1)?.data, {
       taskId: 'T1',
       category: 'DECISION_REQUIRED',
@@ -148,6 +151,10 @@ await test('W005-B RESUME-B/C/D: background resume is non-echoing and concurrenc
 
     server.runtime.resumeDeferred?.resolve(makeState({ state: 'COMPLETED' }))
     await server.controller.getResumePromise()
+    assert.equal(
+      server.controller.getRecentEvents().filter((event) => event.type === 'SESSION_RESUMED').length,
+      1,
+    )
     assert.doesNotMatch(JSON.stringify(server.controller.getRecentEvents()), /SECRET/)
   } finally {
     await server.server.close()

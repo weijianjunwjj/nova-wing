@@ -201,6 +201,10 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     assert.deepEqual(phaseEvents.map((event) => [event.data.phase, event.data.iteration]), [
       ['VERIFYING', 1], ['VERIFYING', 2], ['RECOVERING', 2],
     ])
+    assert.deepEqual(
+      phaseEvents.filter((event) => event.data.phase === 'VERIFYING').map((event) => event.data.elapsedMs),
+      [100, 100],
+    )
     assert.deepEqual(durableProgress.filter((event) =>
       event.phase === 'VERIFYING' || event.phase === 'RECOVERING',
     ).map((event) => [event.phase, event.iteration]), [

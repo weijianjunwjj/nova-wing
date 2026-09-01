@@ -435,8 +435,8 @@ export async function createProductionWorkSessionUi(
                   ? 'active'
                   : verification.status === 'passed' ? 'completed' : 'failed',
                 iteration: verification.iteration,
-                // Executor hook reports a command duration, not Guardian cumulative elapsed.
-                elapsedMs: 0,
+                // Executor hook reports command-local duration, not Guardian cumulative elapsed.
+                elapsedMs: verification.durationMs ?? 0,
                 verification,
               })
             },

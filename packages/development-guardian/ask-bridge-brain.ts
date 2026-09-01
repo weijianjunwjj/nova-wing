@@ -59,6 +59,8 @@ export interface AskBridgeConfigurationStatus extends AskBridgeProviderConfigura
 export interface AskBridgeCommandRequest {
   executable: string
   args: readonly string[]
+  /** Prompt body is streamed over stdin to avoid the Windows command-line length limit. */
+  stdin?: string
   timeoutMs: number
   onOutput?: (event: AskBridgeOutputEvent) => void
 }
@@ -165,9 +167,15 @@ export function createAskBridgeCommandRunner(
     const startedAt = performance.now()
     const child = spawn(request.executable, [...request.args], {
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
+    const stdoutStream = child.stdout
+    const stderrStream = child.stderr
+    if (stdoutStream === null || stderrStream === null) {
+      reject(new Error('ask-bridge output pipes are unavailable'))
+      return
+    }
     let stdout = ''
     let stderr = ''
     let stdoutPending = ''
@@ -211,20 +219,26 @@ export function createAskBridgeCommandRunner(
       stderrPending = ''
     }
 
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => {
+    stdoutStream.setEncoding('utf8')
+    stderrStream.setEncoding('utf8')
+    if (request.stdin !== undefined && child.stdin !== null) {
+      // A bridge that exits before consuming stdin can close the pipe early.
+      // The child exit/error remains the authoritative transport result.
+      child.stdin.on('error', () => {})
+      child.stdin.end(request.stdin)
+    }
+    stdoutStream.on('data', (chunk: string) => {
       stdout = `${stdout}${chunk}`.slice(-1_000_000)
       emitLines('stdout', chunk)
     })
-    child.stderr.on('data', (chunk: string) => {
+    stderrStream.on('data', (chunk: string) => {
       stderr = `${stderr}${chunk}`.slice(-100_000)
       emitLines('stderr', chunk)
     })
 
     const closeCapturedStreams = (): void => {
-      child.stdout.destroy()
-      child.stderr.destroy()
+      stdoutStream.destroy()
+      stderrStream.destroy()
     }
 
     const timer = setTimeout(() => {
@@ -724,7 +738,6 @@ export class AskBridgeBrain implements GuardianBrain {
       '--prompt-fingerprint', `sha256-${promptFingerprint}`,
       '--timeout', String(Math.max(1, Math.ceil(timeoutMs / 1000))),
       '--output', outputPath,
-      prompt,
     )
     return args
   }
@@ -800,6 +813,7 @@ export class AskBridgeBrain implements GuardianBrain {
           const result = await this.runner({
             executable: this.command,
             args,
+            stdin: prompt,
             timeoutMs: remainingOperationMs,
             ...(this.options.onDiagnostic === undefined
               ? {}
