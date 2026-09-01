@@ -76,7 +76,7 @@ workspace-write 不能表达 NovaWing 每个 Task 的细粒度 allowed/forbidden
 
 `classifyCodexError` 集中分类 `quota_exhausted / auth_required / transient / configuration_error / model_unavailable / unknown`。优先处理嵌套 structured code/status/metadata；普通 HTTP 429/5xx、连接故障是 transient，默认有限重试一次。401/登录失效、配置错误、模型不可用、未知错误均不自动接力。
 
-模型 turn 正常结束但没有任何 workspace inspection 证据时单独分类为 `no_op_execution`。零变更 no-op 显示 `EXECUTOR_RETRY_REQUIRED`，用户确认 runtime 已修复后复用原 Task ID、scope 与 recovery lineage，并丢弃不可信的空报告重新执行 Executor；若 repo 已有真实改动，则保留改动、移除仅表示证据丢失的 no-op blocker，继续既有 scope check 与 deterministic verification，绝不 rollback 或覆盖。
+模型 turn 正常结束但没有任何 workspace inspection 证据时单独分类为 `no_op_execution`。零变更 no-op 显示 `EXECUTOR_RETRY_REQUIRED`，用户确认 runtime 已修复后复用原 Task ID、scope 与 recovery lineage，丢弃不可信的空报告与该 no-op Codex thread ID，再以同一 executor 配置启动新 thread；若 repo 已有真实改动，则保留改动、移除仅表示证据丢失的 no-op blocker，继续既有 scope check 与 deterministic verification，绝不 rollback 或覆盖。其他恢复类型仍保持 Exact Resume，不会因普通错误轮换 thread。
 
 SDK 0.151 的 `ThreadError` 类型只有 message，没有稳定的结构化 quota/reset 字段。因此保留少量集中 message fallback（例如官方 usage-limit 消息），不把字符串判断散布到 router。结构化 reset/retry 信息支持未来/注入的明确错误；不能宣称当前 SDK 每次都提供它。
 

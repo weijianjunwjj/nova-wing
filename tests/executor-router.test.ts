@@ -193,3 +193,25 @@ test('Codex thread identity is persisted before completion and passed back on re
       ['codex_thread_started', 'codex_thread_resumed'])
   } finally { await f.close() }
 })
+
+test('confirmed no-op retry replaces only the stale Codex thread identity', async () => {
+  const f = await fixture()
+  try {
+    f.store.save(f.options.taskKey, {
+      mode: 'auto', activeExecutor: 'codex', history: ['codex'],
+      model: 'gpt-5.6-sol', reasoningEffort: 'medium', codexThreadId: 'stale-no-op-thread',
+      lastError: 'NO_OP_EXECUTION: workspace inspection missing', lastErrorKind: 'no_op_execution',
+    })
+    const router = new ExecutorRouter(f.options)
+    await router.preflight({ ...task, state: 'HUMAN_REQUIRED', recoveryContinuation: true,
+      resumeInput: { approval: true } })
+    const persisted = f.store.read(f.options.taskKey)
+    assert.equal(persisted?.codexThreadId, undefined)
+    assert.equal(persisted?.lastError, undefined)
+    assert.equal(persisted?.lastErrorKind, undefined)
+    assert.equal(persisted?.activeExecutor, 'codex')
+    assert.deepEqual(persisted?.history, ['codex'])
+    assert.equal(f.restored?.codingExecution?.codexThreadId, undefined)
+    assert.equal(f.store.events(f.options.taskKey).at(-1)?.type, 'codex_thread_replaced')
+  } finally { await f.close() }
+})

@@ -15,7 +15,7 @@ export interface CodexAvailability {
 
 export interface CodingExecutorEvent {
   type: 'executor_started' | 'codex_thread_started' | 'codex_thread_resumed' |
-    'executor_failed_over' | 'executor_completed' | 'executor_error'
+    'codex_thread_replaced' | 'executor_failed_over' | 'executor_completed' | 'executor_error'
   timestamp: string
   executor?: 'codex' | 'deepseek'
   from?: 'codex'

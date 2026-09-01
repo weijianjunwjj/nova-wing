@@ -114,6 +114,17 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     this.select()
     if (this.metadata!.activeExecutor === 'codex') {
       if (this.options.codexEnabled === false) throw Object.assign(new Error('Codex Local is disabled'), { code: 'configuration_error' })
+      // A no-op thread can have durable identity but no usable workspace tools.
+      // Rotate only after the explicit retry acknowledgement; preserve Task,
+      // scope, provider choice, and every non-thread recovery fact.
+      if (task.recoveryContinuation === true && task.resumeInput?.approval === true &&
+          this.metadata!.lastErrorKind === 'no_op_execution') {
+        delete this.metadata!.codexThreadId
+        delete this.metadata!.lastError
+        delete this.metadata!.lastErrorKind
+        this.codex = undefined
+        this.save({ type: 'codex_thread_replaced', executor: 'codex', reason: 'no_op_execution' })
+      }
       await this.codexExecutor().preflight?.(task)
     }
   }
