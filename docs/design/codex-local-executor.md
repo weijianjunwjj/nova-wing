@@ -58,6 +58,12 @@
 - 最终传入 SDK thread 的默认值为 `model=gpt-5.6-sol`、`modelReasoningEffort=medium`。不支持模型时明确报错，不降级到 Terra/Luna/旧模型。
 - 原生工具使用 `sandboxMode=read-only`、`approvalPolicy=never`、网络关闭、web search 关闭、无额外目录。关闭 shell、hooks、plugins、apps、多 agent、浏览器、GUI、图像生成等工具。
 
+### Windows / WSL development runtime gate
+
+在 Windows 上，Codex Executor 现在显式选择 `Ubuntu-24.04`，通过 `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 --cd <workspace> --exec /usr/bin/bash -lc ...` 验证目标 workspace、bash 和 Git。`docker-desktop` / `docker-desktop-data` 永远不能被选为开发发行版；发行版名、Windows drive path、工作目录或 Git inspection 不可信时 fail closed。WSL Git 需与 Windows Git 使用一致的 `core.autocrlf`，并只为已确认的 `/mnt/d/VSCode/...` workspace 配置 `safe.directory`。
+
+该 gate 负责确认开发 Linux 环境，不授予模型任意 shell。Codex CLI 仍使用官方 Windows bundled binary 和 ChatGPT 登录；repo I/O 只通过下述 scoped MCP bridge。Guardian 在写入 `EXECUTING`、增加 iteration 或启动真实 Executor 前，先运行一次真实只读模型 preflight，要求 Codex 实际完成 `git_status`、根目录 `list_files` 和 `package.json` 的 `read_file`。缺少任一工具证据时停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`，不会制造一次假执行记录。
+
 ### 为什么不是直接 workspace-write
 
 workspace-write 不能表达 NovaWing 每个 Task 的细粒度 allowed/forbidden paths。采用更窄的原生 read-only，并在本机回环地址启动仅服务当前 turn 的受限 MCP 文件桥。只有六个操作：list/read/write/delete 文件、git status、git diff summary；不存在任意 shell/命令执行入口。写操作先验证 Task scope，拒绝系统配置目录、路径逃逸、Windows 特殊文件名、symlink/junction/hardlink。文件读写上限 512 KB。
@@ -69,6 +75,8 @@ workspace-write 不能表达 NovaWing 每个 Task 的细粒度 allowed/forbidden
 ## 错误、额度与 Circuit Breaker
 
 `classifyCodexError` 集中分类 `quota_exhausted / auth_required / transient / configuration_error / model_unavailable / unknown`。优先处理嵌套 structured code/status/metadata；普通 HTTP 429/5xx、连接故障是 transient，默认有限重试一次。401/登录失效、配置错误、模型不可用、未知错误均不自动接力。
+
+模型 turn 正常结束但没有任何 workspace inspection 证据时单独分类为 `no_op_execution`。零变更 no-op 显示 `EXECUTOR_RETRY_REQUIRED`，用户确认 runtime 已修复后复用原 Task ID、scope 与 recovery lineage，并丢弃不可信的空报告重新执行 Executor；若 repo 已有真实改动，则保留改动、移除仅表示证据丢失的 no-op blocker，继续既有 scope check 与 deterministic verification，绝不 rollback 或覆盖。
 
 SDK 0.151 的 `ThreadError` 类型只有 message，没有稳定的结构化 quota/reset 字段。因此保留少量集中 message fallback（例如官方 usage-limit 消息），不把字符串判断散布到 router。结构化 reset/retry 信息支持未来/注入的明确错误；不能宣称当前 SDK 每次都提供它。
 
@@ -113,7 +121,7 @@ NOVAWING_CODEX_SMOKE=1 node scripts/codex-local-smoke.mjs
 
 真实 smoke 已通过：仅 `src/a.ts` 从 1 改为 2、blockers 为空、独立 `git diff --check` passed、thread 已捕获；新 Executor 实例用 checkpoint 恢复同一 thread，`restartSameThread=true`、continuation blockers 为空、再次独立验证 passed。没有依赖 Codex Desktop 窗口。
 
-第一轮标准 `npm test`：588/588 通过。增补生产装配和 DeepSeek 配置测试后，重新 build/build:tests，并对全部 `dist-tests/tests/*.test.js` 使用 `--test-concurrency=2` 运行：593/593 通过，0 failed/cancelled/skipped，耗时约 311 秒。最后的报告能力名称修正重新 build/build:tests，并运行 SDK、生产装配、DeepSeek、Router、Launchpad、依赖预检六组定向回归：73/73 通过，约 21 秒。正常 `npm test` 不调用真实模型、不消耗额度。
+第一轮标准 `npm test`：588/588 通过。增补生产装配和 DeepSeek 配置测试后，重新 build/build:tests，并对全部 `dist-tests/tests/*.test.js` 使用 `--test-concurrency=2` 运行：593/593 通过，0 failed/cancelled/skipped，耗时约 311 秒。Windows/WSL preflight 与 no-op recovery 增补后，标准 `npm test` 为 601/601 通过、0 failed/cancelled/skipped，耗时约 474 秒；另有 13/13 定向 Codex/no-op recovery 测试通过。正常 `npm test` 不调用真实模型、不消耗额度。
 
 类型检查、unused、模块边界和 schema migration 验证通过，`git diff --check` 通过。`check:exports` 仍因已有 runtime-export 白名单不同步而失败；Scheduler 交付已用未修改的 archive baseline 复现同样问题，本次没有增加公共 runtime exports，所以不声称聚合 `npm run check` 全绿。
 

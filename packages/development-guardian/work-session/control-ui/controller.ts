@@ -989,6 +989,7 @@ function validateResumeForState(
       return { accepted: true, input: { decision } }
     case 'ENVIRONMENT_REQUIRED':
     case 'CREDENTIAL_REQUIRED':
+    case 'EXECUTOR_RETRY_REQUIRED':
       if (input.approval !== true || input.decision !== undefined) {
         return { accepted: false, reason: 'resolved acknowledgement is required' }
       }

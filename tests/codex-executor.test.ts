@@ -4,7 +4,14 @@ import { readFile, rm, link, symlink, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { codexTestRepo } from './codex-test-fixture.js'
 import type { Thread, ThreadEvent, CodexOptions, ThreadOptions } from '@openai/codex-sdk'
-import { CodexExecutor, codexEffectiveConfiguration, codexChatGptEnvironment } from '../packages/development-guardian/codex-executor.js'
+import {
+  CodexExecutor,
+  DEFAULT_CODEX_WSL_DISTRO,
+  WINDOWS_WSL_EXECUTABLE,
+  codexEffectiveConfiguration,
+  codexChatGptEnvironment,
+  inspectCodexDevelopmentRuntime,
+} from '../packages/development-guardian/codex-executor.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
 import { CodexWorkspaceTools } from '../packages/development-guardian/codex-workspace-tools.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -21,12 +28,38 @@ test('Codex classifier prioritizes structured causes; ordinary 429, auth and mod
     [{ error: { code: 'quota_exhausted', metadata: { retry_after: 60 } } }, 'quota_exhausted'],
     [{ status: 429 }, 'transient'], [{ status: 401, message: "You've hit your usage limit" }, 'auth_required'],
     [{ code: 'model_not_found' }, 'model_unavailable'], [{ code: 'configuration_error' }, 'configuration_error'],
+    [{ code: 'no_op_execution' }, 'no_op_execution'],
     [new Error("You've hit your usage limit. Try again later."), 'quota_exhausted'],
     [new Error('stream disconnected'), 'transient'], [new Error('something else'), 'unknown'],
   ] as const) assert.equal(classifyCodexError(error).kind, kind)
   assert.equal(classifyCodexError({ code: 'quota_exhausted', metadata: { retry_after: 60 } }, 0).blockedUntil, '1970-01-01T00:01:00.000Z')
   assert.equal(classifyCodexError({ code: 'quota_exhausted' }, 0).blockedUntil, undefined)
   assert.equal(classifyCodexError(new Error('secret=DO_NOT_LOG')).message.includes('DO_NOT_LOG'), false)
+})
+
+test('Codex WSL preflight explicitly selects Ubuntu and proves bash, cwd and Git inspection', async () => {
+  const requests: { executable: string; args: readonly string[]; timeoutMs: number }[] = []
+  const result = await inspectCodexDevelopmentRuntime({ platform: 'win32', cwd: 'D:\\VSCode\\fly-weave',
+    commandRunner: async (request) => {
+      requests.push(request)
+      return { exitCode: 0, stdout: 'NOVAWING_CODEX_PREFLIGHT|/usr/bin/bash|/mnt/d/VSCode/fly-weave', stderr: '' }
+    } })
+  assert.deepEqual(result, { distro: DEFAULT_CODEX_WSL_DISTRO, workspace: '/mnt/d/VSCode/fly-weave', bash: '/usr/bin/bash' })
+  assert.equal(requests[0]?.executable, WINDOWS_WSL_EXECUTABLE)
+  assert.deepEqual(requests[0]?.args.slice(0, 7), ['-d', 'Ubuntu-24.04', '--cd', '/mnt/d/VSCode/fly-weave', '--exec', '/usr/bin/bash', '-lc'])
+})
+
+test('Codex WSL preflight rejects docker-desktop and bash/Git inspection failures', async () => {
+  await assert.rejects(inspectCodexDevelopmentRuntime({ platform: 'win32', cwd: 'D:\\repo', distro: 'docker-desktop' }),
+    /No supported development WSL distribution/u)
+  for (const result of [
+    { exitCode: 1, stdout: '', stderr: 'bash unavailable' },
+    { exitCode: 1, stdout: '', stderr: 'fatal: not a git repository' },
+    { exitCode: 1, stdout: '', stderr: '', timedOut: true },
+  ]) {
+    await assert.rejects(inspectCodexDevelopmentRuntime({ platform: 'win32', cwd: 'D:\\repo',
+      commandRunner: async () => result }), /workspace, bash, or Git inspection is unavailable/u)
+  }
 })
 
 test('effective SDK configuration pins Sol medium, ChatGPT auth and no ambient API billing or expanded native tools', () => {
@@ -118,6 +151,28 @@ test('real MCP transport exposes only scoped file tools and closes write ownersh
     const denied = await client.callTool({ name: 'write_file', arguments: { path: '../bad', content: 'no' } })
     assert.equal(denied.isError, true)
   } finally { await client.close(); await bridge.close(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight performs a real read-only git/list/package tool probe', async () => {
+  const root = await codexTestRepo()
+  let runtime: CodexOptions | undefined
+  const executor = new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+    createCodex: (options) => {
+      runtime = options
+      const thread = { runStreamed: async () => ({ events: (async function* () {
+        const url = /url="([^"]+)"/u.exec(runtime!.configOverrides!.at(-1)!)![1]!
+        const client = new Client({ name: 'preflight-sdk', version: '1' })
+        try {
+          await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
+          await client.callTool({ name: 'git_status', arguments: {} })
+          await client.callTool({ name: 'list_files', arguments: {} })
+          await client.callTool({ name: 'read_file', arguments: { path: 'package.json' } })
+        } finally { await client.close() }
+        yield { type: 'turn.completed', usage: {} } as ThreadEvent
+      })() }) } as unknown as Thread
+      return { startThread: () => thread, resumeThread: () => thread }
+    } })
+  try { await executor.preflight(task) } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('CodexExecutor passes effective SDK options, persists/resumes thread and ignores claimed verification', async () => {

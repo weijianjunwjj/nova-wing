@@ -108,6 +108,16 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     return { ...report, execution: structuredClone(this.metadata!) }
   }
 
+  async preflight(task: GuardianTask): Promise<void> {
+    if (this.taskId !== undefined && this.taskId !== task.id) throw new Error('Executor router belongs to another Task')
+    this.taskId = task.id
+    this.select()
+    if (this.metadata!.activeExecutor === 'codex') {
+      if (this.options.codexEnabled === false) throw Object.assign(new Error('Codex Local is disabled'), { code: 'configuration_error' })
+      await this.codexExecutor().preflight?.(task)
+    }
+  }
+
   async execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {
     if (this.taskId !== undefined && this.taskId !== input.task.id) throw new Error('Executor router belongs to another Task')
     this.taskId = input.task.id

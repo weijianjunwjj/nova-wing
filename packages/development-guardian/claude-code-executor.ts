@@ -1277,7 +1277,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       if (this.options.codingRuntime !== undefined) {
         const result = await this.options.codingRuntime.run(input)
         const changed = await this.readChangedFiles()
-        const blockers = [...result.blockers, ...scopeBlockers(input.task, changed.changedFiles),
+        // Transport evidence can be lost after real writes. Preserve those files
+        // and continue to deterministic verification; only a zero-change no-op
+        // requires a fresh Executor attempt.
+        const runtimeBlockers = changed.changedFiles.length > 0
+          ? result.blockers.filter((blocker) => !blocker.startsWith('NO_OP_EXECUTION:'))
+          : result.blockers
+        const blockers = [...runtimeBlockers, ...scopeBlockers(input.task, changed.changedFiles),
           ...(changed.blocker === undefined ? [] : [changed.blocker])]
         const verification = blockers.length === 0 && result.incompleteReason === undefined
           ? await this.verify(input.task, input.packet.verification)

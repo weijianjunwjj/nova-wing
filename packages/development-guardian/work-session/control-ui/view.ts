@@ -242,6 +242,7 @@ var HUMAN_REQUIRED_LABELS = {
   PERMISSION_REQUIRED: '需要授权',
   CREDENTIAL_REQUIRED: '需要完成凭据或登录设置',
   ENVIRONMENT_REQUIRED: '需要处理运行环境',
+  EXECUTOR_RETRY_REQUIRED: 'Executor 需要重新执行',
   SAFETY_BLOCKED: '被安全策略阻止',
   BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
@@ -566,11 +567,14 @@ function renderDecision(rt) {
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
     var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED')
-    var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED'
+    var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
     if (input) input.hidden = !needsDecision
     if (decisionBtn) decisionBtn.hidden = !needsDecision
     if (approvalBtn) approvalBtn.hidden = !verificationApproval
-    if (resolvedBtn) resolvedBtn.hidden = !resolvedAck
+    if (resolvedBtn) {
+      resolvedBtn.hidden = !resolvedAck
+      resolvedBtn.textContent = category === 'EXECUTOR_RETRY_REQUIRED' ? '重新执行 Executor' : '已处理，恢复'
+    }
     if (pausedBtn) {
       pausedBtn.hidden = !userPaused && !brainUnavailable
       pausedBtn.textContent = brainUnavailable ? '修复后恢复' : '恢复'
@@ -584,8 +588,12 @@ function renderDecision(rt) {
     } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
     } else if (resolvedAck) {
-      setText('decision-guidance', category === 'ENVIRONMENT_REQUIRED'
-        ? '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。'
+      setText('decision-guidance', category === 'EXECUTOR_RETRY_REQUIRED'
+        ? '此前执行没有 workspace inspection、文件改动或可信工具证据。将保留原 Task ID、任务范围和 recovery lineage，重新执行 Executor。'
+        : category === 'ENVIRONMENT_REQUIRED'
+        ? ((hr.reason || '').indexOf('EXECUTOR_ENVIRONMENT_UNAVAILABLE:') === 0
+          ? 'Executor 尚未启动。修复 workspace、shell、Git 或工具 preflight 后，将从原 Task 重新尝试。'
+          : '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。')
         : '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
     } else if (category === 'PERMISSION_REQUIRED') {
       setText('decision-guidance', '请先更新受信任的项目权限。')

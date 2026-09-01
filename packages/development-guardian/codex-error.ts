@@ -1,5 +1,5 @@
 export type CodexErrorKind = 'quota_exhausted' | 'auth_required' | 'transient' |
-  'configuration_error' | 'model_unavailable' | 'unknown'
+  'configuration_error' | 'model_unavailable' | 'no_op_execution' | 'unknown'
 
 export interface ClassifiedCodexError {
   kind: CodexErrorKind
@@ -13,6 +13,7 @@ const MESSAGES: Record<CodexErrorKind, string> = {
   transient: 'Codex transient network/runtime error',
   configuration_error: 'Codex Local configuration error',
   model_unavailable: 'Requested Codex model unavailable',
+  no_op_execution: 'Codex completed without credible workspace execution evidence',
   unknown: 'Codex Local execution failed',
 }
 
@@ -33,6 +34,7 @@ export function classifyCodexError(error: unknown, now = Date.now()): Classified
   const has = (...values: string[]) => codes.some((code) => values.includes(code))
   let kind: CodexErrorKind = 'unknown'
   if (has('usage_limit_reached', 'quota_exhausted', 'insufficient_quota')) kind = 'quota_exhausted'
+  else if (has('no_op_execution', 'workspace_inspection_missing')) kind = 'no_op_execution'
   else if (has('auth_required', 'unauthorized', 'token_expired', 'invalid_authentication') || statuses.includes(401)) kind = 'auth_required'
   else if (has('model_not_found', 'model_unavailable', 'unsupported_model')) kind = 'model_unavailable'
   else if (has('configuration_error', 'invalid_configuration', 'ENOENT')) kind = 'configuration_error'

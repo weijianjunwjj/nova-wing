@@ -358,6 +358,15 @@ function invalidateResolvedExecutorCredentialFailure(task: GuardianTask): Guardi
 export function classifyHumanRequired(task: GuardianTask): HumanRequired {
   const reason = task.stopReason ?? 'unknown'
 
+  if (task.lastReport?.execution?.lastErrorKind === 'no_op_execution' ||
+      reason.startsWith('NO_OP_EXECUTION:')) {
+    return { category: 'EXECUTOR_RETRY_REQUIRED', reason }
+  }
+
+  if (reason.startsWith('EXECUTOR_ENVIRONMENT_UNAVAILABLE:')) {
+    return { category: 'ENVIRONMENT_REQUIRED', reason }
+  }
+
   // W004-B hard boundary：精确 stop marker → BUDGET_EXHAUSTED（优先级最高）。
   // 不得映射成 DECISION_REQUIRED / STALLED / ENVIRONMENT_REQUIRED。
   if (reason.includes('WORK_SESSION_HARD_LIMIT_REACHED')) {

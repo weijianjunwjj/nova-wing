@@ -88,23 +88,32 @@ export class CodexWorkspaceTools {
       if (name === 'list_files') {
         const directory = args.path ? await this.path(args.path, false) : this.root
         const entries = await readdir(directory, { withFileTypes: true })
-        return entries.filter((e) => !PROTECTED.has(e.name.toLowerCase()) && !e.isSymbolicLink())
+        const result = entries.filter((e) => !PROTECTED.has(e.name.toLowerCase()) && !e.isSymbolicLink())
           .slice(0, 1000).map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`).join('\n')
+        this.commandsRun.push(`list_files ${args.path ?? '.'}`)
+        return result
       }
       const path = await this.path(args.path ?? '', name !== 'read_file')
       if (name === 'read_file') {
         const info = await lstat(path)
         if (!info.isFile() || info.size > 512_000) throw new Error('Read requires a file under 512 KB')
-        return readFile(path, 'utf8')
+        const result = await readFile(path, 'utf8')
+        this.commandsRun.push(`read_file ${args.path}`)
+        return result
       }
       if (name === 'write_file') {
         if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > 512_000) throw new Error('Write exceeds limit')
         await mkdir(dirname(path), { recursive: true })
         await this.path(args.path!, true)
         await writeFile(path, args.content, 'utf8')
+        this.commandsRun.push(`write_file ${args.path}`)
         return 'File written; independent Guardian verification is still required.'
       }
-      if (name === 'delete_file') { await unlink(path); return 'File deleted within Task scope.' }
+      if (name === 'delete_file') {
+        await unlink(path)
+        this.commandsRun.push(`delete_file ${args.path}`)
+        return 'File deleted within Task scope.'
+      }
       throw new Error('Unsupported workspace tool')
     })
     this.queue = operation.catch(() => undefined)

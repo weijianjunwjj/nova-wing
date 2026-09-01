@@ -24,6 +24,9 @@ import { environmentVerificationFailure } from './verification-evidence.js'
 
 export const VERIFICATION_ENVIRONMENT_REQUIRED_STOP =
   'VERIFICATION_ENVIRONMENT_REQUIRED'
+export const EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP =
+  'EXECUTOR_ENVIRONMENT_UNAVAILABLE'
+export const NO_OP_EXECUTION_STOP = 'NO_OP_EXECUTION'
 
 export class GuardianStopError extends Error {
   constructor(
@@ -176,6 +179,19 @@ export async function runGuardianTask(options: {
       emitProgress('FAILED', 'completed', task.stopReason)
       return { task, reports, failureStage: 'VERIFICATION' }
     }
+  }
+
+  // A confirmed no-op retry preserves the Task and scope, but discards the
+  // non-credible report so Reviewer/Executor can perform a genuine new attempt.
+  if (
+    task.recoveryContinuation === true &&
+    task.resumeInput?.approval === true &&
+    task.stopReason?.startsWith(NO_OP_EXECUTION_STOP) === true &&
+    task.lastReport?.changedFiles.length === 0
+  ) {
+    task = { ...task, state: 'READY' }
+    delete task.lastReport
+    delete task.stopReason
   }
 
   while (true) {
@@ -427,6 +443,19 @@ export async function runGuardianTask(options: {
     }
 
     const executionPacket = enforceTaskConstraints(task, packet)
+    if (options.executor.preflight !== undefined) {
+      try {
+        await options.executor.preflight(task)
+      } catch {
+        task = {
+          ...task,
+          state: 'HUMAN_REQUIRED',
+          stopReason: `${EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP}: workspace, shell, Git, or executor tool preflight failed`,
+        }
+        emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
+        return { task, reports }
+      }
+    }
     task = {
       ...task,
       state: 'EXECUTING',

@@ -10,6 +10,19 @@ import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
+export const NO_OP_EXECUTION = 'NO_OP_EXECUTION'
+export const DEFAULT_CODEX_WSL_DISTRO = 'Ubuntu-24.04'
+export const WINDOWS_WSL_EXECUTABLE = 'C:\\Windows\\System32\\wsl.exe'
+
+export interface CodexDevelopmentRuntimeProbeOptions {
+  platform?: NodeJS.Platform
+  cwd: string
+  distro?: string
+  commandRunner?: (request: { executable: string; args: readonly string[]; timeoutMs: number }) => Promise<{
+    exitCode: number; stdout: string; stderr: string; timedOut?: boolean
+  }>
+}
+
 export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   codexModel?: string
   reasoningEffort?: ThreadOptions['modelReasoningEffort']
@@ -17,6 +30,78 @@ export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   onThread?: (id: string, resumed: boolean) => void
   createCodex?: (options: CodexOptions) => Pick<Codex, 'startThread' | 'resumeThread'>
   preflight?: () => Promise<{ executable: string; mcpNames: string[] }>
+}
+
+function windowsPathToWsl(path: string): string {
+  const normalized = path.replaceAll('\\', '/')
+  const match = /^([a-z]):\/(.*)$/iu.exec(normalized)
+  if (match === null) throw Object.assign(new Error('Codex workspace must use an absolute Windows drive path'), { code: 'configuration_error' })
+  return `/mnt/${match[1]!.toLowerCase()}/${match[2]}`
+}
+
+function runDevelopmentRuntimeProbe(request: { executable: string; args: readonly string[]; timeoutMs: number }): Promise<{
+  exitCode: number; stdout: string; stderr: string; timedOut?: boolean
+}> {
+  return new Promise((resolveRun) => {
+    const child = spawn(request.executable, [...request.args], {
+      windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (result: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolveRun(result)
+    }
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => { stdout += chunk })
+    child.stderr.on('data', (chunk: string) => { stderr += chunk })
+    child.once('error', (error) => finish({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` }))
+    child.once('exit', (code) => finish({ exitCode: code ?? 1, stdout, stderr }))
+    const timer = setTimeout(() => {
+      child.kill()
+      finish({ exitCode: 1, stdout, stderr, timedOut: true })
+    }, request.timeoutMs)
+    timer.unref()
+  })
+}
+
+/** Explicitly selects a development WSL distro and proves bash + cwd + Git are usable. */
+export async function inspectCodexDevelopmentRuntime(options: CodexDevelopmentRuntimeProbeOptions): Promise<{
+  distro: string; workspace: string; bash: string
+}> {
+  if ((options.platform ?? process.platform) !== 'win32') {
+    return { distro: 'native', workspace: options.cwd, bash: '/usr/bin/bash' }
+  }
+  const distro = options.distro ?? DEFAULT_CODEX_WSL_DISTRO
+  if (!/^[A-Za-z0-9._-]+$/u.test(distro) || /^docker-desktop(?:-data)?$/iu.test(distro)) {
+    throw Object.assign(new Error('No supported development WSL distribution available'), { code: 'configuration_error' })
+  }
+  const workspace = windowsPathToWsl(options.cwd)
+  const script = [
+    'set -eu',
+    'test "$(command -v bash)" = /usr/bin/bash -o "$(command -v bash)" = /bin/bash',
+    'bash --version >/dev/null',
+    'git --version >/dev/null',
+    'test "$(pwd)" != /',
+    'git -c safe.directory="$PWD" status --short >/dev/null',
+    'printf "NOVAWING_CODEX_PREFLIGHT|%s|%s" "$(command -v bash)" "$(pwd)"',
+  ].join('; ')
+  const result = await (options.commandRunner ?? runDevelopmentRuntimeProbe)({
+    executable: WINDOWS_WSL_EXECUTABLE,
+    args: ['-d', distro, '--cd', workspace, '--exec', '/usr/bin/bash', '-lc', script],
+    timeoutMs: 15_000,
+  })
+  if (result.exitCode !== 0 || result.timedOut === true ||
+      !result.stdout.includes(`NOVAWING_CODEX_PREFLIGHT|/usr/bin/bash|${workspace}`)) {
+    throw Object.assign(new Error('Codex development WSL workspace, bash, or Git inspection is unavailable'), {
+      code: 'configuration_error',
+    })
+  }
+  return { distro, workspace, bash: '/usr/bin/bash' }
 }
 
 /** Whitelist rather than passing ambient OpenAI/DeepSeek keys or app privileges to the runtime. */
@@ -92,6 +177,8 @@ async function inspectCli(executable: string, args: string[], env: Record<string
 }
 
 export async function inspectCodexLocal(env: NodeJS.ProcessEnv = process.env, cwd?: string): Promise<{ executable: string; mcpNames: string[] }> {
+  if (cwd === undefined) throw Object.assign(new Error('Codex workspace is required'), { code: 'configuration_error' })
+  await inspectCodexDevelopmentRuntime({ cwd })
   const executable = bundledCodexExecutable()
   const childEnv = codexChatGptEnvironment(env)
   const status = await inspectCli(executable, ['login', 'status'], childEnv, cwd)
@@ -106,6 +193,7 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   private readonly guarded: ClaudeCodeExecutor
   private thread: Thread | undefined
   private threadId: string | undefined
+  private prepared: { executable: string; mcpNames: string[] } | undefined
   lastError: ClassifiedCodexError | undefined
 
   constructor(private readonly options: CodexExecutorOptions) {
@@ -128,6 +216,44 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
     return this.guarded.execute(input)
   }
 
+  /** A real, read-only Codex-to-workspace probe. Guardian calls this before EXECUTING. */
+  async preflight(task: GuardianTask): Promise<void> {
+    const runtime = await (this.options.preflight?.() ?? inspectCodexLocal(this.options.env, this.options.cwd))
+    const workspace = await CodexWorkspaceTools.create(this.options.cwd, task)
+    const bridge = await workspace.listen()
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), 90_000)
+    let completed = false
+    let failure: unknown
+    try {
+      const config = codexEffectiveConfiguration(this.options, runtime.executable, bridge.url, runtime.mcpNames)
+      const codex = this.options.createCodex?.(config.runtime) ?? new Codex(config.runtime)
+      const probe = codex.startThread(config.thread)
+      const { events } = await probe.runStreamed([
+        'NovaWing executor preflight only. Do not modify or delete files.',
+        'Use novawing_workspace.git_status, then list_files for the repository root, then read_file package.json.',
+        'Return NOVAWING_PREFLIGHT_READY only after all three calls succeed.',
+      ].join('\n'), { signal: abort.signal })
+      for await (const event of events) {
+        if (event.type === 'turn.completed') completed = true
+        else if (event.type === 'turn.failed') failure = event.error
+        else if (event.type === 'error') failure ??= event
+      }
+      const evidence = workspace.commandsRun
+      if (failure !== undefined || !completed ||
+          !evidence.includes('git status --porcelain --untracked-files=all') ||
+          !evidence.includes('list_files .') || !evidence.includes('read_file package.json')) {
+        throw Object.assign(new Error(`Codex workspace tool preflight failed; observed: ${evidence.join(', ') || 'none'}`), {
+          code: 'configuration_error',
+        })
+      }
+      this.prepared = runtime
+    } finally {
+      clearTimeout(timer)
+      await bridge.close()
+    }
+  }
+
   private async run(input: { task: GuardianTask; packet: DelegationPacket }): Promise<{
     summary: string; commandsRun: string[]; blockers: string[]
   }> {
@@ -140,7 +266,8 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
     const abort = new AbortController()
     const timeout = setTimeout(() => abort.abort(), this.options.timeoutMs ?? 20 * 60 * 1000)
     try {
-      const preflight = await (this.options.preflight?.() ?? inspectCodexLocal(this.options.env, this.options.cwd))
+      const preflight = this.prepared ?? await (this.options.preflight?.() ?? inspectCodexLocal(this.options.env, this.options.cwd))
+      this.prepared = undefined
       workspace = await CodexWorkspaceTools.create(this.options.cwd, input.task)
       bridge = await workspace.listen()
       const config = codexEffectiveConfiguration(this.options, preflight.executable, bridge.url, preflight.mcpNames)
@@ -180,11 +307,11 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
     }
     // A successful model response is not proof that the tool host actually worked.
     // Require observable repository inspection before treating a turn as executed.
-    if (failure === undefined && completed && commandsRun.length === 0) failure = { code: 'workspace_inspection_missing' }
+    if (failure === undefined && completed && commandsRun.length === 0) failure = { code: 'no_op_execution' }
     if (failure !== undefined || !completed) {
       this.lastError = classifyCodexError(failure)
-      if ((failure as { code?: string } | undefined)?.code === 'workspace_inspection_missing') {
-        this.lastError = { kind: 'unknown', message: 'Codex completed without workspace inspection; execution evidence is missing' }
+      if ((failure as { code?: string } | undefined)?.code === 'no_op_execution') {
+        this.lastError = { kind: 'no_op_execution', message: `${NO_OP_EXECUTION}: Codex completed without workspace inspection; execution evidence is missing` }
       }
       return { summary: summary || this.lastError.message, commandsRun, blockers: [this.lastError.message] }
     }

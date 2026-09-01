@@ -27,6 +27,9 @@ export interface GuardianBrain {
 }
 
 export interface GuardianExecutor {
+  /** Bounded, read-only workspace/runtime gate that must pass before EXECUTING. */
+  preflight?(task: GuardianTask): Promise<void>
+
   execute(input: {
     task: GuardianTask
     packet: DelegationPacket
