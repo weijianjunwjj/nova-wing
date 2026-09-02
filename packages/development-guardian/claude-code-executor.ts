@@ -31,6 +31,8 @@ export interface GuardianCommandRequest {
   env?: NodeJS.ProcessEnv
   /** Internal marker for native Git Bash process errors; never inferred from a path string. */
   nativeGitBash?: true
+  /** Optional stdin payload keeps large prompts out of the Windows command line. */
+  stdinText?: string
 }
 
 export interface GuardianCommandResult {
@@ -333,7 +335,7 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
       env: processEnvironment,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: false,
       shell: false,
     })
@@ -349,6 +351,8 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
     child.stderr.on('data', (chunk: string) => {
       stderr = `${stderr}${chunk}`
     })
+    child.stdin.on('error', () => {})
+    child.stdin.end(request.stdinText)
 
     const timer = setTimeout(() => {
       if (settled) {
@@ -1131,7 +1135,15 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     permissionDenials: PermissionDenialEvidence[]
     claudeDurationMs: number
   }> {
-    const args = this.buildClaudeArgs(task, packet, mode)
+    const argsWithPrompt = this.buildClaudeArgs(task, packet, mode)
+    const prompt = argsWithPrompt[1]
+    const stdinText = typeof prompt === 'string' &&
+      (this.options.additionalExecutionContext !== undefined || prompt.length > 8_000)
+      ? prompt
+      : undefined
+    const args = stdinText === undefined
+      ? argsWithPrompt
+      : [argsWithPrompt[0]!, ...argsWithPrompt.slice(2)]
     const spec = claudeCommand(args, this.shellOptions())
     const env = this.commandEnvironment(spec.executable, spec.nativeGitBash)
     const claudeStartedAt = performance.now()
@@ -1142,6 +1154,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       timeoutMs: this.timeoutMs,
       ...(env === undefined ? {} : { env }),
       ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
+      ...(stdinText === undefined ? {} : { stdinText }),
     })
     const claudeDurationMs = performance.now() - claudeStartedAt
 

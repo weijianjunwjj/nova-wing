@@ -145,6 +145,23 @@ test('Claude invocation forwards argv through the Git Bash -- delimiter', async 
   assert.equal(claude.nativeGitBash, true)
 })
 
+test('large Claude prompt is streamed over stdin instead of the Windows command line', async () => {
+  const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('tests passed')])
+  const handoff = `handoff:${'x'.repeat(12_000)}`
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo', platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe',
+    commandRunner: runner.run, additionalExecutionContext: handoff,
+  })
+
+  await executor.execute({ task: task(), packet: packet() })
+
+  const claude = runner.requests[1]!
+  assert.equal(claude.args[3], '-p')
+  assert.equal(claude.args[4], '--output-format')
+  assert.ok(claude.stdinText?.includes(handoff))
+  assert.equal(claude.args.some(arg => arg.includes(handoff)), false)
+})
+
 test('missing configured Git Bash fails closed through shell:false process launch', async () => {
   const executor = new ClaudeCodeExecutor({
     cwd: 'D:/repo',

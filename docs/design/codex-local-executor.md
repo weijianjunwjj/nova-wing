@@ -100,6 +100,8 @@ SQLite 原子 workspace lease 覆盖 Codex turn、文件桥撤销、handoff、De
 
 若本地 provider 在已产生改动后因受支持的瞬时错误失败，并且进程终止未能确认，lease 会继续保留。只有显式的 failed-Executor recovery、同一 Session/Task/repository/branch 的已验证 checkpoint，以及受支持的瞬时失败账本证据同时成立时，production runtime 才会删除该 Task 的精确 lease；普通启动、PID 消失或超时不会自动夺取所有权。一次恢复若先被陈旧 lease 拒绝，后续显式恢复只接受紧邻的原始瞬时失败证据。
 
+Claude CLI / DeepSeek handoff 的长 prompt 不进入 Windows argv。超过安全阈值的 prompt 通过子进程 stdin 传输，CLI 参数仍保留 `--print`、输出格式、权限、turn budget、模型和 exact resume identity，避免 handoff evidence 触发 `spawn ENAMETOOLONG`。
+
 `runStreamed` 必须消费到 EOF：收到 quota 事件不能立即 break 或启动 DeepSeek。仅在 execute 完整返回、文件桥撤销、ownership 确认释放、且没有 scope/其他硬 blocker 时接力。若旧命令 runner 超时而进程退出不能确认，保留 lease，阻止重试和接力。外部 quota availability 更新不会打断正在运行的 turn。
 
 Codex 和 DeepSeek 都返回原 `ExecutionReport`，附加 execution metadata。Codex 自述“tests passed”不是验证证据；仍由原独立 allowlist/scoped-approval verifier 执行，包含 staging-equivalent `git diff --check`。scope violation 优先阻断，不能利用 quota failover 绕过。
