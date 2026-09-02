@@ -16,6 +16,7 @@ export interface CodexAvailability {
 export interface CodingExecutorEvent {
   type: 'executor_started' | 'codex_thread_started' | 'codex_thread_resumed' |
     'codex_thread_replaced' | 'executor_failed_over' | 'executor_completed' | 'executor_error'
+    | 'executor_ownership_recovered'
   timestamp: string
   executor?: 'codex' | 'deepseek'
   from?: 'codex'
@@ -115,6 +116,33 @@ export class CodingExecutionStore {
     if (!acquired) throw new Error('Executor ownership unavailable; confirm the previous local writer has stopped before recovery')
     return () => this.withDb((db) => {
       db.prepare('DELETE FROM coding_workspace_lease WHERE workspace=? AND owner=?').run(workspace, owner)
+    })
+  }
+
+  /** Explicit operator recovery only: release the exact Task's retained workspace lease. */
+  recoverOwnership(workspace: string, taskKey: string): boolean {
+    return this.withDb((db) => {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const removed = db.prepare(
+          'DELETE FROM coding_workspace_lease WHERE workspace=? AND task_key=?',
+        ).run(workspace, taskKey).changes === 1
+        if (removed) {
+          db.prepare('INSERT INTO coding_executor_event(task_key,event) VALUES (?,?)').run(
+            taskKey,
+            JSON.stringify({
+              type: 'executor_ownership_recovered',
+              timestamp: new Date().toISOString(),
+              reason: 'verified_transient_provider_recovery',
+            } satisfies CodingExecutorEvent),
+          )
+        }
+        db.exec('COMMIT')
+        return removed
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
     })
   }
 }

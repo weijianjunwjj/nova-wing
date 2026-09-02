@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFile, mkdir, stat } from 'node:fs/promises'
+import { readFile, mkdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -496,6 +496,13 @@ export async function createProductionWorkSessionUi(
         ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
         notificationObserver: notificationSink,
         localControlUrl: () => localControlUrl,
+        recoverExecutorOwnership: async (checkpoint) => {
+          const workspace = await realpath(checkpoint.repo.repoPath)
+          codingStore.recoverOwnership(
+            process.platform === 'win32' ? workspace.toLowerCase() : workspace,
+            taskKey(checkpoint.task.id),
+          )
+        },
         ...(dependencies.notificationRetryDelayMs === undefined
           ? {}
           : { notificationRetryDelayMs: dependencies.notificationRetryDelayMs }),

@@ -89,6 +89,8 @@ export interface WorkSessionRuntimeConfig {
   notificationWait?: (delayMs: number) => Promise<void>
   /** Opt-in completion emails; omission preserves the W006 HUMAN_REQUIRED-only behavior. */
   notifyOnCompleted?: boolean
+  /** Explicit recovery hook; invoked only after a failed Executor checkpoint is verified. */
+  recoverExecutorOwnership?: (checkpoint: GuardianTaskRecoveryCheckpoint) => Promise<void>
 }
 
 export interface ResumeInput {
@@ -831,19 +833,29 @@ export class WorkSessionRuntime {
     ) {
       throw new Error('executor recovery checkpoint repository identity mismatch')
     }
-    const failure = [...this.readExecutionLedger()].reverse().find((event) =>
-      event.eventType === 'SESSION_FAILED' && event.taskId === state.currentTaskId)
-    if (
-      failure === undefined || failure.eventType !== 'SESSION_FAILED' ||
-      failure.failureStage !== 'EXECUTOR' || failure.failureCategory !== 'PROVIDER_ERROR' ||
-      !/\b(?:ENAMETOOLONG|ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b/u.test(failure.safeMessage ?? '')
-    ) {
+    const failures = [...this.readExecutionLedger()].reverse().filter(
+      (event): event is Extract<ExecutionLedgerEvent, { eventType: 'SESSION_FAILED' }> =>
+        event.eventType === 'SESSION_FAILED' && event.taskId === state.currentTaskId,
+    )
+    const supported = (event: Extract<ExecutionLedgerEvent, { eventType: 'SESSION_FAILED' }> | undefined): boolean =>
+      event !== undefined && event.failureStage === 'EXECUTOR' &&
+      event.failureCategory === 'PROVIDER_ERROR' &&
+      /\b(?:ENAMETOOLONG|ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b/u.test(event.safeMessage ?? '')
+    const latest = failures[0]
+    const failure = supported(latest)
+      ? latest
+      : latest !== undefined && latest.failureStage === 'EXECUTOR' && latest.failureCategory === 'PROVIDER_ERROR' &&
+        /Executor ownership unavailable/u.test(latest.safeMessage ?? '') && supported(failures[1])
+        ? failures[1]
+        : undefined
+    if (failure === undefined) {
       throw new Error('executor recovery rejected: failure is not a supported transient provider error')
     }
     const verified = await this.config.taskRunner.verifyRecoveryCheckpoint?.(options.checkpoint)
     if (verified !== undefined && !verified.ok) {
       throw new Error(verified.reason ?? 'executor recovery checkpoint drifted')
     }
+    await this.config.recoverExecutorOwnership?.(options.checkpoint)
 
     const generation = (state.humanRequiredGeneration ?? 0) + 1
     const reason = `EXECUTOR_PROVIDER_RECOVERY: ${failure.safeMessage}`

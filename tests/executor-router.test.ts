@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { codexTestRepo } from './codex-test-fixture.js'
@@ -157,6 +157,22 @@ test('unconfirmed termination retains ownership and prevents retry/failover', as
     assert.equal(f.dsCalls, 0)
     assert.match(report.blockers.join(' '), /termination is unconfirmed/)
     await assert.rejects(new ExecutorRouter(f.options).execute({ task, packet }), /ownership unavailable/)
+  } finally { await f.close() }
+})
+
+test('explicit recovery releases only the matching Task workspace ownership', async () => {
+  const f = await fixture()
+  try {
+    const resolved = await realpath(f.cwd)
+    const workspace = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+    f.codex.hasReleasedExecutionOwnership = () => false
+    await new ExecutorRouter(f.options).execute({ task, packet })
+    assert.equal(f.store.recoverOwnership(workspace, 'other-task'), false)
+    await assert.rejects(new ExecutorRouter(f.options).execute({ task, packet }), /ownership unavailable/)
+    assert.equal(f.store.recoverOwnership(workspace, f.options.taskKey), true)
+    f.codex.hasReleasedExecutionOwnership = () => true
+    await new ExecutorRouter(f.options).execute({ task, packet })
+    assert.equal(f.store.events(f.options.taskKey).some(event => event.type === 'executor_ownership_recovered'), true)
   } finally { await f.close() }
 })
 

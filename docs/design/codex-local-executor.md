@@ -98,6 +98,8 @@ DeepSeek 首先检查真实 repo，保留已有修改；使用现有 checkpoint 
 
 SQLite 原子 workspace lease 覆盖 Codex turn、文件桥撤销、handoff、DeepSeek execute 和独立 verification。相同或不同 Task 同 repo 的第二个 executor 会被拒绝。
 
+若本地 provider 在已产生改动后因受支持的瞬时错误失败，并且进程终止未能确认，lease 会继续保留。只有显式的 failed-Executor recovery、同一 Session/Task/repository/branch 的已验证 checkpoint，以及受支持的瞬时失败账本证据同时成立时，production runtime 才会删除该 Task 的精确 lease；普通启动、PID 消失或超时不会自动夺取所有权。一次恢复若先被陈旧 lease 拒绝，后续显式恢复只接受紧邻的原始瞬时失败证据。
+
 `runStreamed` 必须消费到 EOF：收到 quota 事件不能立即 break 或启动 DeepSeek。仅在 execute 完整返回、文件桥撤销、ownership 确认释放、且没有 scope/其他硬 blocker 时接力。若旧命令 runner 超时而进程退出不能确认，保留 lease，阻止重试和接力。外部 quota availability 更新不会打断正在运行的 turn。
 
 Codex 和 DeepSeek 都返回原 `ExecutionReport`，附加 execution metadata。Codex 自述“tests passed”不是验证证据；仍由原独立 allowlist/scoped-approval verifier 执行，包含 staging-equivalent `git diff --check`。scope violation 优先阻断，不能利用 quota failover 绕过。
