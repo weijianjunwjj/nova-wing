@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { access, mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -21,7 +22,21 @@ import {
   deriveDisplayState,
   type WorkSessionDisplayState,
 } from '../recoverability.js'
-import { fileURLToPath } from 'node:url'
+
+const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
+
+/**
+ * A long-lived Launchpad keeps imported executor code in memory. A later
+ * `npm run build` replaces dist on disk but cannot hot-reload that process.
+ * Refuse to start another real Session after such a rebuild; otherwise a
+ * fixed stdin transport can silently execute through stale argv code.
+ */
+async function assertLaunchpadRuntimeCurrent(): Promise<void> {
+  const loadedModule = await stat(fileURLToPath(import.meta.url))
+  if (loadedModule.mtimeMs > LAUNCHPAD_RUNTIME_LOADED_AT_MS + 1_000) {
+    throw new Error('NovaWing runtime was rebuilt after Launchpad started; restart Launchpad before starting or recovering a Work Session')
+  }
+}
 import { resolveProductionSmtpEnvironment } from '../local-smtp-secrets.js'
 import {
   DependencyPreflightError,
@@ -719,6 +734,7 @@ export class NovaWingLaunchpad {
   }
 
   private async startWorkSession(configId: string): Promise<LaunchResult> {
+    await assertLaunchpadRuntimeCurrent()
     if (this.activeDeletes.has(configId)) throw new Error('unknown config')
     const existing = this.activeStarts.get(configId)
     if (existing !== undefined) {

@@ -31,6 +31,7 @@ const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
   'nova-wing/development-guardian': [
     'AskBridgeBrain',
+    'CONTROLLED_QUOTA_INJECTION_FLAG',
     'ClaudeCodeExecutor',
     'EXECUTION_LEDGER_SCHEMA_VERSION',
     'ExecutionLedgerStore',
@@ -83,6 +84,7 @@ const expectedRuntimeExports = {
     'readCurrentHeadSha',
     'readExecutionLedger',
     'recoverCheckpointPush',
+    'requestControlledCodexQuotaExhaustion',
     'resolveProductionSmtpEnvironment',
     'resolveWindowsGitBashExecutable',
     'runGuardianTask',

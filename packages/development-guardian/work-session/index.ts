@@ -16,6 +16,7 @@ export * from './failure-classification.js'
 export * from './execution-ledger.js'
 export * from './dependency-health.js'
 export * from './production.js'
+export * from './controlled-quota-injection.js'
 export {
   defaultLocalSmtpSecretPath,
   loadLocalSmtpSecrets,

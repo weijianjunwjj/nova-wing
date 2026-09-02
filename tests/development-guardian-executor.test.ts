@@ -162,6 +162,21 @@ test('large Claude prompt is streamed over stdin instead of the Windows command 
   assert.equal(claude.args.some(arg => arg.includes(handoff)), false)
 })
 
+test('large dynamic execution prompt without handoff context also stays out of argv', async () => {
+  const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean')])
+  const marker = `large-task:${'z'.repeat(70_000)}`
+  const executor = new ClaudeCodeExecutor({
+    cwd: 'D:/repo', platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe', commandRunner: runner.run,
+  })
+
+  await executor.execute({ task: task(0, { goal: marker }), packet: { ...packet([]), goal: marker } })
+
+  const claude = runner.requests[1]!
+  assert.ok(claude.stdinText?.includes(marker))
+  assert.equal(claude.args.some(arg => arg.includes(marker)), false)
+  assert.ok(claude.args.every(arg => arg.length < 1_000), 'argv contains only fixed flags and short identifiers')
+})
+
 test('missing configured Git Bash fails closed through shell:false process launch', async () => {
   const executor = new ClaudeCodeExecutor({
     cwd: 'D:/repo',

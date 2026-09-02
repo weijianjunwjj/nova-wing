@@ -4,6 +4,7 @@ import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 import { CODING_EXECUTOR_DEFAULTS, type CodingExecutionMetadata, type ExecutorMode } from './coding-executor-config.js'
 import type { ClassifiedCodexError } from './codex-error.js'
+import { classifyCodexError } from './codex-error.js'
 import { CodingExecutionStore, type CodingExecutorEvent } from './work-session/coding-execution-store.js'
 import { readWorkspaceGit } from './codex-workspace-tools.js'
 import { computeWorktreeFingerprint, parseGitStatus } from './work-session/worktree-fingerprint.js'
@@ -138,6 +139,59 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     let ownershipReleased = false
     try {
       this.select()
+      const injection = this.options.store.controlledQuotaInjection(this.options.taskKey)
+      if (injection?.status === 'pending') {
+        const metadata = this.metadata!
+        const prior = input.task.lastReport
+        if (injection.kind !== 'codex_quota_exhausted' || injection.taskId !== input.task.id ||
+            metadata.mode !== 'auto' || metadata.activeExecutor !== 'codex' ||
+            metadata.history.length !== 1 || metadata.history[0] !== 'codex' || prior === undefined ||
+            prior.changedFiles.length === 0) {
+          throw new Error('controlled quota injection preconditions no longer match Task state')
+        }
+        const workingTree = await readWorkspaceGit(this.options.cwd, 'status')
+        const entries = parseGitStatus(workingTree)
+        const fingerprint = await computeWorktreeFingerprint(this.options.cwd, entries)
+        const diff = await readWorkspaceGit(this.options.cwd, 'diff')
+        const diffEvidence = diff.length > 0 ? diff : workingTree
+        const currentFiles = entries.map((entry) => entry.path).sort()
+        if (fingerprint !== injection.expectedWorktreeFingerprint ||
+            Buffer.byteLength(diffEvidence, 'utf8') !== injection.expectedDiffBytes ||
+            JSON.stringify(currentFiles) !== JSON.stringify([...injection.expectedChangedFiles].sort())) {
+          throw new Error('controlled quota injection rejected because workspace checkpoint drifted')
+        }
+        const consumedAt = new Date(this.now()).toISOString()
+        this.options.store.consumeControlledQuotaInjection(this.options.taskKey, injection.injectionId, consumedAt)
+        const error = classifyCodexError({ code: 'usage_limit_reached' }, this.now())
+        if (error.kind !== 'quota_exhausted') throw new Error('controlled quota injection classifier mismatch')
+        metadata.lastError = error.message
+        metadata.lastErrorKind = error.kind
+        this.save({ type: 'executor_error', executor: 'codex', reason: error.kind,
+          testInjected: true, injectionId: injection.injectionId })
+        this.options.store.markQuota(error, this.now(), this.options.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs)
+        this.save({ type: 'executor_ownership_released', executor: 'codex', reason: 'codex_quota_exhausted',
+          testInjected: true, injectionId: injection.injectionId })
+        const handoff = await this.handoff(input, prior)
+        metadata.activeExecutor = 'deepseek'
+        metadata.history.push('deepseek')
+        metadata.failoverReason = 'codex_quota_exhausted'
+        delete metadata.lastError
+        delete metadata.lastErrorKind
+        delete metadata.model
+        delete metadata.reasoningEffort
+        this.save({ type: 'executor_failed_over', from: 'codex', to: 'deepseek', reason: 'codex_quota_exhausted',
+          testInjected: true, injectionId: injection.injectionId,
+          ...(metadata.codexThreadId ? { codexThreadId: metadata.codexThreadId } : {}) }, handoff)
+        this.save({ type: 'executor_ownership_acquired', executor: 'deepseek', reason: 'codex_quota_exhausted',
+          testInjected: true, injectionId: injection.injectionId })
+        this.save({ type: 'executor_started', executor: 'deepseek', testInjected: true, injectionId: injection.injectionId })
+        let report = await this.deepSeekExecutor(handoff).execute(input)
+        this.save({ type: report.blockers.length === 0 ? 'executor_completed' : 'executor_error', executor: 'deepseek' })
+        ownershipReleased = this.deepseek?.hasReleasedExecutionOwnership?.() !== false
+        if (!ownershipReleased) report = { ...report, blockers: [...report.blockers,
+          'Executor process termination is unconfirmed; workspace ownership retained for operator recovery'] }
+        return this.report(report)
+      }
       this.save({ type: 'executor_started', executor: this.metadata!.activeExecutor })
       let report: ExecutionReport
       if (this.metadata!.activeExecutor === 'deepseek') report = await this.deepSeekExecutor().execute(input)
@@ -166,6 +220,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
             if (this.metadata!.mode === 'auto' && codex.hasReleasedExecutionOwnership?.() !== false &&
                 report.blockers.every((blocker) => blocker === error!.message)) {
               // execute() has fully settled and revoked Codex's file tools BEFORE this point.
+              this.save({ type: 'executor_ownership_released', executor: 'codex', reason: 'codex_quota_exhausted' })
               const handoff = await this.handoff(input, report)
               this.metadata!.activeExecutor = 'deepseek'
               this.metadata!.history.push('deepseek')
@@ -177,6 +232,10 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
               this.save({ type: 'executor_failed_over', from: 'codex', to: 'deepseek', reason: 'codex_quota_exhausted',
                 ...(this.metadata!.codexThreadId ? { codexThreadId: this.metadata!.codexThreadId } : {}) }, handoff)
               // Immediate takeover of THIS Task; the unstarted-task Scheduler is never involved.
+              // The Task-scoped workspace lease remains continuously held while provider
+              // ownership changes, so no second writer can enter between persistence and spawn.
+              this.save({ type: 'executor_ownership_acquired', executor: 'deepseek', reason: 'codex_quota_exhausted' })
+              this.save({ type: 'executor_started', executor: 'deepseek' })
               report = await this.deepSeekExecutor(handoff).execute(input)
             }
           }
@@ -220,7 +279,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     }
     return {
       task: input.task, currentDecision: input.packet, workspace, workingTree,
-      diffSummary: await readWorkspaceGit(this.options.cwd, 'diff'), changedFiles: report.changedFiles,
+      diffSummary: (await readWorkspaceGit(this.options.cwd, 'diff')) || workingTree, changedFiles: report.changedFiles,
       knownTestResults: input.task.lastReport?.verificationResults ?? report.verificationResults,
       testEvidenceFreshness: 'historical; reverify after partial edits',
       commandsAlreadyExecuted: [...(input.task.lastReport?.commandsRun ?? []), ...report.commandsRun],

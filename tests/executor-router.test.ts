@@ -7,6 +7,8 @@ import { codexTestRepo } from './codex-test-fixture.js'
 import { ExecutorRouter, type ExecutorHandoffContext, type ExecutorRouterOptions, type RouterCodexExecutor } from '../packages/development-guardian/executor-router.js'
 import { CodingExecutionStore } from '../packages/development-guardian/work-session/coding-execution-store.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
+import { readWorkspaceGit } from '../packages/development-guardian/codex-workspace-tools.js'
+import { computeWorktreeFingerprint, parseGitStatus } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
 import type { DelegationPacket, ExecutionReport, GuardianTask } from '../packages/development-guardian/model.js'
 import type { ExecutorMode } from '../packages/development-guardian/coding-executor-config.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from '../packages/development-guardian/work-session/checkpoint.js'
@@ -86,6 +88,93 @@ test('quota handoff preserves two real edits, Task identity, known tests, feedba
     assert.ok(f.recovery?.worktreeFingerprint)
     assert.match(await readFile(join(f.cwd, 'src/a.ts'), 'utf8'), /value = 2/)
     assert.match(await readFile(join(f.cwd, 'src/b.ts'), 'utf8'), /partial/)
+  } finally { await f.close() }
+})
+
+test('one-shot controlled quota injection uses classifier, Router handoff, ownership transfer and sticky DeepSeek', async () => {
+  const f = await fixture('auto')
+  try {
+    await writeFile(join(f.cwd, 'src/a.ts'), 'export const inheritedFromCodex = true\n')
+    const status = await readWorkspaceGit(f.cwd, 'status')
+    const entries = parseGitStatus(status)
+    const diff = await readWorkspaceGit(f.cwd, 'diff')
+    const prior = { ...good(), summary: 'Inherited from Codex: type definitions and risk classification',
+      changedFiles: ['src/a.ts'], commandsRun: ['git status', 'git diff', 'read_file src/a.ts'] }
+    f.store.save(f.options.taskKey, { mode: 'auto', activeExecutor: 'codex', history: ['codex'],
+      model: 'gpt-5.6-sol', reasoningEffort: 'medium' },
+    { type: 'executor_completed', executor: 'codex', timestamp: '2026-09-02T00:00:00.000Z' })
+    f.store.requestControlledQuotaInjection(f.options.taskKey, {
+      injectionId: 'injection-1', kind: 'codex_quota_exhausted', taskId: 'T1',
+      requestedAt: '2026-09-02T00:01:00.000Z', status: 'pending',
+      expectedWorktreeFingerprint: await computeWorktreeFingerprint(f.cwd, entries),
+      expectedChangedFiles: ['src/a.ts'], expectedDiffBytes: Buffer.byteLength(diff),
+    })
+
+    const report = await new ExecutorRouter(f.options).execute({ task: { ...task, lastReport: prior }, packet })
+
+    assert.equal(f.codexCalls, 0, 'injection never invokes Codex')
+    assert.equal(f.dsCalls, 1)
+    assert.equal(report.execution?.activeExecutor, 'deepseek')
+    assert.deepEqual(report.execution?.history, ['codex', 'deepseek'])
+    assert.equal(report.execution?.failoverReason, 'codex_quota_exhausted')
+    assert.equal(f.handoff?.codexExecutionSummary, prior.summary)
+    assert.equal(f.store.controlledQuotaInjection(f.options.taskKey)?.status, 'consumed')
+    const transfer = f.store.events(f.options.taskKey).slice(1).map((event) => event.type)
+    assert.deepEqual(transfer.slice(0, 5), ['executor_error', 'executor_ownership_released',
+      'executor_failed_over', 'executor_ownership_acquired', 'executor_started'])
+    assert.equal(f.store.events(f.options.taskKey).find((event) => event.type === 'executor_failed_over')?.testInjected, true)
+    await new ExecutorRouter(f.options).execute({ task: { ...task, lastReport: prior }, packet })
+    assert.equal(f.codexCalls, 0)
+    assert.equal(f.dsCalls, 2, 'sticky continuation stays on DeepSeek')
+  } finally { await f.close() }
+})
+
+test('large Codex diff survives provider error and sticky DeepSeek recovery without a second writer', async () => {
+  const f = await fixture('auto', 'quota_exhausted')
+  const t031 = { ...task, id: 'T031', goal: `large handoff drill:${'criteria '.repeat(9_000)}` }
+  const taskKey = '["handoff-drill","T031"]'
+  const options = { ...f.options, taskKey }
+  const inherited = `export const inherited = ${JSON.stringify('x'.repeat(70_000))}\n`
+  let codexInvocations = 0
+  try {
+    f.codex.execute = async () => {
+      codexInvocations++
+      await writeFile(join(f.cwd, 'src/a.ts'), inherited)
+      f.codex.lastError = classifyCodexError({ code: 'quota_exhausted' })
+      return { ...good(), summary: 'Inherited from Codex', changedFiles: ['src/a.ts'], commandsRun: ['git status'],
+        blockers: [f.codex.lastError.message] }
+    }
+    options.createDeepSeek = (context) => ({ execute: async () => {
+      assert.equal(context?.task.id, 'T031')
+      assert.ok(JSON.stringify(context).length > 65_000)
+      assert.deepEqual(context?.changedFiles, ['src/a.ts'])
+      throw Object.assign(new Error('spawn ENAMETOOLONG'), { code: 'ENAMETOOLONG' })
+    } })
+
+    await assert.rejects(new ExecutorRouter(options).execute({ task: t031, packet }), /ENAMETOOLONG/u)
+    assert.deepEqual(f.store.read(taskKey)?.history, ['codex', 'deepseek'])
+    assert.equal(f.store.read(taskKey)?.activeExecutor, 'deepseek')
+    assert.equal(codexInvocations, 1)
+    await assert.rejects(new ExecutorRouter(options).execute({ task: t031, packet }), /ownership unavailable/u)
+
+    const resolved = await realpath(f.cwd)
+    const workspace = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+    assert.equal(f.store.recoverOwnership(workspace, taskKey), true)
+    let recoveredHandoff: ExecutorHandoffContext | undefined
+    options.createDeepSeek = (context) => {
+      recoveredHandoff = context
+      return { execute: async () => good() }
+    }
+    const recovered = await new ExecutorRouter(options).execute({ task: t031, packet })
+    assert.equal(recovered.execution?.activeExecutor, 'deepseek')
+    assert.deepEqual(recovered.execution?.history, ['codex', 'deepseek'])
+    assert.equal(recoveredHandoff?.task.id, 'T031')
+    assert.ok(JSON.stringify(recoveredHandoff).length > 65_000)
+    assert.deepEqual(recoveredHandoff?.changedFiles, ['src/a.ts'])
+    assert.equal(await readFile(join(f.cwd, 'src/a.ts'), 'utf8'), inherited)
+    assert.equal(codexInvocations, 1, 'provider recovery never routes sticky T031 back to Codex')
+    assert.deepEqual(f.store.events(taskKey).filter(event => event.type === 'executor_failed_over').map(event => [event.from, event.to]),
+      [['codex', 'deepseek']])
   } finally { await f.close() }
 })
 

@@ -16,13 +16,27 @@ export interface CodexAvailability {
 export interface CodingExecutorEvent {
   type: 'executor_started' | 'codex_thread_started' | 'codex_thread_resumed' |
     'codex_thread_replaced' | 'executor_failed_over' | 'executor_completed' | 'executor_error'
-    | 'executor_ownership_recovered'
+    | 'executor_ownership_released' | 'executor_ownership_acquired' | 'executor_ownership_recovered'
   timestamp: string
   executor?: 'codex' | 'deepseek'
   from?: 'codex'
   to?: 'deepseek'
   reason?: string
   codexThreadId?: string
+  testInjected?: true
+  injectionId?: string
+}
+
+export interface ControlledQuotaInjection {
+  injectionId: string
+  kind: 'codex_quota_exhausted'
+  taskId: string
+  requestedAt: string
+  expectedWorktreeFingerprint: string
+  expectedChangedFiles: readonly string[]
+  expectedDiffBytes: number
+  status: 'pending' | 'consumed'
+  consumedAt?: string
 }
 
 /** Local metadata/ownership only; Task lifecycle stays in WorkSessionRuntime. */
@@ -44,6 +58,9 @@ export class CodingExecutionStore {
       );
       CREATE TABLE IF NOT EXISTS codex_availability (
         id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS controlled_quota_injection (
+        task_key TEXT PRIMARY KEY, injection TEXT NOT NULL
       );
     `))
   }
@@ -85,6 +102,44 @@ export class CodingExecutionStore {
   events(key: string): CodingExecutorEvent[] {
     return this.withDb((db) => db.prepare('SELECT event FROM coding_executor_event WHERE task_key=? ORDER BY id').all(key)
       .map((r) => JSON.parse(String(r.event)) as CodingExecutorEvent))
+  }
+
+  requestControlledQuotaInjection(key: string, injection: ControlledQuotaInjection): void {
+    this.withDb((db) => {
+      const existing = db.prepare('SELECT injection FROM controlled_quota_injection WHERE task_key=?').get(key)
+      if (existing !== undefined) throw new Error('controlled quota injection already exists for Task')
+      db.prepare('INSERT INTO controlled_quota_injection VALUES (?,?)').run(key, JSON.stringify(injection))
+    })
+  }
+
+  controlledQuotaInjection(key: string): ControlledQuotaInjection | undefined {
+    return this.withDb((db) => {
+      const row = db.prepare('SELECT injection FROM controlled_quota_injection WHERE task_key=?').get(key)
+      return row === undefined ? undefined : JSON.parse(String(row.injection)) as ControlledQuotaInjection
+    })
+  }
+
+  consumeControlledQuotaInjection(key: string, injectionId: string, consumedAt: string): ControlledQuotaInjection {
+    return this.withDb((db) => {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const row = db.prepare('SELECT injection FROM controlled_quota_injection WHERE task_key=?').get(key)
+        if (row === undefined) throw new Error('controlled quota injection is unavailable')
+        const injection = JSON.parse(String(row.injection)) as ControlledQuotaInjection
+        if (injection.injectionId !== injectionId || injection.status !== 'pending') {
+          throw new Error('controlled quota injection has already been consumed')
+        }
+        const consumed: ControlledQuotaInjection = { ...injection, status: 'consumed', consumedAt }
+        db.prepare('UPDATE controlled_quota_injection SET injection=? WHERE task_key=?')
+          .run(JSON.stringify(consumed), key)
+        db.exec('COMMIT')
+        return consumed
+      } catch (error) { db.exec('ROLLBACK'); throw error }
+    })
+  }
+
+  hasWorkspaceLease(workspace: string): boolean {
+    return this.withDb((db) => db.prepare('SELECT 1 FROM coding_workspace_lease WHERE workspace=?').get(workspace) !== undefined)
   }
 
   availability(): CodexAvailability {
