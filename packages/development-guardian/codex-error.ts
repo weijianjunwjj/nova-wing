@@ -38,7 +38,7 @@ export function classifyCodexError(error: unknown, now = Date.now()): Classified
   else if (has('auth_required', 'unauthorized', 'token_expired', 'invalid_authentication') || statuses.includes(401)) kind = 'auth_required'
   else if (has('model_not_found', 'model_unavailable', 'unsupported_model')) kind = 'model_unavailable'
   else if (has('configuration_error', 'invalid_configuration', 'ENOENT')) kind = 'configuration_error'
-  else if (has('rate_limit_exceeded', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED') ||
+  else if (has('rate_limit_exceeded', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENAMETOOLONG') ||
     statuses.some((s) => typeof s === 'number' && (s === 429 || s >= 500))) kind = 'transient'
   // Only use text if no structured category is known. An ordinary 429 is NOT quota.
   if (kind === 'unknown') {
@@ -48,7 +48,7 @@ export function classifyCodexError(error: unknown, now = Date.now()): Classified
     else if (/\b(?:not logged in|authentication required|sign in with ChatGPT|refresh token.*expired)\b/iu.test(message)) kind = 'auth_required'
     else if (/\bmodel\b.*\b(?:not supported|does not exist|not available|not found)\b/iu.test(message)) kind = 'model_unavailable'
     else if (/\b(?:error loading config|invalid configuration|failed to load bootstrap configuration|unknown variant)\b/iu.test(message)) kind = 'configuration_error'
-    else if (/\b(?:connection reset|connection refused|stream disconnected|request timed out)\b/iu.test(message)) kind = 'transient'
+    else if (/\b(?:connection reset|connection refused|stream disconnected|request timed out|spawn ENAMETOOLONG)\b/iu.test(message)) kind = 'transient'
   }
   let blockedUntil: string | undefined
   if (kind === 'quota_exhausted') {

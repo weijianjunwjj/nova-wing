@@ -105,6 +105,8 @@ export interface RecoveryCheckpointResumeOptions {
   resumeData?: ResumeInput
 }
 
+export interface FailedExecutorRecoveryOptions extends RecoveryCheckpointResumeOptions {}
+
 // Workflow state schema
 const WorkflowStateSchema = z.object({
   sessionId: z.string(),
@@ -794,6 +796,88 @@ export class WorkSessionRuntime {
     await workflows.persistWorkflowSnapshot({ workflowName, runId, snapshot })
 
     return this.resume(options.resumeData ?? {})
+  }
+
+  /**
+   * Narrow recovery for a failed, transient Executor provider turn that left
+   * repository edits behind. Reuses the same session/run and Mastra step; it
+   * never fabricates a new Task or bypasses checkpoint verification.
+   */
+  async recoverFailedExecutorWithCheckpoint(
+    options: FailedExecutorRecoveryOptions,
+  ): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    if (options.sessionId !== runId) {
+      throw new Error(`executor recovery session mismatch: expected ${runId}, got ${options.sessionId}`)
+    }
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('executor recovery storage unavailable')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId })
+    if (snapshot === null || snapshot.status !== 'failed') {
+      throw new Error('executor recovery requires a failed workflow snapshot')
+    }
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success || parsed.data.currentTaskId === null) {
+      throw new Error('executor recovery durable state is invalid')
+    }
+    const state = parsed.data
+    if (state.currentTaskId !== options.checkpoint.task.id) {
+      throw new Error('executor recovery checkpoint Task identity mismatch')
+    }
+    if (
+      options.checkpoint.repo.repoPath !== this.config.definition.targetRepo ||
+      options.checkpoint.repo.branch !== this.config.definition.branch
+    ) {
+      throw new Error('executor recovery checkpoint repository identity mismatch')
+    }
+    const failure = [...this.readExecutionLedger()].reverse().find((event) =>
+      event.eventType === 'SESSION_FAILED' && event.taskId === state.currentTaskId)
+    if (
+      failure === undefined || failure.eventType !== 'SESSION_FAILED' ||
+      failure.failureStage !== 'EXECUTOR' || failure.failureCategory !== 'PROVIDER_ERROR' ||
+      !/\b(?:ENAMETOOLONG|ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b/u.test(failure.safeMessage ?? '')
+    ) {
+      throw new Error('executor recovery rejected: failure is not a supported transient provider error')
+    }
+    const verified = await this.config.taskRunner.verifyRecoveryCheckpoint?.(options.checkpoint)
+    if (verified !== undefined && !verified.ok) {
+      throw new Error(verified.reason ?? 'executor recovery checkpoint drifted')
+    }
+
+    const generation = (state.humanRequiredGeneration ?? 0) + 1
+    const reason = `EXECUTOR_PROVIDER_RECOVERY: ${failure.safeMessage}`
+    const recoveredState: WorkflowState = {
+      ...state,
+      state: 'SUSPENDED',
+      humanRequired: { category: 'EXECUTOR_RETRY_REQUIRED', reason },
+      humanRequiredGeneration: generation,
+      currentTaskCheckpoint: options.checkpoint,
+      verificationFailure: undefined,
+      verificationResults: undefined,
+      pendingVerificationApproval: undefined,
+      updatedAt: new Date().toISOString(),
+    }
+    const stepId = 'execute-tasks-serially'
+    const step = snapshot.context[stepId]
+    if (step === undefined || step.status !== 'failed') {
+      throw new Error('executor recovery failed step is unavailable')
+    }
+    snapshot.status = 'suspended'
+    snapshot.value = recoveredState as unknown as Record<string, string>
+    snapshot.context[stepId] = {
+      payload: step.payload,
+      startedAt: step.startedAt,
+      status: 'suspended',
+      suspendPayload: { reason },
+      suspendedAt: this.now(),
+    }
+    snapshot.suspendedPaths = { [stepId]: [0] }
+    snapshot.resumeLabels = { 'human-decision': { stepId } }
+    delete snapshot.error
+    await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
+    this.latestState = recoveredState
+    return this.resume(options.resumeData ?? { approval: true })
   }
 
   /** Narrow closure for a failed, already-committed Git push checkpoint only. */

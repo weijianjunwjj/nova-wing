@@ -30,6 +30,7 @@ test('Codex classifier prioritizes structured causes; ordinary 429, auth and mod
     [{ code: 'model_not_found' }, 'model_unavailable'], [{ code: 'configuration_error' }, 'configuration_error'],
     [{ code: 'no_op_execution' }, 'no_op_execution'],
     [new Error("You've hit your usage limit. Try again later."), 'quota_exhausted'],
+    [{ code: 'ENAMETOOLONG' }, 'transient'], [new Error('spawn ENAMETOOLONG'), 'transient'],
     [new Error('stream disconnected'), 'transient'], [new Error('something else'), 'unknown'],
   ] as const) assert.equal(classifyCodexError(error).kind, kind)
   assert.equal(classifyCodexError({ code: 'quota_exhausted', metadata: { retry_after: 60 } }, 0).blockedUntil, '1970-01-01T00:01:00.000Z')

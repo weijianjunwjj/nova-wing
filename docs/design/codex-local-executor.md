@@ -78,6 +78,8 @@ workspace-write 不能表达 NovaWing 每个 Task 的细粒度 allowed/forbidden
 
 模型 turn 正常结束但没有任何 workspace inspection 证据时单独分类为 `no_op_execution`。零变更 no-op 显示 `EXECUTOR_RETRY_REQUIRED`，用户确认 runtime 已修复后复用原 Task ID、scope 与 recovery lineage，丢弃不可信的空报告与该 no-op Codex thread ID，再以同一 executor 配置启动新 thread；若 repo 已有真实改动，则保留改动、移除仅表示证据丢失的 no-op blocker，继续既有 scope check 与 deterministic verification，绝不 rollback 或覆盖。其他恢复类型仍保持 Exact Resume，不会因普通错误轮换 thread。
 
+Windows code-mode host 在长 turn 中可能返回结构化 `ENAMETOOLONG`。它与连接重置、超时同属有限 transient runtime 错误，Router 只自动重试一次，不切换 DeepSeek。若旧版本已把这类错误写成 `FAILED / EXECUTOR / PROVIDER_ERROR` 且 repo 留下真实修改，`recoverFailedExecutorWithCheckpoint` 仅接受同 session、同 Task、同 repo/branch 且通过 fingerprint 验证的显式 checkpoint，把原 Mastra step 恢复为 suspended 后走既有 recovery continuation；不删除旧 snapshot、不创建新 Task、不放宽 scope，也不恢复其他 FAILED 类别。
+
 SDK 0.151 的 `ThreadError` 类型只有 message，没有稳定的结构化 quota/reset 字段。因此保留少量集中 message fallback（例如官方 usage-limit 消息），不把字符串判断散布到 router。结构化 reset/retry 信息支持未来/注入的明确错误；不能宣称当前 SDK 每次都提供它。
 
 仅确定 quota 时持久化 global availability。可靠 `reset_at/resetAt/retry_after/retryAfter` 决定 `blockedUntil`；否则使用集中配置的 15 分钟低频 cooldown（可配 1 分钟至 24 小时），这是下一新 Task 的 probe 时间，不是“额度已恢复”的保证。没有“启动时间 + 5 小时”的逻辑。阻断期 Auto 新 Task 直接 DeepSeek；到期后新 Task 重试 Codex，成功才标记 available。旧 Task 的 sticky DeepSeek 不受恢复影响。
