@@ -1,7 +1,8 @@
 import type { LaunchpadConfigSummary } from './server.js'
 import type { DependencyHealthReport } from '../dependency-health.js'
 import { DEEPSEEK_PRICING_SCHEDULE, getDeepSeekPricingPeriod } from '../schedule-policy.js'
-import { CODING_EXECUTOR_DEFAULTS } from '../../coding-executor-config.js'
+import { CODEX_MODEL_OPTIONS, CODING_EXECUTOR_DEFAULTS, codexModelOption } from '../../coding-executor-config.js'
+import { MAX_TASK_BRIEF_CHARS } from './task-brief.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -50,7 +51,7 @@ function renderCard(config: LaunchpadConfigSummary): string {
         ${config.scheduleSource === 'deepseek_off_peak' ? '<div><dt>调度来源</dt><dd>DeepSeek 闲时 · Off-Peak</dd></div>' : ''}
         <div><dt>Branch</dt><dd title="${escapeHtml(config.branch)}">${escapeHtml(config.branch)}</dd></div>
         <div><dt>Reviewer</dt><dd>${escapeHtml(config.reviewer)}</dd></div>
-        <div><dt>Executor</dt><dd>${escapeHtml(config.executorMode ?? 'deepseek')} · ${escapeHtml(config.executorMode === 'deepseek' || config.executorMode === undefined ? config.executor : (config.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model) + ' · ' + (config.codexReasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort))}</dd></div>
+        <div><dt>Executor</dt><dd>${escapeHtml(config.executorMode ?? 'deepseek')} · ${escapeHtml(config.executorMode === 'deepseek' || config.executorMode === undefined ? config.executor : (codexModelOption(config.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model)?.label ?? config.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model) + ' · ' + (config.codexReasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort))}</dd></div>
         <div><dt>Git</dt><dd>${escapeHtml(gitLabel)}</dd></div>
         <div><dt>Notification</dt><dd>${escapeHtml(emailLabel)}</dd></div>
       </dl>
@@ -71,24 +72,40 @@ function renderEmptyState(hidden: boolean): string {
       </section>`
 }
 
+/** The topbar reports preflighted component availability, never task activity. */
+function launchpadAvailability(report: DependencyHealthReport | undefined, id: 'CORE' | 'BRAIN' | 'EXECUTOR'): string {
+  const state = report?.dependencies.find((item) => item.id === id)?.state
+  return state ?? 'UNKNOWN'
+}
+
 export function renderLaunchpadHtml(input: {
   configs: readonly LaunchpadConfigSummary[]
   launchToken: string
   serverOrigin: string
   dependencyHealth?: DependencyHealthReport
+  initialExecutorMode?: 'codex' | 'deepseek'
 }): string {
+  const initialExecutorMode = input.initialExecutorMode ?? 'codex'
+  const executorOptions = [
+    ['codex', 'Codex'], ['deepseek', 'DeepSeek'], ['auto', 'Auto'],
+  ].map(([value, label]) => `<option value="${value}"${value === initialExecutorMode ? ' selected' : ''}>${label}</option>`).join('')
+  const codexModelOptions = CODEX_MODEL_OPTIONS.map((option) =>
+    `<option value="${escapeHtml(option.id)}"${option.id === CODING_EXECUTOR_DEFAULTS.codex.model ? ' selected' : ''}>${escapeHtml(option.label)}</option>`).join('')
   const bootstrap = JSON.stringify({
     launchToken: input.launchToken,
     serverOrigin: input.serverOrigin,
+    initialExecutorMode,
   }).replaceAll('<', '\\u003c')
   const content = `<section class="session-grid" data-session-list aria-label="Trusted Work Sessions"${input.configs.length === 0 ? ' hidden' : ''}>
         ${input.configs.map(renderCard).join('\n')}
       </section>
       ${renderEmptyState(input.configs.length > 0)}`
-  const healthState = input.dependencyHealth?.overall === 'READY' || input.dependencyHealth === undefined ? 'READY' : 'DEGRADED'
-  const health = (['CORE', 'BRAIN', 'EXECUTOR'] as const).map((id) => {
-    const item = input.dependencyHealth?.dependencies.find((candidate) => candidate.id === id)
-    return `<span data-dependency-health="${id}">${id === 'CORE' ? 'NovaWing Core' : id}: ${escapeHtml(item?.state ?? healthState)}</span>`
+  const componentStates = (['CORE', 'BRAIN', 'EXECUTOR'] as const).map((id) => [id, launchpadAvailability(input.dependencyHealth, id)] as const)
+  const healthState = componentStates.some(([, state]) => state === 'UNAVAILABLE' || state === 'DEGRADED')
+    ? 'DEGRADED'
+    : componentStates.every(([, state]) => state === 'READY') ? 'READY' : 'UNKNOWN'
+  const health = componentStates.map(([id, state]) => {
+    return `<span data-dependency-health="${id}">${id === 'CORE' ? 'NovaWing Core' : id}: ${escapeHtml(state)}</span>`
   }).join(' · ')
 
   return `<!doctype html>
@@ -118,8 +135,14 @@ export function renderLaunchpadHtml(input: {
           <p class="eyebrow">NEW WORK SESSION</p>
           <h2 id="composer-title">新建 Work Session</h2>
         </div>
+        <section class="task-brief" aria-labelledby="task-brief-title">
+          <div><p class="eyebrow">TASK BRIEF / QUICK FILL</p><h3 id="task-brief-title">一次性描述任务</h3></div>
+          <textarea data-task-brief data-task-brief-max="${MAX_TASK_BRIEF_CHARS}" rows="7" placeholder="粘贴完整任务描述、项目路径、限制、验证要求等；原始 Brief 会保留在此处，识别结果只会填入下方表单，仍需由你确认并创建。"></textarea>
+          <div class="task-brief-actions"><button class="task-add" type="button" data-task-brief-fill>识别并填充</button><button class="task-add" type="button" data-smart-model>智能推荐模型</button></div>
+          <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务。</p>
+        </section>
         <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
-        <label>分支<input name="branch" type="text" readonly value="填写项目目录后自动检测"></label>
+        <label>分支<input name="branch" type="text" autocomplete="off" value="填写项目目录后自动检测"><span class="field-hint">默认自动检测；Task Brief 指定的分支必须与项目当前 checkout 一致。</span></label>
         <div class="composer-tasks" data-composer-tasks>
           <fieldset class="composer-task" data-composer-task>
             <legend>Task 1</legend>
@@ -131,8 +154,10 @@ export function renderLaunchpadHtml(input: {
         <button class="task-add" type="button" data-add-task>＋ 添加 Task</button>
         <label>允许修改路径<textarea name="allowedPaths" rows="3" placeholder="apps/api/**\ntests/**" required></textarea><span class="field-hint">每行一条，相对于仓库根目录。</span></label>
         <div class="composer-grid">
-          <label>Executor<select name="executorMode"><option value="auto" selected>Auto</option><option value="codex">Codex</option><option value="deepseek">DeepSeek</option></select><span class="field-hint" data-executor-hint>优先使用 Codex，额度不可用时由 DeepSeek 接力</span></label>
+          <label>Executor<select name="executorMode">${executorOptions}</select><span class="field-hint" data-executor-hint></span></label>
           <label data-deepseek-model>DeepSeek runtime model alias<input name="executorModel" type="text" value="sonnet" required><span class="field-hint">沿用本机 Claude CLI → DeepSeek 配置</span></label>
+          <label data-codex-model>Model<select name="codexModel">${codexModelOptions}</select><span class="field-hint" data-model-advisor>Auto · GPT-5.6 Terra · High</span></label>
+          <label data-codex-reasoning>Reasoning<select name="codexReasoningEffort"><option value="high" selected>High</option></select></label>
           <label>Soft Limit（分钟）<input name="softMinutes" type="number" min="0" max="1440" value="45" required></label>
           <label>Hard Limit（分钟）<input name="hardMinutes" type="number" min="1" max="1440" value="90" required></label>
         </div>
@@ -151,7 +176,7 @@ export function renderLaunchpadHtml(input: {
         <div class="checks">
           <label><input name="autoCommit" type="checkbox" checked> Auto Commit</label>
           <label><input name="autoPush" type="checkbox"> Auto Push</label>
-          <label><input name="emailEnabled" type="checkbox"> 邮件通知（完成 / 失败 / 需人工）</label>
+          <label><input name="emailEnabled" type="checkbox" checked> 邮件通知（完成 / 失败 / 需人工）</label>
         </div>
         <p class="push-remote" data-push-remote hidden></p>
         <details>
@@ -179,6 +204,7 @@ export const LAUNCHPAD_APP_JS = `
 (() => {
   'use strict'
   const DEEPSEEK_PRICING_SCHEDULE = ${JSON.stringify(DEEPSEEK_PRICING_SCHEDULE)}
+  const CODEX_MODEL_OPTIONS = ${JSON.stringify(CODEX_MODEL_OPTIONS)}
   const getDeepSeekPricingPeriod = ${getDeepSeekPricingPeriod.toString()}
 
   const bootstrapElement = document.getElementById('novawing-bootstrap')
@@ -298,15 +324,37 @@ export const LAUNCHPAD_APP_JS = `
   const customLabel = form.querySelector('[data-custom-time]')
   const scheduleHint = form.querySelector('[data-schedule-hint]')
   const pricingLabel = form.querySelector('[data-off-peak-label]')
+  const codexModel = form.elements.codexModel
+  const codexReasoning = form.elements.codexReasoningEffort
+  const modelAdvisor = form.querySelector('[data-model-advisor]')
+  let modelMode = 'auto'
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   form.querySelector('[data-local-zone]').textContent = '时区：' + localZone + '；过去或当前时间将立即开始。'
+  const synchronizeCodexReasoning = () => {
+    const option = CODEX_MODEL_OPTIONS.find((candidate) => candidate.id === codexModel.value)
+    if (!option) return
+    const previous = codexReasoning.value
+    codexReasoning.replaceChildren(...option.supportedReasoningEfforts.map((effort) => {
+      const element = document.createElement('option')
+      element.value = effort
+      element.textContent = effort[0].toUpperCase() + effort.slice(1)
+      return element
+    }))
+    codexReasoning.value = option.supportedReasoningEfforts.includes(previous)
+      ? previous
+      : (option.supportedReasoningEfforts.includes('high') ? 'high' : option.supportedReasoningEfforts[0])
+  }
   const updateSchedule = () => {
     const executor = form.elements.executorMode.value
-    form.querySelector('[data-deepseek-model]').hidden = executor === 'codex'
+    const selectedCodexModel = CODEX_MODEL_OPTIONS.find((option) => option.id === codexModel.value)
+    synchronizeCodexReasoning()
+    form.querySelector('[data-deepseek-model]').hidden = executor !== 'deepseek'
+    form.querySelector('[data-codex-model]').hidden = executor === 'deepseek'
+    form.querySelector('[data-codex-reasoning]').hidden = executor === 'deepseek'
     form.querySelector('[data-off-peak-option]').hidden = executor !== 'deepseek'
     form.querySelector('[data-executor-hint]').textContent = executor === 'auto'
-      ? '优先使用 Codex，只有确认额度耗尽才由 DeepSeek 接力'
-      : executor === 'codex' ? '${CODING_EXECUTOR_DEFAULTS.codex.model} · ${CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort} · 仅使用 Codex'
+      ? '优先使用 Codex；额度耗尽时由 DeepSeek 接力'
+      : executor === 'codex' ? (selectedCodexModel ? selectedCodexModel.label + ' · ' + codexReasoning.value + ' · 仅使用 Codex' : '仅使用 Codex')
       : 'DeepSeek API · 沿用本机执行配置'
     if (executor !== 'deepseek' && form.elements.startMode.value === 'deepseek_off_peak') form.querySelector('[name="startMode"][value="immediate"]').checked = true
     const mode = form.elements.startMode.value
@@ -327,8 +375,19 @@ export const LAUNCHPAD_APP_JS = `
     form.querySelector('[data-composer-submit]').textContent = mode === 'immediate' || (mode === 'deepseek_off_peak' && !pricing.nextOffPeakAt)
       ? '创建并启动' : '创建并安排'
   }
+  const setModelAdvisor = (recommendation, mode) => {
+    if (!recommendation || !modelAdvisor) return
+    modelMode = mode
+    codexModel.value = recommendation.model
+    synchronizeCodexReasoning()
+    codexReasoning.value = recommendation.reasoningEffort
+    modelAdvisor.textContent = (mode === 'manual' ? '手动选择 · ' : mode === 'explicit' ? 'Task Brief 明确指定 · ' : '智能推荐 · ') + recommendation.reason
+    updateSchedule()
+  }
   for (const radio of form.querySelectorAll('[name="startMode"]')) radio.addEventListener('change', updateSchedule)
   form.elements.executorMode.addEventListener('change', updateSchedule)
+  codexModel.addEventListener('change', () => { modelMode = 'manual'; if (modelAdvisor) modelAdvisor.textContent = '手动选择；点击“智能推荐模型”可恢复 Auto。'; updateSchedule() })
+  codexReasoning.addEventListener('change', () => { modelMode = 'manual'; if (modelAdvisor) modelAdvisor.textContent = '手动选择；点击“智能推荐模型”可恢复 Auto。' })
   updateSchedule()
   setInterval(updateSchedule, 30000)
   toggle.addEventListener('click', () => {
@@ -348,9 +407,30 @@ export const LAUNCHPAD_APP_JS = `
   const hardMinutes = form.elements.hardMinutes
   const pushRemote = form.querySelector('[data-push-remote]')
   const error = form.querySelector('[data-composer-error]')
+  const briefInput = form.querySelector('[data-task-brief]')
+  const briefFill = form.querySelector('[data-task-brief-fill]')
+  const smartModel = form.querySelector('[data-smart-model]')
+  const briefResult = form.querySelector('[data-task-brief-result]')
   const lines = (value) => value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
   let branchTimer
   let discoveredPushRemote
+  const discoverTargetRepo = (preserveBranch = false) => {
+    if (!preserveBranch) branch.value = '正在检测…'
+    discoveredPushRemote = undefined
+    updatePushRemote()
+    clearTimeout(branchTimer)
+    branchTimer = setTimeout(async () => {
+      try {
+        const response = await fetch('/api/session/branch', {
+          method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ targetRepo: targetRepo.value }),
+        })
+        const result = await response.json()
+        if (!preserveBranch) branch.value = response.ok ? result.branch : '无法检测分支'
+        discoveredPushRemote = response.ok && result.pushRemoteStatus === 'available' ? result.pushRemote : undefined
+        updatePushRemote()
+      } catch { if (!preserveBranch) branch.value = '无法检测分支' }
+    }, 350)
+  }
   const taskRows = () => Array.from(taskContainer.querySelectorAll('[data-composer-task]'))
   let suggestedSoftMinutes = 45
   let suggestedHardMinutes = 90
@@ -427,22 +507,76 @@ export const LAUNCHPAD_APP_JS = `
     form.elements.allowedPaths.removeAttribute('aria-invalid')
     if (error.textContent === '请填写至少一个允许修改路径。') error.textContent = ''
   })
-  targetRepo.addEventListener('input', () => {
-    branch.value = '正在检测…'
-    discoveredPushRemote = undefined
-    updatePushRemote()
-    clearTimeout(branchTimer)
-    branchTimer = setTimeout(async () => {
-      try {
-        const response = await fetch('/api/session/branch', {
-          method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ targetRepo: targetRepo.value }),
-        })
-        const result = await response.json()
-        branch.value = response.ok ? result.branch : '无法检测分支'
-        discoveredPushRemote = response.ok && result.pushRemoteStatus === 'available' ? result.pushRemote : undefined
-        updatePushRemote()
-      } catch { branch.value = '无法检测分支' }
-    }, 350)
+  targetRepo.addEventListener('input', () => discoverTargetRepo())
+  const requestBriefAnalysis = async (brief) => {
+    const maxBriefChars = Number(briefInput.dataset.taskBriefMax)
+    if (Number.isSafeInteger(maxBriefChars) && brief.length > maxBriefChars) {
+      throw new Error('Task Brief 超过 ' + maxBriefChars + ' 字符，未进行解析或截断。请拆分或精简后重试。')
+    }
+    const response = await fetch('/api/session/brief', {
+      method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ brief, executorMode: form.elements.executorMode.value }),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok || !result.fields) throw new Error('Task Brief 无法识别，请继续手动填写表单。')
+    return result
+  }
+  const applyBriefAnalysis = (result, fillFields) => {
+    const fields = result.fields || {}
+    if (fillFields) {
+      if (fields.targetRepo) targetRepo.value = fields.targetRepo
+      if (fields.branch) branch.value = fields.branch
+      const firstTask = taskRows()[0]
+      if (fields.taskId) firstTask.querySelector('[data-task-id]').value = fields.taskId
+      if (fields.taskInstructions) {
+        const goal = firstTask.querySelector('[data-task-goal]')
+        goal.value = fields.taskInstructions
+        goal.dispatchEvent(new Event('input'))
+      }
+      if (Array.isArray(fields.allowedPaths) && fields.allowedPaths.length) form.elements.allowedPaths.value = fields.allowedPaths.join('\\n')
+      if (Array.isArray(fields.forbiddenPaths) && fields.forbiddenPaths.length) form.elements.forbiddenPaths.value = fields.forbiddenPaths.join('\\n')
+      if (Array.isArray(fields.constraints) && fields.constraints.length) form.elements.constraints.value = fields.constraints.join('\\n')
+      if (Array.isArray(fields.acceptanceCriteria) && fields.acceptanceCriteria.length) form.elements.acceptanceCriteria.value = fields.acceptanceCriteria.join('\\n')
+      if (Array.isArray(fields.doNotDo) && fields.doNotDo.length) form.elements.doNotDo.value = fields.doNotDo.join('\\n')
+      if (fields.executorMode) form.elements.executorMode.value = fields.executorMode
+      if (Number.isFinite(fields.softMinutes)) softMinutes.value = String(fields.softMinutes)
+      if (Number.isFinite(fields.hardMinutes)) hardMinutes.value = String(fields.hardMinutes)
+      if (fields.startMode === 'immediate') form.querySelector('[name="startMode"][value="immediate"]').checked = true
+      if (fields.startMode === 'custom' && fields.customStartAt) {
+        form.querySelector('[name="startMode"][value="custom"]').checked = true
+        customTime.value = fields.customStartAt
+      }
+      if (typeof fields.autoCommit === 'boolean') autoCommit.checked = fields.autoCommit
+      if (typeof fields.autoPush === 'boolean') autoPush.checked = fields.autoPush
+      if (typeof fields.emailEnabled === 'boolean') form.elements.emailEnabled.checked = fields.emailEnabled
+      if (fields.targetRepo) discoverTargetRepo(Boolean(fields.branch))
+      updatePushRemote()
+      updateSchedule()
+    }
+    if (result.modelRecommendation) {
+      const mode = result.modelRecommendation.modelExplicit || result.modelRecommendation.reasoningExplicit ? 'explicit' : 'auto'
+      setModelAdvisor(result.modelRecommendation, mode)
+    }
+    const recognized = Array.isArray(result.recognized) && result.recognized.length ? '已识别：' + result.recognized.join('、') + '。' : '未识别到可安全填充的字段。'
+    const warnings = Array.isArray(result.warnings) && result.warnings.length ? ' ' + result.warnings.join(' ') : ''
+    briefResult.textContent = recognized + warnings
+  }
+  briefFill.addEventListener('click', async () => {
+    const brief = briefInput.value.trim()
+    if (!brief) { briefResult.textContent = '请先输入 Task Brief。'; briefInput.focus(); return }
+    briefFill.disabled = true
+    briefResult.textContent = '正在识别并验证字段…'
+    try { applyBriefAnalysis(await requestBriefAnalysis(brief), true) }
+    catch (cause) { briefResult.textContent = cause instanceof Error ? cause.message : 'Task Brief 无法识别。' }
+    finally { briefFill.disabled = false }
+  })
+  smartModel.addEventListener('click', async () => {
+    const firstTask = taskRows()[0]
+    const brief = briefInput.value.trim() || firstTask.querySelector('[data-task-goal]').value.trim()
+    if (!brief) { briefResult.textContent = '请先填写 Task Brief 或 Task 描述。'; return }
+    smartModel.disabled = true
+    try { applyBriefAnalysis(await requestBriefAnalysis(brief), false) }
+    catch (cause) { briefResult.textContent = cause instanceof Error ? cause.message : '智能推荐不可用，已保留当前选择。' }
+    finally { smartModel.disabled = false }
   })
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -502,10 +636,13 @@ export const LAUNCHPAD_APP_JS = `
         method: 'POST', headers: mutationHeaders(),
         body: JSON.stringify({
           requestId, targetRepo: targetRepo.value, tasks,
+          ...( /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(branch.value) && !branch.value.includes('..') && !branch.value.endsWith('.lock') && !branch.value.includes('@{') ? { branch: branch.value } : {} ),
           scheduled_start_at: instant ? instant.toISOString() : null,
           schedule_source: mode,
           executorModel: form.elements.executorModel.value,
           executorMode: form.elements.executorMode.value,
+          codexModel: form.elements.codexModel.value,
+          codexReasoningEffort: form.elements.codexReasoningEffort.value,
           softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
           autoCommit: autoCommit.checked, autoPush: autoPush.checked,
           ...(autoPush.checked ? { pushRemote: discoveredPushRemote } : {}),
@@ -624,6 +761,12 @@ body {
 .composer-form { padding: 0 24px 26px; }
 .composer-heading { margin: 5px 0 22px; }
 .composer-heading h2, .existing-heading { font-size: 20px; }
+.task-brief { margin: 0 0 24px; padding: 18px; border: 1px solid rgba(146, 183, 255, .22); border-radius: 12px; background: rgba(72, 105, 167, .07); }
+.task-brief h3 { margin: 0; color: #d9e7ff; font-size: 16px; }
+.task-brief textarea { margin-top: 14px; }
+.task-brief-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.task-brief-actions .task-add { width: auto; margin: 0; }
+.task-brief-result { min-height: 18px; margin: 12px 0 0; line-height: 1.5; }
 .composer-form label { display: grid; gap: 8px; margin: 15px 0; color: #b9c4d4; font-size: 13px; }
 .composer-form input[type="text"], .composer-form input[type="number"], .composer-form textarea, .composer-form select {
   width: 100%; border: 1px solid rgba(151, 170, 202, .2); border-radius: 9px;

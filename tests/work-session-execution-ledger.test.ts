@@ -555,7 +555,12 @@ await test('T009 commit success + push failure stays FAILED, notifies with one r
       },
     })
 
-    await assert.rejects(runtime.start(), /Git checkpoint failed/u)
+    await assert.rejects(runtime.start(), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /Git checkpoint failed/u)
+      assert.doesNotMatch(error.message, /SECRET_TOKEN|SECRET_KEY|SECRET_PASSWORD|SECRET_COOKIE|PROVIDER_SECRET/u)
+      return true
+    })
     await runtime.getNotificationPromise()
     const state = runtime.getDurableState()
     assert.equal(state?.state, 'FAILED')
@@ -737,7 +742,12 @@ await test('two FAILED notification delivery failures do not mutate terminal sta
         },
       },
     })
-    await assert.rejects(runtime.start(), /Task T009 failed/u)
+    await assert.rejects(runtime.start(), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /Task T009 failed/u)
+      assert.doesNotMatch(error.message, /SECRET_TOKEN|SECRET_KEY|SECRET_PASSWORD|SECRET_COOKIE|PROVIDER_SECRET/u)
+      return true
+    })
     await runtime.getNotificationPromise()
     assert.equal(notifier.attempts, 2)
     assert.equal(runtime.getDurableState()?.state, 'FAILED')

@@ -13,8 +13,12 @@ import { DeepSeekExecutor } from '../deepseek-executor.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
 import { CodexExecutor, type CodexExecutorOptions } from '../codex-executor.js'
 import { ExecutorRouter, type RouterCodexExecutor } from '../executor-router.js'
-import { CODING_EXECUTOR_DEFAULTS } from '../coding-executor-config.js'
-import { CodingExecutionStore } from './coding-execution-store.js'
+import {
+  CODING_EXECUTOR_DEFAULTS,
+  isSupportedCodexConfiguration,
+  resolvePersistedCodexConfiguration,
+} from '../coding-executor-config.js'
+import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-execution-store.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
@@ -85,7 +89,7 @@ const TrustedConfigSchema = z.object({
   codex: z.object({
     enabled: z.boolean().optional(),
     model: z.string().trim().min(1).optional(),
-    reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']).optional(),
+    reasoningEffort: z.string().trim().min(1).optional(),
     quotaProbeCooldownMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
   }).strict().optional(),
   notification: z.object({
@@ -181,6 +185,12 @@ export async function validateTrustedWorkSessionConfig(
   }
 
   config.executor.model = requireTrimmed(config.executor.model, 'executor.model')
+  if (config.codex !== undefined) {
+    const resolved = resolvePersistedCodexConfiguration(config.codex)
+    if (!isSupportedCodexConfiguration(resolved.model, resolved.reasoningEffort)) {
+      throw new Error('Codex model/reasoning configuration is unsupported')
+    }
+  }
   if (!Number.isInteger(config.executor.maxTurns) || config.executor.maxTurns < 1) {
     throw new Error('executor.maxTurns must be an integer >= 1')
   }
@@ -368,7 +378,7 @@ export async function createProductionWorkSessionUi(
   // Injected executor tests stay isolated with their temporary session storage.
   const codingStore = new CodingExecutionStore(dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined
     ? join(resolve(storagePath, '..'), 'coding-executors.sqlite')
-    : join(env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing'), 'NovaWing', 'coding-executors.sqlite'))
+    : defaultCodingExecutionStorePath(env))
   const taskKey = (id: string) => JSON.stringify([definition.id, id])
   const policies = new Map(trusted.tasks.map((task) => [task.id, task.guardian]))
   const gitRunner = createProductionGitRunner(
@@ -456,13 +466,13 @@ export async function createProductionWorkSessionUi(
             taskKey: taskKey(task.id), cwd: definition.targetRepo, store: codingStore,
             mode: taskModes.get(task.id)!,
             codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
-            codexModel: trusted.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
-            reasoningEffort: trusted.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort,
+            codexModel: resolvePersistedCodexConfiguration(trusted.codex).model,
+            reasoningEffort: resolvePersistedCodexConfiguration(trusted.codex).reasoningEffort,
             quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
             createCodex(onThread) {
+              const codex = resolvePersistedCodexConfiguration(trusted.codex)
               const codexOptions: CodexExecutorOptions = { ...options, env, onThread,
-                codexModel: trusted.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
-                reasoningEffort: trusted.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort }
+                codexModel: codex.model, reasoningEffort: codex.reasoningEffort }
               return dependencies.createCodexExecutor?.(codexOptions) ?? new CodexExecutor(codexOptions)
             },
             createDeepSeek(handoff) {

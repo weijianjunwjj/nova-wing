@@ -5,7 +5,7 @@ import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@open
 import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-code-executor.js'
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
 import { classifyCodexError, type ClassifiedCodexError } from './codex-error.js'
-import { CodexWorkspaceTools } from './codex-workspace-tools.js'
+import { CodexWorkspaceTools, type CodexWorkspaceProbeResult } from './codex-workspace-tools.js'
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
@@ -30,6 +30,10 @@ export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   onThread?: (id: string, resumed: boolean) => void
   createCodex?: (options: CodexOptions) => Pick<Codex, 'startThread' | 'resumeThread'>
   preflight?: () => Promise<{ executable: string; mcpNames: string[] }>
+  /** Test seam for bounded preflight diagnostics; production uses 90 seconds. */
+  preflightTimeoutMs?: number
+  /** Test seam for the locally-owned MCP listener. */
+  listenWorkspace?: (workspace: CodexWorkspaceTools) => Promise<Awaited<ReturnType<CodexWorkspaceTools['listen']>>>
 }
 
 function windowsPathToWsl(path: string): string {
@@ -115,10 +119,10 @@ export function codexChatGptEnvironment(source: NodeJS.ProcessEnv): Record<strin
 export function codexEffectiveConfiguration(options: CodexExecutorOptions, executable: string, url: string, mcpNames: string[]): {
   runtime: CodexOptions; thread: ThreadOptions
 } {
-  // CLI -c splits dotted paths itself; quoted segments become literal quote characters.
-  // Fail closed for names that cannot be represented safely as bare segments.
-  if (mcpNames.some((name) => !/^[A-Za-z0-9_-]+$/u.test(name))) throw { code: 'configuration_error' }
-  const disabledMcp = mcpNames.map((name) => `mcp_servers.${name}.enabled=false`)
+  // Replace, rather than enumerate, the inherited MCP table. Enumeration used
+  // `codex mcp list` before every Task, making an optional system CLI a hard
+  // prerequisite for the SDK executor.
+  void mcpNames
   return {
     runtime: {
       codexPathOverride: executable,
@@ -134,9 +138,9 @@ export function codexEffectiveConfiguration(options: CodexExecutorOptions, execu
           workspace_dependencies: false, skill_mcp_dependency_install: false,
         },
       },
-      // Explicit per-server flags also disable inherited MCP entries, not just the new table.
-      configOverrides: [...disabledMcp,
-        `mcp_servers.novawing_workspace={url=${JSON.stringify(url)},enabled=true,required=true,default_tools_approval_mode="approve",enabled_tools=["list_files","read_file","write_file","delete_file","git_status","git_diff_summary"]}`],
+      configOverrides: [
+        `mcp_servers={novawing_workspace={url=${JSON.stringify(url)},enabled=true,required=true,default_tools_approval_mode="approve",enabled_tools=["list_files","read_file","write_file","delete_file","git_status","git_diff_summary"]}}`,
+      ],
     },
     thread: {
       workingDirectory: options.cwd,
@@ -159,33 +163,73 @@ export function bundledCodexExecutable(): string {
   return join(root, 'vendor', triple, 'bin', 'codex.exe')
 }
 
-async function inspectCli(executable: string, args: string[], env: Record<string, string>, cwd?: string): Promise<string> {
-  return new Promise((resolveRun, reject) => {
-    const child = spawn(executable, args, { env, ...(cwd === undefined ? {} : { cwd }), windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
-    let output = ''
-    const timer = setTimeout(() => child.kill(), 15_000)
-    child.stdout.on('data', (d: Buffer) => { output += d })
-    // login status is written to stderr; MCP config is never returned to callers/loggers.
-    child.stderr.on('data', (d: Buffer) => { if (args[0] === 'login') output += d })
-    child.once('error', () => { clearTimeout(timer); reject({ code: 'configuration_error' }) })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      if (code !== 0) reject({ code: args[0] === 'login' ? 'auth_required' : 'configuration_error' })
-      else resolveRun(output)
-    })
-  })
+/**
+ * Resolve only the executable bundled with @openai/codex-sdk.  The SDK owns
+ * launching this binary; a separately installed `codex` command is neither
+ * consulted nor required. Authentication and the controlled MCP connection
+ * are proven by CodexExecutor.preflight's real SDK probe below.
+ */
+export async function inspectCodexLocal(_env: NodeJS.ProcessEnv = process.env, cwd?: string): Promise<{ executable: string; mcpNames: string[] }> {
+  if (cwd === undefined) throw Object.assign(new Error('Codex workspace is required'), { code: 'configuration_error' })
+  return { executable: bundledCodexExecutable(), mcpNames: [] }
 }
 
-export async function inspectCodexLocal(env: NodeJS.ProcessEnv = process.env, cwd?: string): Promise<{ executable: string; mcpNames: string[] }> {
-  if (cwd === undefined) throw Object.assign(new Error('Codex workspace is required'), { code: 'configuration_error' })
-  await inspectCodexDevelopmentRuntime({ cwd })
-  const executable = bundledCodexExecutable()
-  const childEnv = codexChatGptEnvironment(env)
-  const status = await inspectCli(executable, ['login', 'status'], childEnv, cwd)
-  if (!/Logged in using ChatGPT/iu.test(status)) throw { code: 'auth_required' }
-  const raw = JSON.parse(await inspectCli(executable, ['mcp', 'list', '--json'], childEnv, cwd)) as unknown
-  if (!Array.isArray(raw) || raw.some((r) => !r || typeof r.name !== 'string')) throw { code: 'configuration_error' }
-  return { executable, mcpNames: raw.map((r: { name: string }) => r.name) }
+export type CodexSdkPreflightStage =
+  | 'workspace_root' | 'sdk_runtime' | 'workspace_mcp_initialization'
+  | 'sdk_session' | 'sdk_network' | 'git' | 'list' | 'read' | 'timeout'
+
+export interface CodexSdkPreflightStepResult {
+  stage: CodexSdkPreflightStage
+  status: 'passed' | 'failed'
+  reason?: string
+}
+
+export class CodexSdkPreflightError extends Error {
+  constructor(
+    readonly stage: CodexSdkPreflightStage,
+    readonly safeMessage: string,
+    readonly results: readonly CodexWorkspaceProbeResult[] = [],
+    readonly steps: readonly CodexSdkPreflightStepResult[] = [],
+  ) {
+    super(safeMessage)
+  }
+}
+
+function safeSdkPreflightError(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error :
+    error !== null && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+      ? error.message
+      : 'Codex SDK did not return a usable preflight result'
+  return message
+    .replace(/\b(api[_-]?key|access[_-]?token|token|secret|password|authorization)\b\s*[:=]\s*\S+/giu, '$1= [redacted]')
+    .slice(0, 300)
+}
+
+function isSdkNetworkTransportError(error: unknown): boolean {
+  return /(?:os error 10013|access.*socket|network \(connection failed|responses_websocket)/iu.test(safeSdkPreflightError(error))
+}
+
+function failedWorkspaceProbe(results: readonly CodexWorkspaceProbeResult[]): CodexSdkPreflightError | undefined {
+  const failure = results.find((result) => result.status === 'failed')
+  if (failure === undefined) return undefined
+  const stage = failure.name === 'git_status' ? 'git' : failure.name === 'list_files' ? 'list' : 'read'
+  const label = stage === 'git' ? 'Git' : stage
+  return new CodexSdkPreflightError(stage, `workspace ${label} preflight failed: ${failure.reason ?? 'workspace operation failed'}`, results)
+}
+
+function missingWorkspaceProbe(results: readonly CodexWorkspaceProbeResult[]): CodexSdkPreflightError {
+  const names = new Set(results.filter((result) => result.status === 'passed').map((result) => result.name))
+  if (!names.has('git_status')) return new CodexSdkPreflightError('git', 'workspace Git preflight failed: Codex did not invoke git_status', results)
+  if (!names.has('list_files')) return new CodexSdkPreflightError('list', 'workspace list preflight failed: Codex did not invoke list_files for the repository root', results)
+  return new CodexSdkPreflightError('read', 'workspace read preflight failed: Codex did not invoke read_file package.json', results)
+}
+
+function workspaceProbeSteps(results: readonly CodexWorkspaceProbeResult[]): CodexSdkPreflightStepResult[] {
+  return results.map((result) => ({
+    stage: result.name === 'git_status' ? 'git' : result.name === 'list_files' ? 'list' : 'read',
+    status: result.status,
+    ...(result.reason === undefined ? {} : { reason: result.reason }),
+  }))
 }
 
 export class CodexExecutor implements GuardianRecoverableExecutor {
@@ -218,13 +262,37 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
 
   /** A real, read-only Codex-to-workspace probe. Guardian calls this before EXECUTING. */
   async preflight(task: GuardianTask): Promise<void> {
-    const runtime = await (this.options.preflight?.() ?? inspectCodexLocal(this.options.env, this.options.cwd))
-    const workspace = await CodexWorkspaceTools.create(this.options.cwd, task)
-    const bridge = await workspace.listen()
+    const steps: CodexSdkPreflightStepResult[] = []
+    let runtime: { executable: string; mcpNames: string[] }
+    try {
+      runtime = await (this.options.preflight?.() ?? inspectCodexLocal(this.options.env, this.options.cwd))
+      steps.push({ stage: 'sdk_runtime', status: 'passed' })
+    } catch (error) {
+      const safeMessage = `Codex SDK runtime preflight failed: ${safeSdkPreflightError(error)}`
+      throw new CodexSdkPreflightError('sdk_runtime', safeMessage, [], [{ stage: 'sdk_runtime', status: 'failed', reason: safeMessage }])
+    }
+    let workspace: CodexWorkspaceTools
+    try {
+      workspace = await CodexWorkspaceTools.create(this.options.cwd, task)
+      steps.push({ stage: 'workspace_root', status: 'passed' })
+    } catch (error) {
+      const safeMessage = `workspace root preflight failed: ${safeSdkPreflightError(error)}`
+      throw new CodexSdkPreflightError('workspace_root', safeMessage, [], [...steps, { stage: 'workspace_root', status: 'failed', reason: safeMessage }])
+    }
+    let bridge: Awaited<ReturnType<CodexWorkspaceTools['listen']>>
+    try {
+      bridge = await (this.options.listenWorkspace?.(workspace) ?? workspace.listen())
+      steps.push({ stage: 'workspace_mcp_initialization', status: 'passed' })
+    } catch (error) {
+      const safeMessage = `workspace MCP initialization preflight failed: ${safeSdkPreflightError(error)}`
+      throw new CodexSdkPreflightError('workspace_mcp_initialization', safeMessage, [], [...steps, { stage: 'workspace_mcp_initialization', status: 'failed', reason: safeMessage }])
+    }
     const abort = new AbortController()
-    const timer = setTimeout(() => abort.abort(), 90_000)
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; abort.abort() }, this.options.preflightTimeoutMs ?? 90_000)
     let completed = false
     let failure: unknown
+    let terminalNetworkFailure: unknown
     try {
       const config = codexEffectiveConfiguration(this.options, runtime.executable, bridge.url, runtime.mcpNames)
       const codex = this.options.createCodex?.(config.runtime) ?? new Codex(config.runtime)
@@ -237,17 +305,46 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
       for await (const event of events) {
         if (event.type === 'turn.completed') completed = true
         else if (event.type === 'turn.failed') failure = event.error
-        else if (event.type === 'error') failure ??= event
+        else if (event.type === 'error') {
+          failure ??= event
+          // A Windows socket permission denial cannot recover through the
+          // runtime's reconnect loop. Stop it now; otherwise the user waits
+          // for its opaque retry window before seeing the actionable cause.
+          if (isSdkNetworkTransportError(event)) {
+            terminalNetworkFailure = event
+            abort.abort()
+          }
+        }
       }
-      const evidence = workspace.commandsRun
-      if (failure !== undefined || !completed ||
-          !evidence.includes('git status --porcelain --untracked-files=all') ||
-          !evidence.includes('list_files .') || !evidence.includes('read_file package.json')) {
-        throw Object.assign(new Error(`Codex workspace tool preflight failed; observed: ${evidence.join(', ') || 'none'}`), {
-          code: 'configuration_error',
-        })
+      const probeFailure = failedWorkspaceProbe(workspace.probeResults)
+      if (timedOut) throw new CodexSdkPreflightError('timeout', `workspace preflight timed out after ${this.options.preflightTimeoutMs ?? 90_000} ms`, workspace.probeResults)
+      if (probeFailure !== undefined) throw probeFailure
+      if (failure !== undefined || !completed) {
+        const stage = isSdkNetworkTransportError(failure) ? 'sdk_network' : 'sdk_session'
+        const label = stage === 'sdk_network' ? 'Codex SDK network transport' : 'Codex SDK session'
+        throw new CodexSdkPreflightError(stage, `${label} preflight failed: ${safeSdkPreflightError(failure)}`, workspace.probeResults)
+      }
+      if (!workspace.commandsRun.includes('git status --porcelain --untracked-files=all') ||
+          !workspace.commandsRun.includes('list_files .') || !workspace.commandsRun.includes('read_file package.json')) {
+        throw missingWorkspaceProbe(workspace.probeResults)
       }
       this.prepared = runtime
+    } catch (error) {
+      if (error instanceof CodexSdkPreflightError) {
+        throw new CodexSdkPreflightError(error.stage, error.safeMessage, error.results,
+          [...steps, ...workspaceProbeSteps(error.results), { stage: error.stage, status: 'failed', reason: error.safeMessage }])
+      }
+      if (timedOut) throw new CodexSdkPreflightError('timeout', `workspace preflight timed out after ${this.options.preflightTimeoutMs ?? 90_000} ms`, workspace.probeResults)
+      if (terminalNetworkFailure !== undefined) {
+        const safeMessage = `Codex SDK network transport preflight failed: ${safeSdkPreflightError(terminalNetworkFailure)}`
+        throw new CodexSdkPreflightError('sdk_network', safeMessage, workspace.probeResults,
+          [...steps, ...workspaceProbeSteps(workspace.probeResults), { stage: 'sdk_network', status: 'failed', reason: safeMessage }])
+      }
+      const probeFailure = failedWorkspaceProbe(workspace.probeResults)
+      if (probeFailure !== undefined) throw probeFailure
+      const safeMessage = `Codex SDK session preflight failed: ${safeSdkPreflightError(error)}`
+      throw new CodexSdkPreflightError('sdk_session', safeMessage, workspace.probeResults,
+        [...steps, ...workspaceProbeSteps(workspace.probeResults), { stage: 'sdk_session', status: 'failed', reason: safeMessage }])
     } finally {
       clearTimeout(timer)
       await bridge.close()

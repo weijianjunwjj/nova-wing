@@ -592,7 +592,7 @@ function renderDecision(rt) {
         ? '此前执行没有 workspace inspection、文件改动或可信工具证据。将保留原 Task ID、任务范围和 recovery lineage，重新执行 Executor。'
         : category === 'ENVIRONMENT_REQUIRED'
         ? ((hr.reason || '').indexOf('EXECUTOR_ENVIRONMENT_UNAVAILABLE:') === 0
-          ? 'Executor 尚未启动。修复 workspace、shell、Git 或工具 preflight 后，将从原 Task 重新尝试。'
+          ? 'Executor 尚未启动。请按上方原因修复标明的 preflight 项后，从原 Task 重新尝试。'
           : '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。')
         : '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
     } else if (category === 'PERMISSION_REQUIRED') {

@@ -17,11 +17,22 @@ import {
 } from '../production.js'
 import { WorkSessionRuntime } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
-import { CODING_EXECUTOR_DEFAULTS, type ExecutorMode } from '../../coding-executor-config.js'
+import {
+  CODING_EXECUTOR_DEFAULTS,
+  isSupportedCodexConfiguration,
+  resolvePersistedCodexConfiguration,
+  type ExecutorMode,
+} from '../../coding-executor-config.js'
+import {
+  CodingExecutionStore,
+  defaultCodingExecutionStorePath,
+  type CodexAvailability,
+} from '../coding-execution-store.js'
 import {
   deriveDisplayState,
   type WorkSessionDisplayState,
 } from '../recoverability.js'
+import { analyzeTaskBrief, MAX_TASK_BRIEF_CHARS } from './task-brief.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
 
@@ -144,6 +155,8 @@ export interface NovaWingLaunchpadDependencies {
   readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   /** One-shot bounded preflight; production enables it explicitly. */
   preflight?: (targetRepo?: string) => Promise<DependencyHealthReport>
+  /** Existing local Codex quota observation; failures intentionally remain unknown. */
+  readCodexAvailability?: () => CodexAvailability | Promise<CodexAvailability>
 }
 
 interface LaunchResult {
@@ -154,10 +167,13 @@ interface LaunchResult {
 
 interface ComposerRequest {
   executorMode: ExecutorMode
+  codexModel: string
+  codexReasoningEffort: string
   scheduledStartAt: string | null
   scheduleSource: ScheduleSource
   requestId: string
   targetRepo: string
+  branch?: string
   tasks: Array<{
     id: string
     goal: string
@@ -186,6 +202,7 @@ type ComposerError =
   | 'INVALID_PROJECT_PATH'
   | 'NOT_A_GIT_REPOSITORY'
   | 'CANNOT_READ_BRANCH'
+  | 'BRANCH_MISMATCH'
   | 'INVALID_TASK_ID'
   | 'INVALID_TASK'
   | 'INVALID_TASK_TOO_LONG'
@@ -204,6 +221,7 @@ const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', str
   INVALID_PROJECT_PATH: '项目目录必须是存在的绝对路径。',
   NOT_A_GIT_REPOSITORY: '项目目录不是有效的 Git 仓库。',
   CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
+  BRANCH_MISMATCH: 'Task Brief 中的分支与项目当前 Git 分支不一致。',
   INVALID_TASK_ID: '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。',
   INVALID_TASK: '请填写有效的 Task 描述。',
   INVALID_TASK_TOO_LONG: `Task 描述过长，最大 ${MAX_COMPOSER_TASK_GOAL_CHARS} 字符。`,
@@ -245,8 +263,8 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
   return {
     configId,
     executorMode: firstTask.executorMode ?? config.executor.defaultMode ?? (config.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode),
-    codexModel: config.codex?.model ?? CODING_EXECUTOR_DEFAULTS.codex.model,
-    codexReasoningEffort: config.codex?.reasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort,
+    codexModel: resolvePersistedCodexConfiguration(config.codex).model,
+    codexReasoningEffort: resolvePersistedCodexConfiguration(config.codex).reasoningEffort,
     scheduledStartAt: config.session.scheduledStartAt ?? null,
     scheduleSource: config.session.scheduleSource ?? 'immediate',
     project: titleCaseProject(basename(config.session.targetRepo)),
@@ -354,6 +372,7 @@ export class NovaWingLaunchpad {
   private readonly shutdownTimeoutMs: number
   private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   private readonly preflight: NovaWingLaunchpadDependencies['preflight']
+  private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
@@ -370,6 +389,7 @@ export class NovaWingLaunchpad {
   private dependencyHealth: DependencyHealthReport = {
     overall: 'READY', canStart: true, checkedAt: new Date(0).toISOString(), dependencies: [],
   }
+  private initialExecutorMode: Exclude<ExecutorMode, 'auto'> = 'codex'
 
   constructor(
     discovered: readonly DiscoveredLaunchpadConfig[],
@@ -394,6 +414,8 @@ export class NovaWingLaunchpad {
     this.gitProcessRunner = dependencies.gitProcessRunner
     this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
     this.preflight = dependencies.preflight
+    this.readCodexAvailability = dependencies.readCodexAvailability ?? (() =>
+      new CodingExecutionStore(defaultCodingExecutionStorePath()).availability())
     this.server = createServer((request, response) => {
       void this.handle(request, response)
     })
@@ -404,6 +426,20 @@ export class NovaWingLaunchpad {
       const status = this.liveApps.get(config.summary.configId)?.app.controller.getSnapshot?.().runtime.displayState ?? this.statuses.get(config.summary.configId)
       return { ...config.summary, ...(status === undefined ? {} : { status }) }
     })
+  }
+
+  /** Unknown, failed, stale, and timed-out observations never mean exhausted. */
+  private async resolveInitialExecutorMode(): Promise<Exclude<ExecutorMode, 'auto'>> {
+    try {
+      const availability = await this.readCodexAvailability()
+      if (availability.state !== 'quota_exhausted') return 'codex'
+      const expiry = availability.blockedUntil ?? availability.nextProbeAt
+      if (expiry === undefined) return 'deepseek'
+      const expiryMs = Date.parse(expiry)
+      return Number.isFinite(expiryMs) && expiryMs > Date.now() ? 'deepseek' : 'codex'
+    } catch {
+      return 'codex'
+    }
   }
 
   /** T021: 读取每个 config 的持久化状态并派生展示状态。只发现、不自动恢复。 */
@@ -432,6 +468,7 @@ export class NovaWingLaunchpad {
     if (this.closed) throw new Error('Launchpad is closed')
     if (this.address !== undefined) return this.address
     await this.hydrateStatuses()
+    this.initialExecutorMode = await this.resolveInitialExecutorMode()
     if (this.preflight !== undefined) {
       this.dependencyHealth = await this.preflight().catch(() => ({
         overall: 'DEGRADED' as const,
@@ -549,10 +586,14 @@ export class NovaWingLaunchpad {
       await this.serveBranch(request, response)
       return
     }
+    if (method === 'POST' && path === '/api/session/brief') {
+      await this.serveTaskBrief(request, response)
+      return
+    }
 
     const knownPaths = new Set([
       '/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
-      '/api/session/delete', '/api/session/branch', '/api/session/configs',
+      '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
     ])
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
       error: knownPaths.has(path) ? 'method not allowed' : 'not found',
@@ -571,6 +612,7 @@ export class NovaWingLaunchpad {
       launchToken: this.token,
       serverOrigin: this.origin(),
       dependencyHealth: this.dependencyHealth,
+      initialExecutorMode: this.initialExecutorMode,
     }))
   }
 
@@ -699,6 +741,27 @@ export class NovaWingLaunchpad {
       const code = error instanceof ComposerLaunchError ? error.code : 'CANNOT_READ_BRANCH'
       this.respondComposerError(response, 400, code)
     }
+  }
+
+  /** Analysis is a non-mutating helper; it never creates or starts a Session. */
+  private async serveTaskBrief(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const brief = parseTaskBriefBody(body)
+    if (brief === undefined) {
+      this.respondJson(response, 400, { error: 'INVALID_BRIEF' })
+      return
+    }
+    this.respondJson(response, 200, analyzeTaskBrief(brief.value, new Date(), brief.executorMode ?? this.initialExecutorMode))
   }
 
   private authorizeMutation(request: IncomingMessage, response: ServerResponse): boolean {
@@ -906,6 +969,9 @@ export class NovaWingLaunchpad {
     }
     if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo)
     const branch = await this.readCurrentBranch(targetRepo)
+    if (input.branch !== undefined && input.branch !== branch) {
+      throw new ComposerLaunchError('BRANCH_MISMATCH')
+    }
     const sessionId = createSessionId(targetRepo)
     const config = await validateTrustedWorkSessionConfig({
       session: {
@@ -940,6 +1006,10 @@ export class NovaWingLaunchpad {
         allowNpmInstall: false,
         allowPythonBootstrap: false,
       },
+      ...(input.executorMode === 'deepseek' ? {} : { codex: {
+        model: input.codexModel,
+        reasoningEffort: input.codexReasoningEffort,
+      } }),
       notification: {
         email: input.emailEnabled
           ? { enabled: true, notifyOnCompleted: true }
@@ -990,7 +1060,7 @@ export class NovaWingLaunchpad {
   private respondPreflightError(response: ServerResponse, error: unknown): boolean {
     if (!(error instanceof DependencyPreflightError)) return false
     const blocker = error.report.dependencies.find((item) => item.id === 'SHELL' && item.state !== 'READY') ??
-      error.report.dependencies.find((item) => item.state !== 'READY')
+      error.report.dependencies.find((item) => item.id !== 'CORE' && (item.state === 'UNAVAILABLE' || item.state === 'DEGRADED'))
     this.respondJson(response, 503, {
       error: 'DEPENDENCY_REQUIRED',
       classification: error.report.overall,
@@ -1047,9 +1117,12 @@ function createSessionId(targetRepo: string): string {
 function canonicalComposerPayload(input: ComposerRequest): string {
   return JSON.stringify({
     targetRepo: input.targetRepo,
+    branch: input.branch,
     tasks: input.tasks,
     executorModel: input.executorModel,
     executorMode: input.executorMode,
+    codexModel: input.codexModel,
+    codexReasoningEffort: input.codexReasoningEffort,
     softMinutes: input.softMinutes,
     hardMinutes: input.hardMinutes,
     autoCommit: input.autoCommit,
@@ -1076,15 +1149,21 @@ export async function createNovaWingLaunchpad(options: {
         ...options.dependencies,
         preflight: options.dependencies?.preflight ?? ((targetRepo?: string) =>
           runProductionDependencyPreflight({
-            // The runtime checks the persisted active executor (including sticky failover).
-            // Launchpad cannot infer it from the original Composer choice alone.
-            executorModes: [],
+            // Launchpad's default Composer route is Codex. Check its local SDK
+            // prerequisites at cold start so the topbar reports availability,
+            // not whether an active Task has already selected a route.
+            executorModes: ['codex'],
             ...(options.env === undefined ? {} : { env: options.env }),
             ...(targetRepo === undefined ? {} : { targetRepo }),
           })),
       }
     : options.dependencies
-  return new NovaWingLaunchpad(discovered, configDirectory, dependencies)
+  const launchpadDependencies: NovaWingLaunchpadDependencies = {
+    ...dependencies,
+    readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
+      new CodingExecutionStore(defaultCodingExecutionStorePath(options.env)).availability()),
+  }
+  return new NovaWingLaunchpad(discovered, configDirectory, launchpadDependencies)
 }
 
 function pathOf(request: IncomingMessage): string {
@@ -1155,7 +1234,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   const allowed = new Set([
     'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
-    'scheduled_start_at', 'schedule_source', 'executorMode',
+    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
   let scheduledStartAt: string | null
@@ -1176,6 +1255,10 @@ function parseComposerBody(body: string): ComposerParseResult {
   if (typeof record.targetRepo !== 'string' || record.targetRepo.trim().length === 0) {
     return { ok: false, error: 'INVALID_PROJECT_PATH' }
   }
+  const branch = record.branch
+  if (branch !== undefined && (typeof branch !== 'string' || !isSafeBranch(branch.trim()))) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
   const tasks = parseComposerTasks(record.tasks)
   if (tasks === 'invalid-id') return { ok: false, error: 'INVALID_TASK_ID' }
   if (tasks === 'invalid-task') return { ok: false, error: 'INVALID_TASK' }
@@ -1189,6 +1272,12 @@ function parseComposerBody(body: string): ComposerParseResult {
   }
   const executorModel = record.executorModel ?? DEFAULT_EXECUTOR_MODEL
   if (typeof executorModel !== 'string' || executorModel.trim().length === 0 || executorModel.length > 120) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const codexModel = record.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model
+  const codexReasoningEffort = record.codexReasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort
+  if (typeof codexModel !== 'string' || typeof codexReasoningEffort !== 'string' ||
+      !isSupportedCodexConfiguration(codexModel, codexReasoningEffort)) {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
   const autoCommit = record.autoCommit ?? true
@@ -1212,9 +1301,12 @@ function parseComposerBody(body: string): ComposerParseResult {
       scheduledStartAt,
       scheduleSource,
       targetRepo: record.targetRepo.trim(),
+      ...(branch === undefined ? {} : { branch: branch.trim() }),
       tasks,
       executorModel: executorModel.trim(),
       executorMode,
+      codexModel,
+      codexReasoningEffort,
       softMinutes,
       hardMinutes,
       autoCommit,
@@ -1291,6 +1383,23 @@ function parseBranchBody(body: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function parseTaskBriefBody(body: string): { value: string; executorMode?: ExecutorMode } | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const record = parsed as Record<string, unknown>
+    if (Object.keys(record).some((key) => key !== 'brief' && key !== 'executorMode') || typeof record.brief !== 'string' || record.brief.trim().length === 0 || record.brief.length > MAX_TASK_BRIEF_CHARS) return undefined
+    if (record.executorMode !== undefined && record.executorMode !== 'auto' && record.executorMode !== 'codex' && record.executorMode !== 'deepseek') return undefined
+    return { value: record.brief, ...(record.executorMode === undefined ? {} : { executorMode: record.executorMode }) }
+  } catch {
+    return undefined
+  }
+}
+
+function isSafeBranch(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u.test(value) && !value.includes('..') && !value.endsWith('.lock') && !value.includes('@{')
 }
 
 function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | undefined {

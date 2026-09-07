@@ -14,6 +14,7 @@ import {
   loadTrustedWorkSessionConfig,
   openLaunchpadInAppMode,
   persistComposedTrustedWorkSessionConfig,
+  analyzeTaskBrief,
   type BrowserProcessSpawner,
   NovaWingLaunchpad,
   type TrustedWorkSessionConfig,
@@ -100,7 +101,7 @@ async function createConfigDirectory(): Promise<string> {
   return directory
 }
 
-test('Composer executor defaults Auto, persists explicit modes, and confines Off-Peak to DeepSeek', async () => {
+test('Composer executor defaults Codex, persists explicit modes, and confines Off-Peak to DeepSeek', async () => {
   const directory = await createConfigDirectory()
   const state = emptyFakeState()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
@@ -115,7 +116,7 @@ test('Composer executor defaults Auto, persists explicit modes, and confines Off
         ...(mode === undefined ? {} : { executorMode: mode }),
       }), auth)
       assert.equal(result.status, 202)
-      assert.equal(state.receivedConfigs[index]?.executor.defaultMode, mode ?? 'auto')
+      assert.equal(state.receivedConfigs[index]?.executor.defaultMode, mode ?? 'codex')
     }
     for (const mode of ['auto', 'codex']) {
       const result = await postCreate(launchpad, composerRequest(`executor-off-peak-invalid-${mode}`, {
@@ -128,6 +129,261 @@ test('Composer executor defaults Auto, persists explicit modes, and confines Off
     }), auth)).status, 202)
     assert.equal((await postCreate(launchpad, composerRequest('executor-mode-invalid-value', { executorMode: 'other' }), auth)).status, 400)
     assert.equal((await postCreate(launchpad, composerRequest('executor-mode-valid-0', { executorMode: 'deepseek' }), auth)).status, 409)
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('Launchpad quota default uses DeepSeek only for an explicit active exhaustion result', async () => {
+  for (const [name, readCodexAvailability, expected] of [
+    ['available', () => ({ state: 'available' as const }), 'codex'],
+    ['exhausted', () => ({ state: 'quota_exhausted' as const }), 'deepseek'],
+    ['unknown', () => ({ state: 'unknown' as const }), 'codex'],
+    ['error', () => { throw new Error('quota probe failed') }, 'codex'],
+    ['timeout', async () => { throw new Error('quota probe timed out') }, 'codex'],
+  ] as const) {
+    const directory = await createConfigDirectory()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+      readCodexAvailability,
+    } })
+    try {
+      const address = await launchpad.start()
+      const html = await (await fetch(address.url)).text()
+      assert.match(html, new RegExp(`<option value="${expected}" selected>`), name)
+      assert.match(html, /name="codexModel"/u, name)
+      assert.match(html, /name="codexReasoningEffort"/u, name)
+    } finally {
+      await launchpad.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+})
+
+test('Composer persists selected Codex model and reasoning, validates combinations, and leaves DeepSeek unchanged', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+    readCodexAvailability: () => ({ state: 'available' }),
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const codex = await postCreate(launchpad, composerRequest('codex-model-reasoning-0001', {
+      executorMode: 'codex', codexModel: 'gpt-5.6-luna', codexReasoningEffort: 'max',
+    }), auth)
+    assert.equal(codex.status, 202)
+    assert.deepEqual(state.receivedConfigs[0]!.codex, {
+      model: 'gpt-5.6-luna', reasoningEffort: 'max',
+    })
+    assert.equal((await postCreate(launchpad, composerRequest('codex-model-reasoning-0002', {
+      executorMode: 'codex', codexModel: 'gpt-5.5', codexReasoningEffort: 'max',
+    }), auth)).status, 400, 'unsupported model/reasoning pairs are rejected')
+    const deepseek = await postCreate(launchpad, composerRequest('deepseek-model-unchanged-0003', {
+      executorMode: 'deepseek', executorModel: 'sonnet', codexModel: 'gpt-6-astra', codexReasoningEffort: 'ultra',
+    }), auth)
+    assert.equal(deepseek.status, 202)
+    assert.equal(state.receivedConfigs[1]!.executor.model, 'sonnet')
+    assert.equal(state.receivedConfigs[1]!.codex, undefined)
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('Task Brief analysis fills only explicit high-risk fields and recommends a supported Codex configuration', () => {
+  const analysis = analyzeTaskBrief(`项目目录 D:\\VSCode\\nova-wing
+Task ID: T033
+目标：修复 Codex Executor Resume 后 model/reasoning 可能恢复错误的问题。
+只允许修改：
+packages/development-guardian/**
+tests/**
+禁止修改：
+package.json
+pnpm-lock.yaml
+Executor 使用 Codex。
+Soft Limit 10
+Hard Limit 20
+立即执行。
+完成后 Auto Commit。
+不要 Auto Push。
+验证：npm test\nnpm run typecheck`, new Date('2026-09-05T09:00:00+08:00'))
+  assert.equal(analysis.fields.targetRepo, 'D:\\VSCode\\nova-wing')
+  assert.equal(analysis.fields.taskId, 'T033')
+  assert.deepEqual(analysis.fields.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+  assert.deepEqual(analysis.fields.forbiddenPaths, ['package.json', 'pnpm-lock.yaml'])
+  assert.equal(analysis.fields.autoCommit, true)
+  assert.equal(analysis.fields.autoPush, false)
+  assert.equal(analysis.fields.startMode, 'immediate')
+  assert.equal(analysis.modelRecommendation?.model, 'gpt-5.6-terra')
+  assert.equal(analysis.modelRecommendation?.reasoningEffort, 'high')
+  assert.deepEqual(analysis.fields.acceptanceCriteria, ['npm test', 'npm run typecheck'])
+
+  const tomorrowMorning = analyzeTaskBrief('明天上午开始修复 README。', new Date('2026-09-05T09:00:00+08:00'))
+  assert.equal(tomorrowMorning.fields.startMode, 'custom')
+  assert.equal(tomorrowMorning.fields.customStartAt, '2026-09-06T09:00')
+
+  const explicit = analyzeTaskBrief('Model: GPT-5.6 Sol\nReasoning: High\n修复复杂状态机并发问题。')
+  assert.equal(explicit.modelRecommendation?.model, 'gpt-5.6-sol')
+  assert.equal(explicit.modelRecommendation?.reasoningEffort, 'high')
+  assert.equal(explicit.modelRecommendation?.modelExplicit, true)
+
+  const conservative = analyzeTaskBrief('修改 NovaWing，完成并发布。')
+  assert.equal(conservative.fields.allowedPaths, undefined)
+  assert.equal(conservative.fields.autoPush, undefined)
+
+  const quotaFallback = analyzeTaskBrief('修复跨文件 runtime 问题并运行测试。', new Date(), 'deepseek')
+  assert.equal(quotaFallback.modelRecommendation, undefined, 'DeepSeek quota fallback never invokes the Codex advisor')
+
+  const boundedPaths = analyzeTaskBrief(`只允许修改：
+docs/**
+tests/**
+
+如果不需要修改代码则不要产生无意义 diff。
+
+禁止修改：
+package.json`)
+  assert.deepEqual(boundedPaths.fields.allowedPaths, ['docs/**', 'tests/**'])
+  assert.deepEqual(boundedPaths.fields.forbiddenPaths, ['package.json'])
+
+  const t034Audit = analyzeTaskBrief(`审计 NovaWing 在技术面试现场演示完整开发流程时可能出现的可靠性风险。
+涉及：Launchpad、Codex SDK、DeepSeek handoff、Retry、Resume、verification、WebSocket、状态持久化等。
+先调查，输出风险报告；不进行大规模修复，不做架构重构；问题定义明确。`)
+  assert.equal(t034Audit.modelRecommendation?.model, 'gpt-5.6-terra')
+  assert.equal(t034Audit.modelRecommendation?.reasoningEffort, 'high')
+  assert.match(t034Audit.modelRecommendation?.reason ?? '', /审计/u)
+  assert.equal(t034Audit.modelRecommendation?.signals.includes('architecture-redesign'), false)
+
+  const runtimeInvestigation = analyzeTaskBrief('调查 Codex SDK 在 runtime 中处理 retry / resume 时的兼容性问题，验证现有恢复路径；不重构架构。')
+  assert.equal(runtimeInvestigation.modelRecommendation?.model, 'gpt-5.6-terra')
+  assert.equal(runtimeInvestigation.modelRecommendation?.reasoningEffort, 'high')
+
+  const light = analyzeTaskBrief('修复 README 中一个拼写错误。')
+  assert.equal(light.modelRecommendation?.model, 'gpt-5.6-luna')
+  assert.equal(light.modelRecommendation?.reasoningEffort, 'medium')
+
+  const architecture = analyzeTaskBrief('为模糊需求设计新的核心状态模型，比较多个架构方案并进行职责边界重构。')
+  assert.equal(architecture.modelRecommendation?.model, 'gpt-5.6-sol')
+  assert.equal(architecture.modelRecommendation?.reasoningEffort, 'high')
+
+  const concurrencyArchitecture = analyzeTaskBrief('诊断多进程生命周期中的 race condition，并重新设计状态所有权与职责边界。')
+  assert.equal(concurrencyArchitecture.modelRecommendation?.model, 'gpt-5.6-sol')
+  assert.equal(concurrencyArchitecture.modelRecommendation?.reasoningEffort, 'high')
+
+  const longBrief = [
+    '目标：审计 NovaWing Demo reliability，并验证既有恢复路径。',
+    '',
+    ...Array.from({ length: 120 }, (_, index) => `${index + 1}. ${'这是一段用于模拟长 Task Brief 的审计背景。'.repeat(4)}`),
+    '25. 这只是编号，不能被当作时间限制。',
+    '26. 这也是编号，不能被当作时间限制。',
+    '检查 Auto Push 是否存在风险。',
+    'Soft Limit:',
+    '10',
+    'Hard Limit:',
+    '20',
+    'Auto Commit: OFF',
+    'Auto Push: OFF',
+    '不要 commit',
+    '不要 push',
+    'Allowed Paths:',
+    'packages/development-guardian/**',
+    'tests/**',
+    'Forbidden Paths:',
+    'package.json',
+    'Constraints:',
+    'Do not widen the Guardian write boundary.',
+    'Acceptance Criteria:',
+    'npm test passes.',
+    'Do Not Do:',
+    'Do not change quota routing.',
+  ].join('\n')
+  const longAnalysis = analyzeTaskBrief(longBrief)
+  assert.equal(longBrief.length > 8_000, true)
+  assert.match(longAnalysis.fields.taskInstructions, /^审计 NovaWing Demo reliability，并验证既有恢复路径。/u)
+  assert.doesNotMatch(longAnalysis.fields.taskInstructions, /Soft Limit|Hard Limit|Allowed Paths|Forbidden Paths/u)
+  assert.equal(longAnalysis.fields.softMinutes, 10)
+  assert.equal(longAnalysis.fields.hardMinutes, 20)
+  assert.equal(longAnalysis.fields.autoCommit, false)
+  assert.equal(longAnalysis.fields.autoPush, false)
+  assert.deepEqual(longAnalysis.fields.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+  assert.deepEqual(longAnalysis.fields.forbiddenPaths, ['package.json'])
+  assert.deepEqual(longAnalysis.fields.constraints, ['Do not widen the Guardian write boundary.'])
+  assert.deepEqual(longAnalysis.fields.acceptanceCriteria, ['npm test passes.'])
+  assert.deepEqual(longAnalysis.fields.doNotDo, ['Do not change quota routing.'])
+  assert.ok(longAnalysis.warnings.some((warning) => warning.includes('超过 8000 字符')))
+
+  assert.equal(analyzeTaskBrief('检查 Auto Push 是否存在风险。\nAuto Push: OFF').fields.autoPush, false)
+  assert.equal(analyzeTaskBrief('不要 push').fields.autoPush, false)
+  assert.equal(analyzeTaskBrief('只调查当前状态。').fields.autoPush, undefined)
+  assert.equal(analyzeTaskBrief('Auto Push: ON').fields.autoPush, true)
+
+  const multilineFields = analyzeTaskBrief(`Auto Commit:
+OFF
+
+Auto Push:
+ON
+
+Start:
+Immediately`)
+  assert.equal(multilineFields.fields.autoCommit, false)
+  assert.equal(multilineFields.fields.autoPush, true)
+  assert.equal(multilineFields.fields.startMode, 'immediate')
+  assert.deepEqual(multilineFields.recognized.filter((field) => ['Auto Commit', 'Auto Push', 'Start Time'].includes(field)), ['Start Time', 'Auto Commit', 'Auto Push'])
+  assert.equal(analyzeTaskBrief('Auto Commit: ON\nAuto Push: OFF\nStart: Immediately').fields.autoCommit, true)
+  assert.equal(analyzeTaskBrief('Auto Commit: ON\nAuto Push: OFF\nStart: Immediately').fields.autoPush, false)
+  assert.equal(analyzeTaskBrief('Auto Commit: ON\nAuto Push: OFF\nStart: Immediately').fields.startMode, 'immediate')
+  assert.equal(analyzeTaskBrief('Auto Commit:\n允许 commit').fields.autoCommit, true)
+  assert.equal(analyzeTaskBrief('Auto Push:\n明确允许 push').fields.autoPush, true)
+  assert.equal(analyzeTaskBrief('Auto Commit:\n禁止 commit').fields.autoCommit, false)
+  assert.equal(analyzeTaskBrief('Auto Push:\n不要 push').fields.autoPush, false)
+
+  const t034Source = [
+    'Workspace:', 'D:\\VSCode\\nova-wing', 'Task ID:', 'T034',
+    'Allowed Paths:', 'docs/**', 'tests/**',
+    'Forbidden Paths:', 'packages/development-guardian/codex-executor.ts',
+    'Soft Limit:', '10', 'Hard Limit:', '20',
+    'Model: GPT-5.6 Terra', 'Reasoning: High',
+    'Auto Commit:', 'OFF', 'Auto Push:', 'OFF', 'Start:', 'Immediately', '',
+    '目标：对 NovaWing 当前代码库进行技术面试现场 Demo 可靠性审计。',
+    '重点检查 Launchpad、Reviewer、Guardian、Codex SDK、DeepSeek handoff、Retry/Resume、Verification、状态持久化、WebSocket、Health 等完整链路。',
+    '寻找可能导致现场失败、卡死、状态错误、误报成功、无法恢复或需要人工救场的风险，按 P0/P1/P2 分级。',
+    '第一阶段只调查并输出报告，不批量修复产品代码。',
+    ...Array.from({ length: 180 }, () => '补充审计背景：每一个结论都应回到可复现的现场 Demo 风险与证据。'),
+  ].join('\n')
+  const t034 = analyzeTaskBrief(t034Source)
+  assert.equal(t034.fields.targetRepo, 'D:\\VSCode\\nova-wing')
+  assert.equal(t034.fields.taskId, 'T034')
+  assert.equal(t034.fields.autoCommit, false)
+  assert.equal(t034.fields.autoPush, false)
+  assert.equal(t034.fields.startMode, 'immediate')
+  assert.deepEqual(t034.fields.allowedPaths, ['docs/**', 'tests/**'])
+  assert.equal(t034.fields.softMinutes, 10)
+  assert.equal(t034.fields.hardMinutes, 20)
+  assert.equal(t034.modelRecommendation?.model, 'gpt-5.6-terra')
+  assert.equal(t034.modelRecommendation?.reasoningEffort, 'high')
+  assert.match(t034.fields.taskInstructions, /技术面试现场 Demo 可靠性审计/u)
+  assert.match(t034.fields.taskInstructions, /第一阶段只调查并输出报告/u)
+  assert.doesNotMatch(t034.fields.taskInstructions, /Workspace|Task ID|Allowed Paths|Auto Commit|Auto Push/u)
+})
+
+test('Task Brief endpoint is authenticated, validates its envelope, and never starts a Work Session', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    assert.equal((await postBrief(launchpad, { brief: 'Task ID: T040\n立即执行' }, auth)).status, 200)
+    const longBrief = `目标：只保留这个核心目标。\n\n${'背景说明。'.repeat(2_000)}\nSoft Limit: 10\nHard Limit: 20\nAuto Push: OFF`
+    const longResponse = await postBrief(launchpad, { brief: longBrief }, auth)
+    assert.equal(longResponse.status, 200)
+    const longAnalysis = await longResponse.json()
+    assert.match(longAnalysis.fields.taskInstructions, /^只保留这个核心目标。/u)
+    assert.equal(longAnalysis.fields.softMinutes, 10)
+    assert.equal(longAnalysis.fields.hardMinutes, 20)
+    assert.equal(longAnalysis.fields.autoPush, false)
+    assert.ok(longAnalysis.warnings.some((warning: string) => warning.includes('超过 8000 字符')))
+    assert.equal((await postBrief(launchpad, { brief: 'x', extra: true }, auth)).status, 400)
+    assert.equal((await postBrief(launchpad, { brief: 'x' }, { origin: address.url })).status, 403)
+    assert.equal(state.createCalls, 0)
   } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -280,6 +536,24 @@ async function postBranch(
   })
 }
 
+async function postBrief(
+  launchpad: NovaWingLaunchpad,
+  body: unknown,
+  headers: { token?: string; origin?: string } = {},
+): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/brief`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
+    },
+    body: JSON.stringify(body),
+  })
+}
+
 function composerRequest(requestId: string, overrides: Record<string, unknown> = {}): unknown {
   return {
     requestId,
@@ -321,7 +595,15 @@ await test('Launchpad config directory supports NOVAWING_CONFIG_DIR and the LOCA
 
 await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe config fields', async () => {
   const directory = await createConfigDirectory()
-  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    preflight: async () => ({
+      overall: 'READY', canStart: true, checkedAt: '2026-09-05T00:00:00.000Z',
+      dependencies: [
+        { id: 'CORE', state: 'READY' }, { id: 'BRIDGE', state: 'READY' },
+        { id: 'BRAIN', state: 'UNKNOWN' }, { id: 'EXECUTOR', state: 'READY' },
+      ],
+    }),
+  } })
   try {
     const address = await launchpad.start()
     assert.equal(address.host, '127.0.0.1')
@@ -330,13 +612,14 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     const html = await (await fetch(address.url)).text()
     assert.match(html, /NovaWing Launchpad/u)
     assert.match(html, /AgentRun Persistence/u)
-    assert.match(html, /SYSTEM READY/u)
+    assert.match(html, /SYSTEM UNKNOWN/u)
     assert.match(html, /新建 Work Session/u)
     assert.match(html, /data-composer-tasks/u)
     assert.match(html, /data-task-id/u)
     assert.match(html, /data-task-goal/u)
     assert.match(html, /data-task-goal-count>0 \/ 8000/u)
     assert.match(html, /data-task-goal rows="6" maxlength="8000"/u)
+    assert.match(html, /data-task-brief data-task-brief-max="20000" rows="7"/u)
     assert.match(html, /data-add-task/u)
     assert.match(html, /data-delete-config-id=/u)
     assert.match(html, />\s*删除\s*<\/button>/u)
@@ -349,6 +632,7 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     const appJs = await (await fetch(`${address.url}/app.js`)).text()
     assert.match(appJs, /确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。/u)
     assert.match(appJs, /Work Session 正在运行，请先结束后再删除。/u)
+    assert.match(appJs, /Task Brief 超过 .*字符，未进行解析或截断。/u)
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -406,6 +690,37 @@ await test('Launchpad renders DEGRADED and blocks before creating a Work Session
   }
 })
 
+await test('Launchpad reports ready availability at cold start without a model call or active Task', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      preflight: async () => ({
+        overall: 'READY', canStart: true,
+        checkedAt: '2026-09-05T00:00:00.000Z',
+        dependencies: [
+          { id: 'CORE', state: 'READY' },
+          { id: 'BRIDGE', state: 'READY' },
+          { id: 'BRAIN', state: 'READY', safeMessage: 'Static Brain pipeline preflight passed.' },
+          { id: 'EXECUTOR', state: 'READY' },
+        ],
+      }),
+    },
+  })
+  try {
+    const address = await launchpad.start()
+    const html = await (await fetch(address.url)).text()
+    assert.match(html, /SYSTEM READY/u)
+    assert.match(html, /NovaWing Core: READY/u)
+    assert.match(html, /BRAIN: READY/u)
+    assert.match(html, /EXECUTOR: READY/u)
+    assert.doesNotMatch(html, /SYSTEM DEGRADED/u)
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 await test('Composer creates a fresh validated session from structured input and reads branch through git argv', async () => {
   const directory = await createConfigDirectory()
   const state = emptyFakeState()
@@ -423,7 +738,17 @@ await test('Composer creates a fresh validated session from structured input and
   try {
     const address = await launchpad.start()
     const auth = { token: launchpad.getTokenForTest(), origin: address.url }
-    const response = await postCreate(launchpad, composerRequest('composer-create-request-0001'), auth)
+    const mismatch = await postCreate(launchpad, composerRequest('composer-create-branch-mismatch', {
+      branch: 'feat/other',
+    }), auth)
+    assert.deepEqual(await mismatch.json(), {
+      error: 'BRANCH_MISMATCH',
+      message: 'Task Brief 中的分支与项目当前 Git 分支不一致。',
+    })
+    assert.equal(state.createCalls, 0)
+    const response = await postCreate(launchpad, composerRequest('composer-create-request-0001', {
+      branch: 'feat/composer',
+    }), auth)
     assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
     assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
     assert.equal(state.createCalls, 1)
@@ -434,7 +759,10 @@ await test('Composer creates a fresh validated session from structured input and
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
     assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
-    assert.deepEqual(gitCalls, [{ executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() }])
+    assert.deepEqual(gitCalls, [
+      { executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() },
+      { executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() },
+    ])
     const sessionId = state.receivedConfigIds[0]!
     const persistedPath = join(directory, `${sessionId}.json`)
     const persistedText = await readFile(persistedPath, 'utf8')

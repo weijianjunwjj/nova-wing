@@ -1,5 +1,13 @@
 # Codex Local Executor 与额度接力
 
+## 2026-09-07 收尾后当前行为
+
+- Launchpad 新 Task 默认使用 Codex / `gpt-5.6-terra` / `high`；只有本地持久化额度状态明确且仍在阻断期时，Composer 才预选 DeepSeek。Auto 模式仍保留为显式可选策略。
+- 旧 Trusted Config 如果缺少 `codex` 块，继续按 Sol / Medium 解析，不会因新默认值静默改变已持久化 Session。
+- Composer 可选择当前 Codex 模型及其受支持的 reasoning effort；Task Brief Quick Fill 只填充现有受验证字段，不会自动创建任务。Brief 中的分支必须与创建时仓库的真实 checkout 一致。
+- 静态冷启检查不再要求 PATH 中存在另一个 `codex` 命令；执行前的 Guardian preflight 仍通过 SDK 真实调用受限 workspace MCP，必须完成 `git_status`、根目录 `list_files` 和 `package.json` `read_file`，否则在 iteration 0 停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`。
+- Windows 下 SDK 使用包内置原生可执行文件；受限文件桥不需要 WSL。依赖 POSIX 语义的旧 Claude/DeepSeek 链和金丝雀脚本仍显式通过本机 Git Bash 契约运行，不从 PATH 解析裸 `bash`。
+
 ## 范围与入口
 
 2026-08-31。Scheduler 已先单独提交为 `968afd1`（`feat: add durable scheduled task starts`）。本适配不改变 Scheduler 状态机，不执行 Flyweave T026，不创建下一任务。
@@ -18,7 +26,8 @@
 - 新增测试：`tests/{codex-executor,codex-production-wiring,deepseek-executor,executor-router}.test.ts` 与 `tests/codex-test-fixture.ts`；扩展 `tests/{work-session-dependency-preflight,work-session-launchpad}.test.ts`。
 - 验证脚本：`scripts/codex-local-smoke.mjs`；说明：本文。
 
-未修改 Scheduler runtime、schedule policy 或已有调度状态机；未增加公共 package runtime exports。Codex 适配保持为工作区改动，没有连同 Scheduler 提交、没有 push。
+未修改 Scheduler runtime、schedule policy 或已有调度状态机。Codex 适配与 Launchpad
+仅从根工作区 `nova-wing/development-guardian` 入口导出，不进入正式私有发布包的四个入口。
 
 ## 配置
 
@@ -27,7 +36,7 @@
 ```json
 {
   "executor": {
-    "defaultMode": "auto",
+    "defaultMode": "codex",
     "model": "sonnet",
     "maxTurns": 12,
     "allowNpmInstall": false,
@@ -35,14 +44,14 @@
   },
   "codex": {
     "enabled": true,
-    "model": "gpt-5.6-sol",
-    "reasoningEffort": "medium",
+    "model": "gpt-5.6-terra",
+    "reasoningEffort": "high",
     "quotaProbeCooldownMs": 900000
   }
 }
 ```
 
-`executor.model` 仍为已有 DeepSeek CLI alias，不用于 Codex。每个 trusted Task 可用 `executorMode` 覆盖 session 默认值。省略模式默认 Auto；旧的 DeepSeek Off-Peak 配置在没有显式模式时保持 DeepSeek。默认值集中在 `coding-executor-config.ts`。显式禁用 Codex 不会静默改模型或 provider，需选择 DeepSeek。
+`executor.model` 仍为已有 DeepSeek CLI alias，不用于 Codex。每个 trusted Task 可用 `executorMode` 覆盖 session 默认值。新 Composer 请求默认 Codex；旧的 DeepSeek Off-Peak 配置在没有显式模式时保持 DeepSeek，缺少 `codex` 块的旧 Session 保持 Sol / Medium。默认值集中在 `coding-executor-config.ts`。显式禁用 Codex 不会静默改模型或 provider，需选择 DeepSeek。
 
 | 模式 | 首选 | 额度耗尽 | 同一 Task 后续 |
 | --- | --- | --- | --- |
@@ -53,16 +62,14 @@
 ## SDK、认证与有效配置
 
 - 固定 `@openai/codex-sdk@0.151.0`，使用其随包提供的 Windows CLI；当前主机 Node 24.14.1、npm 11.11.0。实际 SDK 类型支持 `startThread`、`resumeThread`、`runStreamed`、per-thread model/reasoning/sandbox/approval。
-- 在目标 repo 的工作目录中执行 bundled CLI `login status`，仅接受 ChatGPT 登录；`mcp list --json` 仅用于读取继承服务器名称，不输出配置或凭据。
+- 冷启静态检查只解析 SDK 内置 CLI，不依赖 PATH 中的系统 `codex`。真实 ChatGPT 认证、SDK session 和 workspace MCP 连接在 Task 执行前的受限 preflight 中统一验证。
 - 子进程环境使用白名单，移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、Anthropic/DeepSeek keys 以及桌面内部权限标志；不设置 SDK `apiKey`。执行范围内强制 `forced_login_method=chatgpt`、`model_provider=openai`。不修改用户全局 config，不提供付费 OpenAI API fallback。
-- 最终传入 SDK thread 的默认值为 `model=gpt-5.6-sol`、`modelReasoningEffort=medium`。不支持模型时明确报错，不降级到 Terra/Luna/旧模型。
+- 新 Task 最终传入 SDK thread 的默认值为 `model=gpt-5.6-terra`、`modelReasoningEffort=high`。用户显式选择的受支持组合原样保留；不支持的模型/强度组合在配置边界拒绝，不自动降级。
 - 原生工具使用 `sandboxMode=read-only`、`approvalPolicy=never`、网络关闭、web search 关闭、无额外目录。关闭 shell、hooks、plugins、apps、多 agent、浏览器、GUI、图像生成等工具。
 
-### Windows / WSL development runtime gate
+### Windows 原生 SDK 与 workspace gate
 
-在 Windows 上，Codex Executor 现在显式选择 `Ubuntu-24.04`，通过 `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 --cd <workspace> --exec /usr/bin/bash -lc ...` 验证目标 workspace、bash 和 Git。`docker-desktop` / `docker-desktop-data` 永远不能被选为开发发行版；发行版名、Windows drive path、工作目录或 Git inspection 不可信时 fail closed。WSL Git 需与 Windows Git 使用一致的 `core.autocrlf`，并只为已确认的 `/mnt/d/VSCode/...` workspace 配置 `safe.directory`。
-
-该 gate 负责确认开发 Linux 环境，不授予模型任意 shell。Codex CLI 仍使用官方 Windows bundled binary 和 ChatGPT 登录；repo I/O 只通过下述 scoped MCP bridge。Guardian 在写入 `EXECUTING`、增加 iteration 或启动真实 Executor 前，先运行一次真实只读模型 preflight，要求 Codex 实际完成 `git_status`、根目录 `list_files` 和 `package.json` 的 `read_file`。缺少任一工具证据时停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`，不会制造一次假执行记录。
+Codex CLI 使用官方 Windows bundled binary 和 ChatGPT 登录；repo I/O 只通过下述 scoped MCP bridge，不依赖 WSL 或它的 Git 配置。Guardian 在写入 `EXECUTING`、增加 iteration 或启动真实 Executor 前，先运行一次真实只读模型 preflight，要求 Codex 实际完成 `git_status`、根目录 `list_files` 和 `package.json` 的 `read_file`。缺少任一工具证据时停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`，不会制造一次假执行记录。
 
 ### 为什么不是直接 workspace-write
 
@@ -70,7 +77,7 @@ workspace-write 不能表达 NovaWing 每个 Task 的细粒度 allowed/forbidden
 
 该六工具服务器在本次执行配置中明确批准；其他继承 MCP 逐个禁用。随机 capability URL 不进入 execution report 或 UI；关闭时先撤销能力并等待队列完成，再关闭 HTTP 连接。原生 Codex 即使异常遗留，也不能继续通过该桥写入。
 
-实际 0.151 runtime 有两个需要实测才能发现的细节：CLI `-c` 的 dotted key 不按 TOML 处理带引号的路径片段，故对服务器名称使用安全 bare key，无法安全表示时 fail closed；Sol 的工具执行仍需要 `code_mode_host=true`，关闭它会使 MCP 一并不可用。保留必要工具宿主并不授予 shell 权限。
+实际 0.151 runtime 的工具执行需要 `code_mode_host=true`，关闭它会使 MCP 一并不可用。保留必要工具宿主并不授予 shell 权限。运行时用一个完整 `mcp_servers` override 只注册当前 Task 的 `novawing_workspace`，不依赖或枚举全局 MCP 配置。
 
 ## 错误、额度与 Circuit Breaker
 
@@ -127,9 +134,11 @@ NOVAWING_CODEX_SMOKE=1 node scripts/codex-local-smoke.mjs
 
 真实 smoke 已通过：仅 `src/a.ts` 从 1 改为 2、blockers 为空、独立 `git diff --check` passed、thread 已捕获；新 Executor 实例用 checkpoint 恢复同一 thread，`restartSameThread=true`、continuation blockers 为空、再次独立验证 passed。没有依赖 Codex Desktop 窗口。
 
-第一轮标准 `npm test`：588/588 通过。增补生产装配和 DeepSeek 配置测试后，重新 build/build:tests，并对全部 `dist-tests/tests/*.test.js` 使用 `--test-concurrency=2` 运行：593/593 通过，0 failed/cancelled/skipped，耗时约 311 秒。Windows/WSL preflight 与 no-op recovery 增补后，标准 `npm test` 为 601/601 通过、0 failed/cancelled/skipped，耗时约 474 秒；另有 13/13 定向 Codex/no-op recovery 测试通过。正常 `npm test` 不调用真实模型、不消耗额度。
+历史增量回归从 588 个增长到 601 个。正式收尾后标准 `npm test` 为
+626/626 通过，0 failed/cancelled/skipped；正常 `npm test` 不调用真实模型、不消耗额度。
 
-类型检查、unused、模块边界和 schema migration 验证通过，`git diff --check` 通过。`check:exports` 仍因已有 runtime-export 白名单不同步而失败；Scheduler 交付已用未修改的 archive baseline 复现同样问题，本次没有增加公共 runtime exports，所以不声称聚合 `npm run check` 全绿。
+类型检查、unused、模块边界、schema migration、运行时 export 白名单和
+`git diff --check` 均通过；聚合 `npm run check` 已恢复为可用的正式验收门。
 
 浏览器实测确认 Auto 默认值、DeepSeek 闲时显示/隐藏、切换 Codex 清除闲时选择、隐藏无关 DeepSeek model alias，以及控件布局；页面 console 无错误。使用 `openai-docs` 技能核验 SDK/auth/config 的真实接口，使用 Browser 技能验证产品交互；未自动化 Codex Desktop。
 
@@ -149,10 +158,10 @@ NOVAWING_CODEX_SMOKE=1 node scripts/codex-local-smoke.mjs
 | --- | --- |
 | 1 修改文件 | 见“修改文件清单”，Scheduler 已独立提交 |
 | 2 SDK 接入 | 官方 SDK 0.151.0，生产 ExecutorRouter 工厂，runStreamed |
-| 3 本地 ChatGPT auth | bundled CLI login status 实测通过；执行前逐次检查 |
+| 3 本地 ChatGPT auth | 执行前通过真实 SDK session + workspace probe 检查 |
 | 4 API key fallback | 环境白名单 + forced ChatGPT + 不传 apiKey，无 OpenAI API fallback |
-| 5 effective model | `gpt-5.6-sol`；SDK options 测试与真实编辑通过 |
-| 6 effective reasoning | `medium`；SDK options 测试与真实编辑通过 |
+| 5 effective model | 新 Task 默认 `gpt-5.6-terra`；可选支持模型；旧配置保持 Sol |
+| 6 effective reasoning | 新 Task 默认 `high`；按模型白名单校验；旧配置保持 Medium |
 | 7 Router | Auto/Codex/DeepSeek；仅 quota 安全接力；同 Task sticky |
 | 8 quota 识别 | 集中 structured classifier + SDK message-only 最小 fallback |
 | 9 错误区分 | 六类；auth/config/model/unknown 不接力；transient 有限重试 |
@@ -165,7 +174,7 @@ NOVAWING_CODEX_SMOKE=1 node scripts/codex-local-smoke.mjs
 | 16 Scheduler | 原语义保留，完整回归通过；active failover 不等闲时 |
 | 17 UI | Composer 选模式、闲时互斥；详情展示执行器/模型/接力；浏览器实测 |
 | 18 新测试 | SDK/路径/MCP/EOF、Router/handoff/lease/restart/quota、生产装配、DeepSeek 配置、UI/API |
-| 19 全量回归 | 593/593；静态/边界/migration 通过；既有 exports 白名单失败已披露 |
+| 19 全量回归 | 626/626；类型、unused、exports、边界和 migration 通过 |
 | 20 真实风险 | 见上面七项；不声称人为耗尽真实额度或真实付费 DeepSeek E2E |
 
 ## 依据

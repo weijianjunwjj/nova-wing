@@ -11,6 +11,22 @@ import { scopeBlockers } from './claude-code-executor.js'
 
 const PROTECTED = new Set(['.git', '.codex', '.claude', '.openai', 'node_modules', '.venv'])
 
+export type CodexWorkspaceProbeName = 'git_status' | 'list_files' | 'read_file'
+
+export interface CodexWorkspaceProbeResult {
+  name: CodexWorkspaceProbeName
+  status: 'passed' | 'failed'
+  /** This is intentionally a bounded, credential-redacted diagnostic for Human Required. */
+  reason?: string
+}
+
+function safeWorkspaceError(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'workspace operation failed'
+  return message
+    .replace(/\b(api[_-]?key|access[_-]?token|token|secret|password|authorization)\b\s*[:=]\s*\S+/giu, '$1= [redacted]')
+    .slice(0, 300)
+}
+
 export function readWorkspaceGit(cwd: string, kind: 'status' | 'diff' | 'branch' | 'head'): Promise<string> {
   const args = {
     status: ['-c', 'core.quotepath=false', 'status', '--porcelain', '--untracked-files=all'],
@@ -35,6 +51,7 @@ export function readWorkspaceGit(cwd: string, kind: 'status' | 'diff' | 'branch'
 /** All Codex writes pass this host-owned boundary. Native Codex runs read-only, without shell. */
 export class CodexWorkspaceTools {
   readonly commandsRun: string[] = []
+  readonly probeResults: CodexWorkspaceProbeResult[] = []
   private open = true
   private queue: Promise<unknown> = Promise.resolve()
   private constructor(readonly root: string, private readonly task: GuardianTask) {}
@@ -116,8 +133,22 @@ export class CodexWorkspaceTools {
       }
       throw new Error('Unsupported workspace tool')
     })
-    this.queue = operation.catch(() => undefined)
-    return operation
+    const tracked = operation.then(
+      (result) => {
+        if (name === 'git_status' || name === 'list_files' || name === 'read_file') {
+          this.probeResults.push({ name, status: 'passed' })
+        }
+        return result
+      },
+      (error: unknown) => {
+        if (name === 'git_status' || name === 'list_files' || name === 'read_file') {
+          this.probeResults.push({ name, status: 'failed', reason: safeWorkspaceError(error) })
+        }
+        throw error
+      },
+    )
+    this.queue = tracked.catch(() => undefined)
+    return tracked
   }
 
   async revoke(): Promise<void> { this.open = false; await this.queue }

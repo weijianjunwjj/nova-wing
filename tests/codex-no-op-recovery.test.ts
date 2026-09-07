@@ -81,12 +81,12 @@ test('confirmed no-op retry preserves T030 identity and scope before genuine exe
 test('failed preflight prevents EXECUTING and preserves iteration zero', async () => {
   let executions = 0
   const result = await runGuardianTask({ task: task(), brain: { review: async () => packet },
-    executor: { preflight: async () => { throw new Error('git unavailable') }, execute: async () => {
+    executor: { preflight: async () => { throw { stage: 'list', safeMessage: 'workspace list preflight failed: directory is unavailable' } }, execute: async () => {
       executions++
       throw new Error('must not execute')
     } } })
   assert.equal(result.task.state, 'HUMAN_REQUIRED')
   assert.equal(result.task.iteration, 0)
-  assert.match(result.task.stopReason ?? '', /^EXECUTOR_ENVIRONMENT_UNAVAILABLE:/u)
+  assert.equal(result.task.stopReason, 'EXECUTOR_ENVIRONMENT_UNAVAILABLE: workspace list preflight failed: directory is unavailable')
   assert.equal(executions, 0)
 })

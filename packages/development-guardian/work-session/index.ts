@@ -42,6 +42,7 @@ export {
   createSmtpWorkSessionNotifierFromEnv,
 } from './smtp-notifier.js'
 export * from './launchpad/server.js'
+export * from './launchpad/task-brief.js'
 export * from './launchpad/browser-launcher.js'
 export type {
   SmtpTransportConfig,

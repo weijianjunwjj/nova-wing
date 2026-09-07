@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import {
   AskBridgeBrain,
   ClaudeCodeExecutor,
+  guardianShellCommand,
   runGuardianTask,
 } from 'nova-wing/development-guardian'
 
@@ -74,11 +75,13 @@ function buildClaudeBreakdown() {
 
 function run(command, args, cwd, timeoutMs = 60_000) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn('bash', ['-lc', 'exec "$@"', '--', command, ...args], {
+    const shell = guardianShellCommand('exec "$@"')
+    const child = spawn(shell.executable, [...shell.args, '--', command, ...args], {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: false,
+      windowsHide: true,
+      shell: false,
     })
     let stdout = ''
     let stderr = ''

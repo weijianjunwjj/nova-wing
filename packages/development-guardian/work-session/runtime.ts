@@ -1429,7 +1429,7 @@ export class WorkSessionRuntime {
                 self.latestState = failedState
                 self.recordSessionFailed(failedState)
                 throw new Error(
-                  `Git checkpoint failed for task ${task.id}: ${failureReason}`,
+                  `Git checkpoint failed for task ${task.id}: ${failure.safeMessage}`,
                 )
               }
             }
@@ -1679,7 +1679,7 @@ export class WorkSessionRuntime {
             self.latestState = failedState
             self.recordSessionFailed(failedState)
 
-            throw new Error(`Task ${task.id} failed: ${failureReason}`)
+            throw new Error(`Task ${task.id} failed: ${failure.safeMessage}`)
           }
         }
 

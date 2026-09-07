@@ -14,7 +14,12 @@ export function resolveAskBridgeExecutable(env: NodeJS.ProcessEnv): string {
     join(homedir(), '.local', 'bin', 'ask-bridge.exe')
 }
 
-export type DependencyHealthState = 'READY' | 'UNAVAILABLE' | 'DEGRADED'
+/**
+ * Availability, not activity. A bounded static preflight can establish READY
+ * without a paid model request or an active Task. UNKNOWN is reserved for an
+ * actual lack of enough information, never normal cold-start idleness.
+ */
+export type DependencyHealthState = 'READY' | 'UNKNOWN' | 'UNAVAILABLE' | 'DEGRADED'
 export type DependencyHealthId = 'CORE' | 'SHELL' | 'BRAIN' | 'BRIDGE' | 'EXECUTOR' | 'GIT' | 'RUNTIME'
 
 export interface DependencyHealth {
@@ -208,8 +213,10 @@ export async function runProductionDependencyPreflight(
         }, commandRunner),
       ]).then(([transport, configuration]) => transport.state === 'READY' ? configuration : transport),
       (async (): Promise<DependencyHealth> => {
-        const modes = options.executorModes ?? ['deepseek']
-        if (modes.length === 0) return { id: 'EXECUTOR', state: 'DEGRADED', safeMessage: 'Executor 在 Task 启动/恢复时按持久化路由检查。' }
+        // Launchpad has no active Task at cold start, but its default Codex
+        // executor still has a real local SDK/runtime preflight. Do not turn
+        // idleness into UNKNOWN.
+        const modes = options.executorModes?.length === 0 ? ['codex'] : options.executorModes ?? ['deepseek']
         if (modes.some((mode) => mode !== 'deepseek')) {
           try { await (options.inspectCodex?.() ?? inspectCodexLocal(env, options.targetRepo)) }
           catch (error) {
@@ -236,8 +243,8 @@ export async function runProductionDependencyPreflight(
     const brain: DependencyHealth = bridge.state === 'READY'
       ? {
           id: 'BRAIN',
-          state: 'DEGRADED',
-          safeMessage: 'Static preflight verifies the Bridge binary/config only; live Browser session transport is verified by the bounded Review operation.',
+          state: 'READY',
+          safeMessage: 'Brain pipeline and Bridge configuration passed static preflight; no model request was made.',
         }
       : {
           id: 'BRAIN',
@@ -245,9 +252,10 @@ export async function runProductionDependencyPreflight(
           ...(bridge.failureType === undefined ? {} : { failureType: bridge.failureType }),
           safeMessage: 'Brain transport/configuration 不可用。',
         }
-    const coreState: DependencyHealthState = [brain, executor, git, runtime].every((item) => item.state === 'READY')
-      ? 'READY'
-      : 'DEGRADED'
+    const coreState: DependencyHealthState = [brain, executor, git, runtime]
+      .some((item) => item.state === 'UNAVAILABLE' || item.state === 'DEGRADED')
+      ? 'DEGRADED'
+      : 'READY'
     dependencies = [{ id: 'CORE', state: coreState }, shell, brain, bridge, executor, git, runtime]
   }
 
@@ -266,7 +274,7 @@ export async function runProductionDependencyPreflight(
 
 export class DependencyPreflightError extends Error {
   constructor(readonly report: DependencyHealthReport) {
-    super(report.dependencies.find((item) => item.state !== 'READY')?.safeMessage ?? 'Dependency preflight failed')
+    super(report.dependencies.find((item) => item.id !== 'CORE' && (item.state === 'UNAVAILABLE' || item.state === 'DEGRADED'))?.safeMessage ?? 'Dependency preflight failed')
     this.name = 'DependencyPreflightError'
   }
 }

@@ -1,6 +1,6 @@
 # NovaWing Development Guardian MVP Scope Lock
 
-> 状态：Active
+> 状态：Completed / Scope Closed（2026-09-07）
 > 日期：2026-08-18
 > 目标：验证 NovaWing 能否在不调用 GPT API 的前提下，自动协调 ChatGPT Web 与 Claude Code，消除人工复制粘贴。
 

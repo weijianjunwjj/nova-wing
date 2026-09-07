@@ -28,6 +28,18 @@ export const EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP =
   'EXECUTOR_ENVIRONMENT_UNAVAILABLE'
 export const NO_OP_EXECUTION_STOP = 'NO_OP_EXECUTION'
 
+function executorPreflightStopReason(error: unknown): string {
+  if (error !== null && typeof error === 'object' &&
+      'safeMessage' in error && typeof error.safeMessage === 'string') {
+    return `${EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP}: ${error.safeMessage}`
+  }
+  const safeStage = error !== null && typeof error === 'object' &&
+    'stage' in error && typeof error.stage === 'string'
+    ? error.stage.replaceAll('_', ' ')
+    : 'unknown executor dependency'
+  return `${EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP}: ${safeStage} preflight failed`
+}
+
 export class GuardianStopError extends Error {
   constructor(
     message: string,
@@ -446,11 +458,11 @@ export async function runGuardianTask(options: {
     if (options.executor.preflight !== undefined) {
       try {
         await options.executor.preflight(task)
-      } catch {
+      } catch (error) {
         task = {
           ...task,
           state: 'HUMAN_REQUIRED',
-          stopReason: `${EXECUTOR_ENVIRONMENT_UNAVAILABLE_STOP}: workspace, shell, Git, or executor tool preflight failed`,
+          stopReason: executorPreflightStopReason(error),
         }
         emitProgress('HUMAN_REQUIRED', 'completed', task.stopReason)
         return { task, reports }

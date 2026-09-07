@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readFile, rm, link, symlink, mkdir } from 'node:fs/promises'
+import { readFile, rm, link, symlink, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { codexTestRepo } from './codex-test-fixture.js'
 import type { Thread, ThreadEvent, CodexOptions, ThreadOptions } from '@openai/codex-sdk'
 import {
   CodexExecutor,
+  CodexSdkPreflightError,
   DEFAULT_CODEX_WSL_DISTRO,
   WINDOWS_WSL_EXECUTABLE,
   codexEffectiveConfiguration,
   codexChatGptEnvironment,
   inspectCodexDevelopmentRuntime,
+  inspectCodexLocal,
 } from '../packages/development-guardian/codex-executor.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
 import { CodexWorkspaceTools } from '../packages/development-guardian/codex-workspace-tools.js'
@@ -21,6 +24,24 @@ import type { DelegationPacket, GuardianTask } from '../packages/development-gua
 const task: GuardianTask = { id: 'T1', goal: 'Implement scoped change', state: 'READY', iteration: 0, maxIterations: 3,
   allowedPaths: ['src/**'], forbiddenPaths: ['src/private/**'], constraints: ['Keep API compatible'], acceptanceCriteria: ['Pass tests'], doNotDo: ['No dependencies'] }
 const packet: DelegationPacket = { goal: task.goal, verdict: 'proceed', instructions: ['Edit src/a.ts'], constraints: [], doNotDo: [], verification: [] }
+
+function executorWithWorkspaceProbe(root: string, probe: (client: Client) => Promise<void>): CodexExecutor {
+  let runtime: CodexOptions | undefined
+  return new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+    createCodex: (options) => {
+      runtime = options
+      const thread = { runStreamed: async () => ({ events: (async function* () {
+        const url = /url="([^"]+)"/u.exec(runtime!.configOverrides!.at(-1)!)![1]!
+        const client = new Client({ name: 'preflight-diagnostic', version: '1' })
+        try {
+          await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
+          await probe(client)
+        } finally { await client.close() }
+        yield { type: 'turn.completed', usage: {} } as ThreadEvent
+      })() }) } as unknown as Thread
+      return { startThread: () => thread, resumeThread: () => thread }
+    } })
+}
 
 test('Codex classifier prioritizes structured causes; ordinary 429, auth and model errors never become quota', () => {
   for (const [error, kind] of [
@@ -63,13 +84,13 @@ test('Codex WSL preflight rejects docker-desktop and bash/Git inspection failure
   }
 })
 
-test('effective SDK configuration pins Sol medium, ChatGPT auth and no ambient API billing or expanded native tools', () => {
+test('effective SDK configuration defaults to Terra high, ChatGPT auth and no ambient API billing or expanded native tools', () => {
   const { runtime, thread } = codexEffectiveConfiguration({ cwd: 'D:/repo', env: {
     PATH: 'safe', OPENAI_API_KEY: 'secret', CODEX_API_KEY: 'secret', CODEX_ACCESS_TOKEN: 'secret',
     ANTHROPIC_AUTH_TOKEN: 'secret', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'app',
   } }, 'codex.exe', 'http://127.0.0.1:1234/scoped', ['external-tool'])
-  assert.equal(thread.model, 'gpt-5.6-sol')
-  assert.equal(thread.modelReasoningEffort, 'medium')
+  assert.equal(thread.model, 'gpt-5.6-terra')
+  assert.equal(thread.modelReasoningEffort, 'high')
   assert.equal(thread.sandboxMode, 'read-only')
   assert.equal(thread.approvalPolicy, 'never')
   assert.equal(thread.networkAccessEnabled, false)
@@ -78,10 +99,17 @@ test('effective SDK configuration pins Sol medium, ChatGPT auth and no ambient A
   assert.equal(runtime.apiKey, undefined)
   assert.equal(runtime.config?.forced_login_method, 'chatgpt')
   assert.equal(runtime.config?.model_provider, 'openai')
-  assert.ok(runtime.configOverrides?.includes('mcp_servers.external-tool.enabled=false'))
+  assert.equal(runtime.configOverrides?.length, 1)
+  assert.match(runtime.configOverrides![0]!, /^mcp_servers=\{novawing_workspace=\{/u)
+  assert.doesNotMatch(runtime.configOverrides![0]!, /external-tool/u)
   assert.match(runtime.configOverrides!.at(-1)!, /default_tools_approval_mode="approve"/u)
-  assert.throws(() => codexEffectiveConfiguration({ cwd: 'D:/repo' }, 'codex.exe', 'http://127.0.0.1:1', ['unsafe.name']))
   assert.deepEqual(codexChatGptEnvironment({ openai_api_key: 'secret', Home: 'profile' }), { Home: 'profile' })
+})
+
+test('SDK runtime discovery does not require a system codex command', async () => {
+  const runtime = await inspectCodexLocal({ PATH: 'C:\\system-without-codex' }, process.cwd())
+  assert.match(runtime.executable, /@openai[\\/]codex-win32-/u)
+  assert.deepEqual(runtime.mcpNames, [])
 })
 
 test('scoped workspace tools reject escapes, forbidden paths, linked files and post-revocation writes', async () => {
@@ -154,7 +182,7 @@ test('real MCP transport exposes only scoped file tools and closes write ownersh
   } finally { await client.close(); await bridge.close(); await rm(root, { recursive: true, force: true }) }
 })
 
-test('Codex preflight performs a real read-only git/list/package tool probe', async () => {
+test('Codex preflight performs a real read-only git/list/package tool probe on a normal Windows workspace path', async () => {
   const root = await codexTestRepo()
   let runtime: CodexOptions | undefined
   const executor = new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
@@ -173,7 +201,112 @@ test('Codex preflight performs a real read-only git/list/package tool probe', as
       })() }) } as unknown as Thread
       return { startThread: () => thread, resumeThread: () => thread }
     } })
-  try { await executor.preflight(task) } finally { await rm(root, { recursive: true, force: true }) }
+  try {
+    if (process.platform === 'win32') assert.match(root, /^[A-Za-z]:\\/u)
+    await executor.preflight(task)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight retains the exact Git, list, and read workspace probe failure', async () => {
+  const root = await codexTestRepo()
+  try {
+    for (const [stage, invoke] of [
+      ['list', (client: Client) => client.callTool({ name: 'list_files', arguments: { path: 'missing' } }).then(() => undefined)],
+      ['read', (client: Client) => client.callTool({ name: 'read_file', arguments: { path: 'missing.json' } }).then(() => undefined)],
+    ] as const) {
+      await assert.rejects(executorWithWorkspaceProbe(root, invoke).preflight(task), (error: unknown) =>
+        error instanceof CodexSdkPreflightError && error.stage === stage &&
+        error.safeMessage.startsWith(`workspace ${stage} preflight failed:`))
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight retains the exact Git probe failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'novawing-codex-no-git-'))
+  await writeFile(join(root, 'package.json'), '{"name":"fixture"}\n')
+  try {
+    await assert.rejects(executorWithWorkspaceProbe(root, (client) =>
+      client.callTool({ name: 'git_status', arguments: {} }).then(() => undefined)).preflight(task), (error: unknown) =>
+      error instanceof CodexSdkPreflightError && error.stage === 'git' &&
+      error.safeMessage === 'workspace Git preflight failed: Workspace git inspection failed')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight distinguishes MCP initialization, SDK runtime, and timeout failures', async () => {
+  const root = await codexTestRepo()
+  try {
+    await assert.rejects(new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+      listenWorkspace: async () => { throw new Error('listen EADDRINUSE') } }).preflight(task), (error: unknown) =>
+      error instanceof CodexSdkPreflightError && error.stage === 'workspace_mcp_initialization' &&
+      error.safeMessage === 'workspace MCP initialization preflight failed: listen EADDRINUSE')
+    await assert.rejects(new CodexExecutor({ cwd: root, preflight: async () => { throw new Error('token=abc123') } }).preflight(task),
+      (error: unknown) => error instanceof CodexSdkPreflightError && error.stage === 'sdk_runtime' &&
+        error.safeMessage === 'Codex SDK runtime preflight failed: token= [redacted]')
+    const timeout = new CodexExecutor({ cwd: root, preflightTimeoutMs: 1,
+      preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+      createCodex: () => {
+        const thread = { runStreamed: async (_prompt: string, options: { signal?: AbortSignal }) => ({ events: (async function* () {
+          await new Promise<void>((resolveAbort) => options.signal?.addEventListener('abort', () => resolveAbort(), { once: true }))
+          throw new Error('aborted')
+        })() }) } as unknown as Thread
+        return { startThread: () => thread, resumeThread: () => thread }
+      } })
+    await assert.rejects(timeout.preflight(task), (error: unknown) =>
+      error instanceof CodexSdkPreflightError && error.stage === 'timeout' &&
+      error.safeMessage === 'workspace preflight timed out after 1 ms')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight identifies a Windows SDK network transport denial before workspace tools run', async () => {
+  const root = await codexTestRepo()
+  try {
+    const executor = new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+      createCodex: () => {
+        const thread = { runStreamed: async () => ({ events: (async function* () {
+          yield { type: 'error', message: 'stream disconnected: socket access denied (os error 10013)' } as ThreadEvent
+        })() }) } as unknown as Thread
+        return { startThread: () => thread, resumeThread: () => thread }
+      } })
+    await assert.rejects(executor.preflight(task), (error: unknown) =>
+      error instanceof CodexSdkPreflightError && error.stage === 'sdk_network' &&
+      error.safeMessage === 'Codex SDK network transport preflight failed: stream disconnected: socket access denied (os error 10013)' &&
+      error.results.length === 0 &&
+      JSON.stringify(error.steps) === JSON.stringify([
+        { stage: 'sdk_runtime', status: 'passed' },
+        { stage: 'workspace_root', status: 'passed' },
+        { stage: 'workspace_mcp_initialization', status: 'passed' },
+        { stage: 'sdk_network', status: 'failed', reason: 'Codex SDK network transport preflight failed: stream disconnected: socket access denied (os error 10013)' },
+      ]))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex SDK preflight identifies the failed dependency without a system codex command', async () => {
+  const root = await codexTestRepo()
+  let runtime: CodexOptions | undefined
+  const passing = new CodexExecutor({ cwd: root, env: { PATH: 'C:\\system-without-codex' },
+    preflight: async () => ({ executable: 'sdk-bundled.exe', mcpNames: [] }),
+    createCodex: (options) => {
+      runtime = options
+      const thread = { runStreamed: async () => ({ events: (async function* () {
+        const url = /url="([^"]+)"/u.exec(runtime!.configOverrides!.at(-1)!)![1]!
+        const client = new Client({ name: 'sdk-no-system-cli', version: '1' })
+        try {
+          await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
+          await client.callTool({ name: 'git_status', arguments: {} })
+          await client.callTool({ name: 'list_files', arguments: {} })
+          await client.callTool({ name: 'read_file', arguments: { path: 'package.json' } })
+        } finally { await client.close() }
+        yield { type: 'turn.completed', usage: {} } as ThreadEvent
+      })() }) } as unknown as Thread
+      return { startThread: () => thread, resumeThread: () => thread }
+    } })
+  const missingWorkspace = new CodexExecutor({ cwd: join(root, 'missing-workspace'),
+    preflight: async () => ({ executable: 'sdk-bundled.exe', mcpNames: [] }) })
+  try {
+    await passing.preflight(task)
+    await assert.rejects(missingWorkspace.preflight(task), (error: unknown) =>
+      error instanceof CodexSdkPreflightError && error.stage === 'workspace_root')
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('CodexExecutor passes effective SDK options, persists/resumes thread and ignores claimed verification', async () => {
@@ -218,8 +351,8 @@ test('CodexExecutor passes effective SDK options, persists/resumes thread and ig
     await resumed.execute({ task, packet })
     assert.deepEqual(resumes, ['thread-1', 'thread-1'])
     assert.equal(captured.length, 3)
-    assert.equal(threads[0]?.model, 'gpt-5.6-sol')
-    assert.equal(threads[0]?.modelReasoningEffort, 'medium')
+    assert.equal(threads[0]?.model, 'gpt-5.6-terra')
+    assert.equal(threads[0]?.modelReasoningEffort, 'high')
     assert.equal(runtimes[0]?.apiKey, undefined)
   } finally { await rm(root, { recursive: true, force: true }) }
 })

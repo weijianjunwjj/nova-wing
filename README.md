@@ -74,6 +74,7 @@ GitHub Packages 发布与不可变消费策略见
 ## 目录
 
 - `packages/core`：领域类型、状态转换、稳定错误、存储端口与 `NovaWingFacade`。
+- `packages/development-guardian`：仅供本仓库开发与本地运行使用的 Work Session、Guardian、Provider 路由和 Launchpad；不进入正式私有发布包。
 - `packages/sqlite`：仅使用 `nw_` 表的 migration、追加式持久化和事务实现。
 - `packages/testing`：只依赖 Facade 的 `FakeOfferFlowHost` 合约适配器。
 - `tests`：领域、SQLite、并发/重复请求、重启和假宿主闭环测试。
@@ -87,9 +88,12 @@ GitHub Packages 发布与不可变消费策略见
 @weijianjunwjj/nova-wing/core
 @weijianjunwjj/nova-wing/sqlite
 @weijianjunwjj/nova-wing/testing
+@weijianjunwjj/nova-wing/host-snapshot
 ```
 
-`package.json#exports` 会拒绝 `packages/*/src`、domain、migration 等深层路径。`npm run check:exports` 同时校验公开运行时键和深层导入拒绝行为。
+根工作区还提供仅供 NovaWing 本地开发使用的 `nova-wing/development-guardian`；
+正式 `@weijianjunwjj/nova-wing` 私有包不导出该入口。`package.json#exports` 会拒绝
+`packages/*/src`、domain、migration 等深层路径。`npm run check:exports` 同时校验根工作区运行时键和深层导入拒绝行为。
 
 ## SQLite 连接所有权
 
@@ -120,7 +124,6 @@ npm run check
 ```bash
 npm test
 npm run typecheck
-npm run lint
 npm run check:migration
 npm run check:exports
 npm run check:unused
@@ -128,6 +131,10 @@ npm run check:boundaries
 ```
 
 ## Work Session SMTP 本机配置（Windows）
+
+Development Guardian Work Session 已实现串行 Task、独立确定性验证、Git checkpoint、
+持久化暂停/恢复、Codex/DeepSeek 执行器路由及本地 Launchpad。它是受控的本地
+development control surface，不改变 NovaWing 领域内核的权威数据边界。
 
 当可信 Work Session 配置启用邮件通知时，可一次性保存 SMTP notification secrets：
 
@@ -159,4 +166,4 @@ interface NovaWingHostAdapter {
 
 ## 明确未实现
 
-真实 OfferFlow 同进程/同库接入、OfferFlow UI、真实 Prompt 注入、Snapshot V3、跨设备同步、RBAC、后台任务、独立客户端和复杂版本快照均未实现。
+真实 OfferFlow 同进程/同库接入、OfferFlow UI、真实 Prompt 注入、Host Snapshot V3 的具体宿主数据复制/文件替换实现、跨设备同步、RBAC、独立客户端和复杂版本快照均未实现。

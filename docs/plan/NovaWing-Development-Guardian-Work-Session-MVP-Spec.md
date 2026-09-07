@@ -1,6 +1,6 @@
 # NovaWing Development Guardian — Work Session MVP Spec
 
-> 状态：Active / Scope Locked for MVP
+> 状态：Completed / MVP Scope Closed（2026-09-07）
 > 日期：2026-08-20
 > 基础分支：`feat/development-guardian-mvp`
 > 实现分支：`feat/work-session-mvp`

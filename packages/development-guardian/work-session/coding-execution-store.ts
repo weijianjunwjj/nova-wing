@@ -1,5 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import type { CodingExecutionMetadata } from '../coding-executor-config.js'
@@ -11,6 +13,14 @@ export interface CodexAvailability {
   lastQuotaErrorAt?: string
   blockedUntil?: string
   nextProbeAt?: string
+}
+
+/** Shared by the runtime and Launchpad so they observe the same quota result. */
+export function defaultCodingExecutionStorePath(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  return join(env.LOCALAPPDATA?.trim() || join(userHome, '.novawing'), 'NovaWing', 'coding-executors.sqlite')
 }
 
 export interface CodingExecutorEvent {
