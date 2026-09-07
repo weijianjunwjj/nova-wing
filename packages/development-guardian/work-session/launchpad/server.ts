@@ -1,0 +1,1525 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { access, mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+
+import {
+  createProductionWorkSessionUi,
+  createProductionGitRunner,
+  defaultStorageUrl,
+  loadTrustedWorkSessionConfig,
+  validateTrustedWorkSessionConfig,
+  type ProductionGitProcessRunner,
+  type ProductionWorkSessionUi,
+  type TrustedWorkSessionConfig,
+} from '../production.js'
+import { WorkSessionRuntime } from '../runtime.js'
+import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
+import {
+  CODING_EXECUTOR_DEFAULTS,
+  isSupportedCodexConfiguration,
+  resolvePersistedCodexConfiguration,
+  type ExecutorMode,
+} from '../../coding-executor-config.js'
+import {
+  CodingExecutionStore,
+  defaultCodingExecutionStorePath,
+  type CodexAvailability,
+} from '../coding-execution-store.js'
+import {
+  deriveDisplayState,
+  type WorkSessionDisplayState,
+} from '../recoverability.js'
+import { analyzeTaskBrief, MAX_TASK_BRIEF_CHARS } from './task-brief.js'
+
+const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
+
+/**
+ * A long-lived Launchpad keeps imported executor code in memory. A later
+ * `npm run build` replaces dist on disk but cannot hot-reload that process.
+ * Refuse to start another real Session after such a rebuild; otherwise a
+ * fixed stdin transport can silently execute through stale argv code.
+ */
+async function assertLaunchpadRuntimeCurrent(): Promise<void> {
+  const loadedModule = await stat(fileURLToPath(import.meta.url))
+  if (loadedModule.mtimeMs > LAUNCHPAD_RUNTIME_LOADED_AT_MS + 1_000) {
+    throw new Error('NovaWing runtime was rebuilt after Launchpad started; restart Launchpad before starting or recovering a Work Session')
+  }
+}
+import { resolveProductionSmtpEnvironment } from '../local-smtp-secrets.js'
+import {
+  DependencyPreflightError,
+  requireDependencyPreflightReady,
+  runProductionDependencyPreflight,
+  type DependencyHealthReport,
+} from '../dependency-health.js'
+import {
+  LAUNCHPAD_APP_JS,
+  LAUNCHPAD_STYLES_CSS,
+  renderLaunchpadHtml,
+} from './view.js'
+
+const LOOPBACK_HOST = '127.0.0.1'
+const MAX_BODY_BYTES = 96 * 1024
+const SAFE_LAUNCH_ERROR = 'Work Session 启动失败'
+const DEFAULT_EXECUTOR_MODEL = 'sonnet'
+const DEFAULT_SOFT_MINUTES = 45
+const DEFAULT_HARD_MINUTES = 90
+const MAX_COMPOSER_TASKS = 10
+export const MAX_COMPOSER_TASK_GOAL_CHARS = 8_000
+const MAX_COMPLETED_COMPOSER_REQUESTS = 100
+const COMPLETED_COMPOSER_REQUEST_TTL_MS = 5 * 60 * 1_000
+const MAX_SESSION_PROJECT_SLUG_LENGTH = 48
+const SAFE_COMPOSER_SESSION_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{12}-[a-f0-9]{6}$/u
+
+const DEFAULT_GUARDIAN_POLICY = {
+  constraints: [
+    'Keep changes scoped to the requested task.',
+    'Do not modify files outside allowedPaths.',
+  ],
+  acceptanceCriteria: [
+    'Implement the requested task.',
+    'Run relevant deterministic tests.',
+  ],
+  doNotDo: [
+    'Do not access, expose, or modify credentials or secrets.',
+    'Do not modify files outside allowedPaths.',
+    'Do not push changes.',
+  ],
+  forbiddenPaths: ['.env', '**/.env', '**/*secret*', '**/*credential*'],
+} as const
+
+export interface LaunchpadConfigSummary {
+  executorMode?: ExecutorMode
+  codexModel?: string
+  codexReasoningEffort?: string
+  scheduledStartAt?: string | null
+  scheduleSource?: ScheduleSource
+  configId: string
+  project: string
+  taskId: string
+  goal: string
+  additionalTaskCount: number
+  branch: string
+  reviewer: 'GPT Reviewer'
+  executor: string
+  autoCommit: boolean
+  autoPush: boolean
+  emailEnabled: boolean
+  /** T021: 派生展示状态（持久化 state 与当前进程 Runner 存活状态分离）。start() 前为 undefined。 */
+  status?: WorkSessionDisplayState
+}
+
+interface DiscoveredLaunchpadConfig {
+  configPath: string
+  config: TrustedWorkSessionConfig
+  summary: LaunchpadConfigSummary
+}
+
+export interface NovaWingLaunchpadAddress {
+  host: typeof LOOPBACK_HOST
+  port: number
+  url: string
+}
+
+interface ManagedWorkSessionApp {
+  controller: {
+    start(): { started: boolean }
+    getSnapshot?(): { runtime: { displayState?: WorkSessionDisplayState } }
+  }
+  start(): Promise<{ url: string }>
+  /** Whether the local control server is still accepting connections. */
+  isLive(): boolean
+  /** Whether start/resume/recovery work is currently in flight. */
+  hasActiveSession(): boolean
+  close(): Promise<void>
+}
+
+interface LiveWorkSessionApp {
+  app: ManagedWorkSessionApp
+  controlUrl: string
+}
+
+export interface NovaWingLaunchpadDependencies {
+  loadConfig?: (configPath: string) => Promise<TrustedWorkSessionConfig>
+  resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
+  createWorkSession?: (
+    config: TrustedWorkSessionConfig,
+    options: { env: NodeJS.ProcessEnv; serverPort: 0 },
+  ) => Promise<ManagedWorkSessionApp>
+  gitProcessRunner?: ProductionGitProcessRunner
+  shutdownTimeoutMs?: number
+  /** T021: 读取某 config 对应持久化 Session 的派生展示状态（缺省读 Mastra storage）。 */
+  readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
+  /** One-shot bounded preflight; production enables it explicitly. */
+  preflight?: (targetRepo?: string) => Promise<DependencyHealthReport>
+  /** Existing local Codex quota observation; failures intentionally remain unknown. */
+  readCodexAvailability?: () => CodexAvailability | Promise<CodexAvailability>
+}
+
+interface LaunchResult {
+  accepted: true
+  controlUrl: string
+  alreadyStarted?: true
+}
+
+interface ComposerRequest {
+  executorMode: ExecutorMode
+  codexModel: string
+  codexReasoningEffort: string
+  scheduledStartAt: string | null
+  scheduleSource: ScheduleSource
+  requestId: string
+  targetRepo: string
+  branch?: string
+  tasks: Array<{
+    id: string
+    goal: string
+  }>
+  executorModel: string
+  softMinutes: number
+  hardMinutes: number
+  autoCommit: boolean
+  autoPush: boolean
+  pushRemote?: {
+    name: string
+    expectedUrl: string
+  }
+  emailEnabled: boolean
+  guardian: {
+    constraints?: string[]
+    acceptanceCriteria?: string[]
+    doNotDo?: string[]
+    allowedPaths: string[]
+    forbiddenPaths?: string[]
+  }
+}
+
+type ComposerParseResult = { ok: true; value: ComposerRequest } | { ok: false; error: ComposerError }
+type ComposerError =
+  | 'INVALID_PROJECT_PATH'
+  | 'NOT_A_GIT_REPOSITORY'
+  | 'CANNOT_READ_BRANCH'
+  | 'BRANCH_MISMATCH'
+  | 'INVALID_TASK_ID'
+  | 'INVALID_TASK'
+  | 'INVALID_TASK_TOO_LONG'
+  | 'DUPLICATE_TASK_ID'
+  | 'INVALID_LIMITS'
+  | 'MISSING_ALLOWED_PATHS'
+  | 'INVALID_GUARDIAN_POLICY'
+  | 'AUTO_PUSH_REQUIRES_AUTO_COMMIT'
+  | 'AUTO_PUSH_REMOTE_UNAVAILABLE'
+  | 'INVALID_PUSH_REMOTE'
+  | 'INVALID_REQUEST'
+  | 'INVALID_SCHEDULE'
+  | 'IDEMPOTENCY_CONFLICT'
+
+const COMPOSER_SAFE_MESSAGES: Record<ComposerError | 'SESSION_START_FAILED', string> = {
+  INVALID_PROJECT_PATH: '项目目录必须是存在的绝对路径。',
+  NOT_A_GIT_REPOSITORY: '项目目录不是有效的 Git 仓库。',
+  CANNOT_READ_BRANCH: '无法读取项目当前 Git 分支。',
+  BRANCH_MISMATCH: 'Task Brief 中的分支与项目当前 Git 分支不一致。',
+  INVALID_TASK_ID: '请填写有效的 Task ID（仅允许字母、数字、点、下划线和连字符）。',
+  INVALID_TASK: '请填写有效的 Task 描述。',
+  INVALID_TASK_TOO_LONG: `Task 描述过长，最大 ${MAX_COMPOSER_TASK_GOAL_CHARS} 字符。`,
+  DUPLICATE_TASK_ID: 'Task ID 不得重复。',
+  INVALID_LIMITS: '时间限制无效：Hard Limit 必须不小于 Soft Limit。',
+  MISSING_ALLOWED_PATHS: '请填写至少一个允许修改路径。',
+  INVALID_GUARDIAN_POLICY: 'Guardian 规则无效。',
+  AUTO_PUSH_REQUIRES_AUTO_COMMIT: 'Auto Push requires Auto Commit。',
+  AUTO_PUSH_REMOTE_UNAVAILABLE: '无法确定 Auto Push 的 origin 远端，请填写有效的远端配置。',
+  INVALID_PUSH_REMOTE: 'Auto Push remote 配置无效。',
+  INVALID_REQUEST: '创建请求无效。',
+  INVALID_SCHEDULE: '开始时间无效，请提供包含时区的 ISO 时间。',
+  IDEMPOTENCY_CONFLICT: '该 requestId 已用于不同的创建请求。',
+  SESSION_START_FAILED: SAFE_LAUNCH_ERROR,
+}
+
+interface ComposerCreateEntry {
+  canonicalPayload: string
+  launch: Promise<LaunchResult>
+}
+
+interface CompletedComposerCreateEntry {
+  canonicalPayload: string
+  result: LaunchResult
+  completedAt: number
+}
+
+function titleCaseProject(directoryName: string): string {
+  return directoryName
+    .split(/[-_\s]+/u)
+    .filter((part) => part.length > 0)
+    .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+    .join('-')
+}
+
+function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): LaunchpadConfigSummary {
+  const firstTask = config.tasks[0]
+  if (firstTask === undefined) throw new Error('trusted config has no tasks')
+  return {
+    configId,
+    executorMode: firstTask.executorMode ?? config.executor.defaultMode ?? (config.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode),
+    codexModel: resolvePersistedCodexConfiguration(config.codex).model,
+    codexReasoningEffort: resolvePersistedCodexConfiguration(config.codex).reasoningEffort,
+    scheduledStartAt: config.session.scheduledStartAt ?? null,
+    scheduleSource: config.session.scheduleSource ?? 'immediate',
+    project: titleCaseProject(basename(config.session.targetRepo)),
+    taskId: firstTask.id,
+    goal: firstTask.goal,
+    additionalTaskCount: config.tasks.length - 1,
+    branch: config.session.branch,
+    reviewer: 'GPT Reviewer',
+    executor: config.executor.model,
+    autoCommit: config.gitCheckpoint.autoCommit,
+    autoPush: config.gitCheckpoint.autoPush,
+    emailEnabled: config.notification?.email.enabled === true,
+  }
+}
+
+export function defaultTrustedConfigDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  userHome = homedir(),
+): string {
+  const override = env.NOVAWING_CONFIG_DIR?.trim()
+  if (override !== undefined && override.length > 0) return resolve(override)
+  const localAppData = env.LOCALAPPDATA?.trim() || join(userHome, 'AppData', 'Local')
+  return join(localAppData, 'NovaWing', 'canary-configs')
+}
+
+export async function discoverTrustedWorkSessionConfigs(
+  configDirectory: string,
+  loadConfig: (configPath: string) => Promise<TrustedWorkSessionConfig> = loadTrustedWorkSessionConfig,
+): Promise<readonly DiscoveredLaunchpadConfig[]> {
+  const entries = await readdir(configDirectory, { withFileTypes: true }).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === 'ENOENT') return []
+    throw error
+  })
+  const discovered: DiscoveredLaunchpadConfig[] = []
+
+  for (const entry of entries
+    .filter((candidate) => candidate.isFile() && candidate.name.toLowerCase().endsWith('.json'))
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    const configPath = join(configDirectory, entry.name)
+    try {
+      const config = await loadConfig(configPath)
+      const configId = randomBytes(16).toString('hex')
+      discovered.push({ configPath, config, summary: summaryFromConfig(configId, config) })
+    } catch {
+      // One invalid trusted config must not prevent the remaining cards from loading.
+    }
+  }
+  return discovered
+}
+
+/**
+ * Persists a validated Composer config without ever exposing a partially-written
+ * JSON file to trusted-config discovery. Composer session ids are generated by
+ * this module and are intentionally constrained before deriving a filename.
+ */
+export async function persistComposedTrustedWorkSessionConfig(
+  configDirectory: string,
+  config: TrustedWorkSessionConfig,
+): Promise<string> {
+  const sessionId = config.session.id
+  if (!SAFE_COMPOSER_SESSION_ID.test(sessionId)) {
+    throw new Error('Composer session id is not safe for config filename')
+  }
+
+  const directory = resolve(configDirectory)
+  const configPath = join(directory, `${sessionId}.json`)
+  const temporaryPath = join(directory, `.${sessionId}.${randomBytes(8).toString('hex')}.tmp`)
+  const content = `${JSON.stringify(config, undefined, 2)}\n`
+
+  await mkdir(directory, { recursive: true })
+  try {
+    await access(configPath)
+    throw new Error('Composer config filename collision')
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== 'ENOENT') throw error
+  }
+
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(temporaryPath, 'wx', 0o600)
+    await handle.writeFile(content, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await rename(temporaryPath, configPath)
+    return configPath
+  } catch (error) {
+    await handle?.close().catch(() => undefined)
+    await unlink(temporaryPath).catch(() => undefined)
+    throw error
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error
+}
+
+export class NovaWingLaunchpad {
+  private readonly configDirectory: string
+  private readonly configs: Map<string, DiscoveredLaunchpadConfig>
+  private readonly loadConfig: (configPath: string) => Promise<TrustedWorkSessionConfig>
+  private readonly resolveEnvironment: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
+  private readonly createWorkSession: NonNullable<NovaWingLaunchpadDependencies['createWorkSession']>
+  private readonly gitProcessRunner: ProductionGitProcessRunner | undefined
+  private readonly shutdownTimeoutMs: number
+  private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
+  private readonly preflight: NovaWingLaunchpadDependencies['preflight']
+  private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
+  private readonly statuses = new Map<string, WorkSessionDisplayState>()
+  private readonly token = randomBytes(32).toString('hex')
+  private readonly server: Server
+  private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
+  private readonly activeDeletes = new Set<string>()
+  private readonly activeCreates = new Map<string, ComposerCreateEntry>()
+  private readonly completedCreates = new Map<string, CompletedComposerCreateEntry>()
+  private readonly liveApps = new Map<string, LiveWorkSessionApp>()
+
+  private address: NovaWingLaunchpadAddress | undefined
+  private closed = false
+  private scheduleRecoveryTimer: NodeJS.Timeout | undefined
+  private scheduleRecovery: Promise<void> | undefined
+  private dependencyHealth: DependencyHealthReport = {
+    overall: 'READY', canStart: true, checkedAt: new Date(0).toISOString(), dependencies: [],
+  }
+  private initialExecutorMode: Exclude<ExecutorMode, 'auto'> = 'codex'
+
+  constructor(
+    discovered: readonly DiscoveredLaunchpadConfig[],
+    configDirectoryOrDependencies: string | NovaWingLaunchpadDependencies = defaultTrustedConfigDirectory(),
+    providedDependencies: NovaWingLaunchpadDependencies = {},
+  ) {
+    const configDirectory = typeof configDirectoryOrDependencies === 'string'
+      ? configDirectoryOrDependencies
+      : defaultTrustedConfigDirectory()
+    const dependencies = typeof configDirectoryOrDependencies === 'string'
+      ? providedDependencies
+      : configDirectoryOrDependencies
+    this.configDirectory = resolve(configDirectory)
+    this.configs = new Map(discovered.map((config) => [config.summary.configId, config]))
+    this.loadConfig = dependencies.loadConfig ?? loadTrustedWorkSessionConfig
+    this.resolveEnvironment = dependencies.resolveEnvironment ?? resolveProductionSmtpEnvironment
+    this.createWorkSession = dependencies.createWorkSession ?? (
+      async (config, options): Promise<ProductionWorkSessionUi> =>
+        createProductionWorkSessionUi(config, options)
+    )
+    this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
+    this.gitProcessRunner = dependencies.gitProcessRunner
+    this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
+    this.preflight = dependencies.preflight
+    this.readCodexAvailability = dependencies.readCodexAvailability ?? (() =>
+      new CodingExecutionStore(defaultCodingExecutionStorePath()).availability())
+    this.server = createServer((request, response) => {
+      void this.handle(request, response)
+    })
+  }
+
+  getConfigs(): readonly LaunchpadConfigSummary[] {
+    return [...this.configs.values()].map((config) => {
+      const status = this.liveApps.get(config.summary.configId)?.app.controller.getSnapshot?.().runtime.displayState ?? this.statuses.get(config.summary.configId)
+      return { ...config.summary, ...(status === undefined ? {} : { status }) }
+    })
+  }
+
+  /** Unknown, failed, stale, and timed-out observations never mean exhausted. */
+  private async resolveInitialExecutorMode(): Promise<Exclude<ExecutorMode, 'auto'>> {
+    try {
+      const availability = await this.readCodexAvailability()
+      if (availability.state !== 'quota_exhausted') return 'codex'
+      const expiry = availability.blockedUntil ?? availability.nextProbeAt
+      if (expiry === undefined) return 'deepseek'
+      const expiryMs = Date.parse(expiry)
+      return Number.isFinite(expiryMs) && expiryMs > Date.now() ? 'deepseek' : 'codex'
+    } catch {
+      return 'codex'
+    }
+  }
+
+  /** T021: 读取每个 config 的持久化状态并派生展示状态。只发现、不自动恢复。 */
+  private async hydrateStatuses(): Promise<void> {
+    await Promise.all([...this.configs.values()].map(async (config) => {
+      const configId = config.summary.configId
+      try {
+        const status = await this.readSessionStatus(config.config)
+        this.statuses.set(configId, status)
+      } catch {
+        // 读取失败按 READY 处理（与 discovery 的容错一致），不阻塞其余卡片。
+        this.statuses.set(configId, 'READY')
+      }
+    }))
+  }
+
+  getAddress(): NovaWingLaunchpadAddress | undefined {
+    return this.address
+  }
+
+  getTokenForTest(): string {
+    return this.token
+  }
+
+  async start(): Promise<NovaWingLaunchpadAddress> {
+    if (this.closed) throw new Error('Launchpad is closed')
+    if (this.address !== undefined) return this.address
+    await this.hydrateStatuses()
+    this.initialExecutorMode = await this.resolveInitialExecutorMode()
+    if (this.preflight !== undefined) {
+      this.dependencyHealth = await this.preflight().catch(() => ({
+        overall: 'DEGRADED' as const,
+        canStart: false,
+        checkedAt: new Date().toISOString(),
+        dependencies: [{ id: 'CORE' as const, state: 'DEGRADED' as const, failureType: 'PREFLIGHT_FAILED', safeMessage: 'Dependency preflight 无法完成。' }],
+      }))
+    }
+    await new Promise<void>((resolveStart, rejectStart) => {
+      const onError = (error: Error): void => rejectStart(error)
+      this.server.once('error', onError)
+      this.server.listen(0, LOOPBACK_HOST, () => {
+        this.server.off('error', onError)
+        resolveStart()
+      })
+    })
+    const address = this.server.address()
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Launchpad did not receive a TCP address')
+    }
+    this.address = {
+      host: LOOPBACK_HOST,
+      port: address.port,
+      url: `http://${LOOPBACK_HOST}:${address.port}`,
+    }
+    await this.recoverScheduledSessions()
+    this.scheduleRecoveryTimer = setInterval(() => { void this.recoverScheduledSessions() }, 5_000)
+    this.scheduleRecoveryTimer.unref()
+    return this.address
+  }
+
+  /** Only scheduled configs are automatically reopened. Existing interrupted runs stay manual. */
+  private async recoverScheduledSessions(): Promise<void> {
+    if (this.closed || this.scheduleRecovery !== undefined) return
+    this.scheduleRecovery = (async () => {
+      for (const [id, entry] of this.configs) {
+        if (this.closed) break
+        if (entry.config.session.scheduledStartAt == null || this.liveApps.has(id) || this.activeDeletes.has(id)) continue
+        try {
+          const status = await this.readSessionStatus(entry.config)
+          this.statuses.set(id, status)
+          if (status === 'SCHEDULED') await this.startWorkSession(id)
+        } catch { /* Storage/dependency outage: keep the durable gate, retry opening later. */ }
+      }
+    })()
+    try { await this.scheduleRecovery } finally { this.scheduleRecovery = undefined }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    if (this.scheduleRecoveryTimer !== undefined) clearInterval(this.scheduleRecoveryTimer)
+    await bounded(this.scheduleRecovery ?? Promise.resolve(), this.shutdownTimeoutMs)
+    if (this.address !== undefined) {
+      const closeListener = new Promise<void>((resolveClose) => {
+        this.server.close(() => resolveClose())
+        this.server.closeAllConnections()
+      })
+      await bounded(closeListener, this.shutdownTimeoutMs)
+      this.address = undefined
+    }
+
+    await bounded(
+      Promise.allSettled(this.activeStarts.values()).then(() => undefined),
+      this.shutdownTimeoutMs,
+    )
+    await bounded(
+      Promise.allSettled([...this.activeCreates.values()].map(({ launch }) => launch)).then(() => undefined),
+      this.shutdownTimeoutMs,
+    )
+    await bounded(
+      Promise.allSettled([...this.liveApps.values()].map(({ app }) => app.close())).then(() => undefined),
+      this.shutdownTimeoutMs,
+    )
+    this.liveApps.clear()
+  }
+
+  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.headers.host !== this.expectedHost()) {
+      this.respondJson(response, 403, { error: 'forbidden host' })
+      return
+    }
+
+    const method = request.method ?? 'GET'
+    const path = pathOf(request)
+    if (method === 'GET' && path === '/') {
+      this.serveHtml(response)
+      return
+    }
+    if (method === 'GET' && path === '/app.js') {
+      this.serveAsset(response, 'text/javascript; charset=utf-8', LAUNCHPAD_APP_JS)
+      return
+    }
+    if (method === 'GET' && path === '/api/session/configs') {
+      this.respondJson(response, 200, this.getConfigs())
+      return
+    }
+    if (method === 'GET' && path === '/styles.css') {
+      this.serveAsset(response, 'text/css; charset=utf-8', LAUNCHPAD_STYLES_CSS)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/start') {
+      await this.serveStart(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/create') {
+      await this.serveCreate(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/delete') {
+      await this.serveDelete(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/branch') {
+      await this.serveBranch(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/session/brief') {
+      await this.serveTaskBrief(request, response)
+      return
+    }
+
+    const knownPaths = new Set([
+      '/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
+      '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
+    ])
+    this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
+      error: knownPaths.has(path) ? 'method not allowed' : 'not found',
+    })
+  }
+
+  private serveHtml(response: ServerResponse): void {
+    response.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy':
+        "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    })
+    response.end(renderLaunchpadHtml({
+      configs: this.getConfigs(),
+      launchToken: this.token,
+      serverOrigin: this.origin(),
+      dependencyHealth: this.dependencyHealth,
+      initialExecutorMode: this.initialExecutorMode,
+    }))
+  }
+
+  private serveAsset(response: ServerResponse, contentType: string, body: string): void {
+    response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' })
+    response.end(body)
+  }
+
+  private async serveStart(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const parsed = parseStartBody(body)
+    if (!parsed.ok) {
+      this.respondJson(response, 400, { error: parsed.error })
+      return
+    }
+    if (!this.configs.has(parsed.configId)) {
+      this.respondJson(response, 404, { error: 'unknown config' })
+      return
+    }
+
+    try {
+      const result = await this.startWorkSession(parsed.configId)
+      this.respondJson(response, 202, result)
+    } catch (error) {
+      if (this.respondPreflightError(response, error)) return
+      this.respondJson(response, 500, { error: SAFE_LAUNCH_ERROR })
+    }
+  }
+
+  private async serveCreate(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const parsed = parseComposerBody(body)
+    if (!parsed.ok) {
+      this.respondComposerError(response, 400, parsed.error)
+      return
+    }
+    try {
+      const result = await this.createWorkSessionFromComposer(parsed.value)
+      this.respondJson(response, 202, result)
+    } catch (error) {
+      if (this.respondPreflightError(response, error)) return
+      const code = error instanceof ComposerLaunchError ? error.code : 'SESSION_START_FAILED'
+      const status = code === 'SESSION_START_FAILED' ? 500 : code === 'IDEMPOTENCY_CONFLICT' ? 409 : 400
+      this.respondComposerError(response, status, code)
+    }
+  }
+
+  private async serveDelete(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const parsed = parseConfigIdBody(body)
+    if (!parsed.ok) {
+      this.respondJson(response, 400, { error: 'INVALID_REQUEST' })
+      return
+    }
+    if (!this.configs.has(parsed.configId)) {
+      this.respondJson(response, 404, { error: 'UNKNOWN_CONFIG' })
+      return
+    }
+    try {
+      await this.deleteWorkSessionConfig(parsed.configId)
+      this.respondJson(response, 200, { deleted: true })
+    } catch (error) {
+      const code = error instanceof DeleteConfigError ? error.code : 'DELETE_FAILED'
+      const status = code === 'UNKNOWN_CONFIG' ? 404 : code === 'SESSION_ACTIVE' ? 409 : 500
+      this.respondJson(response, status, { error: code })
+    }
+  }
+
+  private async serveBranch(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const targetRepo = parseBranchBody(body)
+    if (targetRepo === undefined) {
+      this.respondComposerError(response, 400, 'INVALID_PROJECT_PATH')
+      return
+    }
+    const resolved = resolve(targetRepo)
+    if (!isAbsolute(targetRepo) || !await isDirectory(resolved)) {
+      this.respondComposerError(response, 400, 'INVALID_PROJECT_PATH')
+      return
+    }
+    try {
+      const branch = await this.readCurrentBranch(resolved)
+      const pushRemote = await this.readOriginPushRemote(resolved)
+      this.respondJson(response, 200, {
+        branch,
+        pushRemoteStatus: pushRemote === undefined ? 'unavailable' : 'available',
+        ...(pushRemote === undefined ? {} : { pushRemote }),
+      })
+    } catch (error) {
+      const code = error instanceof ComposerLaunchError ? error.code : 'CANNOT_READ_BRANCH'
+      this.respondComposerError(response, 400, code)
+    }
+  }
+
+  /** Analysis is a non-mutating helper; it never creates or starts a Session. */
+  private async serveTaskBrief(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.authorizeMutation(request, response)) return
+    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) {
+      this.respondJson(response, 413, { error: 'payload too large' })
+      return
+    }
+    const brief = parseTaskBriefBody(body)
+    if (brief === undefined) {
+      this.respondJson(response, 400, { error: 'INVALID_BRIEF' })
+      return
+    }
+    this.respondJson(response, 200, analyzeTaskBrief(brief.value, new Date(), brief.executorMode ?? this.initialExecutorMode))
+  }
+
+  private authorizeMutation(request: IncomingMessage, response: ServerResponse): boolean {
+    if (!this.originMatchesRequest(request)) {
+      this.respondJson(response, 403, { error: 'forbidden origin' })
+      return false
+    }
+    const provided = request.headers['x-novawing-launchpad-token']
+    if (typeof provided !== 'string' || !tokenMatches(this.token, provided)) {
+      this.respondJson(response, 403, { error: 'forbidden' })
+      return false
+    }
+    return true
+  }
+
+  private originMatchesRequest(request: IncomingMessage): boolean {
+    const origin = request.headers.origin
+    if (origin === this.origin()) return true
+    if (
+      origin !== `http://${LOOPBACK_HOST}` ||
+      request.headers.host !== this.expectedHost() ||
+      request.headers['sec-fetch-site'] !== 'same-origin'
+    ) {
+      return false
+    }
+    const referer = request.headers.referer
+    if (typeof referer !== 'string') return false
+    try {
+      return new URL(referer).origin === this.origin()
+    } catch {
+      return false
+    }
+  }
+
+  private async startWorkSession(configId: string): Promise<LaunchResult> {
+    await assertLaunchpadRuntimeCurrent()
+    if (this.activeDeletes.has(configId)) throw new Error('unknown config')
+    const existing = this.activeStarts.get(configId)
+    if (existing !== undefined) {
+      const result = await existing
+      return { ...result, alreadyStarted: true }
+    }
+    const discovered = this.configs.get(configId)
+    if (discovered === undefined) throw new Error('unknown config')
+
+    const launch = this.launchWorkSession(configId, discovered)
+    this.activeStarts.set(configId, launch)
+    try {
+      return await launch
+    } finally {
+      if (this.activeStarts.get(configId) === launch) this.activeStarts.delete(configId)
+    }
+  }
+
+  private async deleteWorkSessionConfig(configId: string): Promise<void> {
+    const discovered = this.configs.get(configId)
+    if (discovered === undefined || this.activeDeletes.has(configId)) {
+      throw new DeleteConfigError('UNKNOWN_CONFIG')
+    }
+    if (this.activeStarts.has(configId)) {
+      throw new DeleteConfigError('SESSION_ACTIVE')
+    }
+    const liveApp = this.liveApps.get(configId)
+    if (liveApp !== undefined && this.isBlockingLiveApp(liveApp.app)) {
+      throw new DeleteConfigError('SESSION_ACTIVE')
+    }
+    const configPath = this.resolveTrustedConfigPath(discovered)
+    if (configPath === undefined) throw new DeleteConfigError('DELETE_FAILED')
+
+    this.activeDeletes.add(configId)
+    try {
+      if (liveApp !== undefined) {
+        this.liveApps.delete(configId)
+        await liveApp.app.close().catch(() => undefined)
+      }
+      try {
+        await unlink(configPath)
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== 'ENOENT') {
+          throw new DeleteConfigError('DELETE_FAILED')
+        }
+      }
+      this.configs.delete(configId)
+      this.statuses.delete(configId)
+    } finally {
+      this.activeDeletes.delete(configId)
+    }
+  }
+
+  private isBlockingLiveApp(app: ManagedWorkSessionApp): boolean {
+    try {
+      return app.isLive() && app.hasActiveSession()
+    } catch {
+      // An indeterminate app is treated as active. Deletion must fail closed.
+      return true
+    }
+  }
+
+  private resolveTrustedConfigPath(discovered: DiscoveredLaunchpadConfig): string | undefined {
+    const configPath = resolve(discovered.configPath)
+    const relativePath = relative(this.configDirectory, configPath)
+    if (
+      relativePath.length === 0 ||
+      isAbsolute(relativePath) ||
+      relativePath === '..' ||
+      relativePath.startsWith('../') ||
+      relativePath.startsWith('..\\') ||
+      dirname(configPath) !== this.configDirectory
+    ) {
+      return undefined
+    }
+    return configPath
+  }
+
+  private async launchWorkSession(
+    configId: string,
+    discovered: DiscoveredLaunchpadConfig,
+  ): Promise<LaunchResult> {
+    if (this.closed) throw new Error('Launchpad is closed')
+    const existing = this.liveApps.get(configId)
+    if (existing !== undefined) {
+      try {
+        if (existing.app.isLive()) {
+          return { accepted: true, controlUrl: existing.controlUrl, alreadyStarted: true }
+        }
+      } catch {
+        // A failed liveness probe retires the stale app before relaunch.
+      }
+      this.liveApps.delete(configId)
+      await existing.app.close().catch(() => undefined)
+    }
+    const config = await this.loadConfig(discovered.configPath)
+    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo)
+    const env = await this.resolveEnvironment(config)
+    const app = await this.createWorkSession(config, { env, serverPort: 0 })
+    if (this.closed) {
+      await app.close()
+      throw new Error('Launchpad is closed')
+    }
+
+    try {
+      const address = await app.start()
+      if (this.closed) {
+        await app.close()
+        throw new Error('Launchpad is closed')
+      }
+      const result = app.controller.start()
+      this.liveApps.set(configId, { app, controlUrl: address.url })
+      return {
+        accepted: true,
+        controlUrl: address.url,
+        ...(result.started ? {} : { alreadyStarted: true }),
+      }
+    } catch (error) {
+      this.liveApps.delete(configId)
+      await app.close().catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async createWorkSessionFromComposer(input: ComposerRequest): Promise<LaunchResult> {
+    this.pruneCompletedCreates()
+    const canonicalPayload = canonicalComposerPayload(input)
+    const existing = this.activeCreates.get(input.requestId)
+    if (existing !== undefined) {
+      if (existing.canonicalPayload !== canonicalPayload) throw new ComposerLaunchError('IDEMPOTENCY_CONFLICT')
+      return existing.launch
+    }
+    const completed = this.completedCreates.get(input.requestId)
+    if (completed !== undefined) {
+      if (completed.canonicalPayload !== canonicalPayload) throw new ComposerLaunchError('IDEMPOTENCY_CONFLICT')
+      return completed.result
+    }
+    const launch = this.launchComposedWorkSession(input)
+    this.activeCreates.set(input.requestId, { canonicalPayload, launch })
+    try {
+      const result = await launch
+      this.completedCreates.set(input.requestId, { canonicalPayload, result, completedAt: Date.now() })
+      this.pruneCompletedCreates()
+      return result
+    } catch (error) {
+      this.activeCreates.delete(input.requestId)
+      throw error
+    } finally {
+      this.activeCreates.delete(input.requestId)
+    }
+  }
+
+  private pruneCompletedCreates(now = Date.now()): void {
+    for (const [requestId, entry] of this.completedCreates) {
+      if (now - entry.completedAt > COMPLETED_COMPOSER_REQUEST_TTL_MS) this.completedCreates.delete(requestId)
+    }
+    while (this.completedCreates.size > MAX_COMPLETED_COMPOSER_REQUESTS) {
+      const oldestRequestId = this.completedCreates.keys().next().value
+      if (oldestRequestId === undefined) return
+      this.completedCreates.delete(oldestRequestId)
+    }
+  }
+
+  private async launchComposedWorkSession(input: ComposerRequest): Promise<LaunchResult> {
+    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
+    const targetRepo = resolve(input.targetRepo)
+    if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
+      throw new ComposerLaunchError('INVALID_PROJECT_PATH')
+    }
+    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo)
+    const branch = await this.readCurrentBranch(targetRepo)
+    if (input.branch !== undefined && input.branch !== branch) {
+      throw new ComposerLaunchError('BRANCH_MISMATCH')
+    }
+    const sessionId = createSessionId(targetRepo)
+    const config = await validateTrustedWorkSessionConfig({
+      session: {
+        id: sessionId,
+        targetRepo,
+        branch,
+        scheduledStartAt: input.scheduledStartAt !== null && Date.parse(input.scheduledStartAt) > Date.now() ? input.scheduledStartAt : null,
+        scheduleSource: input.scheduleSource,
+        createdAt: new Date().toISOString(),
+        limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: input.tasks.length },
+      },
+      tasks: input.tasks.map((task) => ({
+        id: task.id,
+        goal: task.goal,
+        guardian: {
+          constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
+          acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...(input.guardian.acceptanceCriteria ?? [])],
+          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo, ...(input.guardian.doNotDo ?? [])],
+          allowedPaths: input.guardian.allowedPaths,
+          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
+        },
+      })),
+      gitCheckpoint: {
+        autoCommit: input.autoCommit,
+        autoPush: input.autoPush,
+        ...(input.autoPush ? { pushRemote: input.pushRemote } : {}),
+      },
+      executor: {
+        defaultMode: input.executorMode,
+        model: input.executorModel,
+        maxTurns: 10,
+        allowNpmInstall: false,
+        allowPythonBootstrap: false,
+      },
+      ...(input.executorMode === 'deepseek' ? {} : { codex: {
+        model: input.codexModel,
+        reasoningEffort: input.codexReasoningEffort,
+      } }),
+      notification: {
+        email: input.emailEnabled
+          ? { enabled: true, notifyOnCompleted: true }
+          : { enabled: false },
+      },
+    }).catch(() => { throw new ComposerLaunchError('INVALID_GUARDIAN_POLICY') })
+    const configPath = await persistComposedTrustedWorkSessionConfig(this.configDirectory, config)
+      .catch(() => { throw new ComposerLaunchError('SESSION_START_FAILED') })
+    const configId = randomBytes(16).toString('hex')
+    this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
+    try {
+      return await this.startWorkSession(configId)
+    } catch {
+      throw new ComposerLaunchError('SESSION_START_FAILED')
+    }
+  }
+
+  private async readCurrentBranch(targetRepo: string): Promise<string> {
+    const runner = createProductionGitRunner(targetRepo, this.gitProcessRunner)
+    const result = await runner('git branch --show-current').catch(() => undefined)
+    if (result === undefined || result.exitCode !== 0) {
+      throw new ComposerLaunchError('NOT_A_GIT_REPOSITORY')
+    }
+    const branch = result.stdout.trim()
+    if (branch.length === 0) throw new ComposerLaunchError('CANNOT_READ_BRANCH')
+    return branch
+  }
+
+  private async readOriginPushRemote(targetRepo: string): Promise<{ name: 'origin'; expectedUrl: string } | undefined> {
+    const runner = createProductionGitRunner(targetRepo, this.gitProcessRunner)
+    const result = await runner('git remote get-url --push --all origin').catch(() => undefined)
+    if (result === undefined || result.exitCode !== 0) return undefined
+    const urls = [...new Set(result.stdout.split(/\r?\n/u).map((url) => url.trim()).filter(Boolean))]
+    return urls.length === 1 && isSafeRemoteUrl(urls[0]!) ? { name: 'origin', expectedUrl: urls[0]! } : undefined
+  }
+
+  private respondComposerError(response: ServerResponse, status: number, code: ComposerError | 'SESSION_START_FAILED'): void {
+    this.respondJson(response, status, { error: code, message: COMPOSER_SAFE_MESSAGES[code] })
+  }
+
+  private async assertDependenciesReady(targetRepo: string): Promise<void> {
+    if (this.preflight === undefined) return
+    const report = await this.preflight(targetRepo)
+    this.dependencyHealth = report
+    requireDependencyPreflightReady(report)
+  }
+
+  private respondPreflightError(response: ServerResponse, error: unknown): boolean {
+    if (!(error instanceof DependencyPreflightError)) return false
+    const blocker = error.report.dependencies.find((item) => item.id === 'SHELL' && item.state !== 'READY') ??
+      error.report.dependencies.find((item) => item.id !== 'CORE' && (item.state === 'UNAVAILABLE' || item.state === 'DEGRADED'))
+    this.respondJson(response, 503, {
+      error: 'DEPENDENCY_REQUIRED',
+      classification: error.report.overall,
+      failureType: blocker?.failureType,
+      dependency: blocker?.id,
+      message: blocker?.safeMessage,
+      expectedExecutable: blocker?.expectedExecutable,
+      actualExecutable: blocker?.actualExecutable,
+      safeRemediation: blocker?.safeRemediation,
+    })
+    return true
+  }
+
+  private origin(): string {
+    return this.address?.url ?? ''
+  }
+
+  private expectedHost(): string {
+    return this.address === undefined ? '' : `${LOOPBACK_HOST}:${this.address.port}`
+  }
+
+  private respondJson(response: ServerResponse, status: number, payload: unknown): void {
+    response.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    })
+    response.end(JSON.stringify(payload))
+  }
+}
+
+class ComposerLaunchError extends Error {
+  constructor(readonly code: ComposerError | 'SESSION_START_FAILED') {
+    super(code)
+  }
+}
+
+class DeleteConfigError extends Error {
+  constructor(readonly code: 'UNKNOWN_CONFIG' | 'SESSION_ACTIVE' | 'DELETE_FAILED') {
+    super(code)
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  return (await stat(path).catch(() => undefined))?.isDirectory() === true
+}
+
+function createSessionId(targetRepo: string): string {
+  const project = (basename(targetRepo).toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '') || 'session')
+    .slice(0, MAX_SESSION_PROJECT_SLUG_LENGTH)
+  const timestamp = new Date().toISOString().replace(/[^0-9]/gu, '').slice(0, 12)
+  return `${project}-${timestamp}-${randomBytes(3).toString('hex')}`
+}
+
+function canonicalComposerPayload(input: ComposerRequest): string {
+  return JSON.stringify({
+    targetRepo: input.targetRepo,
+    branch: input.branch,
+    tasks: input.tasks,
+    executorModel: input.executorModel,
+    executorMode: input.executorMode,
+    codexModel: input.codexModel,
+    codexReasoningEffort: input.codexReasoningEffort,
+    softMinutes: input.softMinutes,
+    hardMinutes: input.hardMinutes,
+    autoCommit: input.autoCommit,
+    autoPush: input.autoPush,
+    pushRemote: input.pushRemote,
+    emailEnabled: input.emailEnabled,
+    guardian: input.guardian,
+    scheduledStartAt: input.scheduledStartAt,
+    scheduleSource: input.scheduleSource,
+  })
+}
+
+export async function createNovaWingLaunchpad(options: {
+  configDirectory?: string
+  env?: NodeJS.ProcessEnv
+  dependencies?: NovaWingLaunchpadDependencies
+  enableProductionPreflight?: boolean
+} = {}): Promise<NovaWingLaunchpad> {
+  const configDirectory = options.configDirectory ?? defaultTrustedConfigDirectory(options.env)
+  const loadConfig = options.dependencies?.loadConfig ?? loadTrustedWorkSessionConfig
+  const discovered = await discoverTrustedWorkSessionConfigs(configDirectory, loadConfig)
+  const dependencies = options.enableProductionPreflight === true
+    ? {
+        ...options.dependencies,
+        preflight: options.dependencies?.preflight ?? ((targetRepo?: string) =>
+          runProductionDependencyPreflight({
+            // Launchpad's default Composer route is Codex. Check its local SDK
+            // prerequisites at cold start so the topbar reports availability,
+            // not whether an active Task has already selected a route.
+            executorModes: ['codex'],
+            ...(options.env === undefined ? {} : { env: options.env }),
+            ...(targetRepo === undefined ? {} : { targetRepo }),
+          })),
+      }
+    : options.dependencies
+  const launchpadDependencies: NovaWingLaunchpadDependencies = {
+    ...dependencies,
+    readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
+      new CodingExecutionStore(defaultCodingExecutionStorePath(options.env)).availability()),
+  }
+  return new NovaWingLaunchpad(discovered, configDirectory, launchpadDependencies)
+}
+
+function pathOf(request: IncomingMessage): string {
+  return (request.url ?? '/').split('?', 1)[0] ?? '/'
+}
+
+function tokenMatches(expected: string, provided: string): boolean {
+  const expectedBuffer = Buffer.from(expected)
+  const providedBuffer = Buffer.from(provided)
+  return expectedBuffer.length === providedBuffer.length &&
+    timingSafeEqual(expectedBuffer, providedBuffer)
+}
+
+function parseStartBody(body: string):
+  | { ok: true; configId: string }
+  | { ok: false; error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { ok: false, error: 'malformed JSON' }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'start body must be an object' }
+  }
+  const record = parsed as Record<string, unknown>
+  if (Object.keys(record).length !== 1 || !Object.hasOwn(record, 'configId')) {
+    return { ok: false, error: 'start body must contain only configId' }
+  }
+  if (typeof record.configId !== 'string' || !/^[a-f0-9]{32}$/u.test(record.configId)) {
+    return { ok: false, error: 'configId is invalid' }
+  }
+  return { ok: true, configId: record.configId }
+}
+
+function parseConfigIdBody(body: string):
+  | { ok: true; configId: string }
+  | { ok: false } {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false }
+    const record = parsed as Record<string, unknown>
+    if (
+      Object.keys(record).length !== 1 ||
+      !Object.hasOwn(record, 'configId') ||
+      typeof record.configId !== 'string' ||
+      !/^[a-f0-9]{32}$/u.test(record.configId)
+    ) {
+      return { ok: false }
+    }
+    return { ok: true, configId: record.configId }
+  } catch {
+    return { ok: false }
+  }
+}
+
+function parseComposerBody(body: string): ComposerParseResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const record = parsed as Record<string, unknown>
+  const allowed = new Set([
+    'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
+    'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
+    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch',
+  ])
+  if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
+  let scheduledStartAt: string | null
+  try { scheduledStartAt = normalizeScheduledStart(record.scheduled_start_at) } catch {
+    return { ok: false, error: 'INVALID_SCHEDULE' }
+  }
+  const scheduleSource = record.schedule_source ?? (scheduledStartAt === null ? 'immediate' : 'custom')
+  if (scheduleSource !== 'immediate' && scheduleSource !== 'custom' && scheduleSource !== 'deepseek_off_peak') {
+    return { ok: false, error: 'INVALID_SCHEDULE' }
+  }
+  // Legacy off-peak requests implied DeepSeek; explicit Auto/Codex must never imply it.
+  const executorMode = record.executorMode ?? (scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)
+  if (executorMode !== 'auto' && executorMode !== 'codex' && executorMode !== 'deepseek') return { ok: false, error: 'INVALID_REQUEST' }
+  if (scheduleSource === 'deepseek_off_peak' && executorMode !== 'deepseek') return { ok: false, error: 'INVALID_SCHEDULE' }
+  if (typeof record.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,128}$/u.test(record.requestId)) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  if (typeof record.targetRepo !== 'string' || record.targetRepo.trim().length === 0) {
+    return { ok: false, error: 'INVALID_PROJECT_PATH' }
+  }
+  const branch = record.branch
+  if (branch !== undefined && (typeof branch !== 'string' || !isSafeBranch(branch.trim()))) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const tasks = parseComposerTasks(record.tasks)
+  if (tasks === 'invalid-id') return { ok: false, error: 'INVALID_TASK_ID' }
+  if (tasks === 'invalid-task') return { ok: false, error: 'INVALID_TASK' }
+  if (tasks === 'too-long') return { ok: false, error: 'INVALID_TASK_TOO_LONG' }
+  if (tasks === 'duplicate-id') return { ok: false, error: 'DUPLICATE_TASK_ID' }
+  if (tasks === undefined) return { ok: false, error: 'INVALID_REQUEST' }
+  const softMinutes = record.softMinutes ?? DEFAULT_SOFT_MINUTES
+  const hardMinutes = record.hardMinutes ?? DEFAULT_HARD_MINUTES
+  if (!isValidMinuteLimit(softMinutes, true) || !isValidMinuteLimit(hardMinutes, false) || hardMinutes < softMinutes) {
+    return { ok: false, error: 'INVALID_LIMITS' }
+  }
+  const executorModel = record.executorModel ?? DEFAULT_EXECUTOR_MODEL
+  if (typeof executorModel !== 'string' || executorModel.trim().length === 0 || executorModel.length > 120) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const codexModel = record.codexModel ?? CODING_EXECUTOR_DEFAULTS.codex.model
+  const codexReasoningEffort = record.codexReasoningEffort ?? CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort
+  if (typeof codexModel !== 'string' || typeof codexReasoningEffort !== 'string' ||
+      !isSupportedCodexConfiguration(codexModel, codexReasoningEffort)) {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  const autoCommit = record.autoCommit ?? true
+  const autoPush = record.autoPush ?? false
+  const emailEnabled = record.emailEnabled ?? false
+  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean') {
+    return { ok: false, error: 'INVALID_REQUEST' }
+  }
+  if (autoPush && !autoCommit) return { ok: false, error: 'AUTO_PUSH_REQUIRES_AUTO_COMMIT' }
+  const pushRemote = autoPush ? parseComposerPushRemote(record.pushRemote) : undefined
+  if (autoPush && record.pushRemote === undefined) return { ok: false, error: 'AUTO_PUSH_REMOTE_UNAVAILABLE' }
+  if (autoPush && pushRemote === undefined) return { ok: false, error: 'INVALID_PUSH_REMOTE' }
+  const guardian = parseComposerGuardian(record.guardian)
+  if (guardian === undefined) {
+    return { ok: false, error: hasAllowedPaths(record.guardian) ? 'INVALID_GUARDIAN_POLICY' : 'MISSING_ALLOWED_PATHS' }
+  }
+  return {
+    ok: true,
+    value: {
+      requestId: record.requestId,
+      scheduledStartAt,
+      scheduleSource,
+      targetRepo: record.targetRepo.trim(),
+      ...(branch === undefined ? {} : { branch: branch.trim() }),
+      tasks,
+      executorModel: executorModel.trim(),
+      executorMode,
+      codexModel,
+      codexReasoningEffort,
+      softMinutes,
+      hardMinutes,
+      autoCommit,
+      autoPush,
+      ...(pushRemote === undefined ? {} : { pushRemote }),
+      emailEnabled,
+      guardian,
+    },
+  }
+}
+
+function parseComposerTasks(value: unknown): ComposerRequest['tasks'] | 'invalid-id' | 'invalid-task' | 'too-long' | 'duplicate-id' | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_COMPOSER_TASKS) return undefined
+  const tasks: ComposerRequest['tasks'] = []
+  const ids = new Set<string>()
+  for (const valueTask of value) {
+    if (valueTask === null || typeof valueTask !== 'object' || Array.isArray(valueTask)) return undefined
+    const task = valueTask as Record<string, unknown>
+    if (Object.keys(task).length !== 2 || typeof task.id !== 'string' || typeof task.goal !== 'string') return undefined
+    const id = task.id.trim()
+    const goal = task.goal.trim()
+    if (!/^[A-Za-z0-9._-]{1,64}$/u.test(id)) return 'invalid-id'
+    if (goal.length === 0) return 'invalid-task'
+    if (task.goal.length > MAX_COMPOSER_TASK_GOAL_CHARS) return 'too-long'
+    if (ids.has(id)) return 'duplicate-id'
+    ids.add(id)
+    tasks.push({ id, goal })
+  }
+  return tasks
+}
+
+function parseComposerPushRemote(value: unknown): ComposerRequest['pushRemote'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 2 || typeof record.name !== 'string' || typeof record.expectedUrl !== 'string') return undefined
+  const name = record.name.trim()
+  const expectedUrl = record.expectedUrl.trim()
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(name) && isSafeRemoteUrl(expectedUrl)
+    ? { name, expectedUrl }
+    : undefined
+}
+
+function isSafeRemoteUrl(value: string): boolean {
+  if (value.length === 0 || value.length > 2_048 || /[\s\u0000-\u001f\u007f]/u.test(value)) return false
+  if (value.startsWith('https://')) {
+    try {
+      const url = new URL(value)
+      return url.protocol === 'https:' && url.username.length === 0 && url.password.length === 0 &&
+        url.search.length === 0 && url.hash.length === 0 && url.hostname.length > 0 && url.pathname.length > 1
+    } catch {
+      return false
+    }
+  }
+  if (value.startsWith('ssh://')) {
+    try {
+      const url = new URL(value)
+      return url.protocol === 'ssh:' && url.username === 'git' && url.password.length === 0 &&
+        url.search.length === 0 && url.hash.length === 0 && url.hostname.length > 0 && url.pathname.length > 1
+    } catch {
+      return false
+    }
+  }
+  return /^git@[A-Za-z0-9.-]+:[^/?#\s][^?#\s]*$/u.test(value)
+}
+
+function parseBranchBody(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const record = parsed as Record<string, unknown>
+    return Object.keys(record).length === 1 && typeof record.targetRepo === 'string' && record.targetRepo.trim().length > 0
+      ? record.targetRepo.trim()
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function parseTaskBriefBody(body: string): { value: string; executorMode?: ExecutorMode } | undefined {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const record = parsed as Record<string, unknown>
+    if (Object.keys(record).some((key) => key !== 'brief' && key !== 'executorMode') || typeof record.brief !== 'string' || record.brief.trim().length === 0 || record.brief.length > MAX_TASK_BRIEF_CHARS) return undefined
+    if (record.executorMode !== undefined && record.executorMode !== 'auto' && record.executorMode !== 'codex' && record.executorMode !== 'deepseek') return undefined
+    return { value: record.brief, ...(record.executorMode === undefined ? {} : { executorMode: record.executorMode }) }
+  } catch {
+    return undefined
+  }
+}
+
+function isSafeBranch(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u.test(value) && !value.includes('..') && !value.endsWith('.lock') && !value.includes('@{')
+}
+
+function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const allowed = new Set(['constraints', 'acceptanceCriteria', 'doNotDo', 'allowedPaths', 'forbiddenPaths'])
+  if (Object.keys(record).some((key) => !allowed.has(key))) return undefined
+  const allowedPaths = stringArray(record.allowedPaths)
+  if (allowedPaths === undefined || allowedPaths.length === 0) return undefined
+  const constraints = optionalStringArray(record, 'constraints')
+  const acceptanceCriteria = optionalStringArray(record, 'acceptanceCriteria')
+  const doNotDo = optionalStringArray(record, 'doNotDo')
+  const forbiddenPaths = optionalStringArray(record, 'forbiddenPaths')
+  if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
+  return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
+}
+
+function hasAllowedPaths(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const paths = (value as Record<string, unknown>).allowedPaths
+  return Array.isArray(paths) && paths.some((path) => typeof path === 'string' && path.trim().length > 0)
+}
+
+function optionalStringArray(
+  record: Record<string, unknown>,
+  key: 'constraints' | 'acceptanceCriteria' | 'doNotDo' | 'forbiddenPaths',
+): string[] | 'invalid' | undefined {
+  if (record[key] === undefined) return undefined
+  return stringArray(record[key]) ?? 'invalid'
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 100 || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0 || entry.length > 500)) return undefined
+  return value.map((entry) => entry.trim())
+}
+
+function isValidMinuteLimit(value: unknown, allowZero: boolean): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && (allowZero ? value >= 0 : value > 0) && value <= 24 * 60
+}
+
+function readBodyWithLimit(request: IncomingMessage): Promise<string> {
+  return new Promise((resolveBody, rejectBody) => {
+    let body = ''
+    let size = 0
+    let settled = false
+    request.on('data', (chunk: Buffer) => {
+      if (settled) return
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        settled = true
+        rejectBody(new Error('payload too large'))
+        request.resume()
+        return
+      }
+      body += chunk.toString('utf8')
+    })
+    request.on('end', () => {
+      if (!settled) {
+        settled = true
+        resolveBody(body)
+      }
+    })
+    request.on('error', (error) => {
+      if (!settled) {
+        settled = true
+        rejectBody(error)
+      }
+    })
+  })
+}
+
+async function bounded(work: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<void>((resolveTimeout) => {
+    timer = setTimeout(resolveTimeout, timeoutMs)
+    timer.unref()
+  })
+  await Promise.race([work, timeout])
+  if (timer !== undefined) clearTimeout(timer)
+}
+
+/**
+ * T021: 生产默认的 Launchpad 状态读取。读 Mastra workflow 持久化 domain state，
+ * 不创建/启动 Runner（loadPersistedState 只 hydrate，不执行）。db 文件不存在即 READY。
+ */
+async function readProductionSessionStatus(
+  config: TrustedWorkSessionConfig,
+): Promise<WorkSessionDisplayState> {
+  const storageUrl = config.storageUrl ?? defaultStorageUrl(config.session.id, process.env)
+  const exists = await stat(fileURLToPath(storageUrl))
+    .then((entry) => entry.isFile())
+    .catch(() => false)
+  if (!exists) {
+    return config.session.scheduledStartAt == null ? 'READY' : 'SCHEDULED'
+  }
+
+  const definition = {
+    id: config.session.id,
+    targetRepo: config.session.targetRepo,
+    branch: config.session.branch,
+    tasks: config.tasks.map((task) => ({ id: task.id, goal: task.goal })),
+    limits: { ...config.session.limits },
+    scheduledStartAt: config.session.scheduledStartAt ?? null,
+    scheduleSource: config.session.scheduleSource ?? 'immediate',
+    ...(config.session.createdAt === undefined ? {} : { createdAt: config.session.createdAt }),
+  }
+  const runtime = new WorkSessionRuntime({
+    definition,
+    storageUrl,
+    taskRunner: {
+      async run() {
+        return { status: 'FAILED' as const, error: 'read-only session status probe' }
+      },
+    },
+  })
+  try {
+    const state = await runtime.loadPersistedState()
+    // Launchpad 不持有活动 Runner：非终态即 RECOVERABLE。
+    return deriveDisplayState(state, false)
+  } finally {
+    await runtime.close()
+  }
+}

@@ -14,6 +14,10 @@
       "types": "./dist/packages/core/src/index.d.ts",
       "import": "./dist/packages/core/src/index.js"
     },
+    "./development-guardian": {
+      "types": "./dist/packages/development-guardian/index.d.ts",
+      "import": "./dist/packages/development-guardian/index.js"
+    },
     "./sqlite": {
       "types": "./dist/packages/sqlite/src/index.d.ts",
       "import": "./dist/packages/sqlite/src/index.js"
@@ -34,7 +38,6 @@
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
     "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint . --max-warnings=0",
     "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
     "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
     "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
@@ -46,13 +49,29 @@
     "release:prepare": "node scripts/release-prepare.mjs",
     "release:inspect": "node scripts/release-inspect.mjs",
     "release:selftest": "node scripts/release-selftest.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
+    "guardian:chatgpt:install": "bash scripts/install-ask-bridge.sh",
+    "guardian:chatgpt:login": "node scripts/guardian-ask-bridge-login.mjs",
+    "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
+    "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
+    "guardian:poc:canary": "npm run build && node scripts/guardian-full-loop-canary.mjs",
+    "guardian:work-session:ui": "npm run build && node scripts/guardian-work-session-ui.mjs",
+    "guardian:launchpad": "npm run build && node scripts/guardian-launchpad.mjs",
+    "guardian:work-session:adopt": "npm run build && node scripts/guardian-work-session-adopt.mjs",
+    "guardian:notification:setup": "npm run build && node scripts/guardian-notification-setup.mjs",
+    "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
+    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.1",
     "@types/node": "24.10.1",
-    "eslint": "9.39.1",
-    "typescript": "5.9.3",
-    "typescript-eslint": "8.46.1"
+    "@types/nodemailer": "^8.0.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.60.0",
+    "@mastra/libsql": "^1.21.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@openai/codex-sdk": "0.151.0",
+    "nodemailer": "^9.0.5",
+    "zod": "^4.4.3"
   }
 }
