@@ -133,3 +133,51 @@ test('production runtime fails closed when a persisted V2 task state is missing 
     assert.equal(recovered.humanRequired?.category, 'RECOVERY_BLOCKED')
   } finally { await restarted.close(); await cleanupRuntimeData(data) }
 })
+
+test('real runtime restart reloads persisted TaskStateV2 and re-decides without resetting to PENDING', async () => {
+  const data = await mkdtemp(join(tmpdir(), 'novawing-v2-restart-'))
+  const storageUrl = pathToFileURL(join(data, 'session.db')).href
+  const definition = { id: 'v2-restart', targetRepo: data, branch: 'main', controlPlane: 'v2' as const,
+    tasks: [{ id: 'T1', goal: 'repair', acceptanceCriteria: ['tests'], acceptanceEvidenceBindings: [{ criterion: 'tests', requiredEvidence: ['test'] }] }],
+    limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } }
+
+  const makeRunner = () => {
+    const dispatchCalls: string[] = []
+    const runner = new V2ControllerTaskRunner({
+      sessionId: definition.id, branch: definition.branch,
+      agents: [{ id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true } }],
+      dispatcher: {
+        inspectRepository: async () => ({ repositoryIdentity: data, branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+        dispatch: async ({ action }) => {
+          dispatchCalls.push(action)
+          if (action === 'EXECUTE') return { status: 'BLOCKED' as const, blockers: ['external-blocker'], providerHistory: ['codex', 'deepseek'] }
+          return { status: 'SUCCESS' as const, verificationResults: [{ name: 'test', status: 'passed' as const }] }
+        },
+      },
+    })
+    return { runner, dispatchCalls }
+  }
+
+  const first = makeRunner()
+  const runtimeA = new WorkSessionRuntime({ definition, taskRunner: first.runner, storageUrl })
+  try {
+    const started = await runtimeA.start()
+    assert.equal(started.state, 'SUSPENDED')
+    assert.deepEqual(started.taskStatesV2?.T1?.providerHistory, ['codex', 'deepseek'])
+    assert.deepEqual(started.taskStatesV2?.T1?.blockers, ['external-blocker'])
+    assert.ok(!('checkpoint' in (started.taskStatesV2?.T1 as unknown as Record<string, unknown>)),
+      'removed TaskStateV2.checkpoint projection must not reappear')
+  } finally { await runtimeA.close() }
+
+  // 进程重启：重建 runtime 与 runner，共享同一个持久化 storageUrl。
+  const second = makeRunner()
+  const runtimeB = new WorkSessionRuntime({ definition, taskRunner: second.runner, storageUrl })
+  try {
+    const resumed = await runtimeB.resume({ approval: true })
+    assert.equal(resumed.state, 'SUSPENDED')
+    assert.deepEqual(second.dispatchCalls, [], 'restart must re-decide from persisted SUSPENDED, not re-dispatch EXECUTE')
+    assert.deepEqual(resumed.taskStatesV2?.T1?.providerHistory, ['codex', 'deepseek'])
+    assert.ok((resumed.taskStatesV2?.T1?.blockers ?? []).length > 0, 'persisted blocker must still block on restart')
+    assert.notEqual(resumed.taskStatesV2?.T1?.status, 'PENDING')
+  } finally { await runtimeB.close(); await cleanupRuntimeData(data) }
+})

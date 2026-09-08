@@ -22,6 +22,26 @@ function agentIdentity(agent: AgentCapabilityProfile): TaskActorIdentity {
   return agent.identity ?? { agent: agent.id, provider: agent.id, runtimeIdentity: agent.id }
 }
 
+/**
+ * A dispatcher-originated review is trusted only when it names the exact
+ * reviewer the Controller selected. The selected agent's identity is the only
+ * trusted runtime identity; a dispatcher may not self-assert a different one.
+ */
+function trustedReviewEvidence(
+  action: TaskAction,
+  selected: AgentCapabilityProfile,
+  review: ReviewEvidence | undefined,
+): ReviewEvidence | undefined {
+  if (action !== 'REVIEW' || review === undefined) return undefined
+  const identity = agentIdentity(selected)
+  if (
+    review.reviewer.agent !== identity.agent ||
+    review.reviewer.provider !== identity.provider ||
+    review.reviewer.runtimeIdentity !== identity.runtimeIdentity
+  ) return undefined
+  return review
+}
+
 export interface V2StructuredHandoff {
   task: TaskStateV2
   action: TaskAction
@@ -108,8 +128,11 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: result.providerHistory ?? [...state.providerHistory, agent.id],
         ...(decision.action === 'EXECUTE' ? { implementer: agentIdentity(agent) } : {}) }, decision.action, result)
       if (result.review !== undefined || result.approval !== undefined) {
+        // Review evidence is accepted only when its reviewer matches the
+        // selected agent; a mismatched identity is dropped, never trusted.
+        const review = trustedReviewEvidence(decision.action, agent, result.review)
         state = { ...state, completion: { ...state.completion,
-          ...(result.review === undefined ? {} : { review: result.review }),
+          ...(review === undefined ? {} : { review }),
           ...(result.approval === undefined ? {} : { approval: result.approval }),
         } }
       }

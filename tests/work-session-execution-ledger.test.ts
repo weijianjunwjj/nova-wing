@@ -1006,3 +1006,32 @@ await test('Ledger schema supports simple session and failure statistics by redu
     ledger.close()
   })
 })
+
+await test('V2 push recovery projects controller-authorized completion into TaskStateV2', async () => {
+  await withTemp('ledger-v2-push-recovery-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    const v2definition: WorkSessionDefinition = { ...definition('ledger-v2-push-recovery', repoPath), controlPlane: 'v2' }
+    const runtime = new WorkSessionRuntime({
+      definition: v2definition, storageUrl,
+      taskRunner: { async run() { return { status: 'COMPLETED' as const, completionEvidence: completionEvidence() } } },
+      gitCheckpoint: {
+        policy: { autoCommit: true, autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'https://trusted.invalid/repo.git' } },
+        async finalizer() { throw new GitPushError('push verification unavailable', 'commit-recovery-v2') },
+        async commandRunner(args) {
+          if (args[0] === 'branch') return { exitCode: 0, stdout: 'feat/test\n', stderr: '' }
+          if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'commit-recovery-v2\n', stderr: '' }
+          if (args[0] === 'remote') return { exitCode: 0, stdout: 'https://trusted.invalid/repo.git\n', stderr: '' }
+          if (args[0] === 'status') return { exitCode: 0, stdout: '', stderr: '' }
+          if (args[0] === 'ls-remote') return { exitCode: 0, stdout: 'commit-recovery-v2\trefs/heads/feat/test\n', stderr: '' }
+          throw new Error(`unexpected recovery command: ${args[0]}`)
+        },
+      },
+    })
+    await assert.rejects(runtime.start(), /Git checkpoint failed/u)
+    const recovered = await runtime.recoverFailedGitCheckpoint()
+    assert.equal(recovered.state, 'COMPLETED')
+    assert.equal(recovered.taskStatesV2?.T009?.status, 'COMPLETED')
+    assert.deepEqual(recovered.taskStatesV2?.T009?.blockers, [])
+    await runtime.close()
+  })
+})

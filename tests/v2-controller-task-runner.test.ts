@@ -77,3 +77,65 @@ test('V2 restart reconciles repository reality before dispatching an action', as
   assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
   assert.equal(dispatched, false)
 })
+
+const implementer: AgentCapabilityProfile = {
+  id: 'codex', identity: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
+  available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true },
+}
+const reviewer: AgentCapabilityProfile = {
+  id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R2' },
+  available: true, quotaExhausted: false, degraded: false, capabilities: { reasoning: true, verification: true, review: true },
+}
+const highRiskTask = { id: 'v2-review', goal: 'ship', acceptanceCriteria: ['tests pass'], acceptanceEvidenceBindings: [{ criterion: 'tests pass', requiredEvidence: ['test'] }] }
+
+test('REVIEW rejects a dispatcher that self-asserts a different reviewer runtime identity', async () => {
+  let changedFiles: readonly string[] = []
+  const runner = new V2ControllerTaskRunner({
+    sessionId: 's', branch: 'main', agents: [implementer, reviewer], maxActions: 6,
+    dispatcher: {
+      inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }),
+      dispatch: async ({ action }) => {
+        if (action === 'EXECUTE') { changedFiles = ['src/public-api.ts']; return { status: 'SUCCESS', changedFiles } }
+        if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
+        if (action === 'REVIEW') {
+          return { status: 'SUCCESS', review: {
+            passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
+            reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R3' },
+            implementer: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
+            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: [], timestamp: 'now',
+          } }
+        }
+        return { status: 'SUCCESS' }
+      },
+    },
+  })
+  const result = await runner.run(highRiskTask)
+  assert.notEqual(result.status, 'COMPLETED')
+  assert.equal(result.taskStateV2?.completion?.review, undefined)
+})
+
+test('REVIEW accepts a reviewer whose identity matches the selected agent', async () => {
+  let changedFiles: readonly string[] = []
+  const runner = new V2ControllerTaskRunner({
+    sessionId: 's', branch: 'main', agents: [implementer, reviewer],
+    dispatcher: {
+      inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }),
+      dispatch: async ({ action }) => {
+        if (action === 'EXECUTE') { changedFiles = ['src/public-api.ts']; return { status: 'SUCCESS', changedFiles } }
+        if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
+        if (action === 'REVIEW') {
+          return { status: 'SUCCESS', review: {
+            passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
+            reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R2' },
+            implementer: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
+            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: [], timestamp: 'now',
+          } }
+        }
+        return { status: 'SUCCESS' }
+      },
+    },
+  })
+  const result = await runner.run(highRiskTask)
+  assert.equal(result.status, 'COMPLETED')
+  assert.equal(result.taskStateV2?.completion?.review?.reviewer.runtimeIdentity, 'R2')
+})

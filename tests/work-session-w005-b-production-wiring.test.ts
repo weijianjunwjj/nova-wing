@@ -136,7 +136,10 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
       id: 'production-wiring-test',
       targetRepo: process.cwd(),
       branch: 'feat/work-session-mvp',
-      tasks: [{ id: 'T1', goal: 'task one' }, { id: 'T2', goal: 'task two' }],
+      tasks: [
+        { id: 'T1', goal: 'task one', constraints: ['constraint-one'], acceptanceCriteria: ['accept-one'], allowedPaths: ['src/one/**'], forbiddenPaths: ['secrets/**'] },
+        { id: 'T2', goal: 'task two', constraints: ['constraint-two'], acceptanceCriteria: ['accept-two'], allowedPaths: ['src/two/**'], forbiddenPaths: ['dist/**'] },
+      ],
       limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
     })
     assert.ok(runtimeConfig)

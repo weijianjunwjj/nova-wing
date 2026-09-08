@@ -975,6 +975,10 @@ export class WorkSessionRuntime {
       currentTaskBaseHeadSha: undefined,
       activeSegmentStartedAt: this.now(), updatedAt: new Date().toISOString(),
     }
+    // Project the already-authorized terminal completion into TaskStateV2.
+    // This is not a new completion decision: the Controller authorized COMPLETE
+    // before the transport push failed; recovery only persists that fact.
+    patchTaskStateV2(recovered, taskId, { status: 'COMPLETED', blockers: [], currentAction: 'COMPLETE' })
     this.recordLedger({
       eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: state.sessionId, taskId,
       timestamp: this.ledgerTimestamp(), status: 'COMPLETED', recoveryKind: 'GIT_PUSH',
@@ -1626,7 +1630,7 @@ export class WorkSessionRuntime {
               updatedAt: new Date().toISOString(),
             }
             patchTaskStateV2(suspendedState, task.id, {
-              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }),
+              status: 'SUSPENDED',
               blockers: [brainFailure.safeMessage ?? brainFailure.rootCause], currentAction: 'SUSPEND',
             })
             await setState(suspendedState)
@@ -1651,7 +1655,7 @@ export class WorkSessionRuntime {
               updatedAt: new Date().toISOString(),
             }
             patchTaskStateV2(pausedState, task.id, {
-              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }), currentAction: 'SUSPEND',
+              status: 'SUSPENDED', currentAction: 'SUSPEND',
             })
             await setState(pausedState)
             self.latestState = pausedState
@@ -1706,7 +1710,7 @@ export class WorkSessionRuntime {
               updatedAt: new Date().toISOString(),
             }
             patchTaskStateV2(suspendedState, task.id, {
-              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }),
+              status: 'SUSPENDED',
               blockers: result.humanRequired === undefined ? [] : [result.humanRequired.reason],
               currentAction: 'REQUEST_APPROVAL',
             })
