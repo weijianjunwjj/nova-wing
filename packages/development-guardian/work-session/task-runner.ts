@@ -16,6 +16,7 @@ import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
 } from './failure-classification.js'
+import type { TaskEventLogV2, ProviderHealthRegistry } from './task-observability.js'
 
 export type WorkSessionTaskResultStatus =
   | 'COMPLETED'
@@ -86,6 +87,10 @@ export interface WorkSessionTaskRunContext {
   persistTaskStateV2?: (state: TaskStateV2) => Promise<void>
   /** Existing Work Session snapshot projection supplied to the V2 action loop. */
   taskStateV2?: TaskStateV2
+  /** Optional V2 Task Event Log accumulator; history only, never semantic authority. */
+  taskEventLog?: TaskEventLogV2
+  /** Optional V2 Provider Health registry (last-known), projected from real observations. */
+  providerHealth?: ProviderHealthRegistry
 }
 
 export interface WorkSessionTaskRunner {

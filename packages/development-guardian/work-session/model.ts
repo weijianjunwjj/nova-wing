@@ -94,6 +94,14 @@ export interface WorkSessionDurableState {
    * second workflow or a competing runtime state machine.
    */
   taskStatesV2?: Record<string, import('./task-state-v2.js').TaskStateV2>
+  /**
+   * V2 append-only Task Event Log projection (per taskId). History only; it is
+   * never replayed into semantic decisions. Persisted inside the same session
+   * snapshot as TaskStateV2 so restart restores it without a second store.
+   */
+  taskEventLogs?: Record<string, readonly import('./task-observability.js').TaskEventV2[]>
+  /** V2 last-known Provider Health projection (per provider). Real observations override it. */
+  providerHealth?: Record<string, import('./task-observability.js').ProviderHealthObservation>
   humanRequired?: HumanRequired
   pendingVerificationApproval?: PendingVerificationApproval
   /** Brain did not produce a verdict; distinct from a true human decision. */

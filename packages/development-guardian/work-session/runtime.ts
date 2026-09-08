@@ -63,6 +63,7 @@ import {
 } from './verification-approval.js'
 import { TaskController } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2 } from './task-state-v2.js'
+import { ProviderHealthRegistry, TaskEventLogV2 } from './task-observability.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -119,6 +120,10 @@ const WorkflowStateSchema = z.object({
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
   taskStatesV2: z.record(z.string(), z.any()).optional(),
+  // Controller Observability projections: append-only history + last-known health.
+  // Both are advisory; TaskStateV2 remains the single semantic authority.
+  taskEventLogs: z.record(z.string(), z.any()).optional(),
+  providerHealth: z.record(z.string(), z.any()).optional(),
   humanRequired: z.object({
     category: z.string(),
     reason: z.string(),
@@ -238,6 +243,29 @@ function patchTaskStateV2(
     [taskId]: { ...prior, ...patch, updatedAt: new Date().toISOString() },
   }
   state.taskStatesV2 = next
+}
+
+/**
+ * Merge the current Task's telemetry (event log + provider health) into the
+ * same atomic snapshot transition that persists TaskStateV2. The Event Log is
+ * advisory history only: this merge never feeds back into any Controller decision.
+ */
+function mergeTaskTelemetry(
+  state: WorkflowState,
+  taskId: string,
+  log: TaskEventLogV2 | undefined,
+  health: ProviderHealthRegistry | undefined,
+): WorkflowState {
+  const hasEvents = log !== undefined && log.events.length > 0
+  const hasHealth = health !== undefined && Object.keys(health.entries()).length > 0
+  if (!hasEvents && !hasHealth) return state
+  const taskEventLogs = hasEvents
+    ? { ...(state.taskEventLogs ?? {}), [taskId]: log!.events }
+    : state.taskEventLogs
+  const providerHealth = hasHealth
+    ? { ...(state.providerHealth ?? {}), ...health!.entries() }
+    : state.providerHealth
+  return { ...state, taskEventLogs, providerHealth }
 }
 
 /**
@@ -1375,12 +1403,19 @@ export class WorkSessionRuntime {
             isEligibleScopedVerificationCommand(approvedVerification.command, self.config.definition.targetRepo)
               ? approvedVerification.command
               : undefined
+          // Controller Observability projection: seed a per-task Event Log and
+          // last-known Provider Health registry from the current snapshot so
+          // restart preserves history. History is advisory; it never feeds back.
+          const taskEventLog = v2 ? new TaskEventLogV2(currentState.taskEventLogs?.[task.id]) : undefined
+          const providerHealth = v2 ? new ProviderHealthRegistry(currentState.providerHealth) : undefined
           const runContext: WorkSessionTaskRunContext = {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
             ...(v2 ? { persistTaskStateV2: async (canonical: import('./task-state-v2.js').TaskStateV2) => {
-              currentState = { ...currentState, taskStatesV2: { ...currentState.taskStatesV2, [task.id]: canonical }, updatedAt: new Date().toISOString() }
+              // Event Log entries travel in the same atomic snapshot write as the
+              // canonical state transition they describe.
+              currentState = { ...mergeTaskTelemetry(currentState, task.id, taskEventLog, providerHealth), taskStatesV2: { ...currentState.taskStatesV2, [task.id]: canonical }, updatedAt: new Date().toISOString() }
               await setState(currentState)
               self.latestState = currentState
               await self.persistDurableState(currentState)
@@ -1389,8 +1424,13 @@ export class WorkSessionRuntime {
               ? {}
               : { taskStateV2: currentState.taskStatesV2[task.id] as import('./task-state-v2.js').TaskStateV2 }),
             ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+            ...(taskEventLog === undefined ? {} : { taskEventLog }),
+            ...(providerHealth === undefined ? {} : { providerHealth }),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          if (v2 && taskEventLog !== undefined) {
+            currentState = mergeTaskTelemetry(currentState, task.id, taskEventLog, providerHealth)
+          }
           if (result.taskStateV2 !== undefined) {
             const controllerState: WorkflowState = {
               ...currentState,
@@ -1875,6 +1915,12 @@ export class WorkSessionRuntime {
     }
     if (wfState.taskStatesV2 !== undefined) {
       result.taskStatesV2 = wfState.taskStatesV2 as Record<string, import('./task-state-v2.js').TaskStateV2>
+    }
+    if (wfState.taskEventLogs !== undefined) {
+      result.taskEventLogs = wfState.taskEventLogs as Record<string, readonly import('./task-observability.js').TaskEventV2[]>
+    }
+    if (wfState.providerHealth !== undefined) {
+      result.providerHealth = wfState.providerHealth as Record<string, import('./task-observability.js').ProviderHealthObservation>
     }
     if (wfState.pendingVerificationApproval !== undefined) {
       result.pendingVerificationApproval = wfState.pendingVerificationApproval

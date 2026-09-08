@@ -21,6 +21,7 @@ import {
   resolvePersistedCodexConfiguration,
 } from '../coding-executor-config.js'
 import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-execution-store.js'
+import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'
 import { computeWorktreeFingerprint, parseGitStatus } from './worktree-fingerprint.js'
@@ -291,6 +292,44 @@ function defaultGitProcessRunner(
   })
 }
 
+/**
+ * Provider Health source-of-truth: project the real ExecutorRouter / coding-store
+ * facts (failover reason, lastErrorKind, availability) into health observations.
+ * Never inferred from an Agent's self-report.
+ */
+function observedProviderHealth(
+  execution: { activeExecutor?: string; failoverReason?: string; lastErrorKind?: string; lastError?: string } | undefined,
+  availability: { state: 'available' | 'quota_exhausted' | 'unknown'; blockedUntil?: string; nextProbeAt?: string; lastQuotaErrorAt?: string },
+  now: string,
+): ProviderHealthObservation[] {
+  const observations: ProviderHealthObservation[] = []
+  const codex = (status: ProviderHealthStatus, reason: string | undefined, retryAfter?: string): void => {
+    observations.push({
+      provider: 'codex',
+      executor: 'codex',
+      status,
+      ...(reason === undefined ? {} : { reason }),
+      observedAt: availability.lastQuotaErrorAt ?? now,
+      ...(retryAfter === undefined ? {} : { retryAfter }),
+      source: 'runtime',
+    })
+  }
+  const exhausted = execution?.failoverReason === 'codex_quota_exhausted' ||
+    execution?.lastErrorKind === 'quota_exhausted' || availability.state === 'quota_exhausted'
+  if (exhausted) {
+    codex('QUOTA_EXHAUSTED', 'quota exhausted', availability.blockedUntil ?? availability.nextProbeAt)
+  } else if (execution?.lastErrorKind === 'transient') {
+    codex(/timed out|timeout/iu.test(execution.lastError ?? '') ? 'TIMEOUT' : 'DEGRADED', execution.lastError ?? 'transient network/runtime error')
+  } else if (execution?.lastErrorKind === 'auth_required' || execution?.lastErrorKind === 'configuration_error') {
+    codex('OFFLINE', execution.lastErrorKind)
+  } else if (execution?.lastErrorKind === 'model_unavailable') {
+    codex('DEGRADED', execution.lastErrorKind)
+  } else if (execution?.activeExecutor === 'codex' && execution.lastErrorKind === undefined) {
+    codex('AVAILABLE', undefined)
+  }
+  return observations
+}
+
 export function createProductionGitRunner(
   repoPath: string,
   processRunner: ProductionGitProcessRunner = defaultGitProcessRunner,
@@ -484,8 +523,10 @@ export async function createProductionWorkSessionUi(
               } })
               : await router.execute({ task: transportTask,
               packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
+            const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
-              ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }) }
+              ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),
+              ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },
         }
         const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
