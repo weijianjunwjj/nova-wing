@@ -24,6 +24,11 @@ export type WorkSessionState =
 export interface WorkSessionTask {
   id: string
   goal: string
+  /** V2 task facts; optional so existing Work Session definitions remain compatible. */
+  constraints?: readonly string[]
+  acceptanceCriteria?: readonly string[]
+  allowedPaths?: readonly string[]
+  forbiddenPaths?: readonly string[]
 }
 
 export interface WorkSessionLimits {
@@ -79,6 +84,12 @@ export interface WorkSessionDurableState {
   currentTaskIndex: number
   currentTaskId: string | null
   completedTaskIds: readonly string[]
+  /**
+   * V2 task-centric durable projection.  The Work Session snapshot remains the
+   * single persistence boundary; this field deliberately does not introduce a
+   * second workflow or a competing runtime state machine.
+   */
+  taskStatesV2?: Record<string, import('./task-state-v2.js').TaskStateV2>
   humanRequired?: HumanRequired
   pendingVerificationApproval?: PendingVerificationApproval
   /** Brain did not produce a verdict; distinct from a true human decision. */

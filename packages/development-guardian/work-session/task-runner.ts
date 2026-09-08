@@ -11,6 +11,7 @@ import type {
   VerificationResult,
 } from '../model.js'
 import type { GuardianProgressObserver } from '../progress.js'
+import type { TaskStateV2 } from './task-state-v2.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
@@ -63,6 +64,8 @@ export interface WorkSessionTaskResult {
   checkpoint?: GuardianTaskRecoveryCheckpoint
   /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
   completionEvidence?: TaskCompletionEvidence
+  /** V2 controller runner returns the authoritative post-action task state. */
+  taskStateV2?: TaskStateV2
 }
 
 /**
@@ -78,6 +81,8 @@ export interface WorkSessionTaskRunContext {
   onProgress?: GuardianProgressObserver
   /** Runtime-owned one-shot capability; never comes from the browser. */
   approvedVerificationCommand?: string
+  /** Existing Work Session snapshot projection supplied to the V2 action loop. */
+  taskStateV2?: TaskStateV2
 }
 
 export interface WorkSessionTaskRunner {

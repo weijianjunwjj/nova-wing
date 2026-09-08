@@ -129,6 +129,8 @@ describe('Work Session W001 - Durable Skeleton', () => {
       'choose database mode',
       'Should have correct reason',
     )
+    assert.strictEqual(state1.taskStatesV2?.T2?.identity.taskId, 'T2')
+    assert.strictEqual(state1.taskStatesV2?.T2?.status, 'SUSPENDED')
 
     const runId1 = runtime1.getRunId()
     assert.ok(runId1, 'Should have runId')
@@ -193,6 +195,7 @@ describe('Work Session W001 - Durable Skeleton', () => {
     )
     assert.strictEqual(state2.currentTaskId, null, 'No current task')
     assert.strictEqual(state2.humanRequired, undefined, 'humanRequired should be cleared after completion')
+    assert.strictEqual(state2.taskStatesV2?.T2?.identity.sessionId, definition.id)
 
     // 核心验证：第二套 runner 的执行次数
     // runner2 的 T1 不应该执行（因为已在 completed 列表）

@@ -61,6 +61,7 @@ import {
   VERIFICATION_APPROVAL_BLOCKER,
   verificationCommandFingerprint,
 } from './verification-approval.js'
+import { createTaskStateV2 } from './task-state-v2.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -116,6 +117,7 @@ const WorkflowStateSchema = z.object({
   currentTaskIndex: z.number(),
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
+  taskStatesV2: z.record(z.string(), z.any()).optional(),
   humanRequired: z.object({
     category: z.string(),
     reason: z.string(),
@@ -221,6 +223,22 @@ const WorkflowStateSchema = z.object({
 })
 
 type WorkflowState = z.infer<typeof WorkflowStateSchema>
+
+/** Keep the V2 projection in the same atomic snapshot transition as its legacy fact. */
+function patchTaskStateV2(
+  state: WorkflowState,
+  taskId: string,
+  patch: Partial<import('./task-state-v2.js').TaskStateV2>,
+): void {
+  const prior = state.taskStatesV2?.[taskId] as import('./task-state-v2.js').TaskStateV2 | undefined
+  if (prior === undefined) return
+  const next: Record<string, import('./task-state-v2.js').TaskStateV2> = {
+    ...state.taskStatesV2,
+    [taskId]: { ...prior, ...patch, updatedAt: new Date().toISOString() },
+  }
+  if (patch.status === 'COMPLETED' || patch.status === 'FAILED') delete next[taskId]!.checkpoint
+  state.taskStatesV2 = next
+}
 
 /**
  * W004-B: 最小 fail-fast limits 校验。invalid definition 必须在任何
@@ -1229,7 +1247,28 @@ export class WorkSessionRuntime {
           await setState(updatedState)
           currentState = updatedState
           self.latestState = updatedState
-          await self.persistDurableState(updatedState)
+
+          // Persist the V2 projection before provider work begins. It shares
+          // the existing Work Session snapshot rather than creating parallel
+          // task lifecycle persistence.
+          if (currentState.taskStatesV2?.[task.id] === undefined) {
+            const taskState: WorkflowState = {
+              ...currentState,
+              taskStatesV2: {
+                ...(currentState.taskStatesV2 ?? {}),
+                [task.id]: createTaskStateV2(
+                  self.config.definition,
+                  task,
+                  currentState as unknown as WorkSessionDurableState,
+                ),
+              },
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(taskState)
+            currentState = taskState
+            self.latestState = taskState
+          }
+          await self.persistDurableState(currentState)
           if (isNewTaskClaim) {
             self.recordLedger({
               eventType: 'TASK_STARTED',
@@ -1293,9 +1332,22 @@ export class WorkSessionRuntime {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
+            ...(currentState.taskStatesV2?.[task.id] === undefined
+              ? {}
+              : { taskStateV2: currentState.taskStatesV2[task.id] as import('./task-state-v2.js').TaskStateV2 }),
             ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          if (result.taskStateV2 !== undefined) {
+            const controllerState: WorkflowState = {
+              ...currentState,
+              taskStatesV2: { ...(currentState.taskStatesV2 ?? {}), [task.id]: result.taskStateV2 },
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(controllerState)
+            currentState = controllerState
+            self.latestState = controllerState
+          }
           const approvedVerificationResult = approvedVerificationCommand === undefined
             ? undefined
             : persistedVerificationResult(result, approvedVerificationCommand)
@@ -1463,6 +1515,10 @@ export class WorkSessionRuntime {
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               updatedAt: new Date().toISOString(),
             }
+            patchTaskStateV2(completedState, task.id, {
+              status: 'COMPLETED', blockers: [],
+              verificationState: { results: completionEvidence?.verificationResults ?? [] },
+            })
             await setState(completedState)
             currentState = completedState
             self.latestState = completedState
@@ -1552,6 +1608,10 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState),
               updatedAt: new Date().toISOString(),
             }
+            patchTaskStateV2(suspendedState, task.id, {
+              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }),
+              blockers: [brainFailure.safeMessage ?? brainFailure.rootCause], currentAction: 'SUSPEND',
+            })
             await setState(suspendedState)
             self.latestState = suspendedState
             return await suspend(
@@ -1573,6 +1633,9 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState),
               updatedAt: new Date().toISOString(),
             }
+            patchTaskStateV2(pausedState, task.id, {
+              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }), currentAction: 'SUSPEND',
+            })
             await setState(pausedState)
             self.latestState = pausedState
             return await suspend(
@@ -1625,6 +1688,11 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
             }
+            patchTaskStateV2(suspendedState, task.id, {
+              status: 'SUSPENDED', ...(result.checkpoint === undefined ? {} : { checkpoint: result.checkpoint }),
+              blockers: result.humanRequired === undefined ? [] : [result.humanRequired.reason],
+              currentAction: 'REQUEST_APPROVAL',
+            })
             await setState(suspendedState)
             self.latestState = suspendedState
             self.recordLedger({
@@ -1675,6 +1743,9 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
             }
+            patchTaskStateV2(failedState, task.id, {
+              status: 'FAILED', blockers: [failure.safeMessage], currentAction: 'SUSPEND',
+            })
             await setState(failedState)
             self.latestState = failedState
             self.recordSessionFailed(failedState)
@@ -1744,6 +1815,9 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.taskStatesV2 !== undefined) {
+      result.taskStatesV2 = wfState.taskStatesV2 as Record<string, import('./task-state-v2.js').TaskStateV2>
     }
     if (wfState.pendingVerificationApproval !== undefined) {
       result.pendingVerificationApproval = wfState.pendingVerificationApproval
