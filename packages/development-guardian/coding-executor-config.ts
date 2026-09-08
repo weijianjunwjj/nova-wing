@@ -46,12 +46,6 @@ export function isSupportedCodexConfiguration(model: string, reasoningEffort: st
   return codexModelOption(model)?.supportedReasoningEfforts.includes(reasoningEffort as CodexReasoningEffort) === true
 }
 
-export function defaultReasoningEffortForCodexModel(model: string): CodexReasoningEffort {
-  const efforts = codexModelOption(model)?.supportedReasoningEfforts
-  if (efforts === undefined) throw new Error(`Unsupported Codex model: ${model}`)
-  return efforts.includes('high') ? 'high' : efforts[0]!
-}
-
 /**
  * A missing Codex block identifies a pre-selector Work Session.  Its behavior
  * must stay Sol/Medium even after new task defaults changed to Terra/High.

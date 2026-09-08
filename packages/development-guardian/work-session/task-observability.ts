@@ -15,9 +15,6 @@
 import type { TaskStateV2 } from './task-state-v2.js'
 import type { TaskAction } from './task-controller.js'
 
-/** 本模块持久化结构版本。仅用于帮助未来 schema 演进，不参与语义判断。 */
-export const TASK_OBSERVABILITY_VERSION = 1 as const
-
 /** 第一版 Provider Health 状态。确定性、简单，不做 AI Router。 */
 export type ProviderHealthStatus =
   | 'AVAILABLE'
@@ -257,15 +254,6 @@ export class ProviderHealthRegistry {
   entries(): ProviderHealthMap {
     return { ...this.map }
   }
-}
-
-/** 判断一个 agent 是否具备指定 action 所需 capability。 */
-export function hasRequiredCapability(action: TaskAction, capabilities: { coding?: boolean; reasoning?: boolean; review?: boolean; repoNavigation?: boolean; debugging?: boolean; verification?: boolean }): boolean {
-  if (action === 'EXECUTE') return capabilities.coding === true
-  if (action === 'VERIFY') return capabilities.verification === true
-  if (action === 'REVIEW') return capabilities.review === true
-  if (action === 'ANALYZE') return capabilities.reasoning === true
-  return true
 }
 
 /**
