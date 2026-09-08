@@ -37,6 +37,7 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
     "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
+    "benchmark:v1v2": "node dist-tests/tests/benchmark/run-benchmark.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
     "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",

@@ -1,0 +1,829 @@
+{
+  "environment": {
+    "platform": "win32",
+    "node": "v24.14.1",
+    "providers": {
+      "codex": "AVAILABLE (scripted)",
+      "deepseek": "AVAILABLE (scripted)"
+    }
+  },
+  "frozenAt": "2026-09-08",
+  "commit": {
+    "observabilityBaseline": "648d11c"
+  },
+  "methodology": {
+    "harness": "deterministic control-plane harness; scripted brain/executor (v0.1) and scripted dispatcher (v0.2)",
+    "executedTaskIds": [
+      "T01",
+      "T02",
+      "T03",
+      "T04",
+      "T05",
+      "T06",
+      "T07",
+      "T08",
+      "T15"
+    ],
+    "repeatability": "deterministic: single run per task/mode; identical output on repeat",
+    "note": "LLM/token/quota/cost and wall-clock across live providers are UNAVAILABLE in this environment"
+  },
+  "invalidRuns": [],
+  "runs": [
+    {
+      "taskId": "T01",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T01",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 1.8760000000000048,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T01",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T01",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 2.2734999999999985,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T02",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T02",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.07730000000000814,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T02",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T02",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.40619999999999834,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T03",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T03",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.050199999999989586,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T03",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T03",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.3020000000000067,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T04",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T04",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.04729999999999279,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T04",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T04",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.2831999999999937,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T05",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T05",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.0625,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T05",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T05",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.24039999999999395,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T06",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T06",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.10710000000000264,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 2,
+        "verificationFailureCount": 1,
+        "retryCount": 1,
+        "reviewCount": 3,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 12,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T06",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T06",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.32689999999999486,
+        "controllerDecisionCount": 5,
+        "agentDispatchCount": 4,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 2,
+        "verificationFailureCount": 1,
+        "retryCount": 1,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 19,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T07",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T07",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.04819999999999425,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 2,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 8,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T07",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T07",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.172300000000007,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 11,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T08",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T08",
+        "completed": false,
+        "humanRequired": true,
+        "failed": false,
+        "terminalState": "HUMAN_REQUIRED"
+      },
+      "metrics": {
+        "success": false,
+        "totalDurationMs": 0.09049999999999159,
+        "controllerDecisionCount": 1,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 1,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 1,
+        "approvalCount": 0,
+        "humanInterventionCount": 1,
+        "taskEventCount": 6,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T08",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T08",
+        "completed": false,
+        "humanRequired": true,
+        "failed": false,
+        "terminalState": "HUMAN_REQUIRED"
+      },
+      "metrics": {
+        "success": false,
+        "totalDurationMs": 0.09680000000000177,
+        "controllerDecisionCount": 2,
+        "agentDispatchCount": 1,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 0,
+        "verificationFailureCount": 0,
+        "retryCount": 0,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 1,
+        "taskEventCount": 6,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T15",
+      "mode": "v1",
+      "outcome": {
+        "mode": "v1",
+        "taskId": "T15",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.043000000000006366,
+        "controllerDecisionCount": 3,
+        "agentDispatchCount": 2,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 2,
+        "verificationFailureCount": 1,
+        "retryCount": 1,
+        "reviewCount": 3,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 12,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    },
+    {
+      "taskId": "T15",
+      "mode": "v2",
+      "outcome": {
+        "mode": "v2",
+        "taskId": "T15",
+        "completed": true,
+        "humanRequired": false,
+        "failed": false,
+        "terminalState": "COMPLETED"
+      },
+      "metrics": {
+        "success": true,
+        "totalDurationMs": 0.21949999999999648,
+        "controllerDecisionCount": 5,
+        "agentDispatchCount": 4,
+        "providerSwitchCount": 0,
+        "handoffCount": 0,
+        "verificationRunCount": 2,
+        "verificationFailureCount": 1,
+        "retryCount": 1,
+        "reviewCount": 0,
+        "approvalCount": 0,
+        "humanInterventionCount": 0,
+        "taskEventCount": 19,
+        "llmCallCount": "UNAVAILABLE",
+        "tokenUsage": "UNAVAILABLE",
+        "quotaUsage": "UNAVAILABLE",
+        "providerExecutionDurationMs": "UNAVAILABLE"
+      },
+      "valid": true
+    }
+  ],
+  "aggregated": {
+    "v1": {
+      "aggregates": [
+        {
+          "name": "totalDurationMs",
+          "mean": 0.2668999999999989,
+          "median": 0.0625,
+          "min": 0.043000000000006366,
+          "max": 1.8760000000000048
+        },
+        {
+          "name": "controllerDecisionCount",
+          "mean": 2.111111111111111,
+          "median": 2,
+          "min": 1,
+          "max": 3
+        },
+        {
+          "name": "agentDispatchCount",
+          "mean": 1.2222222222222223,
+          "median": 1,
+          "min": 1,
+          "max": 2
+        },
+        {
+          "name": "providerSwitchCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "handoffCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "verificationRunCount",
+          "mean": 1.2222222222222223,
+          "median": 1,
+          "min": 1,
+          "max": 2
+        },
+        {
+          "name": "verificationFailureCount",
+          "mean": 0.2222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "retryCount",
+          "mean": 0.2222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "reviewCount",
+          "mean": 2.111111111111111,
+          "median": 2,
+          "min": 1,
+          "max": 3
+        },
+        {
+          "name": "approvalCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "humanInterventionCount",
+          "mean": 0.1111111111111111,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "taskEventCount",
+          "mean": 8.666666666666666,
+          "median": 8,
+          "min": 6,
+          "max": 12
+        }
+      ],
+      "completionRate": 0.8888888888888888,
+      "firstPassRate": 0.6666666666666666,
+      "humanInterventions": 1,
+      "retryTotal": 2
+    },
+    "v2": {
+      "aggregates": [
+        {
+          "name": "totalDurationMs",
+          "mean": 0.4800888888888879,
+          "median": 0.2831999999999937,
+          "min": 0.09680000000000177,
+          "max": 2.2734999999999985
+        },
+        {
+          "name": "controllerDecisionCount",
+          "mean": 3.3333333333333335,
+          "median": 3,
+          "min": 2,
+          "max": 5
+        },
+        {
+          "name": "agentDispatchCount",
+          "mean": 2.3333333333333335,
+          "median": 2,
+          "min": 1,
+          "max": 4
+        },
+        {
+          "name": "providerSwitchCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "handoffCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "verificationRunCount",
+          "mean": 1.1111111111111112,
+          "median": 1,
+          "min": 0,
+          "max": 2
+        },
+        {
+          "name": "verificationFailureCount",
+          "mean": 0.2222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "retryCount",
+          "mean": 0.2222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "reviewCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "approvalCount",
+          "mean": 0,
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        {
+          "name": "humanInterventionCount",
+          "mean": 0.1111111111111111,
+          "median": 0,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "name": "taskEventCount",
+          "mean": 12.222222222222221,
+          "median": 11,
+          "min": 6,
+          "max": 19
+        }
+      ],
+      "completionRate": 0.8888888888888888,
+      "firstPassRate": 0.6666666666666666,
+      "humanInterventions": 1,
+      "retryTotal": 2
+    }
+  },
+  "deltas": {
+    "speedControlPlanePct": 79.88,
+    "speedTarget30Pct": false,
+    "costPct": "UNAVAILABLE",
+    "handoffV1Total": 0,
+    "handoffV2Total": 0,
+    "unnecessaryHandoffCount": {
+      "v1": 0,
+      "v2": 0,
+      "note": "no provider switches occur in deterministic runs; not computed"
+    },
+    "firstPassRate": {
+      "v1": 0.6666666666666666,
+      "v2": 0.6666666666666666
+    },
+    "completionRate": {
+      "v1": 0.8888888888888888,
+      "v2": 0.8888888888888888
+    },
+    "humanInterventionTotal": {
+      "v1": 1,
+      "v2": 1
+    },
+    "retryTotal": {
+      "v1": 2,
+      "v2": 2
+    }
+  },
+  "verdicts": {
+    "speed": "INSUFFICIENT_DATA",
+    "cost": "UNAVAILABLE",
+    "handoff": "INSUFFICIENT_DATA",
+    "completionReliability": "PARTIALLY_SUPPORTED"
+  }
+}
