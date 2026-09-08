@@ -1,6 +1,6 @@
 import type { TaskStateV2 } from './task-state-v2.js'
 import type { VerificationResult } from '../model.js'
-import { assessRisk, completionSatisfied, type AcceptanceEvidenceBinding, type ApprovalEvidence, type EvidenceV2, type ReviewEvidence } from './risk-evidence.js'
+import { assessRisk, completionGate } from './risk-evidence.js'
 
 export type TaskAction = 'ANALYZE' | 'EXECUTE' | 'VERIFY' | 'REVIEW' | 'REQUEST_APPROVAL' | 'RECONCILE' | 'SUSPEND' | 'COMPLETE'
 export interface ControllerRuntimeState { reconciliationRequired?: boolean }
@@ -18,44 +18,21 @@ export interface TaskActionResult {
  * execution remain owned by the existing runtime ports.
  */
 export class TaskController {
-  observe(task: TaskStateV2, runtime: ControllerRuntimeState = {}): TaskActionDecision {
-    return runtime.reconciliationRequired
-      ? { action: 'RECONCILE', reason: 'persisted task facts require repository reconciliation' }
-      : this.decide(task)
-  }
-
-  decide(task: TaskStateV2): TaskActionDecision {
+  /** The authoritative V2 next-action and completion gate. */
+  decide(task: TaskStateV2, runtime: ControllerRuntimeState = {}): TaskActionDecision {
+    if (runtime.reconciliationRequired) return { action: 'RECONCILE', reason: 'persisted task facts require repository reconciliation' }
     if (task.blockers.length > 0) return { action: 'SUSPEND', reason: 'unresolved blocker prevents completion' }
-    if (task.status === 'COMPLETED') return { action: 'COMPLETE', reason: 'task already has completion evidence' }
     if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reason: 'task requires a human decision or approval' }
     if (task.acceptanceCriteria.length === 0) return { action: 'ANALYZE', reason: 'acceptance criteria are not yet established' }
     if (task.status === 'PENDING') return { action: 'EXECUTE', reason: 'task has not started execution' }
     const results = task.verificationState.results
     if (results.some((result) => result.status === 'failed')) return { action: 'EXECUTE', reason: 'deterministic verification failed' }
     if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reason: 'required deterministic evidence is missing' }
-    // V2 does not force every task through an independent Reviewer. A caller
-    // may explicitly schedule REVIEW for risk policy later; normal evidence is
-    // sufficient for the deterministic completion gate.
-    return this.evaluateCompletion(task)
-  }
-
-  evaluateCompletion(task: TaskStateV2): TaskActionDecision {
-    const allEvidencePassed = task.verificationState.results.length > 0 &&
-      task.verificationState.results.every((result) => result.status === 'passed')
-    if (task.blockers.length === 0 && task.acceptanceCriteria.length > 0 && allEvidencePassed) {
-      return { action: 'COMPLETE', reason: 'acceptance criteria and deterministic evidence passed' }
-    }
-    return { action: 'VERIFY', reason: 'completion requires acceptance criteria, passing evidence, and no blockers' }
-  }
-
-  /** Risk/evidence completion policy for the controller-driven V2 path. */
-  decideWithEvidence(task: TaskStateV2, policy: { evidence: readonly EvidenceV2[]; bindings: readonly AcceptanceEvidenceBinding[]; review?: ReviewEvidence; approval?: ApprovalEvidence }): TaskActionDecision {
-    const base = this.decide(task)
-    if (base.action !== 'COMPLETE') return base
     const risk = assessRisk(task)
-    if (risk.level === 'CRITICAL' && (policy.approval?.approved !== true || policy.approval.workspaceIdentity !== task.gitState.worktreeFingerprint || policy.approval.risk !== risk.level)) return { action: 'REQUEST_APPROVAL', reason: `critical risk: ${risk.factors.join(', ') || 'policy'}` }
-    if (risk.level === 'HIGH' && (policy.review?.passed !== true || policy.review.blockingFindings.length > 0)) return { action: 'REVIEW', reason: `independent review required: ${risk.factors.join(', ')}` }
-    return completionSatisfied({ task, ...policy, risk })
+    const policy = task.completion
+    if (risk.level === 'CRITICAL' && (policy.approval?.approved !== true || policy.approval.workspaceIdentity !== task.gitState.worktreeFingerprint || policy.approval.reviewedCommit !== task.gitState.headSha || policy.approval.risk !== risk.level)) return { action: 'REQUEST_APPROVAL', reason: `critical risk: ${risk.factors.join(', ') || 'policy'}` }
+    if (risk.level === 'HIGH' && (policy.review?.passed !== true || policy.review.blockingFindings.length > 0 || policy.review.reviewerIdentity === policy.review.implementerIdentity || policy.review.reviewedWorkspace !== task.gitState.worktreeFingerprint || policy.review.reviewedCommit !== task.gitState.headSha)) return { action: 'REVIEW', reason: `independent review required: ${risk.factors.join(', ')}` }
+    return completionGate({ task, ...policy, risk })
       ? { action: 'COMPLETE', reason: 'completion gate passed' }
       : { action: 'VERIFY', reason: 'required acceptance evidence is missing, failed, or stale' }
   }
@@ -71,6 +48,11 @@ export class TaskController {
       artifacts: result.changedFiles === undefined ? task.artifacts : [...new Set([...task.artifacts, ...result.changedFiles])],
       gitState: result.changedFiles === undefined ? task.gitState : { ...task.gitState, changedFiles: result.changedFiles },
       verificationState: { ...task.verificationState, results: verificationResults },
+      completion: result.verificationResults === undefined ? task.completion : {
+        ...task.completion,
+        evidence: result.verificationResults.map((item) => ({ type: item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
+        bindings: task.acceptanceCriteria.map((criterion) => ({ criterion, requiredEvidence: result.verificationResults!.filter((item) => item.status === 'passed').map((item) => item.name) })),
+      },
       blockers,
       currentAction: action,
       status: result.status === 'BLOCKED' ? 'SUSPENDED' : 'ACTIVE',

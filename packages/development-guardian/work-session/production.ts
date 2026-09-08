@@ -20,6 +20,8 @@ import {
 } from '../coding-executor-config.js'
 import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-execution-store.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
+import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'
+import { computeWorktreeFingerprint, parseGitStatus } from './worktree-fingerprint.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
@@ -59,6 +61,7 @@ const TrustedConfigSchema = z.object({
     scheduledStartAt: z.string().nullable().optional(),
     scheduleSource: z.enum(['immediate', 'custom', 'deepseek_off_peak']).optional(),
     createdAt: z.string().optional(),
+    controlPlane: z.enum(['v1', 'v2']).optional(),
     limits: z.object({
       softMinutes: z.number(),
       hardMinutes: z.number(),
@@ -305,6 +308,9 @@ export interface ProductionWorkSessionDependencies {
   createSmtpTransport?: (config: SmtpTransportConfig) => SmtpMailTransport
   notificationRetryDelayMs?: number
   preflight?: (targetRepo: string) => Promise<DependencyHealthReport>
+  /** Production V2 adapter seam. V1 remains available only when explicitly selected. */
+  createV2Dispatcher?: (input: { definition: WorkSessionDefinition; eventSink?: import('../progress.js').GuardianProgressObserver }) => V2ActionDispatcher
+  v2Agents?: readonly AgentCapabilityProfile[]
 }
 
 export interface ProductionWorkSessionUi {
@@ -349,7 +355,8 @@ export async function createProductionWorkSessionUi(
     id: trusted.session.id,
     targetRepo: trusted.session.targetRepo,
     branch: trusted.session.branch,
-    tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal })),
+    tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal, constraints: task.guardian.constraints,
+      acceptanceCriteria: task.guardian.acceptanceCriteria, allowedPaths: task.guardian.allowedPaths, forbiddenPaths: task.guardian.forbiddenPaths })),
     limits: { ...trusted.session.limits },
     ...(trusted.session.scheduledStartAt === undefined ? {} : { scheduledStartAt: trusted.session.scheduledStartAt }),
     ...(trusted.session.scheduleSource === undefined ? {} : { scheduleSource: trusted.session.scheduleSource }),
@@ -416,6 +423,38 @@ export async function createProductionWorkSessionUi(
       requireDependencyPreflightReady(report)
     },
     createRuntime(eventSink, notificationSink) {
+      if (trusted.session.controlPlane === 'v2') {
+        const inspectRepository = async () => {
+          const [branch, head, status] = await Promise.all([
+            gitRunner('git branch --show-current'), gitRunner('git rev-parse HEAD'), gitRunner('git status --porcelain --untracked-files=all'),
+          ])
+          if (branch.exitCode !== 0 || head.exitCode !== 0 || status.exitCode !== 0) throw new Error('production V2 repository inspection failed')
+          const entries = parseGitStatus(status.stdout)
+          return { branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
+            worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) }
+        }
+        const dispatcher = dependencies.createV2Dispatcher?.({ definition, eventSink }) ?? {
+          inspectRepository,
+          dispatch: async ({ action, task: taskState }) => {
+            if (action === 'ANALYZE' || action === 'RECONCILE') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
+            if (action === 'REQUEST_APPROVAL' || action === 'SUSPEND') return { status: 'BLOCKED' as const, blockers: ['human decision required'] }
+            const executor = createExecutor({ cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
+              allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory })
+            const report = await executor.execute({ task: { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0, maxIterations: trusted.executor.maxTurns,
+              constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria, allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths },
+              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: [], doNotDo: taskState.permissions.forbiddenPaths } })
+            return { status: report.blockers.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: report.blockers }
+          },
+        }
+        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+          agents: dependencies.v2Agents ?? [{ id: 'production-executor', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: true } }], dispatcher })
+        const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl,
+          gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
+            ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },
+          ...(notifier === undefined ? {} : { notifier }), notificationObserver: notificationSink, localControlUrl: () => localControlUrl }
+        runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
+        return runtime
+      }
       const runner = new GuardianWorkSessionTaskRunner({
         brain,
         repoPath: definition.targetRepo,

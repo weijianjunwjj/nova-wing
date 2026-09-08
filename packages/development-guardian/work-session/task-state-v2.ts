@@ -1,6 +1,7 @@
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { VerificationResult } from '../model.js'
 import type { WorkSessionDefinition, WorkSessionDurableState, WorkSessionTask } from './model.js'
+import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence } from './risk-evidence.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
 
@@ -35,6 +36,13 @@ export interface TaskStateV2 {
   artifacts: readonly string[]
   gitState: TaskGitStateV2
   verificationState: TaskVerificationStateV2
+  /** Completion facts are task-owned.  Legacy workflow snapshots only project them. */
+  completion: {
+    evidence: readonly EvidenceV2[]
+    bindings: readonly AcceptanceEvidenceBinding[]
+    review?: ReviewEvidence
+    approval?: ApprovalEvidence
+  }
   providerHistory: readonly string[]
   checkpoint?: GuardianTaskRecoveryCheckpoint
   currentAgent?: string
@@ -79,6 +87,7 @@ export function createTaskStateV2(
       ...(checkpoint?.repo.headSha === undefined ? {} : { evidenceHeadSha: checkpoint.repo.headSha }),
       ...(checkpoint?.repo.worktreeFingerprint === undefined ? {} : { evidenceWorktreeFingerprint: checkpoint.repo.worktreeFingerprint }),
     },
+    completion: { evidence: [], bindings: (task.acceptanceCriteria ?? []).map((criterion) => ({ criterion, requiredEvidence: [] })) },
     providerHistory: checkpoint?.provider.codingExecution?.history ?? [],
     ...(checkpoint === undefined ? {} : { checkpoint }),
     risk: 'NORMAL', status,

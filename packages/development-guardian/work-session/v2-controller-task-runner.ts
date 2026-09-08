@@ -1,6 +1,7 @@
 import type { VerificationResult } from '../model.js'
 import { TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { createTaskStateV2, type TaskStateV2 } from './task-state-v2.js'
+import type { ApprovalEvidence, ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
@@ -22,8 +23,9 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff }): Promise<TaskActionResult>
-  inspectRepository?(): Promise<RepositoryReality>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence }>
+  /** Production V2 has no agent-reported-repository fallback. */
+  inspectRepository(): Promise<RepositoryReality>
 }
 
 function requiredCapability(action: TaskAction): keyof AgentCapabilityProfile['capabilities'] | undefined {
@@ -34,7 +36,7 @@ function requiredCapability(action: TaskAction): keyof AgentCapabilityProfile['c
   return undefined
 }
 
-/** Rule-only selection: continuity wins, then the first available capable fallback. */
+/** REVIEW deliberately excludes its implementer; other actions prefer continuity. */
 export function selectAgent(
   action: TaskAction,
   profiles: readonly AgentCapabilityProfile[],
@@ -44,6 +46,7 @@ export function selectAgent(
   const usable = (profile: AgentCapabilityProfile) => profile.available && !profile.quotaExhausted && !profile.degraded &&
     (capability === undefined || profile.capabilities[capability] === true)
   const current = profiles.find((profile) => profile.id === currentAgent)
+  if (action === 'REVIEW') return profiles.find((profile) => profile.id !== currentAgent && usable(profile))
   return current !== undefined && usable(current) ? current : profiles.find(usable)
 }
 
@@ -71,13 +74,9 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     let previousAgent = state.currentAgent
     for (let iteration = 0; iteration < (this.options.maxActions ?? 20); iteration++) {
       if (context?.shouldPauseAutonomousWork?.()) return { status: 'PAUSED', taskStateV2: { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND' } }
-      let reconciliationRequired = false
-      if (this.options.dispatcher.inspectRepository !== undefined) {
-        const reconciliation = reconcileTaskState(state, await this.options.dispatcher.inspectRepository())
-        state = reconciliation.state
-        reconciliationRequired = !reconciliation.reconciled
-      }
-      const decision = controller.observe(state, { reconciliationRequired })
+      const reconciliation = reconcileTaskState(state, await this.options.dispatcher.inspectRepository())
+      state = reconciliation.state
+      const decision = controller.decide(state, { reconciliationRequired: !reconciliation.reconciled })
       if (decision.action === 'RECONCILE') {
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT', reason: decision.reason }, taskStateV2: state }
       }
@@ -85,8 +84,6 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'DECISION_REQUIRED', reason: decision.reason }, taskStateV2: state }
       }
       if (decision.action === 'COMPLETE') {
-        const completion = controller.evaluateCompletion(state)
-        if (completion.action !== 'COMPLETE') continue
         const verificationResults = state.verificationState.results
         return {
           status: 'COMPLETED', taskStateV2: { ...state, status: 'COMPLETED', currentAction: 'COMPLETE' },
@@ -101,6 +98,12 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         : createStructuredHandoff(state, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
       const result = await this.options.dispatcher.dispatch({ action: decision.action, agent, task: state, ...(handoff === undefined ? {} : { handoff }) })
       state = controller.applyResult({ ...state, currentAgent: agent.id, providerHistory: [...state.providerHistory, agent.id] }, decision.action, result)
+      if (result.review !== undefined || result.approval !== undefined) {
+        state = { ...state, completion: { ...state.completion,
+          ...(result.review === undefined ? {} : { review: result.review }),
+          ...(result.approval === undefined ? {} : { approval: result.approval }),
+        } }
+      }
       previousAgent = agent.id
       if (result.status === 'BLOCKED') return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'DECISION_REQUIRED', reason: state.blockers[0] ?? decision.reason }, taskStateV2: state }
     }

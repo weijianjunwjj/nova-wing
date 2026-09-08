@@ -32,8 +32,8 @@ test('controller decides actions from state and never treats a report-like state
   assert.equal(controller.decide(state()).action, 'EXECUTE')
   assert.equal(controller.decide(state({ verificationState: { results: [{ name: 'test', status: 'failed' }] } })).action, 'EXECUTE')
   assert.equal(controller.decide(state({ status: 'SUSPENDED' })).action, 'REQUEST_APPROVAL')
-  assert.equal(controller.evaluateCompletion(state({ verificationState: { results: [{ name: 'test', status: 'passed' }] } })).action, 'COMPLETE')
-  assert.equal(controller.evaluateCompletion(state({ blockers: ['needs approval'], verificationState: { results: [{ name: 'test', status: 'passed' }] } })).action, 'VERIFY')
+  assert.equal(controller.decide(state({ status: 'ACTIVE', verificationState: { results: [{ name: 'test', status: 'passed' }] } })).action, 'VERIFY')
+  assert.equal(controller.decide(state({ blockers: ['needs approval'], verificationState: { results: [{ name: 'test', status: 'passed' }] } })).action, 'SUSPEND')
 })
 
 test('reconciliation suspends on repository drift and invalidates old verification evidence', () => {
@@ -46,7 +46,7 @@ test('reconciliation suspends on repository drift and invalidates old verificati
   })
   assert.equal(result.reconciled, false)
   assert.equal(result.state.status, 'SUSPENDED')
-  assert.equal(new TaskController().observe(result.state, { reconciliationRequired: true }).action, 'RECONCILE')
+  assert.equal(new TaskController().decide(result.state, { reconciliationRequired: true }).action, 'RECONCILE')
   assert.match(result.reasons.join(' '), /branch mismatch/)
   assert.match(result.reasons.join(' '), /older commit/)
 })

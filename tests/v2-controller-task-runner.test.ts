@@ -13,9 +13,10 @@ const task = { id: 'v2', goal: 'fix it', acceptanceCriteria: ['tests pass'] }
 test('V2 runner owns execute/verify/fix/complete loop and preserves agent continuity', async () => {
   const calls: Array<{ action: string; agent: string }> = []
   let verificationAttempt = 0
+  let changedFiles: readonly string[] = []
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [codex, deepseek],
-    dispatcher: { dispatch: async ({ action, agent }) => {
+    dispatcher: { inspectRepository: async () => ({ branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, agent }) => {
       calls.push({ action, agent: agent.id })
       if (action === 'VERIFY') {
         verificationAttempt++
@@ -23,7 +24,8 @@ test('V2 runner owns execute/verify/fix/complete loop and preserves agent contin
           ? { status: 'FAILED', verificationResults: [{ name: 'test', status: 'failed' }] }
           : { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
       }
-      return { status: 'SUCCESS', changedFiles: action === 'EXECUTE' ? ['src/a.ts'] : [] }
+      if (action === 'EXECUTE') changedFiles = ['src/a.ts']
+      return { status: 'SUCCESS', changedFiles: action === 'EXECUTE' ? changedFiles : [] }
     } },
   })
   const result = await runner.run(task)
@@ -36,13 +38,15 @@ test('V2 runner owns execute/verify/fix/complete loop and preserves agent contin
 test('quota fallback passes structured state to DeepSeek without changing task identity', async () => {
   const exhaustedCodex = { ...codex, quotaExhausted: true }
   let handoffSeen = false
+  let changedFiles: readonly string[] = []
   const initial = { ...createTaskStateV2({ id: 's', branch: 'main' }, task), currentAgent: 'codex', providerHistory: ['codex'] }
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [exhaustedCodex, deepseek],
-    dispatcher: { dispatch: async ({ action, task: state, handoff }) => {
+    dispatcher: { inspectRepository: async () => ({ branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, task: state, handoff }) => {
       if (handoff !== undefined) {
         handoffSeen = handoff.task.identity.taskId === 'v2' && handoff.task === state && handoff.task.providerHistory.includes('codex')
       }
+      if (action === 'EXECUTE') changedFiles = ['src/a.ts']
       return action === 'VERIFY'
         ? { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
         : { status: 'SUCCESS', changedFiles: ['src/a.ts'] }

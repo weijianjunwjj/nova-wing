@@ -71,7 +71,6 @@ const expectedRuntimeExports = {
     'classifyHumanRequired',
     'classifyWorkSessionFailure',
     'computeWorktreeFingerprint',
-    'completionSatisfied',
     'createAskBridgeCommandRunner',
     'createDefaultTenXChatCommand',
     'createGuardianTask',
