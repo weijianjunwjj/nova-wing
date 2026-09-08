@@ -102,7 +102,7 @@ test('REVIEW rejects a dispatcher that self-asserts a different reviewer runtime
             passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
             reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R3' },
             implementer: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
-            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: [], timestamp: 'now',
+            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: ['src/public-api.ts'], timestamp: 'now',
           } }
         }
         return { status: 'SUCCESS' }
@@ -128,7 +128,7 @@ test('REVIEW accepts a reviewer whose identity matches the selected agent', asyn
             passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
             reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R2' },
             implementer: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
-            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: [], timestamp: 'now',
+            reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: ['src/public-api.ts'], timestamp: 'now',
           } }
         }
         return { status: 'SUCCESS' }
@@ -138,4 +138,80 @@ test('REVIEW accepts a reviewer whose identity matches the selected agent', asyn
   const result = await runner.run(highRiskTask)
   assert.equal(result.status, 'COMPLETED')
   assert.equal(result.taskStateV2?.completion?.review?.reviewer.runtimeIdentity, 'R2')
+})
+
+test('V2 rejects dispatcher approval, then accepts a human approval only for the persisted request', async () => {
+  let files: readonly string[] = []
+  let fingerprint = 'w'
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [implementer], dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: files, worktreeFingerprint: fingerprint }),
+    dispatch: async ({ action }) => {
+      if (action === 'EXECUTE') { files = ['auth/security.ts', 'database/schema.ts']; return { status: 'SUCCESS' } }
+      return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }], approval: {
+        approved: true, repositoryIdentity: 'repo', branch: 'main', reviewedCommit: 'h', workspaceIdentity: 'w', risk: 'CRITICAL', timestamp: 'now',
+      } }
+    },
+  } })
+  const request = await runner.run(task)
+  assert.equal(request.status, 'HUMAN_REQUIRED')
+  assert.equal(request.taskStateV2?.currentAction, 'REQUEST_APPROVAL')
+  assert.equal(request.taskStateV2?.completion.approval, undefined)
+  assert.equal((await runner.run(task, { approval: true }, undefined, { taskStateV2: request.taskStateV2! })).status, 'COMPLETED')
+  fingerprint = 'changed'
+  assert.equal((await runner.run(task, { approval: true }, undefined, { taskStateV2: request.taskStateV2! })).humanRequired?.category, 'REPO_DRIFT')
+})
+
+test('V2 persists action boundaries and rejects verification performed across repository drift', async () => {
+  const saved: import('../packages/development-guardian/work-session/task-state-v2.js').TaskStateV2[] = []
+  let fingerprint = 'before'
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [codex], dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: fingerprint }),
+    dispatch: async ({ action }) => {
+      if (action === 'VERIFY') { fingerprint = 'after'; return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] } }
+      return { status: 'SUCCESS' }
+    },
+  } })
+  const result = await runner.run(task, undefined, undefined, { persistTaskStateV2: async (state) => { saved.push(structuredClone(state)) } })
+  assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.equal(saved[0]?.currentAction, 'EXECUTE')
+  assert.ok(saved.some((state) => state.status === 'ACTIVE' && state.currentAction === 'EXECUTE'))
+  assert.equal(result.taskStateV2?.completion.evidence.length, 0)
+})
+
+test('V2 enforces observed file permissions even when the dispatcher reports no changes', async () => {
+  let files: readonly string[] = []
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [codex], dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: files, worktreeFingerprint: 'w' }),
+    dispatch: async () => { files = ['.env']; return { status: 'SUCCESS', changedFiles: [], verificationResults: [{ name: 'test', status: 'passed' }] } },
+  } })
+  const result = await runner.run({ ...task, forbiddenPaths: ['.env'] })
+  assert.notEqual(result.status, 'COMPLETED')
+  assert.match(result.taskStateV2!.blockers.join(' '), /forbidden scope/)
+})
+
+test('V2 pause resumes without converting a transport pause into a semantic blocker', async () => {
+  let dispatched = 0
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [codex], dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+    dispatch: async () => { dispatched++; return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] } },
+  } })
+  const paused = await runner.run(task, undefined, undefined, { shouldPauseAutonomousWork: () => true })
+  assert.equal(paused.status, 'PAUSED')
+  assert.equal(dispatched, 0)
+  assert.equal((await runner.run(task, undefined, undefined, { taskStateV2: paused.taskStateV2! })).status, 'COMPLETED')
+})
+
+test('dispatcher cannot mutate canonical policy or selected runtime identity through its input objects', async () => {
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [implementer], maxActions: 4, dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+    dispatch: async ({ task: input, agent }) => {
+      input.completion.bindings = [{ criterion: 'tests pass', requiredEvidence: ['fake'] }]
+      agent.identity!.runtimeIdentity = 'forged'
+      return { status: 'SUCCESS', verificationResults: [{ name: 'fake', status: 'passed' }] }
+    },
+  } })
+  const result = await runner.run(task)
+  assert.notEqual(result.status, 'COMPLETED')
+  assert.deepEqual(result.taskStateV2!.completion.bindings, task.acceptanceEvidenceBindings)
+  assert.equal(result.taskStateV2!.implementer!.runtimeIdentity, 'R1')
 })

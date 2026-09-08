@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { VerificationResult } from '../model.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence } from './risk-evidence.js'
@@ -84,12 +85,30 @@ export function createTaskStateV2(
   }
 }
 
-/** Version gate for persisted JSON. Future migrations have one explicit entry point. */
+const strings = z.array(z.string())
+const actor = z.object({ agent: z.string().min(1), provider: z.string().min(1), runtimeIdentity: z.string().min(1) })
+const riskLevel = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
+const persistedTask = z.object({
+  version: z.literal(2), identity: z.object({ taskId: z.string().min(1), sessionId: z.string().min(1) }),
+  goal: z.string(), constraints: strings, acceptanceCriteria: strings,
+  permissions: z.object({ allowedPaths: strings, forbiddenPaths: strings }),
+  progress: z.object({ completedWork: strings, pendingWork: strings }),
+  decisions: strings, assumptions: strings, openQuestions: strings, artifacts: strings,
+  gitState: z.object({ repositoryIdentity: z.string().min(1).optional(), branch: z.string().min(1).optional(), headSha: z.string().min(1).optional(), changedFiles: strings, worktreeFingerprint: z.string().min(1).optional() }),
+  verificationState: z.object({ results: z.array(z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
+  completion: z.object({
+    bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional() })),
+    evidence: z.array(z.object({ type: z.string(), status: z.enum(['PASSED', 'FAILED', 'MISSING', 'STALE']), source: z.string(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), workspaceIdentity: z.string().optional(), timestamp: z.string() }).passthrough()),
+    review: z.object({ passed: z.boolean(), findings: strings, severity: riskLevel, blockingFindings: strings, reviewer: actor, implementer: actor, reviewedRepository: z.string().optional(), reviewedBranch: z.string().optional(), reviewedCommit: z.string().optional(), reviewedWorkspace: z.string().optional(), reviewedFiles: strings, timestamp: z.string() }).optional(),
+    approval: z.object({ approved: z.boolean(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), workspaceIdentity: z.string(), reviewedCommit: z.string().optional(), risk: riskLevel, riskContext: z.string().optional(), timestamp: z.string() }).optional(),
+  }),
+  providerHistory: strings, currentAgent: z.string().optional(), implementer: actor.optional(), currentAction: z.string().optional(),
+  risk: z.enum(['LOW', 'NORMAL', 'HIGH']), status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'COMPLETED', 'FAILED']), blockers: strings, updatedAt: z.string(),
+})
+
+/** Validate every semantic field before persisted JSON may enter the controller. */
 export function loadTaskStateV2(value: unknown): TaskStateV2 {
-  if (typeof value !== 'object' || value === null || (value as { version?: unknown }).version !== TASK_STATE_V2_VERSION) {
-    throw new Error('unsupported Task State version')
-  }
-  const state = value as TaskStateV2
-  if (!state.identity?.taskId || !state.identity.sessionId) throw new Error('invalid Task State identity')
-  return state
+  const result = persistedTask.safeParse(value)
+  if (!result.success) throw new Error('invalid or unsupported Task State V2')
+  return result.data as TaskStateV2
 }

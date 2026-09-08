@@ -50,3 +50,19 @@ test('reconciliation suspends on repository drift and invalidates old verificati
   assert.match(result.reasons.join(' '), /branch mismatch/)
   assert.match(result.reasons.join(' '), /older commit/)
 })
+
+test('persisted V2 validates nested policy, lifecycle, and identity before recovery', () => {
+  for (const invalid of [null, { version: 2, identity: { taskId: 't', sessionId: 's' } },
+    { ...state(), blockers: null }, { ...state(), status: 'DONE' }, { ...state(), completion: { evidence: [], bindings: 'all' } }]) {
+    assert.throws(() => loadTaskStateV2(invalid), /invalid|unsupported/)
+  }
+})
+
+test('failed adapter output cannot complete by supplying passed evidence and an empty blocker list', () => {
+  const controller = new TaskController()
+  const next = controller.applyResult(state(), 'VERIFY', { status: 'FAILED', blockers: [], verificationResults: [{ name: 'test', status: 'passed' }] })
+  assert.equal(controller.decide(next).action, 'SUSPEND')
+  const executed = controller.applyResult(state(), 'EXECUTE', { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] })
+  assert.equal(controller.decide(executed).action, 'VERIFY')
+  assert.equal(executed.completion.evidence.length, 0)
+})

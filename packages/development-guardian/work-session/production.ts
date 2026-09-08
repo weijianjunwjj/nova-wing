@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, mkdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -256,6 +257,8 @@ export interface ProductionGitProcessRunner {
 const PRODUCTION_GIT_COMMANDS = new Map<string, readonly string[]>([
   ['git branch --show-current', ['branch', '--show-current']],
   ['git remote get-url --push --all origin', ['remote', 'get-url', '--push', '--all', 'origin']],
+  ['git status --porcelain -z --untracked-files=all', ['status', '--porcelain', '-z', '--untracked-files=all']],
+  ['git diff --cached --binary', ['diff', '--cached', '--binary']],
   ['git rev-parse HEAD', ['rev-parse', 'HEAD']],
   ['git status --porcelain --untracked-files=all', ['status', '--porcelain', '--untracked-files=all']],
 ])
@@ -282,7 +285,7 @@ function defaultGitProcessRunner(
     child.once('error', (error) => {
       resolveRun({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` })
     })
-    child.once('exit', (exitCode) => {
+    child.once('close', (exitCode) => {
       resolveRun({ exitCode: exitCode ?? 1, stdout, stderr })
     })
   })
@@ -435,21 +438,21 @@ export async function createProductionWorkSessionUi(
     createRuntime(eventSink, notificationSink) {
       if (trusted.session.controlPlane === 'v2') {
         const inspectRepository = async () => {
-          const [branch, head, status] = await Promise.all([
-            gitRunner('git branch --show-current'), gitRunner('git rev-parse HEAD'), gitRunner('git status --porcelain --untracked-files=all'),
+          const [branch, head, status, indexDiff] = await Promise.all([
+            gitRunner('git branch --show-current'), gitRunner('git rev-parse HEAD'), gitRunner('git status --porcelain -z --untracked-files=all'), gitRunner('git diff --cached --binary'),
           ])
-          if (branch.exitCode !== 0 || head.exitCode !== 0 || status.exitCode !== 0) throw new Error('production V2 repository inspection failed')
+          if (branch.exitCode !== 0 || head.exitCode !== 0 || status.exitCode !== 0 || indexDiff.exitCode !== 0) throw new Error('production V2 repository inspection failed')
           const entries = parseGitStatus(status.stdout)
-          return { repositoryIdentity: resolve(definition.targetRepo), branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
-            worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) }
+          return { repositoryIdentity: await realpath(definition.targetRepo), branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
+            worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(definition.targetRepo, entries, { strict: true })).update(indexDiff.stdout).digest('hex') }
         }
         const dispatcher = dependencies.createV2Dispatcher?.({ definition, eventSink }) ?? {
           inspectRepository,
-          dispatch: async ({ action, task: taskState }) => {
-            if (action === 'ANALYZE' || action === 'RECONCILE') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
+          dispatch: async ({ action, task: taskState, approvedVerificationCommand }) => {
+            if (action === 'ANALYZE' || action === 'RECONCILE' || action === 'REVIEW') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
             if (action === 'REQUEST_APPROVAL' || action === 'SUSPEND') return { status: 'BLOCKED' as const, blockers: ['human decision required'] }
             const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
-              allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory }
+              allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory, ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) }
             const router = new ExecutorRouter({
               taskKey: taskKey(taskState.identity.taskId), cwd: definition.targetRepo, store: codingStore,
               mode: taskModes.get(taskState.identity.taskId)!, codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
@@ -465,14 +468,23 @@ export async function createProductionWorkSessionUi(
               },
               onEvent(event) { eventSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0, detail: `${event.type}: ${event.executor ?? event.reason ?? ''}` }) },
             })
+            // Reuse the mature dirty-workspace continuation gate with current inspected facts.
+            const entries = parseGitStatus((await gitRunner('git status --porcelain --untracked-files=all')).stdout)
+            router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
+              changedFiles: taskState.gitState.changedFiles, worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) })
             const requiredEvidence = taskState.completion.bindings.flatMap((binding) => binding.requiredEvidence)
             const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,
               maxIterations: trusted.executor.maxTurns, constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria,
               allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths,
               lastReport: { summary: 'TaskStateV2 transport projection', changedFiles: taskState.gitState.changedFiles, commandsRun: [], verificationResults: taskState.verificationState.results, blockers: [] } }
-            const report = await router.execute({ task: transportTask,
+            const report = action === 'VERIFY'
+              ? await router.retryVerification({ task: transportTask, report: {
+                summary: 'Controller requested deterministic verification', changedFiles: taskState.gitState.changedFiles, commandsRun: [], blockers: [],
+                verificationResults: [...new Set(['git diff --check', ...requiredEvidence])].map((name) => ({ name, status: 'failed' as const })),
+              } })
+              : await router.execute({ task: transportTask,
               packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
-            return { status: report.blockers.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: report.blockers,
+            return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }) }
           },
         }

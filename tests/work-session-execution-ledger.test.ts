@@ -1,3 +1,4 @@
+import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
@@ -1010,10 +1011,14 @@ await test('Ledger schema supports simple session and failure statistics by redu
 await test('V2 push recovery projects controller-authorized completion into TaskStateV2', async () => {
   await withTemp('ledger-v2-push-recovery-', async ({ root, storageUrl }) => {
     const repoPath = await setupRepo(root)
-    const v2definition: WorkSessionDefinition = { ...definition('ledger-v2-push-recovery', repoPath), controlPlane: 'v2' }
+    const v2definition: WorkSessionDefinition = { ...definition('ledger-v2-push-recovery', repoPath), controlPlane: 'v2', tasks: [{ id: 'T009', goal: 'verify', acceptanceCriteria: ['tested'], acceptanceEvidenceBindings: [{ criterion: 'tested', requiredEvidence: ['test'] }] }] }
     const runtime = new WorkSessionRuntime({
       definition: v2definition, storageUrl,
-      taskRunner: { async run() { return { status: 'COMPLETED' as const, completionEvidence: completionEvidence() } } },
+      taskRunner: new V2ControllerTaskRunner({ sessionId: v2definition.id, branch: v2definition.branch,
+        agents: [{ id: 'coder', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }],
+        dispatcher: { inspectRepository: async () => ({ repositoryIdentity: repoPath, branch: v2definition.branch, headSha: 'base', changedFiles: [], worktreeFingerprint: 'w' }),
+          dispatch: async () => ({ status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }) },
+      }),
       gitCheckpoint: {
         policy: { autoCommit: true, autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'https://trusted.invalid/repo.git' } },
         async finalizer() { throw new GitPushError('push verification unavailable', 'commit-recovery-v2') },
@@ -1028,6 +1033,11 @@ await test('V2 push recovery projects controller-authorized completion into Task
       },
     })
     await assert.rejects(runtime.start(), /Git checkpoint failed/u)
+    const internal = runtime as unknown as { latestState: { taskStatesV2: Record<string, import('../packages/development-guardian/work-session/task-state-v2.js').TaskStateV2> } }
+    const authorized = structuredClone(internal.latestState.taskStatesV2.T009!)
+    internal.latestState.taskStatesV2.T009 = { ...authorized, status: 'ACTIVE', currentAction: 'VERIFY' }
+    await assert.rejects(runtime.recoverFailedGitCheckpoint(), /Controller-authorized COMPLETE/)
+    internal.latestState.taskStatesV2.T009 = authorized
     const recovered = await runtime.recoverFailedGitCheckpoint()
     assert.equal(recovered.state, 'COMPLETED')
     assert.equal(recovered.taskStatesV2?.T009?.status, 'COMPLETED')
