@@ -11,6 +11,7 @@ import {
 } from '../claude-code-executor.js'
 import { DeepSeekExecutor } from '../deepseek-executor.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
+import type { GuardianTask } from '../model.js'
 import { CodexExecutor, type CodexExecutorOptions } from '../codex-executor.js'
 import { ExecutorRouter, type RouterCodexExecutor } from '../executor-router.js'
 import {
@@ -53,6 +54,12 @@ const GuardianPolicySchema = z.object({
   forbiddenPaths: z.array(z.string()),
 }).strict()
 
+const AcceptanceEvidenceBindingSchema = z.object({
+  criterion: z.string(),
+  requiredEvidence: z.array(z.string()),
+  requiresApproval: z.boolean().optional(),
+}).strict()
+
 const TrustedConfigSchema = z.object({
   session: z.object({
     id: z.string(),
@@ -73,6 +80,7 @@ const TrustedConfigSchema = z.object({
     goal: z.string(),
     guardian: GuardianPolicySchema,
     executorMode: z.enum(['auto', 'codex', 'deepseek']).optional(),
+    acceptanceEvidenceBindings: z.array(AcceptanceEvidenceBindingSchema).optional(),
   }).strict()).min(1),
   gitCheckpoint: z.object({
     autoCommit: z.boolean(),
@@ -356,11 +364,13 @@ export async function createProductionWorkSessionUi(
     targetRepo: trusted.session.targetRepo,
     branch: trusted.session.branch,
     tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal, constraints: task.guardian.constraints,
-      acceptanceCriteria: task.guardian.acceptanceCriteria, allowedPaths: task.guardian.allowedPaths, forbiddenPaths: task.guardian.forbiddenPaths })),
+      acceptanceCriteria: task.guardian.acceptanceCriteria, allowedPaths: task.guardian.allowedPaths, forbiddenPaths: task.guardian.forbiddenPaths,
+      ...(task.acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings: task.acceptanceEvidenceBindings }) })),
     limits: { ...trusted.session.limits },
     ...(trusted.session.scheduledStartAt === undefined ? {} : { scheduledStartAt: trusted.session.scheduledStartAt }),
     ...(trusted.session.scheduleSource === undefined ? {} : { scheduleSource: trusted.session.scheduleSource }),
     ...(trusted.session.createdAt === undefined ? {} : { createdAt: trusted.session.createdAt }),
+    ...(trusted.session.controlPlane === undefined ? {} : { controlPlane: trusted.session.controlPlane }),
   }
   const storageUrl = trusted.storageUrl ?? defaultStorageUrl(trusted.session.id, env)
   const storagePath = storagePathFromUrl(storageUrl)
@@ -430,7 +440,7 @@ export async function createProductionWorkSessionUi(
           ])
           if (branch.exitCode !== 0 || head.exitCode !== 0 || status.exitCode !== 0) throw new Error('production V2 repository inspection failed')
           const entries = parseGitStatus(status.stdout)
-          return { branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
+          return { repositoryIdentity: resolve(definition.targetRepo), branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
             worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) }
         }
         const dispatcher = dependencies.createV2Dispatcher?.({ definition, eventSink }) ?? {
@@ -438,16 +448,36 @@ export async function createProductionWorkSessionUi(
           dispatch: async ({ action, task: taskState }) => {
             if (action === 'ANALYZE' || action === 'RECONCILE') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
             if (action === 'REQUEST_APPROVAL' || action === 'SUSPEND') return { status: 'BLOCKED' as const, blockers: ['human decision required'] }
-            const executor = createExecutor({ cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
-              allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory })
-            const report = await executor.execute({ task: { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0, maxIterations: trusted.executor.maxTurns,
-              constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria, allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths },
-              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: [], doNotDo: taskState.permissions.forbiddenPaths } })
-            return { status: report.blockers.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: report.blockers }
+            const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
+              allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory }
+            const router = new ExecutorRouter({
+              taskKey: taskKey(taskState.identity.taskId), cwd: definition.targetRepo, store: codingStore,
+              mode: taskModes.get(taskState.identity.taskId)!, codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
+              codexModel: resolvePersistedCodexConfiguration(trusted.codex).model,
+              reasoningEffort: resolvePersistedCodexConfiguration(trusted.codex).reasoningEffort,
+              quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
+              createCodex(onThread) {
+                const codex = resolvePersistedCodexConfiguration(trusted.codex)
+                return dependencies.createCodexExecutor?.({ ...options, env, onThread, codexModel: codex.model, reasoningEffort: codex.reasoningEffort }) ?? new CodexExecutor({ ...options, env, onThread, codexModel: codex.model, reasoningEffort: codex.reasoningEffort })
+              },
+              createDeepSeek(handoff) {
+                return createExecutor({ ...options, ...(handoff === undefined ? {} : { additionalExecutionContext: 'Codex quota handoff. Inspect repository reality; TaskStateV2 remains the semantic authority.\n' + JSON.stringify(handoff) }) })
+              },
+              onEvent(event) { eventSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0, detail: `${event.type}: ${event.executor ?? event.reason ?? ''}` }) },
+            })
+            const requiredEvidence = taskState.completion.bindings.flatMap((binding) => binding.requiredEvidence)
+            const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,
+              maxIterations: trusted.executor.maxTurns, constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria,
+              allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths,
+              lastReport: { summary: 'TaskStateV2 transport projection', changedFiles: taskState.gitState.changedFiles, commandsRun: [], verificationResults: taskState.verificationState.results, blockers: [] } }
+            const report = await router.execute({ task: transportTask,
+              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
+            return { status: report.blockers.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: report.blockers,
+              ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }) }
           },
         }
         const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
-          agents: dependencies.v2Agents ?? [{ id: 'production-executor', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: true } }], dispatcher })
+          agents: dependencies.v2Agents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }], dispatcher })
         const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl,
           gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
             ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },

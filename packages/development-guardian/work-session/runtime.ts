@@ -236,7 +236,6 @@ function patchTaskStateV2(
     ...state.taskStatesV2,
     [taskId]: { ...prior, ...patch, updatedAt: new Date().toISOString() },
   }
-  if (patch.status === 'COMPLETED' || patch.status === 'FAILED') delete next[taskId]!.checkpoint
   state.taskStatesV2 = next
 }
 
@@ -1182,9 +1181,28 @@ export class WorkSessionRuntime {
         for (let i = currentState.currentTaskIndex; i < tasks.length; i++) {
           const task = tasks[i]!
 
-          // 如果这个任务已经完成，跳过（这是 Mastra 恢复语义的核心）
-          if (currentState.completedTaskIds.includes(task.id)) {
+          const v2 = self.config.definition.controlPlane === 'v2'
+          // V1 retains its historic transport shortcut.  For V2 this is only a
+          // projection written after Controller-authorized terminal completion.
+          if (!v2 && currentState.completedTaskIds.includes(task.id)) {
             continue
+          }
+
+          // A V2 task which was already claimed or projected as complete must
+          // have its canonical TaskStateV2 on restart.  Never seed semantics
+          // from the Guardian checkpoint or legacy completion fields.
+          if (v2 && currentState.taskStatesV2?.[task.id] === undefined &&
+              (currentState.currentTaskId === task.id || currentState.completedTaskIds.includes(task.id))) {
+            const missingState: WorkflowState = {
+              ...currentState, state: 'SUSPENDED', currentTaskId: task.id,
+              humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'persisted TaskStateV2 is required for V2 recovery' },
+              suspensionReason: undefined, updatedAt: new Date().toISOString(),
+              ...self.settleActiveTime(currentState),
+            }
+            await setState(missingState)
+            self.latestState = missingState
+            await self.persistDurableState(missingState)
+            return await suspend({ reason: 'persisted TaskStateV2 is required for V2 recovery' }, { resumeLabel: 'human-decision' })
           }
 
           // W004-B: claim 新 Task 前检查 limits（resume 已 claim 的当前 Task 不截断）。
@@ -1259,7 +1277,6 @@ export class WorkSessionRuntime {
                 [task.id]: createTaskStateV2(
                   self.config.definition,
                   task,
-                  currentState as unknown as WorkSessionDurableState,
                 ),
               },
               updatedAt: new Date().toISOString(),

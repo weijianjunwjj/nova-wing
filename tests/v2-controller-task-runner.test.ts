@@ -8,7 +8,7 @@ import {
 
 const codex: AgentCapabilityProfile = { id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true } }
 const deepseek: AgentCapabilityProfile = { id: 'deepseek', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true } }
-const task = { id: 'v2', goal: 'fix it', acceptanceCriteria: ['tests pass'] }
+const task = { id: 'v2', goal: 'fix it', acceptanceCriteria: ['tests pass'], acceptanceEvidenceBindings: [{ criterion: 'tests pass', requiredEvidence: ['test'] }] }
 
 test('V2 runner owns execute/verify/fix/complete loop and preserves agent continuity', async () => {
   const calls: Array<{ action: string; agent: string }> = []
@@ -16,7 +16,7 @@ test('V2 runner owns execute/verify/fix/complete loop and preserves agent contin
   let changedFiles: readonly string[] = []
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [codex, deepseek],
-    dispatcher: { inspectRepository: async () => ({ branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, agent }) => {
+    dispatcher: { inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, agent }) => {
       calls.push({ action, agent: agent.id })
       if (action === 'VERIFY') {
         verificationAttempt++
@@ -42,7 +42,7 @@ test('quota fallback passes structured state to DeepSeek without changing task i
   const initial = { ...createTaskStateV2({ id: 's', branch: 'main' }, task), currentAgent: 'codex', providerHistory: ['codex'] }
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [exhaustedCodex, deepseek],
-    dispatcher: { inspectRepository: async () => ({ branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, task: state, handoff }) => {
+    dispatcher: { inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, task: state, handoff }) => {
       if (handoff !== undefined) {
         handoffSeen = handoff.task.identity.taskId === 'v2' && handoff.task === state && handoff.task.providerHistory.includes('codex')
       }
@@ -62,13 +62,13 @@ test('quota fallback passes structured state to DeepSeek without changing task i
 test('V2 restart reconciles repository reality before dispatching an action', async () => {
   const stale = {
     ...createTaskStateV2({ id: 's', branch: 'main' }, task),
-    gitState: { branch: 'main', headSha: 'old', changedFiles: [], worktreeFingerprint: 'old' },
+    gitState: { repositoryIdentity: 'repo', branch: 'main', headSha: 'old', changedFiles: [], worktreeFingerprint: 'old' },
   }
   let dispatched = false
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [codex],
     dispatcher: {
-      inspectRepository: async () => ({ branch: 'main', headSha: 'new', changedFiles: [], worktreeFingerprint: 'new' }),
+      inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'new', changedFiles: [], worktreeFingerprint: 'new' }),
       dispatch: async () => { dispatched = true; return { status: 'SUCCESS' } },
     },
   })

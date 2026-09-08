@@ -38,11 +38,11 @@ test('controller decides actions from state and never treats a report-like state
 
 test('reconciliation suspends on repository drift and invalidates old verification evidence', () => {
   const prior = state({
-    gitState: { branch: 'main', headSha: 'old', changedFiles: ['src/a.ts'], worktreeFingerprint: 'old-fingerprint' },
+    gitState: { repositoryIdentity: 'repo', branch: 'main', headSha: 'old', changedFiles: ['src/a.ts'], worktreeFingerprint: 'old-fingerprint' },
     verificationState: { results: [{ name: 'test', status: 'passed' }], evidenceHeadSha: 'old', evidenceWorktreeFingerprint: 'old-fingerprint' },
   })
   const result = reconcileTaskState(prior, {
-    branch: 'other', headSha: 'new', changedFiles: ['src/b.ts'], worktreeFingerprint: 'new-fingerprint',
+    repositoryIdentity: 'repo', branch: 'other', headSha: 'new', changedFiles: ['src/b.ts'], worktreeFingerprint: 'new-fingerprint',
   })
   assert.equal(result.reconciled, false)
   assert.equal(result.state.status, 'SUSPENDED')

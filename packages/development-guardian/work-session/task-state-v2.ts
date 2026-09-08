@@ -1,6 +1,5 @@
-import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { VerificationResult } from '../model.js'
-import type { WorkSessionDefinition, WorkSessionDurableState, WorkSessionTask } from './model.js'
+import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence } from './risk-evidence.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
@@ -15,6 +14,7 @@ export interface TaskVerificationStateV2 {
 }
 
 export interface TaskGitStateV2 {
+  repositoryIdentity?: string
   branch?: string
   headSha?: string
   changedFiles: readonly string[]
@@ -44,8 +44,9 @@ export interface TaskStateV2 {
     approval?: ApprovalEvidence
   }
   providerHistory: readonly string[]
-  checkpoint?: GuardianTaskRecoveryCheckpoint
+  /** Provider transport details are not semantic recovery authority. */
   currentAgent?: string
+  implementer?: TaskActorIdentity
   currentAction?: string
   risk: 'LOW' | 'NORMAL' | 'HIGH'
   status: TaskStateV2Status
@@ -53,52 +54,33 @@ export interface TaskStateV2 {
   updatedAt: string
 }
 
+export interface TaskActorIdentity {
+  agent: string
+  provider: string
+  runtimeIdentity: string
+}
+
 export function createTaskStateV2(
   session: Pick<WorkSessionDefinition, 'id' | 'branch'>,
   task: WorkSessionTask,
-  state?: WorkSessionDurableState,
 ): TaskStateV2 {
-  const checkpoint = state?.currentTaskId === task.id ? state.currentTaskCheckpoint : undefined
-  const report = checkpoint?.task.lastReport
-  const completed = state?.completedTaskIds.includes(task.id) ?? false
-  const suspended = state?.currentTaskId === task.id && state?.state === 'SUSPENDED'
-  const status: TaskStateV2Status = completed ? 'COMPLETED'
-    : state?.state === 'FAILED' && state.currentTaskId === task.id ? 'FAILED'
-      : suspended ? 'SUSPENDED' : state?.currentTaskId === task.id ? 'ACTIVE' : 'PENDING'
   return {
     version: TASK_STATE_V2_VERSION,
     identity: { taskId: task.id, sessionId: session.id }, goal: task.goal,
-    constraints: task.constraints ?? checkpoint?.task.constraints ?? [],
-    acceptanceCriteria: task.acceptanceCriteria ?? checkpoint?.task.acceptanceCriteria ?? [],
+    constraints: task.constraints ?? [],
+    acceptanceCriteria: task.acceptanceCriteria ?? [],
     permissions: {
-      allowedPaths: task.allowedPaths ?? checkpoint?.task.allowedPaths ?? [],
-      forbiddenPaths: task.forbiddenPaths ?? checkpoint?.task.forbiddenPaths ?? [],
+      allowedPaths: task.allowedPaths ?? [],
+      forbiddenPaths: task.forbiddenPaths ?? [],
     },
-    progress: { completedWork: completed ? [task.goal] : [], pendingWork: completed ? [] : [task.goal] },
-    decisions: [], assumptions: [], openQuestions: [], artifacts: report?.changedFiles ?? [],
+    progress: { completedWork: [], pendingWork: [task.goal] },
+    decisions: [], assumptions: [], openQuestions: [], artifacts: [],
     gitState: {
-      branch: checkpoint?.repo.branch ?? session.branch,
-      ...(checkpoint?.repo.headSha === undefined ? {} : { headSha: checkpoint.repo.headSha }),
-      changedFiles: checkpoint?.repo.changedFiles ?? report?.changedFiles ?? [],
-      ...(checkpoint?.repo.worktreeFingerprint === undefined ? {} : { worktreeFingerprint: checkpoint.repo.worktreeFingerprint }),
+      branch: session.branch, changedFiles: [],
     },
-    verificationState: {
-      results: state?.verificationResults ?? report?.verificationResults ?? [],
-      ...(checkpoint?.repo.headSha === undefined ? {} : { evidenceHeadSha: checkpoint.repo.headSha }),
-      ...(checkpoint?.repo.worktreeFingerprint === undefined ? {} : { evidenceWorktreeFingerprint: checkpoint.repo.worktreeFingerprint }),
-    },
-    completion: { evidence: [], bindings: (task.acceptanceCriteria ?? []).map((criterion) => ({ criterion, requiredEvidence: [] })) },
-    providerHistory: checkpoint?.provider.codingExecution?.history ?? [],
-    ...(checkpoint === undefined ? {} : { checkpoint }),
-    risk: 'NORMAL', status,
-    blockers: state?.humanRequired?.reason === undefined ? report?.blockers ?? [] : [state.humanRequired.reason],
-    // Mastra restores workflow snapshots as JSON, so this boundary accepts the
-    // runtime's ISO string as well as the public durable Date type.
-    updatedAt: state?.updatedAt instanceof Date
-      ? state.updatedAt.toISOString()
-      : typeof state?.updatedAt === 'string'
-        ? state.updatedAt
-        : new Date().toISOString(),
+    verificationState: { results: [] },
+    completion: { evidence: [], bindings: task.acceptanceEvidenceBindings ?? [] },
+    providerHistory: [], risk: 'NORMAL', status: 'PENDING', blockers: [], updatedAt: new Date().toISOString(),
   }
 }
 

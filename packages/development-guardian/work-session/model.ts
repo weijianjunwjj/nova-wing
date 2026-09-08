@@ -29,6 +29,8 @@ export interface WorkSessionTask {
   acceptanceCriteria?: readonly string[]
   allowedPaths?: readonly string[]
   forbiddenPaths?: readonly string[]
+  /** Explicit criterion-to-evidence contract for the V2 completion gate. */
+  acceptanceEvidenceBindings?: readonly import('./risk-evidence.js').AcceptanceEvidenceBinding[] | undefined
 }
 
 export interface WorkSessionLimits {
@@ -60,6 +62,8 @@ export interface WorkSessionDefinition {
   scheduledStartAt?: string | null
   scheduleSource?: ScheduleSource
   createdAt?: string
+  /** V2 makes TaskStateV2 authoritative; absent preserves established V1 behavior. */
+  controlPlane?: 'v1' | 'v2'
 }
 
 export interface HumanRequired {

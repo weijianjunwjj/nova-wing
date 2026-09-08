@@ -30,8 +30,8 @@ export class TaskController {
     if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
     const policy = task.completion
-    if (risk.level === 'CRITICAL' && (policy.approval?.approved !== true || policy.approval.workspaceIdentity !== task.gitState.worktreeFingerprint || policy.approval.reviewedCommit !== task.gitState.headSha || policy.approval.risk !== risk.level)) return { action: 'REQUEST_APPROVAL', reason: `critical risk: ${risk.factors.join(', ') || 'policy'}` }
-    if (risk.level === 'HIGH' && (policy.review?.passed !== true || policy.review.blockingFindings.length > 0 || policy.review.reviewerIdentity === policy.review.implementerIdentity || policy.review.reviewedWorkspace !== task.gitState.worktreeFingerprint || policy.review.reviewedCommit !== task.gitState.headSha)) return { action: 'REVIEW', reason: `independent review required: ${risk.factors.join(', ')}` }
+    if (risk.level === 'CRITICAL' && (policy.approval?.approved !== true || policy.approval.repositoryIdentity !== task.gitState.repositoryIdentity || policy.approval.branch !== task.gitState.branch || policy.approval.workspaceIdentity !== task.gitState.worktreeFingerprint || policy.approval.reviewedCommit !== task.gitState.headSha || policy.approval.risk !== risk.level)) return { action: 'REQUEST_APPROVAL', reason: `critical risk: ${risk.factors.join(', ') || 'policy'}` }
+    if (risk.level === 'HIGH' && (policy.review?.passed !== true || policy.review.blockingFindings.length > 0 || task.implementer === undefined || policy.review.implementer.runtimeIdentity !== task.implementer.runtimeIdentity || policy.review.reviewer.runtimeIdentity === policy.review.implementer.runtimeIdentity || (policy.review.reviewer.agent === policy.review.implementer.agent && policy.review.reviewer.provider === policy.review.implementer.provider) || policy.review.reviewedRepository !== task.gitState.repositoryIdentity || policy.review.reviewedBranch !== task.gitState.branch || policy.review.reviewedWorkspace !== task.gitState.worktreeFingerprint || policy.review.reviewedCommit !== task.gitState.headSha)) return { action: 'REVIEW', reason: `independent review required: ${risk.factors.join(', ')}` }
     return completionGate({ task, ...policy, risk })
       ? { action: 'COMPLETE', reason: 'completion gate passed' }
       : { action: 'VERIFY', reason: 'required acceptance evidence is missing, failed, or stale' }
@@ -46,12 +46,15 @@ export class TaskController {
     return {
       ...task,
       artifacts: result.changedFiles === undefined ? task.artifacts : [...new Set([...task.artifacts, ...result.changedFiles])],
-      gitState: result.changedFiles === undefined ? task.gitState : { ...task.gitState, changedFiles: result.changedFiles },
+      // Repository Inspector, not a provider report, owns git reality.
+      gitState: task.gitState,
       verificationState: { ...task.verificationState, results: verificationResults },
       completion: result.verificationResults === undefined ? task.completion : {
         ...task.completion,
-        evidence: result.verificationResults.map((item) => ({ type: item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
-        bindings: task.acceptanceCriteria.map((criterion) => ({ criterion, requiredEvidence: result.verificationResults!.filter((item) => item.status === 'passed').map((item) => item.name) })),
+        evidence: result.verificationResults.map((item) => ({ type: item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
+        // Bindings come only from the trusted task definition; a passed verifier
+        // must never be projected as evidence for every acceptance criterion.
+        bindings: task.completion.bindings,
       },
       blockers,
       currentAction: action,

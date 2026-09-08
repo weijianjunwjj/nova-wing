@@ -1,6 +1,6 @@
 import type { VerificationResult } from '../model.js'
 import { TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
-import { createTaskStateV2, type TaskStateV2 } from './task-state-v2.js'
+import { createTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
 import type { ApprovalEvidence, ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import type { WorkSessionTask } from './model.js'
@@ -8,12 +8,18 @@ import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskR
 
 export interface AgentCapabilityProfile {
   id: string
+  /** Semantic and runtime identity are separately persisted for HIGH review. */
+  identity?: TaskActorIdentity
   capabilities: Readonly<{
     coding?: boolean; reasoning?: boolean; review?: boolean; repoNavigation?: boolean; debugging?: boolean; verification?: boolean
   }>
   available: boolean
   quotaExhausted: boolean
   degraded: boolean
+}
+
+function agentIdentity(agent: AgentCapabilityProfile): TaskActorIdentity {
+  return agent.identity ?? { agent: agent.id, provider: agent.id, runtimeIdentity: agent.id }
 }
 
 export interface V2StructuredHandoff {
@@ -23,7 +29,7 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[] }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
 }
@@ -97,7 +103,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
         : createStructuredHandoff(state, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
       const result = await this.options.dispatcher.dispatch({ action: decision.action, agent, task: state, ...(handoff === undefined ? {} : { handoff }) })
-      state = controller.applyResult({ ...state, currentAgent: agent.id, providerHistory: [...state.providerHistory, agent.id] }, decision.action, result)
+      const observed = await this.options.dispatcher.inspectRepository()
+      const observedState: TaskStateV2 = { ...state, gitState: { repositoryIdentity: observed.repositoryIdentity, branch: observed.branch, headSha: observed.headSha, changedFiles: observed.changedFiles, worktreeFingerprint: observed.worktreeFingerprint } }
+      state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: result.providerHistory ?? [...state.providerHistory, agent.id],
+        ...(decision.action === 'EXECUTE' ? { implementer: agentIdentity(agent) } : {}) }, decision.action, result)
       if (result.review !== undefined || result.approval !== undefined) {
         state = { ...state, completion: { ...state.completion,
           ...(result.review === undefined ? {} : { review: result.review }),
