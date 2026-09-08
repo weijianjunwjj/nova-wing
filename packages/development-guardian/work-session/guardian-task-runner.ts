@@ -508,6 +508,10 @@ export interface GuardianWorkSessionTaskRunnerOptions {
 /**
  * Guardian Work Session Task Runner
  * 桥接 runGuardianTask 和 Work Session Runtime
+ *
+ * V1 compatibility adapter for the Guardian-centric control plane
+ * (`controlPlane: 'v1'`). The V2 path uses V2ControllerTaskRunner instead; this
+ * adapter keeps V1 working and must not drive V2 decisions.
  */
 export class GuardianWorkSessionTaskRunner implements WorkSessionTaskRunner {
   constructor(private readonly options: GuardianWorkSessionTaskRunnerOptions) {}

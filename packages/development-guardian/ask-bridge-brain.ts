@@ -488,6 +488,8 @@ async function readBridgeOutput(outputPath: string, fallbackStdout: string): Pro
   return fallbackStdout.trim()
 }
 
+/** v0.1 Reviewer brain (ChatGPT via AskBridge). Used only by the V1 Guardian-centric
+ *  control plane; the V2 path has no brain and decides via TaskController. */
 export class AskBridgeBrain implements GuardianBrain {
   private readonly runner: AskBridgeCommandRunner
   private readonly timeoutMs: number

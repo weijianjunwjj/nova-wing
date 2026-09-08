@@ -61,6 +61,9 @@ import {
   VERIFICATION_APPROVAL_BLOCKER,
   verificationCommandFingerprint,
 } from './verification-approval.js'
+import { TaskController } from './task-controller.js'
+import { createTaskStateV2, loadTaskStateV2 } from './task-state-v2.js'
+import { ProviderHealthRegistry, TaskEventLogV2 } from './task-observability.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -116,6 +119,11 @@ const WorkflowStateSchema = z.object({
   currentTaskIndex: z.number(),
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
+  taskStatesV2: z.record(z.string(), z.any()).optional(),
+  // Controller Observability projections: append-only history + last-known health.
+  // Both are advisory; TaskStateV2 remains the single semantic authority.
+  taskEventLogs: z.record(z.string(), z.any()).optional(),
+  providerHealth: z.record(z.string(), z.any()).optional(),
   humanRequired: z.object({
     category: z.string(),
     reason: z.string(),
@@ -221,6 +229,44 @@ const WorkflowStateSchema = z.object({
 })
 
 type WorkflowState = z.infer<typeof WorkflowStateSchema>
+
+/** Keep the V2 projection in the same atomic snapshot transition as its legacy fact. */
+function patchTaskStateV2(
+  state: WorkflowState,
+  taskId: string,
+  patch: Partial<import('./task-state-v2.js').TaskStateV2>,
+): void {
+  const prior = state.taskStatesV2?.[taskId] as import('./task-state-v2.js').TaskStateV2 | undefined
+  if (prior === undefined) return
+  const next: Record<string, import('./task-state-v2.js').TaskStateV2> = {
+    ...state.taskStatesV2,
+    [taskId]: { ...prior, ...patch, updatedAt: new Date().toISOString() },
+  }
+  state.taskStatesV2 = next
+}
+
+/**
+ * Merge the current Task's telemetry (event log + provider health) into the
+ * same atomic snapshot transition that persists TaskStateV2. The Event Log is
+ * advisory history only: this merge never feeds back into any Controller decision.
+ */
+function mergeTaskTelemetry(
+  state: WorkflowState,
+  taskId: string,
+  log: TaskEventLogV2 | undefined,
+  health: ProviderHealthRegistry | undefined,
+): WorkflowState {
+  const hasEvents = log !== undefined && log.events.length > 0
+  const hasHealth = health !== undefined && Object.keys(health.entries()).length > 0
+  if (!hasEvents && !hasHealth) return state
+  const taskEventLogs = hasEvents
+    ? { ...(state.taskEventLogs ?? {}), [taskId]: log!.events }
+    : state.taskEventLogs
+  const providerHealth = hasHealth
+    ? { ...(state.providerHealth ?? {}), ...health!.entries() }
+    : state.providerHealth
+  return { ...state, taskEventLogs, providerHealth }
+}
 
 /**
  * W004-B: 最小 fail-fast limits 校验。invalid definition 必须在任何
@@ -563,6 +609,11 @@ export class WorkSessionRuntime {
       (state.humanRequired?.category !== 'DECISION_REQUIRED' &&
         state.pendingVerificationApproval?.status !== 'APPROVED')
     ) return false
+    if (this.config.definition.controlPlane === 'v2') {
+      if (taskId === undefined) return false
+      try { loadTaskStateV2(state.taskStatesV2?.[taskId]) } catch { return false }
+      return this.resolveDurableApprovedVerification(state, taskId) !== undefined
+    }
     const checkpoint = state.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint | undefined
     if (
       checkpoint === undefined ||
@@ -597,9 +648,9 @@ export class WorkSessionRuntime {
     const approved = this.resolveDurableApprovedVerification(state, state.currentTaskId)
     if (approved === undefined) throw new Error('durable verification approval is not recoverable')
     const checkpoint = state.currentTaskCheckpoint as GuardianTaskRecoveryCheckpoint | undefined
-    if (checkpoint === undefined) throw new Error('durable verification checkpoint is unavailable')
+    if (checkpoint === undefined && this.config.definition.controlPlane !== 'v2') throw new Error('durable verification checkpoint is unavailable')
     const checkpointVerification =
-      await this.config.taskRunner.verifyRecoveryCheckpoint?.(checkpoint)
+      checkpoint === undefined ? undefined : await this.config.taskRunner.verifyRecoveryCheckpoint?.(checkpoint)
     if (checkpointVerification !== undefined && !checkpointVerification.ok) {
       throw new Error(checkpointVerification.reason ?? 'repository checkpoint drifted')
     }
@@ -919,6 +970,14 @@ export class WorkSessionRuntime {
       throw new Error('failed session is not eligible for checkpoint recovery')
     }
 
+    if (this.config.definition.controlPlane === 'v2') {
+      const canonical = loadTaskStateV2(state.taskStatesV2?.[taskId])
+      if (canonical.identity.taskId !== taskId || canonical.identity.sessionId !== state.sessionId ||
+          canonical.status !== 'COMPLETED' || canonical.currentAction !== 'COMPLETE' || new TaskController().decide(canonical).action !== 'COMPLETE') {
+        throw new Error('V2 checkpoint recovery requires Controller-authorized COMPLETE')
+      }
+    }
+
     const requestedKey = `checkpoint-recovery-requested:${taskId}:${commitSha}`
     this.recordLedger({
       eventType: 'CHECKPOINT_RECOVERY_REQUESTED', sessionId: state.sessionId, taskId,
@@ -958,6 +1017,10 @@ export class WorkSessionRuntime {
       currentTaskBaseHeadSha: undefined,
       activeSegmentStartedAt: this.now(), updatedAt: new Date().toISOString(),
     }
+    // Preserve the controller authorization while completing transport recovery.
+    // This is not a new completion decision: the Controller authorized COMPLETE
+    // before the transport push failed; recovery only persists that fact.
+    if (this.config.definition.controlPlane !== 'v2') patchTaskStateV2(recovered, taskId, { status: 'COMPLETED', blockers: [], currentAction: 'COMPLETE' })
     this.recordLedger({
       eventType: 'CHECKPOINT_RECOVERY_COMPLETED', sessionId: state.sessionId, taskId,
       timestamp: this.ledgerTimestamp(), status: 'COMPLETED', recoveryKind: 'GIT_PUSH',
@@ -1161,13 +1224,44 @@ export class WorkSessionRuntime {
         }
 
         // 从当前 task index 开始
-        for (let i = currentState.currentTaskIndex; i < tasks.length; i++) {
+        for (let i = self.config.definition.controlPlane === 'v2' ? 0 : currentState.currentTaskIndex; i < tasks.length; i++) {
           const task = tasks[i]!
 
-          // 如果这个任务已经完成，跳过（这是 Mastra 恢复语义的核心）
-          if (currentState.completedTaskIds.includes(task.id)) {
+          const v2 = self.config.definition.controlPlane === 'v2'
+          // V1 retains its historic transport shortcut.  For V2 this is only a
+          // projection written after Controller-authorized terminal completion.
+          if (!v2 && currentState.completedTaskIds.includes(task.id)) {
             continue
           }
+
+          // A V2 task which was already claimed or projected as complete must
+          // have its canonical TaskStateV2 on restart.  Never seed semantics
+          // from the Guardian checkpoint or legacy completion fields.
+          let invalidV2State = false
+          if (v2 && currentState.taskStatesV2?.[task.id] !== undefined) {
+            try {
+              const canonical = loadTaskStateV2(currentState.taskStatesV2[task.id])
+              if (canonical.identity.taskId !== task.id || canonical.identity.sessionId !== currentState.sessionId) throw new Error('identity mismatch')
+              if (canonical.status === 'COMPLETED' && canonical.currentAction === 'COMPLETE' &&
+                  new TaskController().decide(canonical).action === 'COMPLETE' && currentState.completedTaskIds.includes(task.id)) continue
+            } catch { invalidV2State = true }
+          }
+          if (v2 && (invalidV2State || (currentState.taskStatesV2?.[task.id] === undefined &&
+              (i < currentState.currentTaskIndex || currentState.currentTaskId === task.id || currentState.completedTaskIds.includes(task.id))))) {
+            const missingState: WorkflowState = {
+              ...currentState, state: 'SUSPENDED', currentTaskId: task.id,
+              humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'valid persisted TaskStateV2 is required for V2 recovery' },
+              suspensionReason: undefined, updatedAt: new Date().toISOString(),
+              ...self.settleActiveTime(currentState),
+            }
+            await setState(missingState)
+            self.latestState = missingState
+            await self.persistDurableState(missingState)
+            return await suspend({ reason: 'valid persisted TaskStateV2 is required for V2 recovery' }, { resumeLabel: 'human-decision' })
+          }
+
+          if (v2) currentState = { ...currentState, currentTaskIndex: i,
+            completedTaskIds: currentState.completedTaskIds.filter((id) => id !== task.id) }
 
           // W004-B: claim 新 Task 前检查 limits（resume 已 claim 的当前 Task 不截断）。
           const isNewTaskClaim = currentState.currentTaskId !== task.id
@@ -1229,7 +1323,27 @@ export class WorkSessionRuntime {
           await setState(updatedState)
           currentState = updatedState
           self.latestState = updatedState
-          await self.persistDurableState(updatedState)
+
+          // Persist the V2 projection before provider work begins. It shares
+          // the existing Work Session snapshot rather than creating parallel
+          // task lifecycle persistence.
+          if (currentState.taskStatesV2?.[task.id] === undefined) {
+            const taskState: WorkflowState = {
+              ...currentState,
+              taskStatesV2: {
+                ...(currentState.taskStatesV2 ?? {}),
+                [task.id]: createTaskStateV2(
+                  self.config.definition,
+                  task,
+                ),
+              },
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(taskState)
+            currentState = taskState
+            self.latestState = taskState
+          }
+          await self.persistDurableState(currentState)
           if (isNewTaskClaim) {
             self.recordLedger({
               eventType: 'TASK_STARTED',
@@ -1289,13 +1403,44 @@ export class WorkSessionRuntime {
             isEligibleScopedVerificationCommand(approvedVerification.command, self.config.definition.targetRepo)
               ? approvedVerification.command
               : undefined
+          // Controller Observability projection: seed a per-task Event Log and
+          // last-known Provider Health registry from the current snapshot so
+          // restart preserves history. History is advisory; it never feeds back.
+          const taskEventLog = v2 ? new TaskEventLogV2(currentState.taskEventLogs?.[task.id]) : undefined
+          const providerHealth = v2 ? new ProviderHealthRegistry(currentState.providerHealth) : undefined
           const runContext: WorkSessionTaskRunContext = {
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
+            ...(v2 ? { persistTaskStateV2: async (canonical: import('./task-state-v2.js').TaskStateV2) => {
+              // Event Log entries travel in the same atomic snapshot write as the
+              // canonical state transition they describe.
+              currentState = { ...mergeTaskTelemetry(currentState, task.id, taskEventLog, providerHealth), taskStatesV2: { ...currentState.taskStatesV2, [task.id]: canonical }, updatedAt: new Date().toISOString() }
+              await setState(currentState)
+              self.latestState = currentState
+              await self.persistDurableState(currentState)
+            } } : {}),
+            ...(currentState.taskStatesV2?.[task.id] === undefined
+              ? {}
+              : { taskStateV2: currentState.taskStatesV2[task.id] as import('./task-state-v2.js').TaskStateV2 }),
             ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+            ...(taskEventLog === undefined ? {} : { taskEventLog }),
+            ...(providerHealth === undefined ? {} : { providerHealth }),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          if (v2 && taskEventLog !== undefined) {
+            currentState = mergeTaskTelemetry(currentState, task.id, taskEventLog, providerHealth)
+          }
+          if (result.taskStateV2 !== undefined) {
+            const controllerState: WorkflowState = {
+              ...currentState,
+              taskStatesV2: { ...(currentState.taskStatesV2 ?? {}), [task.id]: result.taskStateV2 },
+              updatedAt: new Date().toISOString(),
+            }
+            await setState(controllerState)
+            currentState = controllerState
+            self.latestState = controllerState
+          }
           const approvedVerificationResult = approvedVerificationCommand === undefined
             ? undefined
             : persistedVerificationResult(result, approvedVerificationCommand)
@@ -1327,6 +1472,10 @@ export class WorkSessionRuntime {
             }, `verification-consumed:${task.id}:${approvedVerification.generation}:${approvedVerification.commandFingerprint}`)
           }
 
+          if (v2 && result.status === 'COMPLETED' && (result.taskStateV2?.status !== 'COMPLETED' ||
+              result.taskStateV2.currentAction !== 'COMPLETE' || new TaskController().decide(loadTaskStateV2(result.taskStateV2)).action !== 'COMPLETE')) {
+            throw new Error('V2 runner returned completion without Controller authorization')
+          }
           if (result.status === 'COMPLETED') {
             const completionEvidence = result.completionEvidence
 
@@ -1463,6 +1612,10 @@ export class WorkSessionRuntime {
               stopAfterTaskRequested: self.stopAfterTaskRequested || undefined,
               updatedAt: new Date().toISOString(),
             }
+            if (!v2) patchTaskStateV2(completedState, task.id, {
+              status: 'COMPLETED', blockers: [],
+              verificationState: { results: completionEvidence?.verificationResults ?? [] },
+            })
             await setState(completedState)
             currentState = completedState
             self.latestState = completedState
@@ -1552,6 +1705,10 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState),
               updatedAt: new Date().toISOString(),
             }
+            if (!v2) patchTaskStateV2(suspendedState, task.id, {
+              status: 'SUSPENDED',
+              blockers: [brainFailure.safeMessage ?? brainFailure.rootCause], currentAction: 'SUSPEND',
+            })
             await setState(suspendedState)
             self.latestState = suspendedState
             return await suspend(
@@ -1573,6 +1730,9 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState),
               updatedAt: new Date().toISOString(),
             }
+            if (!v2) patchTaskStateV2(pausedState, task.id, {
+              status: 'SUSPENDED', currentAction: 'SUSPEND',
+            })
             await setState(pausedState)
             self.latestState = pausedState
             return await suspend(
@@ -1625,6 +1785,11 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState), // W004-B: 结算 active time，暂停不计时
               updatedAt: new Date().toISOString(),
             }
+            if (!v2) patchTaskStateV2(suspendedState, task.id, {
+              status: 'SUSPENDED',
+              blockers: result.humanRequired === undefined ? [] : [result.humanRequired.reason],
+              currentAction: 'REQUEST_APPROVAL',
+            })
             await setState(suspendedState)
             self.latestState = suspendedState
             self.recordLedger({
@@ -1675,6 +1840,9 @@ export class WorkSessionRuntime {
               ...self.settleActiveTime(currentState), // W004-B
               updatedAt: new Date().toISOString(),
             }
+            if (!v2) patchTaskStateV2(failedState, task.id, {
+              status: 'FAILED', blockers: [failure.safeMessage], currentAction: 'SUSPEND',
+            })
             await setState(failedState)
             self.latestState = failedState
             self.recordSessionFailed(failedState)
@@ -1744,6 +1912,15 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.taskStatesV2 !== undefined) {
+      result.taskStatesV2 = wfState.taskStatesV2 as Record<string, import('./task-state-v2.js').TaskStateV2>
+    }
+    if (wfState.taskEventLogs !== undefined) {
+      result.taskEventLogs = wfState.taskEventLogs as Record<string, readonly import('./task-observability.js').TaskEventV2[]>
+    }
+    if (wfState.providerHealth !== undefined) {
+      result.providerHealth = wfState.providerHealth as Record<string, import('./task-observability.js').ProviderHealthObservation>
     }
     if (wfState.pendingVerificationApproval !== undefined) {
       result.pendingVerificationApproval = wfState.pendingVerificationApproval

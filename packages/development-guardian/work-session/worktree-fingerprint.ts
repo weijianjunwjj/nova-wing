@@ -10,19 +10,38 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, lstat, readlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RepositoryCheckpoint } from './checkpoint.js'
 
 export interface GitStatusEntry {
   status: string
   path: string
+  /** Literal path from NUL-delimited porcelain, with no rename display syntax. */
+  contentPath?: string
 }
 
 /**
  * 解析 git status --porcelain --untracked-files=all 输出
  */
 export function parseGitStatus(output: string): GitStatusEntry[] {
+  if (output.includes('\0')) {
+    const fields = output.split('\0')
+    const entries: GitStatusEntry[] = []
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i]!
+      if (!field) continue
+      const status = field.slice(0, 2)
+      const path = field.slice(3)
+      entries.push({ status, path, contentPath: path })
+      if (/[RC]/.test(status)) {
+        const source = fields[++i]
+        if (source === undefined || source === '') throw new Error('invalid porcelain rename')
+        entries.push({ status: status.includes('R') ? ' D' : ' C', path: source, contentPath: source })
+      }
+    }
+    return entries
+  }
   return output
     .split(/\r?\n/u)
     .map((line) => line.trimEnd())
@@ -70,6 +89,7 @@ function contentPathOf(path: string): string {
 export async function computeWorktreeFingerprint(
   repoPath: string,
   entries: GitStatusEntry[],
+  options: { strict?: boolean } = {},
 ): Promise<string> {
   const hash = createHash('sha256')
 
@@ -77,6 +97,7 @@ export async function computeWorktreeFingerprint(
     .map((entry) => ({
       status: entry.status,
       path: normalizePath(entry.path),
+      contentPath: entry.contentPath,
     }))
     .sort((a, b) => {
       const pathCmp = a.path.localeCompare(b.path)
@@ -87,21 +108,32 @@ export async function computeWorktreeFingerprint(
   for (const entry of normalized) {
     hash.update(`${entry.status}|${entry.path}\n`)
 
-    if (entry.status.includes('D')) {
+    if (!options.strict && entry.status.includes('D')) {
       hash.update('CONTENT:[deleted]\n')
       continue
     }
 
-    if (entry.status.startsWith('??') && shouldSkipUntrackedContent(entry.path)) {
+    if (!options.strict && entry.status.startsWith('??') && shouldSkipUntrackedContent(entry.path)) {
       hash.update('CONTENT:[untracked-skipped]\n')
       continue
     }
 
-    const absPath = join(repoPath, contentPathOf(entry.path))
+    const absPath = join(repoPath, entry.contentPath ?? contentPathOf(entry.path))
     try {
-      const content = await readFile(absPath, 'utf8')
-      hash.update(`CONTENT:${content}\n`)
-    } catch {
+      if (options.strict) {
+        const info = await lstat(absPath)
+        hash.update('CONTENT:')
+        hash.update(info.isSymbolicLink() ? await readlink(absPath) : await readFile(absPath))
+        hash.update('\n')
+      } else {
+        const content = await readFile(absPath, 'utf8')
+        hash.update(`CONTENT:${content}\n`)
+      }
+    } catch (error) {
+      if (options.strict) {
+        if (entry.status.includes('D') && (error as NodeJS.ErrnoException).code === 'ENOENT') { hash.update('CONTENT:[deleted]\n'); continue }
+        throw error
+      }
       hash.update('CONTENT:[unreadable]\n')
     }
   }

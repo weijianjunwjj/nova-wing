@@ -20,10 +20,12 @@
  * generic Git Bash 权限，也不使用 shell 拼接命令。
  */
 
+import { createHash } from 'node:crypto'
+import { realpath } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
-import { normalizePath, parseGitStatus } from './worktree-fingerprint.js'
+import { normalizePath, parseGitStatus, computeWorktreeFingerprint } from './worktree-fingerprint.js'
 
 export interface PushRemotePolicy {
   /** remote 名（如 origin） */
@@ -538,6 +540,19 @@ export async function finalizeCompletedTask(
       throw new GitCheckpointError(
         'repository HEAD changed during task; refusing to commit',
       )
+    }
+  }
+
+  const authorized = completionEvidence.repositoryReality
+  if (authorized !== undefined) {
+    const status = await runGit(['status', '--porcelain', '-z', '--untracked-files=all'])
+    const entries = parseGitStatus(status.stdout)
+    const indexDiff = await runGit(['diff', '--cached', '--binary'])
+    if (status.exitCode !== 0 || indexDiff.exitCode !== 0) throw new GitCheckpointError('cannot inspect completion authorization')
+    const fingerprint = createHash('sha256').update(await computeWorktreeFingerprint(repoPath, entries, { strict: true })).update(indexDiff.stdout).digest('hex')
+    if (authorized.repositoryIdentity !== await realpath(repoPath) || authorized.branch !== expectedBranch ||
+        authorized.headSha !== await runGitString(runGit, ['rev-parse', 'HEAD']) || authorized.worktreeFingerprint !== fingerprint) {
+      throw new GitCheckpointError('repository differs from Controller completion authorization; refusing to commit')
     }
   }
 

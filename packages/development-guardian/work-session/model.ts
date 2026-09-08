@@ -24,6 +24,13 @@ export type WorkSessionState =
 export interface WorkSessionTask {
   id: string
   goal: string
+  /** V2 task facts; optional so existing Work Session definitions remain compatible. */
+  constraints?: readonly string[]
+  acceptanceCriteria?: readonly string[]
+  allowedPaths?: readonly string[]
+  forbiddenPaths?: readonly string[]
+  /** Explicit criterion-to-evidence contract for the V2 completion gate. */
+  acceptanceEvidenceBindings?: readonly import('./risk-evidence.js').AcceptanceEvidenceBinding[] | undefined
 }
 
 export interface WorkSessionLimits {
@@ -55,6 +62,8 @@ export interface WorkSessionDefinition {
   scheduledStartAt?: string | null
   scheduleSource?: ScheduleSource
   createdAt?: string
+  /** V2 makes TaskStateV2 authoritative; absent preserves established V1 behavior. */
+  controlPlane?: 'v1' | 'v2'
 }
 
 export interface HumanRequired {
@@ -79,6 +88,20 @@ export interface WorkSessionDurableState {
   currentTaskIndex: number
   currentTaskId: string | null
   completedTaskIds: readonly string[]
+  /**
+   * V2 task-centric durable projection.  The Work Session snapshot remains the
+   * single persistence boundary; this field deliberately does not introduce a
+   * second workflow or a competing runtime state machine.
+   */
+  taskStatesV2?: Record<string, import('./task-state-v2.js').TaskStateV2>
+  /**
+   * V2 append-only Task Event Log projection (per taskId). History only; it is
+   * never replayed into semantic decisions. Persisted inside the same session
+   * snapshot as TaskStateV2 so restart restores it without a second store.
+   */
+  taskEventLogs?: Record<string, readonly import('./task-observability.js').TaskEventV2[]>
+  /** V2 last-known Provider Health projection (per provider). Real observations override it. */
+  providerHealth?: Record<string, import('./task-observability.js').ProviderHealthObservation>
   humanRequired?: HumanRequired
   pendingVerificationApproval?: PendingVerificationApproval
   /** Brain did not produce a verdict; distinct from a true human decision. */

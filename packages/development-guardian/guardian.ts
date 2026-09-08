@@ -73,6 +73,16 @@ function enforceTaskConstraints(task: GuardianTask, packet: DelegationPacket): D
   }
 }
 
+/**
+ * Guardian-centric autonomous loop — the v0.1 control-plane engine.
+ *
+ * Retained for explicit V1 compatibility (`controlPlane: 'v1'` is a product
+ * requirement). New control-plane work targets the V2 path
+ * (TaskStateV2 + TaskController + V2ControllerTaskRunner), where next-action,
+ * completion and recovery are decided by TaskController against TaskStateV2 and
+ * the deterministic Evidence Gate — never by this loop. This function must not
+ * be called from the V2 path.
+ */
 export async function runGuardianTask(options: {
   task: GuardianTask
   brain: GuardianBrain

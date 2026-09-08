@@ -11,10 +11,12 @@ import type {
   VerificationResult,
 } from '../model.js'
 import type { GuardianProgressObserver } from '../progress.js'
+import type { TaskStateV2 } from './task-state-v2.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
 } from './failure-classification.js'
+import type { TaskEventLogV2, ProviderHealthRegistry } from './task-observability.js'
 
 export type WorkSessionTaskResultStatus =
   | 'COMPLETED'
@@ -33,6 +35,8 @@ export type WorkSessionTaskResultStatus =
  * 泄漏给 WorkSession。
  */
 export interface TaskCompletionEvidence {
+  /** Exact V2 repository authorization, rechecked before Git transport mutates it. */
+  repositoryReality?: import('./reconciliation.js').RepositoryReality
   /** Task 产生的 changed files（modified/new/deleted） */
   changedFiles: readonly string[]
   /** 要求执行的 deterministic verification 结果 */
@@ -63,6 +67,8 @@ export interface WorkSessionTaskResult {
   checkpoint?: GuardianTaskRecoveryCheckpoint
   /** W004-A: 真 COMPLETED 时的结构化 evidence（供 Git checkpoint 使用） */
   completionEvidence?: TaskCompletionEvidence
+  /** V2 controller runner returns the authoritative post-action task state. */
+  taskStateV2?: TaskStateV2
 }
 
 /**
@@ -78,6 +84,13 @@ export interface WorkSessionTaskRunContext {
   onProgress?: GuardianProgressObserver
   /** Runtime-owned one-shot capability; never comes from the browser. */
   approvedVerificationCommand?: string
+  persistTaskStateV2?: (state: TaskStateV2) => Promise<void>
+  /** Existing Work Session snapshot projection supplied to the V2 action loop. */
+  taskStateV2?: TaskStateV2
+  /** Optional V2 Task Event Log accumulator; history only, never semantic authority. */
+  taskEventLog?: TaskEventLogV2
+  /** Optional V2 Provider Health registry (last-known), projected from real observations. */
+  providerHealth?: ProviderHealthRegistry
 }
 
 export interface WorkSessionTaskRunner {
