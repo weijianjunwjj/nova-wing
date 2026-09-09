@@ -200,3 +200,21 @@ test('Codex SDK preflight still blocks a real Git failure without probing a syst
   assert.equal(report.dependencies.find((item) => item.id === 'GIT')?.failureType, 'GIT_UNAVAILABLE')
   assert.equal(requests.some((request) => request.args.join(' ').includes('command -v codex')), false)
 })
+
+for (const controlPlane of ['v2', 'v1', undefined] as const) {
+  test(`preflight with unavailable AskBridge preserves control-plane requirements: ${controlPlane ?? 'historical'}`, async () => {
+    const requests: DependencyCommandRequest[] = []
+    const report = await runProductionDependencyPreflight({
+      ...(controlPlane === undefined ? {} : { controlPlane }),
+      executorModes: ['codex'], inspectCodex: async () => undefined,
+      env: { NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
+      accessFile: async () => undefined,
+      commandRunner: async (request) => request.executable === 'missing-ask-bridge.exe'
+        ? { exitCode: 1, stdout: '', stderr: 'unavailable' }
+        : healthyRunner(requests)(request),
+    })
+    assert.equal(report.canStart, controlPlane === 'v2')
+    assert.equal(report.dependencies.find((item) => item.id === 'BRAIN')?.state, controlPlane === 'v2' ? 'UNKNOWN' : 'UNAVAILABLE')
+    assert.equal(report.dependencies.find((item) => item.id === 'EXECUTOR')?.state, 'READY')
+  })
+}

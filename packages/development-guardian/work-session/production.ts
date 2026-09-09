@@ -422,14 +422,6 @@ export async function createProductionWorkSessionUi(
   await mkdir(resolve(storagePath, '..'), { recursive: true })
   const verificationOutputDirectory = `${storagePath}.artifacts`
 
-  const createBrain = dependencies.createBrain ?? ((options) => new AskBridgeBrain(options))
-  const brain = createBrain({
-    command: resolveAskBridgeExecutable(env),
-    ...(env.NOVAWING_CHATGPT_MODEL?.trim()
-      ? { model: env.NOVAWING_CHATGPT_MODEL.trim() }
-      : {}),
-    reasoning: brainReasoning(env),
-  })
   const createExecutor = dependencies.createExecutor ?? ((options) => new DeepSeekExecutor(options))
   const taskModes = new Map(trusted.tasks.map((task) => [task.id,
     task.executorMode ?? trusted.executor.defaultMode ?? (trusted.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)]))
@@ -471,7 +463,7 @@ export async function createProductionWorkSessionUi(
         return persisted?.activeExecutor ?? (mode === 'auto' && quotaBlocked ? 'deepseek' : mode)
       })
       const report = await (dependencies.preflight?.(definition.targetRepo) ??
-        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes }))
+        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes, controlPlane: definition.controlPlane ?? 'v1' }))
       requireDependencyPreflightReady(report)
     },
     createRuntime(eventSink, notificationSink) {
@@ -538,6 +530,14 @@ export async function createProductionWorkSessionUi(
         runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
         return runtime
       }
+      const createBrain = dependencies.createBrain ?? ((options) => new AskBridgeBrain(options))
+      const brain = createBrain({
+        command: resolveAskBridgeExecutable(env),
+        ...(env.NOVAWING_CHATGPT_MODEL?.trim()
+          ? { model: env.NOVAWING_CHATGPT_MODEL.trim() }
+          : {}),
+        reasoning: brainReasoning(env),
+      })
       const runner = new GuardianWorkSessionTaskRunner({
         brain,
         repoPath: definition.targetRepo,

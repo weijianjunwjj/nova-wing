@@ -56,6 +56,8 @@ export interface DependencyCommandRequest {
 export type DependencyCommandRunner = (request: DependencyCommandRequest) => Promise<DependencyCommandResult>
 
 export interface ProductionDependencyPreflightOptions {
+  /** Omitted preserves V1 compatibility; V2 actions own their capability requirements. */
+  controlPlane?: 'v1' | 'v2'
   env?: NodeJS.ProcessEnv
   targetRepo?: string
   commandRunner?: DependencyCommandRunner
@@ -204,14 +206,16 @@ export async function runProductionDependencyPreflight(
     const cwd = options.targetRepo
     const askBridgeExecutable = resolveAskBridgeExecutable(env)
     const [bridge, executor, git] = await Promise.all([
-      Promise.all([
-        probeCommand('BRIDGE', 'BRAIN_TRANSPORT_FAILED', 'AskBridge transport 不可用。', {
-          executable: askBridgeExecutable, args: ['--version'], timeoutMs,
-        }, commandRunner),
-        probeCommand('BRIDGE', 'BRAIN_CONFIGURATION_FAILED', 'AskBridge configuration 不可用。', {
-          executable: askBridgeExecutable, args: ['config'], timeoutMs,
-        }, commandRunner),
-      ]).then(([transport, configuration]) => transport.state === 'READY' ? configuration : transport),
+      options.controlPlane === 'v2'
+        ? Promise.resolve<DependencyHealth>({ id: 'BRIDGE', state: 'UNKNOWN', safeMessage: 'V1 Bridge is not required for ordinary V2 execution.' })
+        : Promise.all([
+          probeCommand('BRIDGE', 'BRAIN_TRANSPORT_FAILED', 'AskBridge transport 不可用。', {
+            executable: askBridgeExecutable, args: ['--version'], timeoutMs,
+          }, commandRunner),
+          probeCommand('BRIDGE', 'BRAIN_CONFIGURATION_FAILED', 'AskBridge configuration 不可用。', {
+            executable: askBridgeExecutable, args: ['config'], timeoutMs,
+          }, commandRunner),
+        ]).then(([transport, configuration]) => transport.state === 'READY' ? configuration : transport),
       (async (): Promise<DependencyHealth> => {
         // Launchpad has no active Task at cold start, but its default Codex
         // executor still has a real local SDK/runtime preflight. Do not turn
@@ -240,7 +244,9 @@ export async function runProductionDependencyPreflight(
         timeoutMs,
       }, commandRunner),
     ])
-    const brain: DependencyHealth = bridge.state === 'READY'
+    const brain: DependencyHealth = options.controlPlane === 'v2'
+      ? { id: 'BRAIN', state: 'UNKNOWN', safeMessage: 'V1 Brain is not required for ordinary V2 execution.' }
+      : bridge.state === 'READY'
       ? {
           id: 'BRAIN',
           state: 'READY',

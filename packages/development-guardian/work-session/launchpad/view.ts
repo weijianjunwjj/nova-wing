@@ -523,20 +523,20 @@ export const LAUNCHPAD_APP_JS = `
   const applyBriefAnalysis = (result, fillFields) => {
     const fields = result.fields || {}
     if (fillFields) {
-      if (fields.targetRepo) targetRepo.value = fields.targetRepo
-      if (fields.branch) branch.value = fields.branch
+      targetRepo.value = fields.targetRepo || ''
+      branch.value = fields.branch || ''
       const firstTask = taskRows()[0]
-      if (fields.taskId) firstTask.querySelector('[data-task-id]').value = fields.taskId
       if (fields.taskInstructions) {
         const goal = firstTask.querySelector('[data-task-goal]')
         goal.value = fields.taskInstructions
         goal.dispatchEvent(new Event('input'))
       }
-      if (Array.isArray(fields.allowedPaths) && fields.allowedPaths.length) form.elements.allowedPaths.value = fields.allowedPaths.join('\\n')
-      if (Array.isArray(fields.forbiddenPaths) && fields.forbiddenPaths.length) form.elements.forbiddenPaths.value = fields.forbiddenPaths.join('\\n')
-      if (Array.isArray(fields.constraints) && fields.constraints.length) form.elements.constraints.value = fields.constraints.join('\\n')
-      if (Array.isArray(fields.acceptanceCriteria) && fields.acceptanceCriteria.length) form.elements.acceptanceCriteria.value = fields.acceptanceCriteria.join('\\n')
-      if (Array.isArray(fields.doNotDo) && fields.doNotDo.length) form.elements.doNotDo.value = fields.doNotDo.join('\\n')
+      firstTask.querySelector('[data-task-id]').value = fields.taskId || ''
+      form.elements.allowedPaths.value = (Array.isArray(fields.allowedPaths) ? fields.allowedPaths : []).join('\\n')
+      form.elements.forbiddenPaths.value = (Array.isArray(fields.forbiddenPaths) ? fields.forbiddenPaths : []).join('\\n')
+      form.elements.constraints.value = (Array.isArray(fields.constraints) ? fields.constraints : []).join('\\n')
+      form.elements.acceptanceCriteria.value = (Array.isArray(fields.acceptanceCriteria) ? fields.acceptanceCriteria : []).join('\\n')
+      form.elements.doNotDo.value = (Array.isArray(fields.doNotDo) ? fields.doNotDo : []).join('\\n')
       if (fields.executorMode) form.elements.executorMode.value = fields.executorMode
       if (Number.isFinite(fields.softMinutes)) softMinutes.value = String(fields.softMinutes)
       if (Number.isFinite(fields.hardMinutes)) hardMinutes.value = String(fields.hardMinutes)
@@ -558,7 +558,7 @@ export const LAUNCHPAD_APP_JS = `
     }
     const recognized = Array.isArray(result.recognized) && result.recognized.length ? '已识别：' + result.recognized.join('、') + '。' : '未识别到可安全填充的字段。'
     const warnings = Array.isArray(result.warnings) && result.warnings.length ? ' ' + result.warnings.join(' ') : ''
-    briefResult.textContent = recognized + warnings
+    briefResult.textContent = recognized + warnings + (fillFields ? ' 未识别的项目、分支、Task ID 和权限字段已清空，请核对后创建。' : '')
   }
   briefFill.addEventListener('click', async () => {
     const brief = briefInput.value.trim()
@@ -566,7 +566,10 @@ export const LAUNCHPAD_APP_JS = `
     briefFill.disabled = true
     briefResult.textContent = '正在识别并验证字段…'
     try { applyBriefAnalysis(await requestBriefAnalysis(brief), true) }
-    catch (cause) { briefResult.textContent = cause instanceof Error ? cause.message : 'Task Brief 无法识别。' }
+    catch (cause) {
+      applyBriefAnalysis({ fields: {} }, true)
+      briefResult.textContent = (cause instanceof Error ? cause.message : 'Task Brief 无法识别。') + ' 项目、分支、Task ID 和权限字段已清空，请重新填写。'
+    }
     finally { briefFill.disabled = false }
   })
   smartModel.addEventListener('click', async () => {

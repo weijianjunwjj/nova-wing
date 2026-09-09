@@ -10,13 +10,15 @@ import { createProductionWorkSessionUi, validateTrustedWorkSessionConfig } from 
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
 import type { ExecutionReport } from '../packages/development-guardian/model.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
+import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import type { RouterCodexExecutor } from '../packages/development-guardian/executor-router.js'
 
 for (const [mode, quota, active] of [
-  ['auto', false, 'codex'], ['auto', true, 'deepseek'], ['codex', true, 'codex'], ['deepseek', false, 'deepseek'],
+  ['auto', false, 'codex'], ['auto', true, 'deepseek'], ['codex', true, 'codex'], ['codex', false, 'codex'], ['deepseek', false, 'deepseek'],
 ] as const) test(`production Guardian/UI wiring: ${mode}, quota=${quota}, active=${active}`, async () => {
   const root = await codexTestRepo()
   const data = await mkdtemp(join(tmpdir(), 'novawing-codex-production-'))
+  let brainCalls = 0
   let codexCalls = 0
   let deepseekCalls = 0
   let runtime: WorkSessionRuntimeConfig | undefined
@@ -25,7 +27,7 @@ for (const [mode, quota, active] of [
     verificationResults: [{ name: 'git diff --check', status: 'passed' }], blockers: [] })
   try {
     const config = await validateTrustedWorkSessionConfig({
-      session: { id: 'coding-production', targetRepo: root, branch: 'main', limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 1 } },
+      session: { id: 'coding-production', targetRepo: root, branch: 'main', ...(mode === 'codex' ? { controlPlane: 'v1' } : {}), limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 1 } },
       tasks: [{ id: 'T1', goal: 'Make scoped change', guardian: { constraints: [], acceptanceCriteria: ['Verified'],
         doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: [] } }],
       executor: { defaultMode: mode, model: 'sonnet', maxTurns: 10, allowNpmInstall: false, allowPythonBootstrap: false },
@@ -35,13 +37,14 @@ for (const [mode, quota, active] of [
     app = await createProductionWorkSessionUi(config, {
       env: { LOCALAPPDATA: data },
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
-      createBrain: () => ({ review: async ({ task }) => ({ goal: task.goal,
-        verdict: task.lastReport ? 'done' : 'proceed', instructions: ['Implement scoped change'], constraints: [], doNotDo: [], verification: [] }) }),
+      createBrain: () => ({ review: async ({ task }) => { brainCalls++; return { goal: task.goal,
+        verdict: task.lastReport ? 'done' : 'proceed', instructions: ['Implement scoped change'], constraints: [], doNotDo: [], verification: [] } } }),
       createCodexExecutor(options) {
         assert.equal(options.codexModel, 'gpt-5.6-sol')
         assert.equal(options.reasoningEffort, 'medium')
         assert.equal(options.cwd, root)
         const executor: RouterCodexExecutor = { execute: async () => {
+          assert.ok(brainCalls > 0, 'V1 review remains a precondition of execution')
           codexCalls++
           options.onThread?.('production-thread', false)
           executor.lastError = quota ? classifyCodexError({ code: 'quota_exhausted' }) : undefined
@@ -54,8 +57,11 @@ for (const [mode, quota, active] of [
         return { execute: async () => { deepseekCalls++; return evidence() } }
       },
     })
+    assert.ok(runtime!.taskRunner instanceof GuardianWorkSessionTaskRunner)
+    assert.equal(app.definition.controlPlane, mode === 'codex' ? 'v1' : undefined)
     const outcome = await runtime!.taskRunner.run(app.definition.tasks[0]!)
     assert.equal(outcome.status, mode === 'codex' && quota ? 'HUMAN_REQUIRED' : 'COMPLETED')
+    assert.ok(brainCalls > 0)
     assert.equal(codexCalls, mode === 'deepseek' ? 0 : 1)
     assert.equal(deepseekCalls, active === 'deepseek' ? 1 : 0)
     const displayed = app.controller.getSnapshot().codingExecutions?.[0]

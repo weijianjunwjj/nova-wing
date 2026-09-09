@@ -154,7 +154,7 @@ export interface NovaWingLaunchpadDependencies {
   /** T021: 读取某 config 对应持久化 Session 的派生展示状态（缺省读 Mastra storage）。 */
   readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   /** One-shot bounded preflight; production enables it explicitly. */
-  preflight?: (targetRepo?: string) => Promise<DependencyHealthReport>
+  preflight?: (targetRepo?: string, controlPlane?: 'v1' | 'v2') => Promise<DependencyHealthReport>
   /** Existing local Codex quota observation; failures intentionally remain unknown. */
   readCodexAvailability?: () => CodexAvailability | Promise<CodexAvailability>
 }
@@ -470,7 +470,7 @@ export class NovaWingLaunchpad {
     await this.hydrateStatuses()
     this.initialExecutorMode = await this.resolveInitialExecutorMode()
     if (this.preflight !== undefined) {
-      this.dependencyHealth = await this.preflight().catch(() => ({
+      this.dependencyHealth = await this.preflight(undefined, 'v2').catch(() => ({
         overall: 'DEGRADED' as const,
         canStart: false,
         checkedAt: new Date().toISOString(),
@@ -894,7 +894,7 @@ export class NovaWingLaunchpad {
       await existing.app.close().catch(() => undefined)
     }
     const config = await this.loadConfig(discovered.configPath)
-    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo)
+    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
     const env = await this.resolveEnvironment(config)
     const app = await this.createWorkSession(config, { env, serverPort: 0 })
     if (this.closed) {
@@ -967,7 +967,7 @@ export class NovaWingLaunchpad {
     if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
       throw new ComposerLaunchError('INVALID_PROJECT_PATH')
     }
-    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo)
+    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo, 'v2')
     const branch = await this.readCurrentBranch(targetRepo)
     if (input.branch !== undefined && input.branch !== branch) {
       throw new ComposerLaunchError('BRANCH_MISMATCH')
@@ -976,6 +976,8 @@ export class NovaWingLaunchpad {
     const config = await validateTrustedWorkSessionConfig({
       session: {
         id: sessionId,
+        // New Composer sessions opt into V2; persisted legacy configs keep their semantics.
+        controlPlane: 'v2',
         targetRepo,
         branch,
         scheduledStartAt: input.scheduledStartAt !== null && Date.parse(input.scheduledStartAt) > Date.now() ? input.scheduledStartAt : null,
@@ -1050,9 +1052,9 @@ export class NovaWingLaunchpad {
     this.respondJson(response, status, { error: code, message: COMPOSER_SAFE_MESSAGES[code] })
   }
 
-  private async assertDependenciesReady(targetRepo: string): Promise<void> {
+  private async assertDependenciesReady(targetRepo: string, controlPlane: 'v1' | 'v2'): Promise<void> {
     if (this.preflight === undefined) return
-    const report = await this.preflight(targetRepo)
+    const report = await this.preflight(targetRepo, controlPlane)
     this.dependencyHealth = report
     requireDependencyPreflightReady(report)
   }
@@ -1147,12 +1149,13 @@ export async function createNovaWingLaunchpad(options: {
   const dependencies = options.enableProductionPreflight === true
     ? {
         ...options.dependencies,
-        preflight: options.dependencies?.preflight ?? ((targetRepo?: string) =>
+        preflight: options.dependencies?.preflight ?? ((targetRepo?: string, controlPlane: 'v1' | 'v2' = 'v2') =>
           runProductionDependencyPreflight({
             // Launchpad's default Composer route is Codex. Check its local SDK
             // prerequisites at cold start so the topbar reports availability,
             // not whether an active Task has already selected a route.
             executorModes: ['codex'],
+            controlPlane,
             ...(options.env === undefined ? {} : { env: options.env }),
             ...(targetRepo === undefined ? {} : { targetRepo }),
           })),
