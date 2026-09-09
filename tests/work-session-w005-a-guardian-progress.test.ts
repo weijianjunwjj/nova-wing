@@ -112,6 +112,18 @@ test('Recent Activity folds only consecutive Guardian events with identical safe
   controller.close()
 })
 
+test('V2 progress uses neutral TASK_PHASE telemetry while V1 retains GUARDIAN_PHASE compatibility', () => {
+  const runtime = new FakeRuntime(makeDefinition({ controlPlane: 'v2' }))
+  let progressSink: GuardianProgressObserver | undefined
+  const controller = new WorkSessionControlController({
+    createRuntime: (eventSink) => { progressSink = eventSink; return runtime },
+  })
+  progressSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0 })
+  assert.equal(controller.getRecentEvents().at(-1)?.type, 'TASK_PHASE')
+  assert.equal(controller.getRecentEvents().some((event) => event.type === 'GUARDIAN_PHASE'), false)
+  controller.close()
+})
+
 await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and reason', async () => {
   // 1. HTML 静态包含 decision card 标题与占位元素。
   const html = renderHtml({ controlToken: 'tok', serverOrigin: 'http://127.0.0.1:4317' })

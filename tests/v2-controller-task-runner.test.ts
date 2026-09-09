@@ -5,10 +5,52 @@ import {
   createTaskStateV2,
   type AgentCapabilityProfile,
 } from '../packages/development-guardian/work-session/index.js'
+import { TaskEventLogV2 } from '../packages/development-guardian/work-session/task-observability.js'
 
 const codex: AgentCapabilityProfile = { id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true } }
 const deepseek: AgentCapabilityProfile = { id: 'deepseek', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true } }
 const task = { id: 'v2', goal: 'fix it', acceptanceCriteria: ['tests pass'], acceptanceEvidenceBindings: [{ criterion: 'tests pass', requiredEvidence: ['test'] }] }
+
+test('missing criterion evidence binding fails closed before executor dispatch or action-budget burn', async () => {
+  let dispatches = 0
+  const eventLog = new TaskEventLogV2()
+  const unbound = { id: 'unbound', goal: 'fix it', acceptanceCriteria: ['criterion without evidence'] }
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [codex], dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+    dispatch: async () => { dispatches++; return { status: 'SUCCESS' } },
+  } })
+  const result = await runner.run(unbound, undefined, undefined, { taskEventLog: eventLog })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'CONFIGURATION_REQUIRED')
+  assert.match(result.humanRequired?.reason ?? '', /Acceptance criterion criterion without evidence has no evidence binding/u)
+  assert.equal(dispatches, 0)
+  assert.equal(eventLog.count('CONTROLLER_DECIDED'), 1)
+  assert.equal(eventLog.last('CONTROLLER_DECIDED')?.reasonCode, 'ACCEPTANCE_EVIDENCE_BINDING_MISSING')
+})
+
+test('same controller decision and unchanged facts stall early without exhausting the global action budget', async () => {
+  let dispatches = 0
+  const eventLog = new TaskEventLogV2()
+  const stuckTask = { id: 'stuck', goal: 'fix it', acceptanceCriteria: ['proof'], acceptanceEvidenceBindings: [{ criterion: 'proof', requiredEvidence: ['required-proof'] }] }
+  const initial = createTaskStateV2({ id: 's', branch: 'main' }, stuckTask)
+  const taskStateV2 = {
+    ...initial,
+    status: 'ACTIVE' as const,
+    gitState: { repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' },
+    verificationState: { results: [{ name: 'irrelevant-proof', status: 'passed' as const }] },
+    completion: { ...initial.completion, evidence: [{ type: 'irrelevant-proof', status: 'PASSED' as const, source: 'deterministic', repositoryIdentity: 'repo', branch: 'main', headSha: 'h', workspaceIdentity: 'w', timestamp: 'before' }] },
+  }
+  const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [codex], maxActions: 20, dispatcher: {
+    inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+    dispatch: async () => { dispatches++; return { status: 'SUCCESS', verificationResults: [{ name: 'irrelevant-proof', status: 'passed' }] } },
+  } })
+  const result = await runner.run(stuckTask, undefined, undefined, { taskStateV2, taskEventLog: eventLog })
+  assert.equal(result.humanRequired?.category, 'STALLED_NO_PROGRESS')
+  assert.equal(dispatches, 3)
+  assert.equal(eventLog.count('CONTROLLER_DECIDED'), 3)
+  assert.equal(eventLog.last('TASK_SUSPENDED')?.reasonCode, 'STALLED_NO_PROGRESS')
+  assert.doesNotMatch(result.humanRequired?.reason ?? '', /quota|action budget exhausted/iu)
+})
 
 test('V2 runner owns execute/verify/fix/complete loop and preserves agent continuity', async () => {
   const calls: Array<{ action: string; agent: string }> = []

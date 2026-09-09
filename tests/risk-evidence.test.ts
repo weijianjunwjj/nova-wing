@@ -30,21 +30,21 @@ test('HIGH review rejects a relabeled reviewer running in the implementer runtim
   }
   assert.equal(new TaskController().decide({ ...high, completion: { ...high.completion, review: disguised } }).action, 'REVIEW')
 })
-test('stale, unmapped, or identity-less evidence cannot satisfy completion', () => {
+test('stale or identity-less evidence requires verification while unmapped criteria suspend', () => {
   const state = task()
   assert.equal(new TaskController().decide({ ...state, completion: { evidence: [{ type: 'test', status: 'PASSED', source: 'deterministic', repositoryIdentity: 'repo', branch: 'main', headSha: 'h', workspaceIdentity: 'old', timestamp: 'now' }], bindings } }).action, 'VERIFY')
   assert.equal(new TaskController().decide({ ...state, completion: { evidence: [{ type: 'test', status: 'PASSED', source: 'deterministic', timestamp: 'now' }], bindings } }).action, 'VERIFY')
-  assert.equal(new TaskController().decide({ ...state, completion: { evidence, bindings: [] } }).action, 'VERIFY')
+  assert.equal(new TaskController().decide({ ...state, completion: { evidence, bindings: [] } }).action, 'SUSPEND')
   assert.equal(new TaskController().decide({ ...state, completion: { evidence, bindings: [{ criterion: 'done', requiredEvidence: ['typecheck'] }] } }).action, 'VERIFY')
 })
 
 test('acceptance binding identity, duplicate criteria and explicit approval fail closed', () => {
   const base = task()
   const controller = new TaskController()
-  assert.equal(controller.decide({ ...base, completion: { evidence, bindings: [{ criterion: 'other', requiredEvidence: ['test'] }] } }).action, 'VERIFY')
+  assert.equal(controller.decide({ ...base, completion: { evidence, bindings: [{ criterion: 'other', requiredEvidence: ['test'] }] } }).action, 'SUSPEND')
   assert.equal(controller.decide({ ...base, acceptanceCriteria: ['A', 'B'], completion: { evidence, bindings: [
     { criterion: 'A', requiredEvidence: ['test'] }, { criterion: 'A', requiredEvidence: ['test'] },
-  ] } }).action, 'VERIFY')
+  ] } }).action, 'SUSPEND')
   assert.equal(controller.decide({ ...base, acceptanceCriteria: ['A', 'B'], completion: { evidence, bindings: [
     { criterion: 'A', requiredEvidence: ['test'] }, { criterion: 'B', requiredEvidence: ['typecheck'] },
   ] } }).action, 'VERIFY')

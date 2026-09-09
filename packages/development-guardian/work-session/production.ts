@@ -195,6 +195,18 @@ export async function validateTrustedWorkSessionConfig(
     for (const path of task.guardian.allowedPaths) {
       requireTrimmed(path, `tasks.${task.id}.guardian.allowedPaths[]`)
     }
+    if (task.acceptanceEvidenceBindings !== undefined) {
+      const criteria = new Set(task.guardian.acceptanceCriteria)
+      const bound = new Set<string>()
+      for (const binding of task.acceptanceEvidenceBindings) {
+        binding.criterion = requireTrimmed(binding.criterion, `tasks.${task.id}.acceptanceEvidenceBindings[].criterion`)
+        if (!criteria.has(binding.criterion)) throw new Error(`evidence binding names unknown acceptance criterion: ${binding.criterion}`)
+        if (bound.has(binding.criterion)) throw new Error(`duplicate evidence binding: ${binding.criterion}`)
+        if (binding.requiredEvidence.length === 0) throw new Error(`evidence binding is empty: ${binding.criterion}`)
+        binding.requiredEvidence = binding.requiredEvidence.map((evidence) => requireTrimmed(evidence, `tasks.${task.id}.acceptanceEvidenceBindings[].requiredEvidence[]`))
+        bound.add(binding.criterion)
+      }
+    }
   }
 
   config.executor.model = requireTrimmed(config.executor.model, 'executor.model')

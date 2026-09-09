@@ -135,8 +135,8 @@ export class WorkSessionControlController {
     this.maxRecentEvents = options.maxRecentEvents ?? DEFAULT_MAX_RECENT_EVENTS
     this.clock = options.clock
     this.beforeResume = options.beforeResume
-    // 注入的 factory 拿到 Guardian progress sink；controller 把 GuardianProgressEvent
-    // 转成 GUARDIAN_PHASE recent event。生产 factory 把 sink 接到 runner.onProgress。
+    // Transport still uses the established progress value shape. Presentation
+    // names V2 activity TASK_PHASE so the UI does not imply Guardian semantics.
     this.runtime = options.createRuntime(
       (event) => this.onGuardianProgress(event),
       (result) => this.onNotificationDelivery(result),
@@ -828,7 +828,7 @@ export class WorkSessionControlController {
     // fold only consecutive events whose safe rendered fields are identical.
     const presentationKey = guardianPresentationKey(data)
     if (presentationKey !== this.lastGuardianPresentationKey) {
-      this.emit({ type: 'GUARDIAN_PHASE', data })
+      this.emit({ type: this.runtime.getDefinition().controlPlane === 'v2' ? 'TASK_PHASE' : 'GUARDIAN_PHASE', data })
       this.lastGuardianPresentationKey = presentationKey
     }
     this.broadcastSnapshot()
@@ -891,7 +891,7 @@ export class WorkSessionControlController {
   }
 
   private emit(input: ControlEventInput): void {
-    if (input.type !== 'GUARDIAN_PHASE') {
+    if (input.type !== 'GUARDIAN_PHASE' && input.type !== 'TASK_PHASE') {
       this.lastGuardianPresentationKey = undefined
     }
     const event: ControlEvent = {

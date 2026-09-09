@@ -409,7 +409,7 @@ function formatElapsed(ms) {
 
 function summarizeEvent(ev) {
   var data = ev.data && typeof ev.data === 'object' ? ev.data : {}
-  if (ev.type === 'GUARDIAN_PHASE') {
+  if (ev.type === 'GUARDIAN_PHASE' || ev.type === 'TASK_PHASE') {
     var parts = [displayValue(data.phase, GUARDIAN_PHASE_LABELS)]
     if (data.status !== undefined) parts.push(displayValue(data.status, GUARDIAN_STATUS_LABELS))
     var iteration = displayIteration(data.phase, data.iteration)

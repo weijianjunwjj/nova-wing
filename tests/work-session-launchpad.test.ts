@@ -223,6 +223,17 @@ Hard Limit 20
   assert.equal(analysis.modelRecommendation?.reasoningEffort, 'high')
   assert.deepEqual(analysis.fields.acceptanceCriteria, ['npm test', 'npm run typecheck'])
 
+  const bound = analyzeTaskBrief(`Acceptance Criteria:
+npm test passes.
+typecheck passes.
+Required Evidence:
+npm test passes. => npm test
+typecheck passes. => npm run typecheck`)
+  assert.deepEqual(bound.fields.acceptanceEvidenceBindings, [
+    { criterion: 'npm test passes.', requiredEvidence: ['npm test'] },
+    { criterion: 'typecheck passes.', requiredEvidence: ['npm run typecheck'] },
+  ])
+
   const tomorrowMorning = analyzeTaskBrief('明天上午开始修复 README。', new Date('2026-09-05T09:00:00+08:00'))
   assert.equal(tomorrowMorning.fields.startMode, 'custom')
   assert.equal(tomorrowMorning.fields.customStartAt, '2026-09-06T09:00')
@@ -756,6 +767,11 @@ await test('Composer creates a fresh validated session from structured input and
     assert.equal(state.createCalls, 0)
     const response = await postCreate(launchpad, composerRequest('composer-create-request-0001', {
       branch: 'feat/composer',
+      guardian: {
+        allowedPaths: ['packages/**', 'tests/**'],
+        acceptanceCriteria: ['D01 root cause is classified from evidence.', 'npm run typecheck'],
+        acceptanceEvidenceBindings: [{ criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] }],
+      },
     }), auth)
     assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
     assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
@@ -765,6 +781,21 @@ await test('Composer creates a fresh validated session from structured input and
     assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
     assert.equal(state.controllerStartCalls, 1)
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
+    assert.deepEqual(state.receivedConfigs[0]!.tasks[0]!.acceptanceEvidenceBindings, [
+      { criterion: 'Implement the requested task.', requiredEvidence: ['git diff --check'] },
+      { criterion: 'Run relevant deterministic tests.', requiredEvidence: ['node --test focused-d01.test.js'] },
+      { criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] },
+      { criterion: 'npm run typecheck', requiredEvidence: ['npm run typecheck'] },
+    ])
+    const composedTask = state.receivedConfigs[0]!.tasks[0]!
+    const convergingTask = { id: composedTask.id, goal: composedTask.goal, acceptanceCriteria: composedTask.guardian.acceptanceCriteria, acceptanceEvidenceBindings: composedTask.acceptanceEvidenceBindings }
+    const convergingRunner = new V2ControllerTaskRunner({ sessionId: 'composer-converges', branch: 'feat/composer', agents: [{ id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }], dispatcher: {
+      inspectRepository: async () => ({ repositoryIdentity: process.cwd(), branch: 'feat/composer', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+      dispatch: async ({ action }) => action === 'VERIFY'
+        ? { status: 'SUCCESS', verificationResults: [{ name: 'git diff --check', status: 'passed' }, { name: 'node --test focused-d01.test.js', status: 'passed' }, { name: 'npm run typecheck', status: 'passed' }] }
+        : { status: 'SUCCESS' },
+    } })
+    assert.equal((await convergingRunner.run(convergingTask)).status, 'COMPLETED')
     assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [
@@ -1178,6 +1209,20 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
       autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'not a remote' },
     }), auth)
     assert.equal((await malformedPushRemote.json() as { error: string }).error, 'INVALID_PUSH_REMOTE')
+    const unknownBindingRequest = composerRequest('composer-create-request-unknown-binding', {
+      guardian: { allowedPaths: ['packages/**'], acceptanceCriteria: ['known'], acceptanceEvidenceBindings: [{ criterion: 'unknown', requiredEvidence: ['npm test'] }] },
+    })
+    assert.deepEqual((unknownBindingRequest as { guardian: { acceptanceEvidenceBindings: unknown } }).guardian.acceptanceEvidenceBindings, [{ criterion: 'unknown', requiredEvidence: ['npm test'] }])
+    const unknownBinding = await postCreate(launchpad, unknownBindingRequest, auth)
+    const unknownBindingBody = await unknownBinding.json() as { error?: string }
+    assert.equal(unknownBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(unknownBindingBody))
+    const duplicateBinding = await postCreate(launchpad, composerRequest('composer-create-request-duplicate-binding', {
+      guardian: { allowedPaths: ['packages/**'], acceptanceCriteria: ['known'], acceptanceEvidenceBindings: [
+        { criterion: 'known', requiredEvidence: ['npm test'] }, { criterion: 'known', requiredEvidence: ['git diff --check'] },
+      ] },
+    }), auth)
+    const duplicateBindingBody = await duplicateBinding.json() as { error?: string }
+    assert.equal(duplicateBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(duplicateBindingBody))
     assert.equal(state.createCalls, 0)
   } finally {
     await launchpad.close()
@@ -1927,7 +1972,7 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     const targetRepo = { value: 'old-repo' }
     const branch = { value: 'old-branch' }
     const taskId = { value: 'OLD' }
-    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'doNotDo'].map((key) => [key, { value: 'old' }]))
+    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old' }]))
     const briefResult = { textContent: '' }
     const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
       taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},

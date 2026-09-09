@@ -11,6 +11,7 @@ import {
 const session = { id: 'session-v2', branch: 'main' }
 const task = {
   id: 'task-v2', goal: 'ship V2', acceptanceCriteria: ['tests pass'],
+  acceptanceEvidenceBindings: [{ criterion: 'tests pass', requiredEvidence: ['test'] }],
   allowedPaths: ['src/**'], forbiddenPaths: ['.env'],
 }
 

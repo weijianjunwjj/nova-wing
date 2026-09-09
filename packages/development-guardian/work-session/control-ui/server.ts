@@ -432,7 +432,7 @@ export class WorkSessionControlServer {
 
     const unsubscribe = this.controller.subscribe({
       onEvent: (event) => {
-        const sseEvent = event.type === 'GUARDIAN_PHASE' ? 'guardian' : 'activity'
+        const sseEvent = event.type === 'GUARDIAN_PHASE' ? 'guardian' : event.type === 'TASK_PHASE' ? 'task' : 'activity'
         this.writeSse(res, sseEvent, envelopeFromEvent(event, this.nextSseId()))
       },
       onSnapshot: (snapshot) => {

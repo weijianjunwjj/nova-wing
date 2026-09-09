@@ -8,6 +8,18 @@ export interface ApprovalEvidence { approved: boolean; repositoryIdentity?: stri
 export interface AcceptanceEvidenceBinding { criterion: string; requiredEvidence: readonly string[]; requiresApproval?: boolean | undefined }
 export interface RiskAssessment { level: RiskLevel; factors: readonly string[] }
 
+/** Criteria without one exact, non-empty trusted evidence contract. */
+export function unmappedAcceptanceCriteria(task: Pick<TaskStateV2, 'acceptanceCriteria' | 'completion'>): readonly string[] {
+  const counts = new Map<string, number>()
+  for (const binding of task.completion.bindings) {
+    counts.set(binding.criterion, (counts.get(binding.criterion) ?? 0) + 1)
+  }
+  return task.acceptanceCriteria.filter((criterion) => {
+    const binding = task.completion.bindings.find((candidate) => candidate.criterion === criterion)
+    return counts.get(criterion) !== 1 || binding === undefined || binding.requiredEvidence.length === 0
+  })
+}
+
 export function assessRisk(task: TaskStateV2): RiskAssessment {
   const files = task.gitState.changedFiles
   const factors: string[] = []
@@ -53,7 +65,7 @@ export function reviewSatisfied(task: TaskStateV2): boolean {
 /** Internal helper; TaskController.decide is the authoritative decision entry. */
 export function completionGate(input: { task: TaskStateV2; evidence: readonly EvidenceV2[]; bindings: readonly AcceptanceEvidenceBinding[]; risk: RiskAssessment; review?: ReviewEvidence; approval?: ApprovalEvidence }): boolean {
   const { task, evidence, bindings, risk } = input
-  if (task.blockers.length || task.acceptanceCriteria.length === 0 || bindings.length !== task.acceptanceCriteria.length) return false
+  if (task.blockers.length || task.acceptanceCriteria.length === 0 || bindings.length !== task.acceptanceCriteria.length || unmappedAcceptanceCriteria(task).length > 0) return false
   if (new Set(bindings.map((b) => b.criterion)).size !== bindings.length ||
       !task.acceptanceCriteria.every((criterion) => bindings.some((b) => b.criterion === criterion))) return false
   if (evidence.some((item) => item.source !== 'deterministic' || item.status !== 'PASSED' || evidenceIsStale(item, task))) return false

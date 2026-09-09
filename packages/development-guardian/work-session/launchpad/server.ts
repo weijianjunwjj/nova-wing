@@ -33,6 +33,7 @@ import {
   type WorkSessionDisplayState,
 } from '../recoverability.js'
 import { analyzeTaskBrief, MAX_TASK_BRIEF_CHARS } from './task-brief.js'
+import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
 
@@ -191,6 +192,7 @@ interface ComposerRequest {
   guardian: {
     constraints?: string[]
     acceptanceCriteria?: string[]
+    acceptanceEvidenceBindings?: AcceptanceEvidenceBinding[]
     doNotDo?: string[]
     allowedPaths: string[]
     forbiddenPaths?: string[]
@@ -995,6 +997,7 @@ export class NovaWingLaunchpad {
           allowedPaths: input.guardian.allowedPaths,
           forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
         },
+        acceptanceEvidenceBindings: composerEvidenceBindings(input.guardian.acceptanceCriteria ?? [], input.guardian.acceptanceEvidenceBindings ?? []),
       })),
       gitCheckpoint: {
         autoCommit: input.autoCommit,
@@ -1408,16 +1411,66 @@ function isSafeBranch(value: string): boolean {
 function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
-  const allowed = new Set(['constraints', 'acceptanceCriteria', 'doNotDo', 'allowedPaths', 'forbiddenPaths'])
+  const allowed = new Set(['constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo', 'allowedPaths', 'forbiddenPaths'])
   if (Object.keys(record).some((key) => !allowed.has(key))) return undefined
   const allowedPaths = stringArray(record.allowedPaths)
   if (allowedPaths === undefined || allowedPaths.length === 0) return undefined
   const constraints = optionalStringArray(record, 'constraints')
   const acceptanceCriteria = optionalStringArray(record, 'acceptanceCriteria')
+  const acceptanceEvidenceBindings = parseAcceptanceEvidenceBindings(record.acceptanceEvidenceBindings)
   const doNotDo = optionalStringArray(record, 'doNotDo')
   const forbiddenPaths = optionalStringArray(record, 'forbiddenPaths')
-  if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
-  return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
+  if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || acceptanceEvidenceBindings === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
+  if (acceptanceEvidenceBindings !== undefined) {
+    const criteria = new Set(acceptanceCriteria ?? [])
+    const bound = new Set<string>()
+    for (const binding of acceptanceEvidenceBindings) {
+      if (!criteria.has(binding.criterion) || bound.has(binding.criterion)) return undefined
+      bound.add(binding.criterion)
+    }
+  }
+  return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
+}
+
+function parseAcceptanceEvidenceBindings(value: unknown): AcceptanceEvidenceBinding[] | 'invalid' | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 100) return 'invalid'
+  const bindings: AcceptanceEvidenceBinding[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'invalid'
+    const record = item as Record<string, unknown>
+    if (Object.keys(record).some((key) => key !== 'criterion' && key !== 'requiredEvidence' && key !== 'requiresApproval')) return 'invalid'
+    if (typeof record.criterion !== 'string' || record.criterion.trim().length === 0) return 'invalid'
+    const requiredEvidence = stringArray(record.requiredEvidence)
+    if (requiredEvidence === undefined || requiredEvidence.length === 0 || (record.requiresApproval !== undefined && typeof record.requiresApproval !== 'boolean')) return 'invalid'
+    bindings.push({ criterion: record.criterion.trim(), requiredEvidence, ...(record.requiresApproval === undefined ? {} : { requiresApproval: record.requiresApproval }) })
+  }
+  return bindings
+}
+
+function looksLikeVerifierCommand(criterion: string): boolean {
+  return /^(?:npm|pnpm|yarn|node|npx|git|tsc|vitest|jest)\b/iu.test(criterion.trim())
+}
+
+function looksLikeTestVerifierCommand(command: string): boolean {
+  return /^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|node\s+--test\b|npx\s+(?:vitest|jest)\b|(?:vitest|jest)\b|\.venv\/Scripts\/python\.exe\s+-m\s+pytest\b)/iu.test(command.trim())
+}
+
+function composerEvidenceBindings(criteria: readonly string[], explicit: readonly AcceptanceEvidenceBinding[]): AcceptanceEvidenceBinding[] {
+  const criterionSet = new Set(criteria)
+  const byCriterion = new Map<string, AcceptanceEvidenceBinding>()
+  for (const binding of explicit) {
+    if (!criterionSet.has(binding.criterion) || byCriterion.has(binding.criterion)) throw new ComposerLaunchError('INVALID_GUARDIAN_POLICY')
+    byCriterion.set(binding.criterion, binding)
+  }
+  const explicitEvidence = [...new Set(explicit.flatMap((binding) => binding.requiredEvidence))]
+  const custom = criteria.map((criterion) => byCriterion.get(criterion) ?? (looksLikeVerifierCommand(criterion) ? { criterion, requiredEvidence: [criterion] } : undefined)).filter((binding): binding is AcceptanceEvidenceBinding => binding !== undefined)
+  const relevantTests = [...new Set([...explicitEvidence, ...criteria.filter(looksLikeVerifierCommand)].filter(looksLikeTestVerifierCommand))]
+  return [
+    { criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[0], requiredEvidence: ['git diff --check'] },
+    { criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: relevantTests.length > 0 ? relevantTests : ['npm test'] },
+    ...custom,
+  ]
 }
 
 function hasAllowedPaths(value: unknown): boolean {
