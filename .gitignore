@@ -3,6 +3,8 @@ dist/
 dist-tests/
 release-package/
 coverage/
+.tmp/
+artifacts/
 .guardian-workspaces/
 *.tgz
 *.sqlite
