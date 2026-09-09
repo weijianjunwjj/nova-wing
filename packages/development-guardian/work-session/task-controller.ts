@@ -1,7 +1,7 @@
 import type { TaskStateV2 } from './task-state-v2.js'
 import type { VerificationResult } from '../model.js'
 import type { DecisionReasonCode } from './task-observability.js'
-import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale } from './risk-evidence.js'
+import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale, unmappedAcceptanceCriteria } from './risk-evidence.js'
 
 export type TaskAction = 'ANALYZE' | 'EXECUTE' | 'VERIFY' | 'REVIEW' | 'REQUEST_APPROVAL' | 'RECONCILE' | 'SUSPEND' | 'COMPLETE'
 export interface ControllerRuntimeState { reconciliationRequired?: boolean }
@@ -30,6 +30,8 @@ export class TaskController {
     if (task.blockers.length > 0) return { action: 'SUSPEND', reasonCode: 'BLOCKER_PRESENT', reason: 'unresolved blocker prevents completion' }
     if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'task requires a human decision or approval' }
     if (task.acceptanceCriteria.length === 0) return { action: 'ANALYZE', reasonCode: 'ACCEPTANCE_ANALYSIS_REQUIRED', reason: 'acceptance criteria are not yet established' }
+    const unmapped = unmappedAcceptanceCriteria(task)
+    if (unmapped.length > 0) return { action: 'SUSPEND', reasonCode: 'ACCEPTANCE_EVIDENCE_BINDING_MISSING', reason: `Acceptance criterion ${unmapped[0]} has no evidence binding` }
     if (task.status === 'PENDING') return { action: 'EXECUTE', reasonCode: 'TASK_NOT_STARTED', reason: 'task has not started execution' }
     const results = task.verificationState.results
     if (results.some((result) => result.status === 'failed')) return { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic verification failed' }

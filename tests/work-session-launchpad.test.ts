@@ -15,10 +15,18 @@ import {
   openLaunchpadInAppMode,
   persistComposedTrustedWorkSessionConfig,
   analyzeTaskBrief,
+  runProductionDependencyPreflight,
   type BrowserProcessSpawner,
   NovaWingLaunchpad,
   type TrustedWorkSessionConfig,
 } from 'nova-wing/development-guardian'
+
+import { createProductionWorkSessionUi } from '../packages/development-guardian/work-session/production.js'
+import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
+import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
+import type { TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { FakeRuntime } from './work-session-w005-a-helpers.js'
+import { codexTestRepo } from './codex-test-fixture.js'
 
 function trustedConfig(overrides: {
   sessionId?: string
@@ -214,6 +222,17 @@ Hard Limit 20
   assert.equal(analysis.modelRecommendation?.model, 'gpt-5.6-terra')
   assert.equal(analysis.modelRecommendation?.reasoningEffort, 'high')
   assert.deepEqual(analysis.fields.acceptanceCriteria, ['npm test', 'npm run typecheck'])
+
+  const bound = analyzeTaskBrief(`Acceptance Criteria:
+npm test passes.
+typecheck passes.
+Required Evidence:
+npm test passes. => npm test
+typecheck passes. => npm run typecheck`)
+  assert.deepEqual(bound.fields.acceptanceEvidenceBindings, [
+    { criterion: 'npm test passes.', requiredEvidence: ['npm test'] },
+    { criterion: 'typecheck passes.', requiredEvidence: ['npm run typecheck'] },
+  ])
 
   const tomorrowMorning = analyzeTaskBrief('明天上午开始修复 README。', new Date('2026-09-05T09:00:00+08:00'))
   assert.equal(tomorrowMorning.fields.startMode, 'custom')
@@ -748,6 +767,11 @@ await test('Composer creates a fresh validated session from structured input and
     assert.equal(state.createCalls, 0)
     const response = await postCreate(launchpad, composerRequest('composer-create-request-0001', {
       branch: 'feat/composer',
+      guardian: {
+        allowedPaths: ['packages/**', 'tests/**'],
+        acceptanceCriteria: ['D01 root cause is classified from evidence.', 'npm run typecheck'],
+        acceptanceEvidenceBindings: [{ criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] }],
+      },
     }), auth)
     assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
     assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
@@ -757,6 +781,21 @@ await test('Composer creates a fresh validated session from structured input and
     assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
     assert.equal(state.controllerStartCalls, 1)
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
+    assert.deepEqual(state.receivedConfigs[0]!.tasks[0]!.acceptanceEvidenceBindings, [
+      { criterion: 'Implement the requested task.', requiredEvidence: ['git diff --check'] },
+      { criterion: 'Run relevant deterministic tests.', requiredEvidence: ['node --test focused-d01.test.js'] },
+      { criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] },
+      { criterion: 'npm run typecheck', requiredEvidence: ['npm run typecheck'] },
+    ])
+    const composedTask = state.receivedConfigs[0]!.tasks[0]!
+    const convergingTask = { id: composedTask.id, goal: composedTask.goal, acceptanceCriteria: composedTask.guardian.acceptanceCriteria, acceptanceEvidenceBindings: composedTask.acceptanceEvidenceBindings }
+    const convergingRunner = new V2ControllerTaskRunner({ sessionId: 'composer-converges', branch: 'feat/composer', agents: [{ id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }], dispatcher: {
+      inspectRepository: async () => ({ repositoryIdentity: process.cwd(), branch: 'feat/composer', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+      dispatch: async ({ action }) => action === 'VERIFY'
+        ? { status: 'SUCCESS', verificationResults: [{ name: 'git diff --check', status: 'passed' }, { name: 'node --test focused-d01.test.js', status: 'passed' }, { name: 'npm run typecheck', status: 'passed' }] }
+        : { status: 'SUCCESS' },
+    } })
+    assert.equal((await convergingRunner.run(convergingTask)).status, 'COMPLETED')
     assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [
@@ -1170,6 +1209,20 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
       autoPush: true, pushRemote: { name: 'origin', expectedUrl: 'not a remote' },
     }), auth)
     assert.equal((await malformedPushRemote.json() as { error: string }).error, 'INVALID_PUSH_REMOTE')
+    const unknownBindingRequest = composerRequest('composer-create-request-unknown-binding', {
+      guardian: { allowedPaths: ['packages/**'], acceptanceCriteria: ['known'], acceptanceEvidenceBindings: [{ criterion: 'unknown', requiredEvidence: ['npm test'] }] },
+    })
+    assert.deepEqual((unknownBindingRequest as { guardian: { acceptanceEvidenceBindings: unknown } }).guardian.acceptanceEvidenceBindings, [{ criterion: 'unknown', requiredEvidence: ['npm test'] }])
+    const unknownBinding = await postCreate(launchpad, unknownBindingRequest, auth)
+    const unknownBindingBody = await unknownBinding.json() as { error?: string }
+    assert.equal(unknownBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(unknownBindingBody))
+    const duplicateBinding = await postCreate(launchpad, composerRequest('composer-create-request-duplicate-binding', {
+      guardian: { allowedPaths: ['packages/**'], acceptanceCriteria: ['known'], acceptanceEvidenceBindings: [
+        { criterion: 'known', requiredEvidence: ['npm test'] }, { criterion: 'known', requiredEvidence: ['git diff --check'] },
+      ] },
+    }), auth)
+    const duplicateBindingBody = await duplicateBinding.json() as { error?: string }
+    assert.equal(duplicateBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(duplicateBindingBody))
     assert.equal(state.createCalls, 0)
   } finally {
     await launchpad.close()
@@ -1652,6 +1705,8 @@ await test('Launchpad revalidates the config, passes serverPort=0, and returns t
       controlUrl: 'http://127.0.0.1:54321',
     })
     assert.equal(loadCalls, 2, 'discovery plus launch-time revalidation')
+    assert.equal(state.receivedConfigs[0]!.session.controlPlane, undefined)
+    assert.equal((await loadTrustedWorkSessionConfig(join(directory, 'fly-weave.json'))).session.controlPlane, undefined)
     assert.deepEqual(state.receivedServerPorts, [0])
     assert.deepEqual(state.receivedConfigIds, ['launchpad-test'])
     assert.equal(state.controllerStartCalls, 1)
@@ -1840,3 +1895,101 @@ function requestWithHost(port: number, hostHeader: string): Promise<{ status: nu
     request.end()
   })
 }
+
+test('default Launchpad HTTP creation persists V2 and production dispatches Codex without Brain transport', async () => {
+  const root = await codexTestRepo()
+  const directory = await mkdtemp(join(tmpdir(), 'novawing-launchpad-v2-'))
+  let runtime: WorkSessionRuntimeConfig | undefined
+  let codexCalls = 0
+  const states: TaskStateV2[] = []
+  const phases: string[] = []
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    resolveEnvironment: async () => ({ LOCALAPPDATA: directory }),
+    preflight: (targetRepo, controlPlane) => {
+      assert.equal(controlPlane, 'v2')
+      return runProductionDependencyPreflight({ ...(targetRepo === undefined ? {} : { targetRepo }), controlPlane, executorModes: ['codex'],
+        inspectCodex: async () => undefined, accessFile: async () => undefined,
+        env: { NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
+        commandRunner: async (request) => ({ exitCode: request.executable === 'missing-ask-bridge.exe' ? 1 : 0,
+          stdout: request.args.at(-1)?.includes('BASH_VERSION') ? '5.2.37|MINGW64|msys' : 'ok', stderr: '' }),
+      })
+    },
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+    createWorkSession: (config, input) => createProductionWorkSessionUi(config, {
+      ...input,
+      createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
+      createBrain() { throw new Error('AskBridge transport unavailable') },
+      createCodexExecutor: () => ({ async execute({ packet }) {
+        codexCalls++
+        assert.deepEqual(packet.instructions, ['EXECUTE'])
+        assert.equal(states[0]?.currentAction, 'EXECUTE')
+        assert.ok(states[0]?.gitState.headSha, 'real repository inspection precedes controller dispatch')
+        return { summary: 'D01-like scoped execution dispatched', changedFiles: [], commandsRun: [], verificationResults: [], blockers: [] }
+      } }),
+    }),
+  } })
+  try {
+    const address = await launchpad.start()
+    const response = await postCreate(launchpad, composerRequest('launchpad-production-v2-default', {
+      targetRepo: root, tasks: [{ id: 'D01', goal: 'Fix a focused source helper' }],
+      guardian: { allowedPaths: ['src/**'] }, autoCommit: false,
+    }), { token: launchpad.getTokenForTest(), origin: address.url })
+    assert.equal(response.status, 202, await response.text())
+    const discovered = await discoverTrustedWorkSessionConfigs(directory)
+    assert.equal(discovered.length, 1)
+    assert.equal(discovered[0]!.config.session.controlPlane, 'v2')
+    const serialized = JSON.parse(await readFile(discovered[0]!.configPath, 'utf8'))
+    assert.equal(serialized.session.controlPlane, 'v2')
+    assert.equal(runtime!.definition.controlPlane, 'v2')
+    assert.ok(runtime!.taskRunner instanceof V2ControllerTaskRunner)
+    const result = await runtime!.taskRunner.run(runtime!.definition.tasks[0]!, undefined, undefined, {
+      // This entry-path regression stops at the first executor boundary.
+      shouldPauseAutonomousWork: () => codexCalls > 0,
+      persistTaskStateV2: async (state) => { states.push(structuredClone(state)) },
+      onProgress: (event) => { phases.push(event.phase) },
+    })
+    assert.equal(codexCalls, 1)
+    assert.equal(result.taskStateV2?.identity.taskId, 'D01')
+    assert.notEqual(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
+    assert.doesNotMatch(phases.join(' '), /REVIEW|BRAIN/i)
+    // Launchpad has no evidence-binding editor yet; execution is not a claim of semantic completion.
+  } finally {
+    await launchpad.close()
+    await rm(root, { recursive: true, force: true })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permission fields', async () => {
+  const directory = await createConfigDirectory()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
+  try {
+    const address = await launchpad.start()
+    const script = await (await fetch(`${address.url}/app.js`)).text()
+    const start = script.indexOf('const applyBriefAnalysis =')
+    const end = script.indexOf("briefFill.addEventListener", start)
+    assert.ok(start >= 0 && end > start)
+    const targetRepo = { value: 'old-repo' }
+    const branch = { value: 'old-branch' }
+    const taskId = { value: 'OLD' }
+    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old' }]))
+    const briefResult = { textContent: '' }
+    const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
+      taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},
+    })
+    vm.runInContext(script.slice(start, end) + ';globalThis.apply = applyBriefAnalysis', context)
+    vm.runInContext("apply({ fields: { targetRepo: 'new-repo', taskId: 'D01', allowedPaths: ['src/**'] } }, true)", context)
+    assert.equal(targetRepo.value, 'new-repo')
+    assert.equal(taskId.value, 'D01')
+    assert.equal(elements.allowedPaths!.value, 'src/**')
+    assert.equal(branch.value, '')
+    vm.runInContext('apply({ fields: {} }, false)', context)
+    assert.equal(targetRepo.value, 'new-repo', 'model advice alone does not modify fields')
+    vm.runInContext('apply({ fields: {} }, true)', context)
+    assert.equal(targetRepo.value, '')
+    assert.equal(taskId.value, '')
+    for (const field of Object.values(elements)) assert.equal(field.value, '')
+    assert.match(briefResult.textContent, /已清空/)
+    assert.match(script, /catch \(cause\) \{\s*applyBriefAnalysis\(\{ fields: \{\} \}, true\)/)
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})

@@ -15,7 +15,7 @@ import type {
 } from '../recoverability.js'
 
 /**
- * recent event 类型。SSE 把 GUARDIAN_PHASE 映射为 `event: guardian`，
+ * recent event 类型。V1 的 GUARDIAN_PHASE 保持兼容；V2 使用 TASK_PHASE。
  * 其余映射为 `event: activity`。
  */
 export type ControlEventType =
@@ -24,6 +24,7 @@ export type ControlEventType =
   | 'TASK_STARTED'
   | 'TASK_COMPLETED'
   | 'GUARDIAN_PHASE'
+  | 'TASK_PHASE'
   | 'CHECKPOINT_COMMITTED'
   | 'CHECKPOINT_PUSHED'
   | 'HUMAN_REQUIRED'

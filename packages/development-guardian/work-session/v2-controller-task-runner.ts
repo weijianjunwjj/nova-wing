@@ -101,6 +101,41 @@ function appendProviderHistory(history: readonly string[], provider: string): re
   return history.length > 0 && history[history.length - 1] === provider ? history : [...history, provider]
 }
 
+const MAX_NO_PROGRESS_REPEATS = 2
+
+function semanticProgressKey(task: TaskStateV2, health: ProviderHealthRegistry): string {
+  return JSON.stringify({
+    goal: task.goal,
+    constraints: task.constraints,
+    acceptanceCriteria: task.acceptanceCriteria,
+    permissions: task.permissions,
+    progress: task.progress,
+    decisions: task.decisions,
+    assumptions: task.assumptions,
+    openQuestions: task.openQuestions,
+    artifacts: task.artifacts,
+    gitState: task.gitState,
+    verificationResults: task.verificationState.results,
+    completion: {
+      bindings: task.completion.bindings,
+      evidence: task.completion.evidence.map(({ timestamp: _timestamp, ...evidence }) => evidence),
+      review: task.completion.review,
+      approval: task.completion.approval,
+    },
+    providerHistory: task.providerHistory,
+    currentAgent: task.currentAgent,
+    implementer: task.implementer,
+    currentAction: task.currentAction,
+    risk: task.risk,
+    status: task.status,
+    blockers: task.blockers,
+    providerHealth: Object.fromEntries(Object.entries(health.entries()).sort(([left], [right]) => left.localeCompare(right)).map(([provider, observation]) => {
+      const { observedAt: _observedAt, ...stable } = observation
+      return [provider, stable]
+    })),
+  })
+}
+
 /**
  * V2 execution entry point. It owns the action loop; Guardian remains usable
  * separately through GuardianWorkSessionTaskRunner for V1 compatibility.
@@ -178,6 +213,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         note({ type: 'APPROVAL_GRANTED', action: 'REQUEST_APPROVAL', reasonCode: 'RISK_REQUIRES_APPROVAL', ...repositoryFacts(state), explanation: explanation('RISK_REQUIRES_APPROVAL', 'REQUEST_APPROVAL', {}, [], []) })
       }
     }
+    let previousDecisionKey: string | undefined
+    let noProgressRepeats = 0
     for (let iteration = 0; iteration < (this.options.maxActions ?? 20); iteration++) {
       if (context?.shouldPauseAutonomousWork?.() || (context?.hardDeadlineAtMs !== undefined && Date.now() >= context.hardDeadlineAtMs)) return { status: 'PAUSED', taskStateV2: state }
       const persistedRepositoryIdentity = state.gitState.repositoryIdentity
@@ -208,7 +245,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         } else {
           note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, 'SUSPEND', {}, [], []) })
         }
-        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'DECISION_REQUIRED', reason: decision.reason }, taskStateV2: state }
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: decision.reasonCode === 'ACCEPTANCE_EVIDENCE_BINDING_MISSING' ? 'CONFIGURATION_REQUIRED' : 'DECISION_REQUIRED', reason: decision.reason }, taskStateV2: state }
       }
       if (decision.action === 'REVIEW') {
         reasonEvent('REVIEW_REQUIRED', 'REVIEW', 'RISK_REQUIRES_REVIEW', {}, decision.reason === undefined ? [] : [decision.reason], state)
@@ -243,6 +280,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         ...repositoryFacts(state),
         explanation: explanation(selectionCode, decision.action, { selectedAgent, selectedProvider, ...(previousAgent === undefined ? {} : { previousAgent }), ...(previousProvider === undefined ? {} : { previousProvider }) }, selectionFactors) })
       if (decision.action === 'VERIFY') note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...repositoryFacts(state) })
+      const progressBefore = semanticProgressKey(state, health)
+      const decisionKey = `${decision.action}:${decision.reasonCode}`
       const dispatchedState = structuredClone(state)
       const selected = structuredClone(agent)
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
@@ -298,6 +337,16 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         }
       }
       note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, provider: selectedProvider, ...repositoryFacts(state) })
+      const progressAfter = semanticProgressKey(state, health)
+      noProgressRepeats = decisionKey === previousDecisionKey && progressAfter === progressBefore ? noProgressRepeats + 1 : 0
+      previousDecisionKey = decisionKey
+      if (noProgressRepeats >= MAX_NO_PROGRESS_REPEATS) {
+        const reason = `${decision.action} / ${decision.reasonCode} repeated without semantic, repository, evidence, blocker, or provider progress`
+        state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND' }
+        note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', reasonCode: 'STALLED_NO_PROGRESS', ...repositoryFacts(state), metadata: { repeatedAction: decision.action, repeatedReasonCode: decision.reasonCode, repeats: noProgressRepeats, unresolvedCondition: decision.reason }, explanation: explanation('STALLED_NO_PROGRESS', 'SUSPEND', {}, [reason], []) })
+        await context?.persistTaskStateV2?.(state)
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'STALLED_NO_PROGRESS', reason }, taskStateV2: state }
+      }
       await context?.persistTaskStateV2?.(state)
       previousAgent = agent.id
       if (result.status === 'BLOCKED') {

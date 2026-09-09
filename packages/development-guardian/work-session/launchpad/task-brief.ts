@@ -4,6 +4,7 @@ import {
   type CodexReasoningEffort,
   type ExecutorMode,
 } from '../../coding-executor-config.js'
+import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 
 /**
  * The Launchpad brief is deliberately treated as an untrusted convenience
@@ -20,6 +21,7 @@ export interface TaskBriefAnalysis {
     forbiddenPaths?: string[]
     constraints?: string[]
     acceptanceCriteria?: string[]
+    acceptanceEvidenceBindings?: AcceptanceEvidenceBinding[]
     doNotDo?: string[]
     executorMode?: ExecutorMode
     softMinutes?: number
@@ -46,7 +48,7 @@ export interface TaskBriefAnalysis {
 /** Kept below the 96 KiB JSON request body limit even for multibyte text. */
 export const MAX_TASK_BRIEF_CHARS = 20_000
 const MAX_TASK_INSTRUCTIONS_CHARS = 8_000
-const PATH_SECTION_END = /^(?:目标|task\s*(?:goal|instructions?)|验证|验收|分支|branch|workspace|项目(?:目录|路径)?|task\s*id|(?:soft|hard)\s*limit|开始(?:时间)?|立即执行|立即开始|模型|model|reasoning|executor|执行器|自动(?:提交|推送)|auto\s*(?:commit|push)|禁止(?:修改)?|forbidden\s*paths?|constraints?|acceptance\s*criteria|do\s*not\s*do)/iu
+const PATH_SECTION_END = /^(?:目标|task\s*(?:goal|instructions?)|验证|验收|required\s*evidence|所需证据|证据绑定|分支|branch|workspace|项目(?:目录|路径)?|task\s*id|(?:soft|hard)\s*limit|开始(?:时间)?|立即执行|立即开始|模型|model|reasoning|executor|执行器|自动(?:提交|推送)|auto\s*(?:commit|push)|禁止(?:修改)?|forbidden\s*paths?|constraints?|acceptance\s*criteria|do\s*not\s*do)/iu
 const PATH_ENTRY_PREFIX = /^(?:[-*•]|\d+[.)、])\s*/u
 
 export function analyzeTaskBrief(brief: string, now = new Date(), currentExecutorMode?: ExecutorMode): TaskBriefAnalysis {
@@ -91,6 +93,8 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   if (constraints.length > 0) { fields.constraints = constraints; mark('Constraints') }
   const acceptanceCriteria = extractTextSection(lines, /^(?:acceptance\s*criteria|验收(?:标准|条件)?|验证)\s*[:：]?\s*(.*)$/iu)
   if (acceptanceCriteria.length > 0) { fields.acceptanceCriteria = acceptanceCriteria; mark('Acceptance Criteria') }
+  const acceptanceEvidenceBindings = extractEvidenceBindings(lines, acceptanceCriteria)
+  if (acceptanceEvidenceBindings.length > 0) { fields.acceptanceEvidenceBindings = acceptanceEvidenceBindings; mark('Required Evidence') }
   const doNotDo = extractTextSection(lines, /^(?:do\s*not\s*do|不要做|禁止事项)\s*[:：]?\s*(.*)$/iu)
   if (doNotDo.length > 0) { fields.doNotDo = doNotDo; mark('Do Not Do') }
 
@@ -138,6 +142,45 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   }
 
   return { fields, recognized, warnings }
+}
+
+/**
+ * Trusted, deterministic syntax only: one or more lines of
+ * `<exact acceptance criterion> => <exact verifier command>` under a
+ * Required Evidence / 所需证据 / 证据绑定 heading. Repeated criteria accumulate
+ * commands; anything ambiguous remains unmapped and is rejected by V2.
+ */
+function extractEvidenceBindings(lines: readonly string[], criteria: readonly string[]): AcceptanceEvidenceBinding[] {
+  const header = /^(?:required\s*evidence(?:\s*bindings?)?|所需证据|证据绑定)\s*[:：]?\s*(.*)$/iu
+  const commands = new Map<string, string[]>()
+  let active = false
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    const match = header.exec(line)
+    if (match !== null) {
+      active = true
+      if (match[1]?.trim()) parseEvidenceBindingLine(match[1], criteria, commands)
+      continue
+    }
+    if (!active) continue
+    if (PATH_SECTION_END.test(line) && !/^(?:[-*•]|\d+[.)、])\s*/u.test(line)) break
+    if (line.length > 0) parseEvidenceBindingLine(line.replace(PATH_ENTRY_PREFIX, '').trim(), criteria, commands)
+  }
+  return criteria.flatMap((criterion) => {
+    const requiredEvidence = commands.get(criterion)
+    return requiredEvidence === undefined ? [] : [{ criterion, requiredEvidence }]
+  })
+}
+
+function parseEvidenceBindingLine(line: string, criteria: readonly string[], commands: Map<string, string[]>): void {
+  const separator = line.indexOf('=>')
+  if (separator <= 0) return
+  const criterion = line.slice(0, separator).trim()
+  const evidence = line.slice(separator + 2).trim()
+  if (!criteria.includes(criterion) || evidence.length === 0 || evidence.length > 500) return
+  const existing = commands.get(criterion) ?? []
+  if (!existing.includes(evidence)) existing.push(evidence)
+  commands.set(criterion, existing)
 }
 
 function firstCapture(text: string, patterns: readonly RegExp[]): string | undefined {
@@ -389,7 +432,7 @@ function taskInstructionsFromBrief(_text: string, lines: readonly string[]): str
 /** Identifies source-contract fields which belong in Composer controls, not Task. */
 function taskBriefLineKind(line: string): 'goal' | 'scalar' | 'block' | undefined {
   if (/^(?:目标|任务目标|task\s*(?:goal|instructions?))\s*[:：]/iu.test(line)) return 'goal'
-  if (/^(?:只允许(?:修改)?|允许修改|allowed\s*paths?|禁止(?:修改)?|forbidden\s*paths?|constraints?|约束|acceptance\s*criteria|验收(?:标准|条件)?|验证|do\s*not\s*do|不要做|禁止事项)\s*(?::|：|$)/iu.test(line)) return 'block'
+  if (/^(?:只允许(?:修改)?|允许修改|allowed\s*paths?|禁止(?:修改)?|forbidden\s*paths?|constraints?|约束|acceptance\s*criteria|验收(?:标准|条件)?|验证|required\s*evidence(?:\s*bindings?)?|所需证据|证据绑定|do\s*not\s*do|不要做|禁止事项)\s*(?::|：|$)/iu.test(line)) return 'block'
   if (/^(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)\s*(?::|：|=|(?:[A-Za-z]:[\\/]|\/)|$)/iu.test(line)) return 'scalar'
   if (/^(?:branch|分支|task\s*id|任务\s*id|任务编号|(?:soft|hard)\s*limit|软(?:时间)?限制|硬(?:时间)?限制|start(?:\s*time)?|开始(?:时间)?|auto\s*(?:commit|push)|自动(?:提交|推送)|model|模型|reasoning|推理(?:强度)?|思考强度|executor|执行器|notification|通知)\s*(?::|：|=|使用\b|use\b|\d|$)/iu.test(line)) return 'scalar'
   if (/^(?:立即执行|立即开始)\p{P}?$/u.test(line)) return 'scalar'
