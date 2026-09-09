@@ -114,6 +114,7 @@ test('SDK runtime discovery does not require a system codex command', async () =
 
 test('scoped workspace tools reject escapes, forbidden paths, linked files and post-revocation writes', async () => {
   const root = await codexTestRepo()
+  const junction = join(root, 'src/junction')
   try {
     const tools = await CodexWorkspaceTools.create(root, task)
     if (process.platform === 'win32') await assert.rejects(tools.call('write_file', { path: 'SRC/PRIVATE/a.ts', content: 'bad' }))
@@ -121,7 +122,7 @@ test('scoped workspace tools reject escapes, forbidden paths, linked files and p
     await assert.rejects(tools.call('write_file', { path: 'src/linked.ts', content: 'bad' }))
     await rm(join(root, 'src/linked.ts'))
     await mkdir(join(root, 'outside'))
-    await symlink(join(root, 'outside'), join(root, 'src/junction'), 'junction')
+    await symlink(join(root, 'outside'), junction, 'junction')
     await assert.rejects(tools.call('write_file', { path: 'src/junction/escape.ts', content: 'bad' }))
     for (const path of ['../outside', 'D:/outside', 'src/private/a.ts', '.git/config', '.codex/config.toml', 'src/NUL', 'src/a.ts.']) {
       await assert.rejects(tools.call('write_file', { path, content: 'bad' }))
@@ -132,7 +133,12 @@ test('scoped workspace tools reject escapes, forbidden paths, linked files and p
     await tools.revoke()
     await assert.rejects(tools.call('write_file', { path: 'src/a.ts', content: 'bad' }))
     assert.match(await readFile(join(root, 'src/a.ts'), 'utf8'), /value = 2/)
-  } finally { await rm(root, { recursive: true, force: true }) }
+  } finally {
+    // Windows recursive removal is intermittent when the fixture junction remains nested.
+    // Remove that owned test artifact first; any cleanup error still fails the test.
+    await rm(junction, { force: true })
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('SDK quota event is drained to EOF and workspace capability is revoked before execute settles', async () => {
