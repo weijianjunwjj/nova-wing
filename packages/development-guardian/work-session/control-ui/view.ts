@@ -80,6 +80,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
     <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
     <button id="approve-verification-btn" type="button" class="primary" hidden>批准此验证并继续</button>
+    <button id="runtime-repair-btn" type="button" class="primary" hidden>✨ AI 修复并继续</button>
     <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
     <button id="recover-checkpoint-btn" type="button" class="primary" hidden>重新验证并继续</button>
@@ -564,14 +565,21 @@ function renderDecision(rt) {
     var input = el('decision-input')
     var decisionBtn = el('resume-decision-btn')
     var approvalBtn = el('approve-verification-btn')
+    var repairBtn = el('runtime-repair-btn')
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
     var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED')
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
+    var repair = rt.runtimeRepair
     if (input) input.hidden = !needsDecision
     if (decisionBtn) decisionBtn.hidden = !needsDecision
     if (approvalBtn) approvalBtn.hidden = !verificationApproval
+    if (repairBtn) {
+      repairBtn.hidden = !(repair && repair.available === true)
+      repairBtn.disabled = !!(repair && repair.inProgress === true)
+      repairBtn.textContent = (repair && repair.inProgress === true) ? '正在诊断运行环境…' : '✨ AI 修复并继续'
+    }
     if (resolvedBtn) {
       resolvedBtn.hidden = !resolvedAck
       resolvedBtn.textContent = category === 'EXECUTOR_RETRY_REQUIRED' ? '重新执行 Executor' : '已处理，恢复'
@@ -582,7 +590,12 @@ function renderDecision(rt) {
     }
     if (recoveryBtn) recoveryBtn.hidden = !checkpointRecovery
 
-    if (verificationApproval) {
+    var repairFailure = repair && repair.available === true && repair.lastOutcome && repair.lastOutcome.classification !== 'REPAIRED'
+    if (repair && repair.inProgress === true) {
+      setText('decision-guidance', '正在诊断 → 检查 Provider → 寻找独立 Reviewer → 修复成功 → 恢复 Session')
+    } else if (repairFailure) {
+      setText('decision-guidance', 'AI 修复失败：' + (repair.lastOutcome.reason || repair.lastOutcome.classification) + '。可修复后重试，或手动处理。')
+    } else if (verificationApproval) {
       setText('decision-guidance', '此命令由 Reviewer 要求，用于完成当前 Task 的 deterministic verification。授权仅对当前 Task 的这一条命令生效。')
     } else if (checkpointRecovery) {
       setText('decision-guidance', 'NovaWing 将先重新验证远端状态；不会重新执行当前 Task。')
@@ -718,6 +731,11 @@ if (approveVerificationBtn) approveVerificationBtn.addEventListener('click', asy
 var resumeResolvedBtn = el('resume-resolved-btn')
 if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
   resumeSession({ approval: true })
+})
+var runtimeRepairBtn = el('runtime-repair-btn')
+if (runtimeRepairBtn) runtimeRepairBtn.addEventListener('click', async function () {
+  runtimeRepairBtn.disabled = true
+  try { await requestControl('/api/session/runtime-repair') } finally { runtimeRepairBtn.disabled = false }
 })
 var resumePausedBtn = el('resume-paused-btn')
 if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {

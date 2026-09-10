@@ -11,7 +11,7 @@ import type {
   VerificationResult,
 } from '../model.js'
 import type { GuardianProgressObserver } from '../progress.js'
-import type { TaskStateV2 } from './task-state-v2.js'
+import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
 import type {
   WorkSessionFailureCategory,
   WorkSessionFailureStage,
@@ -87,6 +87,8 @@ export interface WorkSessionTaskRunContext {
   persistTaskStateV2?: (state: TaskStateV2) => Promise<void>
   /** Existing Work Session snapshot projection supplied to the V2 action loop. */
   taskStateV2?: TaskStateV2
+  /** Runtime Repair-selected independent reviewer; trusted only after deterministic validation. */
+  chosenReviewer?: TaskActorIdentity
   /** Optional V2 Task Event Log accumulator; history only, never semantic authority. */
   taskEventLog?: TaskEventLogV2
   /** Optional V2 Provider Health registry (last-known), projected from real observations. */

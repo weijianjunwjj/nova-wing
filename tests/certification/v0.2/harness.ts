@@ -100,6 +100,7 @@ export interface ProductionAppOptions {
   agents: readonly AgentCapabilityProfile[]
   provider: ScenarioProvider
   dispatcherExtras?: Omit<ScriptedDispatcherOptions, 'repo' | 'provider'>
+  runtimeRepair?: import('../../../packages/development-guardian/work-session/production.js').ProductionWorkSessionDependencies['runtimeRepair']
   onRuntimeReady?: (runtime: WorkSessionRuntime) => void
 }
 
@@ -113,6 +114,7 @@ export async function createCertProductionApp(options: ProductionAppOptions): Pr
     env: { ...process.env, LOCALAPPDATA: options.dataDir },
     createV2Dispatcher: () => dispatcher,
     v2Agents: options.agents,
+    ...(options.runtimeRepair === undefined ? {} : { runtimeRepair: options.runtimeRepair }),
   })
   const runtime = app.runtime as unknown as WorkSessionRuntime
   options.onRuntimeReady?.(runtime)

@@ -32,7 +32,12 @@ import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
 import {
   WorkSessionRuntime,
   type WorkSessionRuntimeConfig,
+  type WorkSessionRuntimeRepairConfig,
 } from './runtime.js'
+import { createRuntimeRepairEngine } from './runtime-repair-engine.js'
+import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type RuntimeRepairAuditSink } from './runtime-repair-audit.js'
+import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
+import type { RuntimeRepairRefresh } from './runtime-repair.js'
 import type { WorkSessionControlRuntime } from './control-ui/events.js'
 import {
   WorkSessionControlController,
@@ -373,6 +378,12 @@ export interface ProductionWorkSessionDependencies {
   /** Production V2 adapter seam. V1 remains available only when explicitly selected. */
   createV2Dispatcher?: (input: { definition: WorkSessionDefinition; eventSink?: import('../progress.js').GuardianProgressObserver }) => V2ActionDispatcher
   v2Agents?: readonly AgentCapabilityProfile[]
+  /** v0.2.4: Runtime Repair seams (refresh/audit/notifier); engine + agents defaulted. */
+  runtimeRepair?: {
+    refreshProviderHealth?: () => Promise<RuntimeRepairRefresh>
+    auditSink?: RuntimeRepairAuditSink
+    notifier?: RuntimeRepairNotifier
+  }
 }
 
 export interface ProductionWorkSessionUi {
@@ -533,9 +544,19 @@ export async function createProductionWorkSessionUi(
               ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },
         }
-        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
-          agents: dependencies.v2Agents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }], dispatcher })
-        const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl,
+        const v2Agents = dependencies.v2Agents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
+        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher })
+        const runtimeRepair: WorkSessionRuntimeRepairConfig = {
+          engine: createRuntimeRepairEngine(),
+          agents: () => v2Agents,
+          ...(dependencies.runtimeRepair?.refreshProviderHealth === undefined
+            ? {}
+            : { refreshProviderHealth: dependencies.runtimeRepair.refreshProviderHealth }),
+          auditSink: dependencies.runtimeRepair?.auditSink ??
+            createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
+          notifier: dependencies.runtimeRepair?.notifier ?? createWindowsToastRuntimeRepairNotifier(),
+        }
+        const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl, runtimeRepair,
           gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
             ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },
           ...(notifier === undefined ? {} : { notifier }), notificationObserver: notificationSink, localControlUrl: () => localControlUrl }

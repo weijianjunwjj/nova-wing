@@ -57,6 +57,10 @@ export * from './launchpad/repair-agent-llm.js'
 export * from './launchpad/repair-model.js'
 export * from './launchpad/repair-audit.js'
 export * from './launchpad/repair-notifier.js'
+export * from './runtime-repair.js'
+export * from './runtime-repair-engine.js'
+export * from './runtime-repair-audit.js'
+export * from './runtime-repair-notifier.js'
 export type {
   SmtpTransportConfig,
   SmtpMailOptions,

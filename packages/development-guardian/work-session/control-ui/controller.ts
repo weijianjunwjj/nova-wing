@@ -36,6 +36,7 @@ import type {
   ControlSubscriber,
 } from './events.js'
 import { isExecutorProviderCredentialRecovery } from '../guardian-task-runner.js'
+import { deriveRuntimeRepairReasonCode, isRuntimeRepairable } from '../runtime-repair.js'
 
 /** runtime factory：控制面注入 createRuntime(eventSink)，测试注入 fake runtime。 */
 export type WorkSessionRuntimeFactory = (
@@ -432,6 +433,39 @@ export class WorkSessionControlController {
     return { accepted: true }
   }
 
+  /**
+   * v0.2.4: Runtime AI Repair & Resume. The runtime diagnoses, classifies, applies a
+   * safe mechanical repair (or refuses), and resumes the same Session. A legal repair
+   * never re-runs the Executor.
+   */
+  repairRuntimeAndResume(): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    const humanRequired = state === undefined ? undefined : effectiveHumanRequired(state)
+    if (state?.state !== 'SUSPENDED' || humanRequired === undefined || !isRuntimeRepairable(humanRequired)) {
+      return { accepted: false, reason: 'session is not eligible for runtime repair' }
+    }
+    if (this.runtime.repairRuntimeAndResume === undefined) {
+      return { accepted: false, reason: 'runtime repair is unavailable' }
+    }
+    if (this.resumePromise !== undefined) {
+      return { accepted: false, reason: 'resume already in progress' }
+    }
+    const safeEventData = { taskId: state.currentTaskId, category: 'RUNTIME_REPAIR' }
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.broadcastSnapshot()
+    this.resumePromise = this.runtime.repairRuntimeAndResume()
+      .then(() => {
+        this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
+        this.broadcastSnapshot()
+      })
+      .catch(() => {
+        this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } })
+        this.broadcastSnapshot()
+      })
+      .finally(() => { this.resumePromise = undefined })
+    return { accepted: true }
+  }
+
   recoverFailedCheckpoint(): { accepted: boolean; reason?: string } {
     const state = this.runtime.getDurableState()
     if (!isRecoverableGitPushFailure(state)) {
@@ -463,6 +497,7 @@ export class WorkSessionControlController {
   getSnapshot(): WorkSessionControlSnapshot {
     const definition = this.runtime.getDefinition()
     const state = this.runtime.getDurableState()
+    const runtimeRepairProjection = this.runtimeRepairProjection(state)
     const controls = this.runtime.getControlIntents()
     const hasActiveExecution = this.runtime.hasActiveExecution?.() ?? false
     const displayState = deriveDisplayState(state, hasActiveExecution)
@@ -527,6 +562,9 @@ export class WorkSessionControlController {
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
                 : {}),
+              ...(runtimeRepairProjection === undefined
+                ? {}
+                : { runtimeRepair: runtimeRepairProjection }),
               ...(state.verificationFailure === undefined
                 ? {}
                 : { verificationFailure: {
@@ -846,6 +884,29 @@ export class WorkSessionControlController {
       },
     })
     this.broadcastSnapshot()
+  }
+
+  private runtimeRepairProjection(
+    state: WorkSessionDurableState | undefined,
+  ): NonNullable<WorkSessionControlSnapshot['runtime']['runtimeRepair']> | undefined {
+    if (state === undefined || state.state !== 'SUSPENDED') return undefined
+    const humanRequired = effectiveHumanRequired(state)
+    if (humanRequired === undefined || !isRuntimeRepairable(humanRequired)) return undefined
+    const reasonCode = deriveRuntimeRepairReasonCode(humanRequired)
+    const outcome = this.runtime.getRuntimeRepairOutcome?.()
+    return {
+      available: this.runtime.repairRuntimeAndResume !== undefined,
+      inProgress: this.resumePromise !== undefined,
+      ...(reasonCode === undefined ? {} : { reasonCode }),
+      ...(outcome === undefined
+        ? {}
+        : {
+            lastOutcome: {
+              classification: outcome.classification,
+              ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+            },
+          }),
+    }
   }
 
   private safeHumanRequired(state: WorkSessionDurableState): HumanRequired {

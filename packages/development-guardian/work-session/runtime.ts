@@ -61,9 +61,21 @@ import {
   VERIFICATION_APPROVAL_BLOCKER,
   verificationCommandFingerprint,
 } from './verification-approval.js'
-import { TaskController } from './task-controller.js'
+import { TaskController, type TaskAction } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2 } from './task-state-v2.js'
 import { ProviderHealthRegistry, TaskEventLogV2 } from './task-observability.js'
+import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
+import type { RuntimeRepairAgent } from './runtime-repair-engine.js'
+import {
+  deriveRuntimeRepairReasonCode,
+  isRuntimeRepairable,
+  validateRuntimeRepairProposal,
+  type RuntimeRepairContext,
+  type RuntimeRepairRefresh,
+  type RuntimeRepairReasonCode,
+} from './runtime-repair.js'
+import type { RuntimeRepairAuditSink } from './runtime-repair-audit.js'
+import { runtimeRepairNotificationFrom, runtimeRepairCompletionNotification, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -94,6 +106,23 @@ export interface WorkSessionRuntimeConfig {
   notifyOnCompleted?: boolean
   /** Explicit recovery hook; invoked only after a failed Executor checkpoint is verified. */
   recoverExecutorOwnership?: (checkpoint: GuardianTaskRecoveryCheckpoint) => Promise<void>
+  /** v0.2.4: Runtime AI Repair & Resume capability. */
+  runtimeRepair?: WorkSessionRuntimeRepairConfig
+}
+
+/**
+ * v0.2.4: Runtime AI Repair & Resume capability. The engine is deterministic-first
+ * and its proposal must pass a deterministic validator; the reviewer it selects is
+ * durable and consumed by exactly one resume.
+ */
+export interface WorkSessionRuntimeRepairConfig {
+  engine: RuntimeRepairAgent
+  /** Source of reviewer-capable Agent Capability Profiles for the current run. */
+  agents?: () => readonly AgentCapabilityProfile[]
+  /** Refreshes provider health / runtime availability before reviewer discovery. */
+  refreshProviderHealth?: () => Promise<RuntimeRepairRefresh>
+  auditSink?: RuntimeRepairAuditSink
+  notifier?: RuntimeRepairNotifier
 }
 
 export interface ResumeInput {
@@ -132,6 +161,12 @@ const WorkflowStateSchema = z.object({
     sessionId: z.string(), taskId: z.string(), command: z.string(),
     commandFingerprint: z.string(), generation: z.number().int().positive(),
     status: z.enum(['REQUESTED', 'APPROVED']),
+  }).optional(),
+  runtimeRepair: z.object({
+    reasonCode: z.string(),
+    chosenReviewer: z.object({ agent: z.string(), provider: z.string(), runtimeIdentity: z.string() }).optional(),
+    appliedAt: z.string(),
+    executorReran: z.boolean(),
   }).optional(),
   brainFailure: z.object({
     stage: z.enum(['BRAIN_REVIEW', 'FINAL_REVIEW']),
@@ -325,6 +360,10 @@ export class WorkSessionRuntime {
   private suspendedResumePromise: Promise<WorkSessionDurableState> | undefined
   /** Covers durable approval mutation as well as the resume it triggers. */
   private verificationApprovalPromise: Promise<WorkSessionDurableState> | undefined
+  /** Covers the Runtime Repair diagnose→repair→resume transaction. */
+  private runtimeRepairPromise: Promise<WorkSessionDurableState> | undefined
+  /** Last Runtime Repair outcome, surfaced to the control snapshot for failure display. */
+  private lastRuntimeRepairOutcome: import('./runtime-repair.js').RuntimeRepairOutcome | undefined
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -664,6 +703,157 @@ export class WorkSessionRuntime {
     await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
     this.latestState = reconciled
     return this.resume({})
+  }
+
+  /** v0.2.4: last Runtime Repair outcome, for the control snapshot's failure display. */
+  getRuntimeRepairOutcome(): import('./runtime-repair.js').RuntimeRepairOutcome | undefined {
+    return this.lastRuntimeRepairOutcome
+  }
+
+  /**
+   * v0.2.4: Runtime AI Repair & Resume. Diagnose → classify → safe repair → validate
+   * → resume the same Session. A legal repair never re-runs the Executor.
+   */
+  async repairRuntimeAndResume(): Promise<WorkSessionDurableState> {
+    if (this.runtimeRepairPromise !== undefined) {
+      throw new Error('runtime repair already in progress')
+    }
+    this.runtimeRepairPromise = this.doRepairRuntimeAndResume()
+      .finally(() => { this.runtimeRepairPromise = undefined })
+    return this.runtimeRepairPromise
+  }
+
+  private async doRepairRuntimeAndResume(): Promise<WorkSessionDurableState> {
+    const capability = this.config.runtimeRepair
+    if (capability === undefined) throw new Error('runtime repair is not configured')
+    const runId = this.config.definition.id
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('runtime repair storage unavailable')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') {
+      throw new Error('runtime repair requires a suspended session')
+    }
+    const parsed = WorkflowStateSchema.safeParse(snapshot.value)
+    if (!parsed.success) throw new Error('runtime repair state is invalid')
+    const state = parsed.data
+    const taskId = state.currentTaskId
+    if (taskId === null || state.humanRequired === undefined || !isRuntimeRepairable(state.humanRequired)) {
+      throw new Error('current session is not eligible for runtime repair')
+    }
+    if (this.config.definition.controlPlane !== 'v2') {
+      throw new Error('runtime repair is only available for the V2 control plane')
+    }
+    const rawTask = state.taskStatesV2?.[taskId]
+    if (rawTask === undefined) throw new Error('runtime repair requires a persisted TaskStateV2')
+    const reasonCode = deriveRuntimeRepairReasonCode(state.humanRequired)!
+    const context = this.buildRuntimeRepairContext(state, taskId, loadTaskStateV2(rawTask), reasonCode)
+
+    const audit = capability.auditSink
+    const timestamp = new Date().toISOString()
+    const baseAudit = {
+      sessionId: runId, taskId, timestamp, reasonCode,
+      executorReran: false as const,
+      ...(context.currentAction === undefined ? {} : { failedAction: context.currentAction }),
+      ...(context.implementer === undefined ? {} : { implementer: context.implementer }),
+    }
+    await audit?.record({ ...baseAudit, event: 'RUNTIME_REPAIR_STARTED' })
+    await audit?.record({ ...baseAudit, event: 'RUNTIME_REPAIR_DIAGNOSED', providerHealth: context.providerHealth })
+
+    const outcome = await capability.engine.repair(context)
+    this.lastRuntimeRepairOutcome = outcome
+
+    if (outcome.classification !== 'REPAIRED') {
+      await audit?.record({
+        ...baseAudit, event: 'RUNTIME_REPAIR_FAILED',
+        classification: outcome.classification, reason: outcome.reason,
+      })
+      await capability.notifier?.notify(runtimeRepairNotificationFrom(runId, outcome))
+      this.latestState = state
+      return this.convertWorkflowStateToDurableState(state)
+    }
+
+    const proposal = outcome.proposal!
+    await audit?.record({
+      ...baseAudit, event: 'RUNTIME_REPAIR_PROPOSED',
+      chosenReviewer: proposal.chosenReviewer, mechanism: proposal.mechanism,
+      providerHealth: proposal.refreshedProviderHealth,
+    })
+    const validation = validateRuntimeRepairProposal(context, proposal)
+    await audit?.record({
+      ...baseAudit, event: 'RUNTIME_REPAIR_VALIDATED',
+      chosenReviewer: proposal.chosenReviewer, mechanism: proposal.mechanism,
+      validation: { ok: validation.ok, reasons: validation.ok ? [] : validation.reasons },
+    })
+    if (!validation.ok) {
+      const failed = { classification: 'RUNTIME_REPAIR_REQUIRES_HUMAN' as const, reasonCode, reason: validation.reasons.join('; '), executorReran: false }
+      this.lastRuntimeRepairOutcome = failed
+      await audit?.record({ ...baseAudit, event: 'RUNTIME_REPAIR_FAILED', classification: failed.classification, reason: failed.reason })
+      await capability.notifier?.notify(runtimeRepairNotificationFrom(runId, failed))
+      this.latestState = state
+      return this.convertWorkflowStateToDurableState(state)
+    }
+
+    // Persist the validated chosen reviewer, then resume the same session from REVIEW.
+    const repairedState: WorkflowState = {
+      ...state,
+      runtimeRepair: {
+        reasonCode: proposal.reasonCode,
+        ...(proposal.chosenReviewer === undefined ? {} : { chosenReviewer: proposal.chosenReviewer }),
+        appliedAt: new Date().toISOString(),
+        executorReran: false,
+      },
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = repairedState as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
+    this.latestState = repairedState
+    await audit?.record({
+      ...baseAudit, event: 'RUNTIME_REPAIR_APPLIED',
+      chosenReviewer: proposal.chosenReviewer, mechanism: proposal.mechanism,
+    })
+
+    const resumed = await this.resume({})
+    await audit?.record({ ...baseAudit, event: 'SESSION_RESUMED_AFTER_REPAIR', chosenReviewer: proposal.chosenReviewer })
+    await capability.notifier?.notify(runtimeRepairNotificationFrom(runId, outcome))
+    if (resumed.state === 'COMPLETED') {
+      await capability.notifier?.notify(runtimeRepairCompletionNotification(runId))
+    }
+    return resumed
+  }
+
+  private buildRuntimeRepairContext(
+    state: WorkflowState,
+    taskId: string,
+    task: import('./task-state-v2.js').TaskStateV2,
+    reasonCode: RuntimeRepairReasonCode,
+  ): RuntimeRepairContext {
+    const capability = this.config.runtimeRepair!
+    const agents = capability.agents?.() ?? []
+    const providerHealth = Object.values(state.providerHealth ?? {})
+    return {
+      sessionId: state.sessionId,
+      taskId,
+      task,
+      currentAction: task.currentAction as TaskAction | undefined,
+      reasonCode,
+      humanRequired: state.humanRequired ?? { category: 'ENVIRONMENT_REQUIRED', reason: '' },
+      implementer: task.implementer,
+      requiredReviewerConstraints: {
+        requireIndependentReviewer: true,
+        excludeRuntimeIdentities: task.implementer === undefined ? [] : [task.implementer.runtimeIdentity],
+      },
+      agents,
+      providerHealth,
+      repoHead: task.gitState.headSha,
+      workspaceFingerprint: task.gitState.worktreeFingerprint,
+      evidence: task.completion.evidence,
+      blockers: task.blockers,
+      recentEvents: state.taskEventLogs?.[taskId] ?? [],
+      ...(capability.refreshProviderHealth === undefined
+        ? {}
+        : { refreshProviderHealth: capability.refreshProviderHealth }),
+    }
   }
 
   private async doResume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
@@ -1426,8 +1616,19 @@ export class WorkSessionRuntime {
             ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
             ...(taskEventLog === undefined ? {} : { taskEventLog }),
             ...(providerHealth === undefined ? {} : { providerHealth }),
+            ...(currentState.runtimeRepair?.chosenReviewer === undefined
+              ? {}
+              : { chosenReviewer: currentState.runtimeRepair.chosenReviewer }),
           }
           const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          // A Runtime Repair selection is consumed by exactly one resume. Clear it
+          // once so a later Task never inherits a stale chosen reviewer.
+          if (v2 && currentState.runtimeRepair !== undefined) {
+            const clearedState: WorkflowState = { ...currentState, runtimeRepair: undefined, updatedAt: new Date().toISOString() }
+            await setState(clearedState)
+            currentState = clearedState
+            self.latestState = clearedState
+          }
           if (v2 && taskEventLog !== undefined) {
             currentState = mergeTaskTelemetry(currentState, task.id, taskEventLog, providerHealth)
           }
@@ -1931,6 +2132,14 @@ export class WorkSessionRuntime {
     }
     if (wfState.pendingVerificationApproval !== undefined) {
       result.pendingVerificationApproval = wfState.pendingVerificationApproval
+    }
+    if (wfState.runtimeRepair !== undefined) {
+      result.runtimeRepair = {
+        reasonCode: wfState.runtimeRepair.reasonCode,
+        ...(wfState.runtimeRepair.chosenReviewer === undefined ? {} : { chosenReviewer: { ...wfState.runtimeRepair.chosenReviewer } }),
+        appliedAt: wfState.runtimeRepair.appliedAt,
+        executorReran: wfState.runtimeRepair.executorReran,
+      }
     }
     if (wfState.brainFailure) {
       result.brainFailure = {

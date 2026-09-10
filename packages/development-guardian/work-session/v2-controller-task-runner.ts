@@ -172,6 +172,14 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         risk: assessRisk(state).level, riskContext: approvalContext(state), timestamp: new Date().toISOString(),
       } } }
     }
+    // A Runtime Repair that selected an independent reviewer resumes the same REVIEW
+    // boundary without re-running the Executor. The durable chosen reviewer is trusted
+    // only because the repair engine's deterministic validator already accepted it.
+    const reviewerSelectedOnResume = state.currentAction === 'REVIEW' && state.status === 'SUSPENDED' &&
+        context?.chosenReviewer !== undefined && state.completion.review === undefined
+    if (reviewerSelectedOnResume) {
+      state = { ...state, status: 'ACTIVE' }
+    }
     let approvedVerificationCommand = context?.approvedVerificationCommand
     if (approvedVerificationCommand !== undefined && state.blockers.length > 0 &&
         state.blockers.every((b) => b === VERIFICATION_APPROVAL_BLOCKER + approvedVerificationCommand)) {
@@ -262,7 +270,15 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const eligibleAgents = decision.action === 'REVIEW'
         ? this.options.agents.filter((candidate) => candidate.identity !== undefined && candidate.identity.runtimeIdentity !== state.implementer?.runtimeIdentity)
         : this.options.agents
-      const agent = selectAgent(decision.action, eligibleAgents, decision.action === 'REVIEW' ? undefined : previousAgent)
+      let agent = selectAgent(decision.action, eligibleAgents, decision.action === 'REVIEW' ? undefined : previousAgent)
+      // A Runtime Repair may have durably selected an independent reviewer whose static
+      // profile is still marked unavailable. That selection was already validated
+      // (review-capable + independent); trust it only for the REVIEW action.
+      if (agent === undefined && decision.action === 'REVIEW' && context?.chosenReviewer !== undefined) {
+        agent = eligibleAgents.find((candidate) =>
+          candidate.identity?.runtimeIdentity === context.chosenReviewer!.runtimeIdentity &&
+          candidate.capabilities.review === true)
+      }
       if (agent === undefined) {
         note({ type: 'TASK_SUSPENDED', action: decision.action, reasonCode: 'NO_AVAILABLE_AGENT', ...repositoryFacts(state), explanation: explanation('NO_AVAILABLE_AGENT', decision.action, {}, [], []) })
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: `no available agent for ${decision.action}` }, taskStateV2: { ...state, status: 'SUSPENDED' } }

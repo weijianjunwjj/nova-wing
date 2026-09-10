@@ -6,6 +6,7 @@
 
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { ScheduleSource } from './schedule-policy.js'
+import type { TaskActorIdentity } from './task-state-v2.js'
 import type { GuardianBrainFailure, VerificationResult } from '../model.js'
 import type {
   WorkSessionFailureCategory,
@@ -82,6 +83,15 @@ export interface PendingVerificationApproval {
   status: 'REQUESTED' | 'APPROVED'
 }
 
+/** Durable proof that a Runtime Repair selected an independent reviewer and resumed. */
+export interface RuntimeRepairRecord {
+  reasonCode: string
+  chosenReviewer?: TaskActorIdentity
+  appliedAt: string
+  /** Runtime Repair never re-runs the Executor; this is a durable audit fact. */
+  executorReran: boolean
+}
+
 export interface WorkSessionDurableState {
   sessionId: string
   state: WorkSessionState
@@ -104,6 +114,8 @@ export interface WorkSessionDurableState {
   providerHealth?: Record<string, import('./task-observability.js').ProviderHealthObservation>
   humanRequired?: HumanRequired
   pendingVerificationApproval?: PendingVerificationApproval
+  /** v0.2.4: durable Runtime Repair record (chosen reviewer + audit facts). */
+  runtimeRepair?: RuntimeRepairRecord
   /** Brain did not produce a verdict; distinct from a true human decision. */
   brainFailure?: GuardianBrainFailure
   /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。 */
