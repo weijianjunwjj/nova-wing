@@ -106,6 +106,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
       id: 's1',
       targetRepo: '/repo/example',
       branch: 'feat/x',
+      controlPlane: 'v2',
       limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
       tasks: [{ id: 'T1', goal: MALICIOUS_GOAL }],
     },
@@ -142,6 +143,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   const label = firstLi.children[1]!
   assert.equal(label.textContent, `T1 ${MALICIOUS_GOAL}`)
   assert.equal(elements.get('guardian-iteration')?.textContent, '第 1 轮')
+  assert.equal(elements.get('activity-orchestration-label')?.textContent, 'TASK')
 
   // Presentation mapping and formatting never rewrite the trusted goal or raw elapsed value.
   assert.equal((context.formatElapsed as (ms: number) => string)(0.0465), '0.05 毫秒')
@@ -169,6 +171,17 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
 
   // 6. __PWNED__ 未被执行
   assert.notEqual(context.__PWNED__, true)
+
+  // Explicit V1 sessions retain the historical label.
+  render({
+    configuredSession: {
+      id: 's1', targetRepo: '/repo/example', branch: 'feat/x', controlPlane: 'v1',
+      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 }, tasks: [],
+    },
+    runtime: { started: false, running: false, state: 'READY', completedTaskIds: [] },
+    guardian: {}, recentEvents: [],
+  })
+  assert.equal(elements.get('activity-orchestration-label')?.textContent, 'Guardian')
 
   // A durable scoped-verification request uses only the dedicated approval
   // control. The generic decision textarea cannot be used as a capability grant.
