@@ -672,7 +672,10 @@ export const LAUNCHPAD_APP_JS = `
       })
       const result = await response.json()
       if (!response.ok || result.accepted !== true || typeof result.controlUrl !== 'string') {
-        throw new Error(result.message || 'Work Session 启动失败')
+        const contractMessage = result.error === 'TASK_CONTRACT_INVALID' && Array.isArray(result.issues)
+          ? result.issues.map((issue) => [issue.issueCode, issue.criterion, issue.reason].filter(Boolean).join(' · ')).join('\\n')
+          : ''
+        throw new Error(contractMessage || result.message || 'Work Session 启动失败')
       }
       window.location.assign(result.controlUrl)
     } catch (cause) {

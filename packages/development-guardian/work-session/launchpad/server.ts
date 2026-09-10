@@ -33,6 +33,10 @@ import {
   type WorkSessionDisplayState,
 } from '../recoverability.js'
 import { analyzeTaskBrief, MAX_TASK_BRIEF_CHARS } from './task-brief.js'
+import {
+  preflightTaskContract,
+  type TaskContractIssue,
+} from './contract-preflight.js'
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
@@ -677,6 +681,10 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 202, result)
     } catch (error) {
       if (this.respondPreflightError(response, error)) return
+      if (error instanceof TaskContractPreflightError) {
+        this.respondJson(response, 400, { error: 'TASK_CONTRACT_INVALID', issues: error.issues })
+        return
+      }
       const code = error instanceof ComposerLaunchError ? error.code : 'SESSION_START_FAILED'
       const status = code === 'SESSION_START_FAILED' ? 500 : code === 'IDEMPOTENCY_CONFLICT' ? 409 : 400
       this.respondComposerError(response, status, code)
@@ -974,6 +982,12 @@ export class NovaWingLaunchpad {
     if (input.branch !== undefined && input.branch !== branch) {
       throw new ComposerLaunchError('BRANCH_MISMATCH')
     }
+    const contract = await preflightTaskContract({
+      targetRepo,
+      acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
+      acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
+    })
+    if (!contract.ok) throw new TaskContractPreflightError(contract.issues)
     const sessionId = createSessionId(targetRepo)
     const config = await validateTrustedWorkSessionConfig({
       session: {
@@ -992,12 +1006,12 @@ export class NovaWingLaunchpad {
         goal: task.goal,
         guardian: {
           constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
-          acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...(input.guardian.acceptanceCriteria ?? [])],
+          acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...contract.acceptanceCriteria],
           doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo, ...(input.guardian.doNotDo ?? [])],
           allowedPaths: input.guardian.allowedPaths,
           forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
         },
-        acceptanceEvidenceBindings: composerEvidenceBindings(input.guardian.acceptanceCriteria ?? [], input.guardian.acceptanceEvidenceBindings ?? []),
+        acceptanceEvidenceBindings: composerEvidenceBindings(contract.acceptanceCriteria, contract.acceptanceEvidenceBindings),
       })),
       gitCheckpoint: {
         autoCommit: input.autoCommit,
@@ -1099,6 +1113,12 @@ export class NovaWingLaunchpad {
 class ComposerLaunchError extends Error {
   constructor(readonly code: ComposerError | 'SESSION_START_FAILED') {
     super(code)
+  }
+}
+
+class TaskContractPreflightError extends Error {
+  constructor(readonly issues: readonly TaskContractIssue[]) {
+    super('TASK_CONTRACT_INVALID')
   }
 }
 
@@ -1421,14 +1441,6 @@ function parseComposerGuardian(value: unknown): ComposerRequest['guardian'] | un
   const doNotDo = optionalStringArray(record, 'doNotDo')
   const forbiddenPaths = optionalStringArray(record, 'forbiddenPaths')
   if (constraints === 'invalid' || acceptanceCriteria === 'invalid' || acceptanceEvidenceBindings === 'invalid' || doNotDo === 'invalid' || forbiddenPaths === 'invalid') return undefined
-  if (acceptanceEvidenceBindings !== undefined) {
-    const criteria = new Set(acceptanceCriteria ?? [])
-    const bound = new Set<string>()
-    for (const binding of acceptanceEvidenceBindings) {
-      if (!criteria.has(binding.criterion) || bound.has(binding.criterion)) return undefined
-      bound.add(binding.criterion)
-    }
-  }
   return { ...(constraints === undefined ? {} : { constraints }), ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }), ...(acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings }), ...(doNotDo === undefined ? {} : { doNotDo }), allowedPaths, ...(forbiddenPaths === undefined ? {} : { forbiddenPaths }) }
 }
 
@@ -1440,12 +1452,17 @@ function parseAcceptanceEvidenceBindings(value: unknown): AcceptanceEvidenceBind
     if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'invalid'
     const record = item as Record<string, unknown>
     if (Object.keys(record).some((key) => key !== 'criterion' && key !== 'requiredEvidence' && key !== 'requiresApproval')) return 'invalid'
-    if (typeof record.criterion !== 'string' || record.criterion.trim().length === 0) return 'invalid'
-    const requiredEvidence = stringArray(record.requiredEvidence)
-    if (requiredEvidence === undefined || requiredEvidence.length === 0 || (record.requiresApproval !== undefined && typeof record.requiresApproval !== 'boolean')) return 'invalid'
+    if (typeof record.criterion !== 'string' || record.criterion.length > 500) return 'invalid'
+    const requiredEvidence = verifierStringArray(record.requiredEvidence)
+    if (requiredEvidence === undefined || (record.requiresApproval !== undefined && typeof record.requiresApproval !== 'boolean')) return 'invalid'
     bindings.push({ criterion: record.criterion.trim(), requiredEvidence, ...(record.requiresApproval === undefined ? {} : { requiresApproval: record.requiresApproval }) })
   }
   return bindings
+}
+
+function verifierStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 100 || value.some((entry) => typeof entry !== 'string' || entry.length > 500)) return undefined
+  return value.map((entry) => entry.trim())
 }
 
 function looksLikeVerifierCommand(criterion: string): boolean {

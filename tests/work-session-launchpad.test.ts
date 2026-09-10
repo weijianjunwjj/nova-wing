@@ -770,7 +770,7 @@ await test('Composer creates a fresh validated session from structured input and
       guardian: {
         allowedPaths: ['packages/**', 'tests/**'],
         acceptanceCriteria: ['D01 root cause is classified from evidence.', 'npm run typecheck'],
-        acceptanceEvidenceBindings: [{ criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] }],
+        acceptanceEvidenceBindings: [{ criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['npm test'] }],
       },
     }), auth)
     assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
@@ -783,8 +783,8 @@ await test('Composer creates a fresh validated session from structured input and
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
     assert.deepEqual(state.receivedConfigs[0]!.tasks[0]!.acceptanceEvidenceBindings, [
       { criterion: 'Implement the requested task.', requiredEvidence: ['git diff --check'] },
-      { criterion: 'Run relevant deterministic tests.', requiredEvidence: ['node --test focused-d01.test.js'] },
-      { criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['node --test focused-d01.test.js'] },
+      { criterion: 'Run relevant deterministic tests.', requiredEvidence: ['npm test'] },
+      { criterion: 'D01 root cause is classified from evidence.', requiredEvidence: ['npm test'] },
       { criterion: 'npm run typecheck', requiredEvidence: ['npm run typecheck'] },
     ])
     const composedTask = state.receivedConfigs[0]!.tasks[0]!
@@ -792,7 +792,7 @@ await test('Composer creates a fresh validated session from structured input and
     const convergingRunner = new V2ControllerTaskRunner({ sessionId: 'composer-converges', branch: 'feat/composer', agents: [{ id: 'codex', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }], dispatcher: {
       inspectRepository: async () => ({ repositoryIdentity: process.cwd(), branch: 'feat/composer', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
       dispatch: async ({ action }) => action === 'VERIFY'
-        ? { status: 'SUCCESS', verificationResults: [{ name: 'git diff --check', status: 'passed' }, { name: 'node --test focused-d01.test.js', status: 'passed' }, { name: 'npm run typecheck', status: 'passed' }] }
+        ? { status: 'SUCCESS', verificationResults: [{ name: 'git diff --check', status: 'passed' }, { name: 'npm test', status: 'passed' }, { name: 'npm run typecheck', status: 'passed' }] }
         : { status: 'SUCCESS' },
     } })
     assert.equal((await convergingRunner.run(convergingTask)).status, 'COMPLETED')
@@ -1214,16 +1214,20 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
     })
     assert.deepEqual((unknownBindingRequest as { guardian: { acceptanceEvidenceBindings: unknown } }).guardian.acceptanceEvidenceBindings, [{ criterion: 'unknown', requiredEvidence: ['npm test'] }])
     const unknownBinding = await postCreate(launchpad, unknownBindingRequest, auth)
-    const unknownBindingBody = await unknownBinding.json() as { error?: string }
-    assert.equal(unknownBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(unknownBindingBody))
+    const unknownBindingBody = await unknownBinding.json() as { error?: string; issues?: Array<{ issueCode: string }> }
+    assert.equal(unknownBindingBody.error, 'TASK_CONTRACT_INVALID', JSON.stringify(unknownBindingBody))
+    assert.ok(unknownBindingBody.issues?.some((issue) => issue.issueCode === 'BINDING_IDENTITY_MISMATCH'))
+    assert.equal(state.createCalls, 0)
     const duplicateBinding = await postCreate(launchpad, composerRequest('composer-create-request-duplicate-binding', {
       guardian: { allowedPaths: ['packages/**'], acceptanceCriteria: ['known'], acceptanceEvidenceBindings: [
         { criterion: 'known', requiredEvidence: ['npm test'] }, { criterion: 'known', requiredEvidence: ['git diff --check'] },
       ] },
     }), auth)
-    const duplicateBindingBody = await duplicateBinding.json() as { error?: string }
-    assert.equal(duplicateBindingBody.error, 'INVALID_GUARDIAN_POLICY', JSON.stringify(duplicateBindingBody))
-    assert.equal(state.createCalls, 0)
+    assert.equal(duplicateBinding.status, 202, JSON.stringify(await duplicateBinding.clone().json()))
+    assert.equal(state.createCalls, 1)
+    assert.deepEqual(state.receivedConfigs[0]?.tasks[0]?.acceptanceEvidenceBindings?.slice(-1), [{
+      criterion: 'known', requiredEvidence: ['npm test', 'git diff --check'],
+    }])
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -1991,5 +1995,7 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     for (const field of Object.values(elements)) assert.equal(field.value, '')
     assert.match(briefResult.textContent, /已清空/)
     assert.match(script, /catch \(cause\) \{\s*applyBriefAnalysis\(\{ fields: \{\} \}, true\)/)
+    assert.match(script, /TASK_CONTRACT_INVALID/)
+    assert.match(script, /issue\.issueCode/)
   } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
 })

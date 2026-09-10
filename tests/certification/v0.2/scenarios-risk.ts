@@ -51,7 +51,7 @@ export const s04: CertificationScenario = {
 
 export const s05: CertificationScenario = {
   id: 'S05',
-  title: 'Verifier command DSL tolerates =>, shell operators and quotes; ambiguous input fails closed without half-parsing',
+  title: 'Verifier command DSL preserves =>, shell operators and quotes after the first delimiter',
   group: 'control',
   async run(ctx) {
     const h = ctx.h
@@ -74,16 +74,16 @@ export const s05: CertificationScenario = {
     h.check(binding !== undefined, 'brief parser produced an evidence binding for the criterion')
     h.check(binding?.requiredEvidence[0] === command, 'binding command survives => / quotes / operators without corruption')
 
-    // A2: an ambiguous criterion that itself contains the arrow delimiter must never half-parse.
-    const ambiguous = analyzeTaskBrief([
-      'Task: line should contain =>',
+    // A2: only the first delimiter is structural; a later arrow belongs to the verifier.
+    const delimiterRich = analyzeTaskBrief([
+      'Task: preserve verifier arrow content',
       'allowed paths: src/**',
-      'acceptance criteria: content shows an => arrow',
+      'acceptance criteria: content mapping is exact',
       'required evidence:',
-      'content shows an => arrow => node example-verifier repo x',
+      'content mapping is exact => node -e "console.log(\'x => y\')"',
     ].join('\n'))
-    const partial = ambiguous.fields.acceptanceEvidenceBindings?.find((entry) => entry.criterion === 'content shows an')
-    h.check(partial === undefined, 'no half-parsed binding is produced when the arrow delimiter collides with the criterion')
+    const delimiterBinding = delimiterRich.fields.acceptanceEvidenceBindings?.find((entry) => entry.criterion === 'content mapping is exact')
+    h.check(delimiterBinding?.requiredEvidence[0] === 'node -e "console.log(\'x => y\')"', 'only the first delimiter is structural')
 
     // B: the exact command string, executed through the safe node verifier, drives a complete task.
     const config = await buildTrustedConfig({ sessionId: `s05-${ctx.dirs.runId}`, repo, tasks: [{ id: 'T1', goal: 'make v.ts content exact', acceptanceCriteria: ['v.ts exact'], allowedPaths: ['src/**'], bindings: [{ criterion: 'v.ts exact', requiredEvidence: [command] }] }] })
