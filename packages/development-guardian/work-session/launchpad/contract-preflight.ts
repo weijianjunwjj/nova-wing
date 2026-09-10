@@ -74,6 +74,9 @@ const TRUSTED_COMMANDS = new Set([
   'git diff --check',
   '.venv/Scripts/python.exe -m pytest',
 ])
+
+/** Deterministic verifier allowlist, shared with the Repair Agent's safe-command gate. */
+export const TRUSTED_VERIFIER_COMMANDS: ReadonlySet<string> = TRUSTED_COMMANDS
 const IGNORED_REPOSITORY_DIRECTORIES = new Set(['.git', '.venv', 'node_modules', 'dist', 'dist-tests', 'coverage'])
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|(?:^|[._-])(?:test|spec)\.[^/]+$/iu
 
@@ -134,6 +137,60 @@ function resolveRepositoryTestCommand(facts: RepositoryContractFacts): string | 
 function packageScript(command: string): string | undefined {
   const match = /^(?:npm|pnpm|yarn)\s+(?:run\s+)?([^\s]+)(?:\s|$)/u.exec(command)
   return match?.[1]
+}
+
+function resolveTestEntryFromFacts(facts: RepositoryContractFacts): string | undefined {
+  const authoritative = resolveRepositoryTestCommand(facts)
+  if (authoritative !== undefined) return authoritative
+  if (facts.packageScripts.check?.trim()) return 'npm run check'
+  return undefined
+}
+
+/**
+ * The Repair Agent's broader test-entry resolution. It extends the deterministic
+ * preflight entry (test script / single named test script / venv pytest) with a
+ * `check` script fallback, so an AI repair can resolve a placeholder the
+ * fail-closed preflight deliberately left unresolved.
+ */
+export async function resolveRepairTestEntry(root: string): Promise<string | undefined> {
+  return resolveTestEntryFromFacts(await inspectRepository(root))
+}
+
+const MAX_REPAIR_REPO_LISTING = 60
+
+/** Bounded, secret-free repository reality for a Repair Agent prompt. */
+export interface RepairRepositoryFacts {
+  packageScripts: Readonly<Record<string, string>>
+  resolvedTestEntry?: string
+  testFileCandidates: readonly string[]
+  topLevelEntries: readonly string[]
+  hasPytestConfig: boolean
+  hasWindowsVenvPython: boolean
+}
+
+/**
+ * Report the repository facts a Repair Agent may rely on. Only files whose names
+ * already look like tests are listed, so ordinary source and any credential file
+ * never enters a model prompt.
+ */
+export async function describeRepairRepository(root: string): Promise<RepairRepositoryFacts> {
+  const facts = await inspectRepository(resolve(root))
+  const testFileCandidates = [...facts.files]
+    .filter((path) => TEST_FILE.test(path))
+    .sort()
+    .slice(0, MAX_REPAIR_REPO_LISTING)
+  const topLevelEntries = [...new Set(
+    [...facts.files].map((path) => path.split('/')[0] ?? '').filter((entry) => entry.length > 0),
+  )].sort().slice(0, MAX_REPAIR_REPO_LISTING)
+  const resolvedTestEntry = resolveTestEntryFromFacts(facts)
+  return {
+    packageScripts: facts.packageScripts,
+    ...(resolvedTestEntry === undefined ? {} : { resolvedTestEntry }),
+    testFileCandidates,
+    topLevelEntries,
+    hasPytestConfig: facts.hasPytestConfig,
+    hasWindowsVenvPython: facts.hasWindowsVenvPython,
+  }
 }
 
 function obviousTestPaths(command: string): string[] {

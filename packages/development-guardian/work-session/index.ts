@@ -51,6 +51,12 @@ export {
 export * from './launchpad/server.js'
 export * from './launchpad/task-brief.js'
 export * from './launchpad/browser-launcher.js'
+export * from './launchpad/repair.js'
+export * from './launchpad/repair-agent.js'
+export * from './launchpad/repair-agent-llm.js'
+export * from './launchpad/repair-model.js'
+export * from './launchpad/repair-audit.js'
+export * from './launchpad/repair-notifier.js'
 export type {
   SmtpTransportConfig,
   SmtpMailOptions,
