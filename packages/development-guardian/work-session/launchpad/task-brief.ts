@@ -5,6 +5,7 @@ import {
   type ExecutorMode,
 } from '../../coding-executor-config.js'
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
+import { parseTaskContractBindingDsl } from './contract-preflight.js'
 
 /**
  * The Launchpad brief is deliberately treated as an untrusted convenience
@@ -92,8 +93,15 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   const constraints = extractTextSection(lines, /^(?:constraints?|约束)\s*[:：]?\s*(.*)$/iu)
   if (constraints.length > 0) { fields.constraints = constraints; mark('Constraints') }
   const acceptanceCriteria = extractTextSection(lines, /^(?:acceptance\s*criteria|验收(?:标准|条件)?|验证)\s*[:：]?\s*(.*)$/iu)
-  if (acceptanceCriteria.length > 0) { fields.acceptanceCriteria = acceptanceCriteria; mark('Acceptance Criteria') }
-  const acceptanceEvidenceBindings = extractEvidenceBindings(lines, acceptanceCriteria)
+  const inlineAcceptance = acceptanceCriteria.map((criterion) => parseTaskContractBindingDsl(criterion))
+  const normalizedAcceptanceCriteria = acceptanceCriteria.map((criterion, index) => inlineAcceptance[index]?.criterionText || criterion)
+  if (normalizedAcceptanceCriteria.length > 0) { fields.acceptanceCriteria = normalizedAcceptanceCriteria; mark('Acceptance Criteria') }
+  const acceptanceEvidenceBindings = [
+    ...extractEvidenceBindings(lines, normalizedAcceptanceCriteria),
+    ...inlineAcceptance.flatMap((binding) => binding === undefined || binding.criterionText.length === 0 || binding.verifierCommand.length === 0
+      ? []
+      : [{ criterion: binding.criterionText, requiredEvidence: [binding.verifierCommand] }]),
+  ]
   if (acceptanceEvidenceBindings.length > 0) { fields.acceptanceEvidenceBindings = acceptanceEvidenceBindings; mark('Required Evidence') }
   const doNotDo = extractTextSection(lines, /^(?:do\s*not\s*do|不要做|禁止事项)\s*[:：]?\s*(.*)$/iu)
   if (doNotDo.length > 0) { fields.doNotDo = doNotDo; mark('Do Not Do') }
@@ -173,10 +181,9 @@ function extractEvidenceBindings(lines: readonly string[], criteria: readonly st
 }
 
 function parseEvidenceBindingLine(line: string, criteria: readonly string[], commands: Map<string, string[]>): void {
-  const separator = line.indexOf('=>')
-  if (separator <= 0) return
-  const criterion = line.slice(0, separator).trim()
-  const evidence = line.slice(separator + 2).trim()
+  const parsed = parseTaskContractBindingDsl(line)
+  if (parsed === undefined) return
+  const { criterionText: criterion, verifierCommand: evidence } = parsed
   if (!criteria.includes(criterion) || evidence.length === 0 || evidence.length > 500) return
   const existing = commands.get(criterion) ?? []
   if (!existing.includes(evidence)) existing.push(evidence)

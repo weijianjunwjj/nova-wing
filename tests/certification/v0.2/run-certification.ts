@@ -147,7 +147,7 @@ function gateLines(report: CertificationReport): string[] {
 }
 
 function renderMarkdown(report: CertificationReport): string {
-  const rows = report.scenarios.map((scenario) => `| ${scenario.scenarioId} | ${scenario.tag} | ${Math.round(scenario.durationMs / 1000)}s | ${scenario.error ?? ''}`)
+  const rows = report.scenarios.map((scenario) => `| ${scenario.scenarioId} | ${scenario.tag} | ${Math.round(scenario.durationMs / 1000)}s | ${scenario.error ?? ''} |`)
   const gates = gateLines(report)
   return [
     '# NovaWing v0.2 automated certification',
@@ -204,9 +204,9 @@ async function loadExistingReport(root: string): Promise<CertificationReport | u
 }
 
 const KNOWN_LIMITATIONS: string[] = [
-  'S06 verifies that verifier approval is surfaced at a dedicated non-coding boundary and is bound to the exact command. A stricter pre-EXECUTE approval preflight is a product-design decision (Evidence Gate authority) and is not silently re-timed by the certification.',
+  'Task Contract Preflight v1 reports repository-valid verifier commands outside the existing deterministic allowlist as APPROVAL_REQUIRED before Session creation; it does not grant approval or widen the allowlist.',
   'Provider responses in Layer A are scripted at the documented createV2Dispatcher / executor seams; model cognition itself is not exercised deterministically.',
-  'The Launchpad Task-Brief evidence-binding DSL is line based; a verifier command cannot carry a literal newline inside an evidence binding. S05 covers =>, shell operators and quoted strings within that boundary.',
+  'The Launchpad Task-Brief evidence-binding DSL is line based and cannot carry a literal newline inside one verifier command; S20 proves that literal => content is preserved after the first delimiter.',
 ]
 
 export async function main(): Promise<number> {
