@@ -1532,10 +1532,17 @@ export class WorkSessionRuntime {
                     ? { expectedBaseHeadSha: currentState.currentTaskBaseHeadSha }
                     : {}),
                 })
-                checkpointCommitSha = commitResult.commitSha
-                checkpointPushSha = commitResult.pushSha
-                self.recordGitCommitCompleted(task.id, commitResult.commitSha, currentState)
-                if (commitResult.pushSha !== undefined) {
+                if (commitResult.disposition === 'ALREADY_SATISFIED') {
+                  self.recordGitCommitSkipped(task.id, currentState)
+                } else {
+                  checkpointCommitSha = commitResult.commitSha
+                  checkpointPushSha = commitResult.pushSha
+                  self.recordGitCommitCompleted(task.id, commitResult.commitSha, currentState)
+                }
+                if (
+                  commitResult.disposition !== 'ALREADY_SATISFIED' &&
+                  commitResult.pushSha !== undefined
+                ) {
                   self.recordGitPushCompleted(
                     task.id,
                     commitResult.commitSha,
@@ -2354,6 +2361,18 @@ export class WorkSessionRuntime {
       commitSha,
       activeElapsedMs: this.activeElapsedMs(state),
     }, `git-commit-completed:${taskId}:${commitSha}`)
+  }
+
+  private recordGitCommitSkipped(taskId: string, state: WorkflowState): void {
+    this.recordLedger({
+      eventType: 'GIT_COMMIT_SKIPPED',
+      sessionId: state.sessionId,
+      taskId,
+      timestamp: this.ledgerTimestamp(),
+      status: 'COMPLETED',
+      safeMessage: 'NO_CHANGES_REQUIRED',
+      activeElapsedMs: this.activeElapsedMs(state),
+    }, `git-commit-skipped:${taskId}:no-changes-required`)
   }
 
   private recordGitPushCompleted(

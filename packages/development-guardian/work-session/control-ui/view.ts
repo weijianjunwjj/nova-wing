@@ -133,7 +133,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
   <section class="card">
     <h2>当前活动</h2>
     <div class="row">
-      <span class="label">Guardian</span>
+      <span id="activity-orchestration-label" class="label">Guardian</span>
       <span id="guardian-phase" class="value">—</span>
     </div>
     <div class="row">
@@ -278,6 +278,7 @@ function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
   var guardian = snapshot.guardian || {}
+  setText('activity-orchestration-label', cfg.controlPlane === 'v2' ? 'TASK' : 'Guardian')
   var executions = snapshot.codingExecutions || []
   var execution = executions.find((entry) => entry.taskId === rt.currentTaskId) || executions[executions.length - 1]
   setText('coding-execution', execution ? execution.taskId + ' · ' + execution.mode.toUpperCase() + ' · '

@@ -488,6 +488,7 @@ export class WorkSessionControlController {
         id: definition.id,
         targetRepo: definition.targetRepo,
         branch: definition.branch,
+        ...(definition.controlPlane === undefined ? {} : { controlPlane: definition.controlPlane }),
         limits: {
           softMinutes: definition.limits.softMinutes,
           hardMinutes: definition.limits.hardMinutes,

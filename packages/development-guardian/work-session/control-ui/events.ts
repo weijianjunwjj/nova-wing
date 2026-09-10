@@ -80,6 +80,7 @@ export interface WorkSessionControlSnapshot {
     id: string
     targetRepo: string
     branch: string
+    controlPlane?: 'v1' | 'v2'
     limits: {
       softMinutes: number
       hardMinutes: number

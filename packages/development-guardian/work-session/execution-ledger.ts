@@ -21,6 +21,7 @@ export type ExecutionLedgerEventType =
   | 'PHASE_FAILED'
   | 'TASK_COMPLETED'
   | 'GIT_COMMIT_COMPLETED'
+  | 'GIT_COMMIT_SKIPPED'
   | 'GIT_PUSH_COMPLETED'
   | 'CHECKPOINT_RECOVERY_REQUESTED'
   | 'CHECKPOINT_RECOVERY_COMPLETED'
@@ -81,6 +82,12 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
     }
   | { eventType: 'TASK_COMPLETED'; taskId: string; status: 'COMPLETED' }
   | { eventType: 'GIT_COMMIT_COMPLETED'; taskId: string; status: 'COMPLETED'; commitSha: string }
+  | {
+      eventType: 'GIT_COMMIT_SKIPPED'
+      taskId: string
+      status: 'COMPLETED'
+      safeMessage: 'NO_CHANGES_REQUIRED'
+    }
   | {
       eventType: 'GIT_PUSH_COMPLETED'
       taskId: string

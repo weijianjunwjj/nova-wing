@@ -188,6 +188,7 @@ export function renderLaunchpadHtml(input: {
           <label>Forbidden paths（可选，每行一条；会附加到安全默认值）<textarea name="forbiddenPaths" rows="2"></textarea></label>
         </details>
         <p class="launch-error" data-composer-error role="alert" aria-live="polite"></p>
+        <button class="repair-button" type="button" data-composer-repair hidden>AI 修复并重试</button>
         <button class="launch-button" type="submit" data-composer-submit>创建并启动</button>
       </form>
     </section>
@@ -408,6 +409,7 @@ export const LAUNCHPAD_APP_JS = `
   const hardMinutes = form.elements.hardMinutes
   const pushRemote = form.querySelector('[data-push-remote]')
   const error = form.querySelector('[data-composer-error]')
+  const repairButton = form.querySelector('[data-composer-repair]')
   const briefInput = form.querySelector('[data-task-brief]')
   const briefFill = form.querySelector('[data-task-brief-fill]')
   const smartModel = form.querySelector('[data-smart-model]')
@@ -415,6 +417,7 @@ export const LAUNCHPAD_APP_JS = `
   const lines = (value) => value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean)
   let branchTimer
   let discoveredPushRemote
+  let lastComposerBody = null
   const discoverTargetRepo = (preserveBranch = false) => {
     if (!preserveBranch) branch.value = '正在检测…'
     discoveredPushRemote = undefined
@@ -507,6 +510,13 @@ export const LAUNCHPAD_APP_JS = `
   form.elements.allowedPaths.addEventListener('input', () => {
     form.elements.allowedPaths.removeAttribute('aria-invalid')
     if (error.textContent === '请填写至少一个允许修改路径。') error.textContent = ''
+  })
+  // A repair retries the exact payload that failed. Once the operator edits the
+  // form that payload is stale, so the affordance is withdrawn until the next
+  // create attempt re-proves the failure.
+  form.addEventListener('input', () => {
+    lastComposerBody = null
+    if (repairButton) repairButton.hidden = true
   })
   targetRepo.addEventListener('input', () => discoverTargetRepo())
   const requestBriefAnalysis = async (brief) => {
@@ -652,26 +662,31 @@ export const LAUNCHPAD_APP_JS = `
         ? getDeepSeekPricingPeriod(new Date()).nextOffPeakAt
         : mode === 'custom' ? new Date(customTime.value) : null
       if (instant && !Number.isFinite(instant.getTime())) throw new Error('请选择有效的自定义开始时间。')
+      lastComposerBody = {
+        requestId, targetRepo: targetRepo.value, tasks,
+        ...( /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(branch.value) && !branch.value.includes('..') && !branch.value.endsWith('.lock') && !branch.value.includes('@{') ? { branch: branch.value } : {} ),
+        scheduled_start_at: instant ? instant.toISOString() : null,
+        schedule_source: mode,
+        executorModel: form.elements.executorModel.value,
+        executorMode: form.elements.executorMode.value,
+        codexModel: form.elements.codexModel.value,
+        codexReasoningEffort: form.elements.codexReasoningEffort.value,
+        softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
+        autoCommit: autoCommit.checked, autoPush: autoPush.checked,
+        ...(autoPush.checked ? { pushRemote: discoveredPushRemote } : {}),
+        emailEnabled: form.elements.emailEnabled.checked,
+        guardian: { allowedPaths, ...optionalPolicy('constraints'), ...optionalPolicy('acceptanceCriteria'), ...evidenceBindingsPolicy(), ...optionalPolicy('doNotDo'), ...optionalPolicy('forbiddenPaths') },
+      }
+      if (repairButton) repairButton.hidden = true
       const response = await fetch('/api/session/create', {
         method: 'POST', headers: mutationHeaders(),
-        body: JSON.stringify({
-          requestId, targetRepo: targetRepo.value, tasks,
-          ...( /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(branch.value) && !branch.value.includes('..') && !branch.value.endsWith('.lock') && !branch.value.includes('@{') ? { branch: branch.value } : {} ),
-          scheduled_start_at: instant ? instant.toISOString() : null,
-          schedule_source: mode,
-          executorModel: form.elements.executorModel.value,
-          executorMode: form.elements.executorMode.value,
-          codexModel: form.elements.codexModel.value,
-          codexReasoningEffort: form.elements.codexReasoningEffort.value,
-          softMinutes: Number(form.elements.softMinutes.value), hardMinutes: Number(form.elements.hardMinutes.value),
-          autoCommit: autoCommit.checked, autoPush: autoPush.checked,
-          ...(autoPush.checked ? { pushRemote: discoveredPushRemote } : {}),
-          emailEnabled: form.elements.emailEnabled.checked,
-          guardian: { allowedPaths, ...optionalPolicy('constraints'), ...optionalPolicy('acceptanceCriteria'), ...evidenceBindingsPolicy(), ...optionalPolicy('doNotDo'), ...optionalPolicy('forbiddenPaths') },
-        }),
+        body: JSON.stringify(lastComposerBody),
       })
       const result = await response.json()
       if (!response.ok || result.accepted !== true || typeof result.controlUrl !== 'string') {
+        if (result.error === 'TASK_CONTRACT_INVALID' && result.repairable === true && repairButton) {
+          repairButton.hidden = false
+        }
         const contractMessage = result.error === 'TASK_CONTRACT_INVALID' && Array.isArray(result.issues)
           ? result.issues.map((issue) => [issue.issueCode, issue.criterion, issue.reason].filter(Boolean).join(' · ')).join('\\n')
           : ''
@@ -681,6 +696,36 @@ export const LAUNCHPAD_APP_JS = `
     } catch (cause) {
       error.textContent = cause instanceof Error ? cause.message : 'Work Session 启动失败'
       submit.disabled = false
+    }
+  })
+
+  if (repairButton) repairButton.addEventListener('click', async () => {
+    if (!lastComposerBody) { repairButton.hidden = true; return }
+    repairButton.disabled = true
+    repairButton.textContent = 'AI 正在修复…'
+    error.textContent = ''
+    try {
+      const response = await fetch('/api/session/repair', {
+        method: 'POST', headers: mutationHeaders(), body: JSON.stringify(lastComposerBody),
+      })
+      const result = await response.json()
+      if (response.ok && result.accepted === true && typeof result.controlUrl === 'string') {
+        window.location.assign(result.controlUrl)
+        return
+      }
+      const contractMessage = result.error === 'TASK_CONTRACT_INVALID' && Array.isArray(result.issues)
+        ? result.issues.map((issue) => [issue.issueCode, issue.criterion, issue.reason].filter(Boolean).join(' · ')).join('\\n')
+        : ''
+      const attempt = result.repairAttempt
+      const attemptMessage = attempt
+        ? 'AI 修复尝试' + (attempt.classification === 'REPAIRED' ? '已通过机械校验但复检失败' : attempt.classification === 'NOVAWING_PRODUCT_BUG' ? '判定为 NovaWing 产品缺陷（已生成结构化修复任务，未改动 NovaWing）' : '被安全拒绝') + (attempt.reason ? '：' + attempt.reason : '') + (attempt.structuredRepairTask ? '（' + attempt.structuredRepairTask.taskId + '）' : '')
+        : ''
+      error.textContent = (contractMessage || result.message || 'AI 修复并重试失败') + (attemptMessage ? '\\n' + attemptMessage : '')
+    } catch {
+      error.textContent = 'AI 修复并重试失败'
+    } finally {
+      repairButton.disabled = false
+      repairButton.textContent = 'AI 修复并重试'
     }
   })
 })()
@@ -955,6 +1000,24 @@ h2 {
   font-size: 12px;
   text-align: center;
 }
+
+.repair-button {
+  width: 100%;
+  height: 42px;
+  margin: 0 0 10px;
+  border: 1px solid rgba(87, 217, 154, .3);
+  border-radius: 11px;
+  background: linear-gradient(180deg, #1e6b4f, #18563f);
+  color: #dffcf0;
+  cursor: pointer;
+  font: 650 13px/1 "Segoe UI", sans-serif;
+  letter-spacing: .02em;
+  transition: transform 140ms ease, filter 140ms ease, opacity 140ms ease;
+}
+
+.repair-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.07); }
+.repair-button:focus-visible { outline: 2px solid #57d99a; outline-offset: 3px; }
+.repair-button:disabled { cursor: wait; opacity: .64; }
 
 .launch-button {
   width: 100%;

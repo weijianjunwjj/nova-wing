@@ -10,6 +10,11 @@ import {
   preflightTaskContract,
 } from '../../../packages/development-guardian/work-session/launchpad/contract-preflight.js'
 import { analyzeTaskBrief } from '../../../packages/development-guardian/work-session/launchpad/task-brief.js'
+import type { RepairAgent } from '../../../packages/development-guardian/work-session/launchpad/repair-agent.js'
+import { createLlmRepairAgent } from '../../../packages/development-guardian/work-session/launchpad/repair-agent-llm.js'
+import { RepairProviderUnavailableError } from '../../../packages/development-guardian/work-session/launchpad/repair-model.js'
+import type { RepairAuditEntry, RepairAuditSink } from '../../../packages/development-guardian/work-session/launchpad/repair-audit.js'
+import type { RepairNotification, RepairNotifier } from '../../../packages/development-guardian/work-session/launchpad/repair-notifier.js'
 import type { TrustedWorkSessionConfig } from '../../../packages/development-guardian/work-session/production.js'
 import type { CertificationScenario } from './scenario.js'
 import { initFixtureRepo, removeTree } from './util.js'
@@ -136,5 +141,460 @@ export const s20: CertificationScenario = {
     ctx.h.check(parsed?.criterionText === 'mapping remains exact', 'criterion uses only the first delimiter')
     ctx.h.check(parsed?.verifierCommand === 'node -e "console.log(\'x => y\')"', 'literal => remains inside the structured verifier command')
     return Promise.resolve()
+  },
+}
+
+async function postRepair(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/repair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    body: JSON.stringify(body),
+  })
+}
+
+/** Injected notifier/audit keep certification side-effect free and observable. */
+function recordingRepairDeps() {
+  const notifications: RepairNotification[] = []
+  const audit: RepairAuditEntry[] = []
+  let llmCalls = 0
+  const notifier: RepairNotifier = { notify: async (notification) => { notifications.push(notification) } }
+  const auditSink: RepairAuditSink = { record: async (entry) => { audit.push(entry) } }
+  return {
+    notifications,
+    audit,
+    notifier,
+    auditSink,
+    get llmCalls() { return llmCalls },
+    /** A model stand-in: certification never reaches a live provider. */
+    llmAgent(): RepairAgent {
+      return {
+        id: 'cert-llm-agent',
+        async repair() {
+          llmCalls += 1
+          return { classification: 'REPAIR_REJECTED', reason: 'certification model stand-in declines' }
+        },
+      }
+    },
+  }
+}
+
+/** A scripted model runner returning one fixed structured proposal. */
+function scriptedLlmAgent(bindings: readonly { criterion: string; requiredEvidence: readonly string[] }[]): RepairAgent {
+  return createLlmRepairAgent({
+    runner: async () => ({ text: JSON.stringify({ acceptanceEvidenceBindings: bindings }) }),
+    describeRepository: async () => ({
+      packageScripts: { test: 'node --test' }, testFileCandidates: [], topLevelEntries: [],
+      hasPytestConfig: false, hasWindowsVenvPython: false,
+    }),
+    isRuntimeAvailable: () => true,
+  })
+}
+
+export const s21: CertificationScenario = {
+  id: 'S21', title: 'AI repair binds a missing evidence binding', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const created: TrustedWorkSessionConfig[] = []
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp((config) => { created.push(config) }),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const body = request(`cert-s21-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['Tests pass'],
+      })
+      const create = await postCreate(launchpad, body)
+      h.check(create.status === 400, 'unbound criterion is rejected before repair')
+      const createBody = await create.json() as { error?: string; repairable?: boolean }
+      h.check(createBody.error === 'TASK_CONTRACT_INVALID' && createBody.repairable === true, 'create error advertises a repairable TASK_CONTRACT_INVALID')
+
+      const repair = await postRepair(launchpad, body)
+      h.check(repair.status === 202, 'repair binds missing evidence and creates Session')
+      h.check(created.length === 1, 'exactly one Session is created by the retry')
+      h.check(created[0]?.tasks[0]?.acceptanceEvidenceBindings?.some((binding) => binding.criterion === 'Tests pass' && binding.requiredEvidence.includes('npm test')) === true,
+        'missing criterion is bound to the repository test entry')
+      h.check(rec.llmCalls === 0, 'a complete deterministic repair never consults the model')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s22: CertificationScenario = {
+  id: 'S22', title: 'AI repair resolves a verifier placeholder', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { check: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const created: TrustedWorkSessionConfig[] = []
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp((config) => { created.push(config) }),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const body = request(`cert-s22-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['AC1 invalid input => npm test -- <对应测试>'],
+      })
+      const create = await postCreate(launchpad, body)
+      h.check(create.status === 400, 'placeholder is not resolved by the fail-closed preflight')
+      const createBody = await create.json() as { repairErrorCode?: string }
+      h.check(createBody.repairErrorCode === 'PLACEHOLDER_UNRESOLVED', 'create classifies the placeholder')
+
+      const repair = await postRepair(launchpad, body)
+      h.check(repair.status === 202, 'repair resolves the placeholder via the check script')
+      h.check(created[0]?.tasks[0]?.acceptanceEvidenceBindings?.some((binding) => binding.criterion === 'AC1 invalid input' && binding.requiredEvidence.includes('npm run check')) === true,
+        'placeholder is replaced with the repository check entry')
+      h.check(rec.llmCalls === 0, 'the deterministic agent resolved the placeholder without the model')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s23: CertificationScenario = {
+  id: 'S23', title: 'Unsafe semantic repair is rejected', group: 'risk',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    let createCalls = 0
+    const malicious: RepairAgent = {
+      id: 'cert-malicious-agent',
+      async repair() {
+        return {
+          classification: 'REPAIRED',
+          proposal: {
+            acceptanceCriteria: ['A rewired criterion'],
+            acceptanceEvidenceBindings: [{ criterion: 'A rewired criterion', requiredEvidence: ['npm test'] }],
+            repairs: ['rewrote the criterion'],
+          },
+        }
+      },
+    }
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => { createCalls++ }),
+      repairAgent: malicious,
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s23-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['Tests pass'],
+      }))
+      h.check(repair.status === 400, 'semantic rewrite is rejected')
+      const body = await repair.json() as { repairAttempt?: { classification?: string; reason?: string } }
+      h.check(body.repairAttempt?.classification === 'REPAIR_REJECTED', 'rejection is surfaced as REPAIR_REJECTED')
+      h.check(createCalls === 0, 'no Session is created from an unsafe repair')
+      const deterministicStage = rec.audit[0]?.stages.find((stage) => stage.agent === 'deterministic')
+      h.check(/unsafe repair rejected/u.test(deterministicStage?.reason ?? ''), 'the deterministic stage names the unsafe repair')
+      h.check(deterministicStage?.validation?.ok === false, 'mechanical validation rejected the rewrite')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s24: CertificationScenario = {
+  id: 'S24', title: 'Successful retry launches a V2 Session', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const created: TrustedWorkSessionConfig[] = []
+    const s24Rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp((config) => { created.push(config) }),
+      repairNotifier: s24Rec.notifier,
+      repairAudit: s24Rec.auditSink,
+      repairLlmAgent: s24Rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s24-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['Tests pass'],
+      }))
+      h.check(repair.status === 202, 'retry launches a Session')
+      const result = await repair.json() as { repaired?: boolean; controlUrl?: string }
+      h.check(result.repaired === true && typeof result.controlUrl === 'string', 'retry reports a repaired launch with a control URL')
+      h.check(created[0]?.session.controlPlane === 'v2', 'retried Session opts into the V2 control plane')
+      const persisted = await discoverTrustedWorkSessionConfigs(configs)
+      h.check(persisted.length === 1, 'only the repaired config is persisted')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s25: CertificationScenario = {
+  id: 'S25', title: 'Failed repair preserves the original Task', group: 'risk',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    let createCalls = 0
+    const s25Rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => { createCalls++ }),
+      repairNotifier: s25Rec.notifier,
+      repairAudit: s25Rec.auditSink,
+      repairLlmAgent: s25Rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s25-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['custom proof'],
+        acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
+      }))
+      h.check(repair.status === 400, 'unrepairable contract keeps the original error')
+      const result = await repair.json() as { error?: string; issues?: Array<{ issueCode?: string }>; repairAttempt?: { classification?: string; llmInvoked?: boolean } }
+      h.check(result.error === 'TASK_CONTRACT_INVALID', 'original error code is preserved')
+      h.check(result.issues?.some((issue) => issue.issueCode === 'VERIFIER_APPROVAL_REQUIRED') === true, 'original issues are preserved')
+      h.check(result.repairAttempt?.classification === 'REPAIR_REJECTED', 'repair attempt is surfaced')
+      h.check(result.repairAttempt?.llmInvoked === false, 'approval cannot be delegated to a model')
+      h.check(s25Rec.llmCalls === 0, 'a human approval issue never reaches the model')
+      h.check(createCalls === 0, 'no Session is created')
+      h.check((await discoverTrustedWorkSessionConfigs(configs)).length === 0, 'no invalid config is persisted')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s26: CertificationScenario = {
+  id: 'S26', title: 'Repair success and failure emit desktop notifications', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const noTest = join(ctx.dirs.root, 'notest')
+    await initFixtureRepo(noTest, { 'package.json': JSON.stringify({ scripts: {} }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => undefined),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: rec.llmAgent(),
+    } })
+    try {
+      await launchpad.start()
+      const ok = await postRepair(launchpad, request(`cert-s26a-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: ['Tests pass'],
+      }))
+      h.check(ok.status === 202, 'successful repair launches')
+      const fail = await postRepair(launchpad, request(`cert-s26b-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, noTest, {
+        acceptanceCriteria: ['custom proof'],
+        acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
+      }))
+      h.check(fail.status === 400, 'failed repair preserves the error')
+      h.check(rec.notifications.some((notification) => notification.kind === 'SUCCESS'), 'success emits a desktop notification')
+      h.check(rec.notifications.some((notification) => notification.kind === 'FAILURE'), 'failure emits a desktop notification')
+      h.check(rec.audit.length === 2, 'every repair attempt is audited')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+/** A criterion the deterministic agent cannot judge, but a model can bind. */
+const LLM_ONLY_CRITERION = 'AC1 label formatting matches every specified example'
+
+export const s27: CertificationScenario = {
+  id: 'S27', title: 'LLM repair binds a criterion deterministic repair cannot judge', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const created: TrustedWorkSessionConfig[] = []
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp((config) => { created.push(config) }),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: scriptedLlmAgent([{ criterion: LLM_ONLY_CRITERION, requiredEvidence: ['npm test'] }]),
+      repairProvider: { id: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s27-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: [LLM_ONLY_CRITERION],
+      }))
+      h.check(repair.status === 202, 'the model resolves the criterion and the retry launches')
+      h.check(rec.llmCalls === 0, 'the injected agent is scripted; no live provider is contacted in certification')
+      h.check(created.length === 1, 'exactly one Session is created')
+      h.check(created[0]?.tasks[0]?.acceptanceEvidenceBindings?.some((binding) => binding.criterion === LLM_ONLY_CRITERION && binding.requiredEvidence.includes('npm test')) === true,
+        'the model binding reaches the persisted Session')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s28: CertificationScenario = {
+  id: 'S28', title: 'Unavailable repair provider preserves the original Task', group: 'recovery',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    let createCalls = 0
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => { createCalls++ }),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: createLlmRepairAgent({
+        runner: async () => { throw new RepairProviderUnavailableError('no login', 'Codex Local is not authenticated') },
+        describeRepository: async () => ({ packageScripts: {}, testFileCandidates: [], topLevelEntries: [], hasPytestConfig: false, hasWindowsVenvPython: false }),
+        isRuntimeAvailable: () => true,
+      }),
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s28-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: [LLM_ONLY_CRITERION],
+      }))
+      h.check(repair.status === 400, 'an unavailable provider fails closed')
+      const body = await repair.json() as { error?: string; issues?: Array<{ issueCode?: string }>; repairAttempt?: { classification?: string; llmInvoked?: boolean; reason?: string } }
+      h.check(body.error === 'TASK_CONTRACT_INVALID', 'the original error is preserved')
+      h.check(body.issues?.some((issue) => issue.issueCode === 'MISSING_EVIDENCE_BINDING') === true, 'the original issue is preserved')
+      h.check(body.repairAttempt?.classification === 'PROVIDER_UNAVAILABLE', 'the provider failure is named explicitly')
+      h.check(body.repairAttempt?.llmInvoked === true, 'the attempt records that the model was consulted')
+      h.check(body.repairAttempt?.reason === 'Codex Local is not authenticated', 'the safe provider reason is surfaced')
+      h.check(createCalls === 0, 'no Session is created')
+      h.check((await discoverTrustedWorkSessionConfigs(configs)).length === 0, 'no config is persisted')
+      h.check(rec.notifications.some((notification) => notification.kind === 'FAILURE'), 'the failure is notified')
+      h.check(rec.audit[0]?.classification === 'PROVIDER_UNAVAILABLE', 'the audit records PROVIDER_UNAVAILABLE')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s29: CertificationScenario = {
+  id: 'S29', title: 'A model proposal cannot weaken an approval-required verifier', group: 'risk',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    let createCalls = 0
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => { createCalls++ }),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      // The model "fixes" the missing binding but also downgrades the explicit
+      // approval-required proof to a weaker allowlisted command.
+      repairLlmAgent: scriptedLlmAgent([
+        { criterion: LLM_ONLY_CRITERION, requiredEvidence: ['npm test'] },
+        { criterion: 'custom proof', requiredEvidence: ['npm test'] },
+      ]),
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s29-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: [LLM_ONLY_CRITERION, 'custom proof'],
+        acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
+      }))
+      h.check(repair.status === 400, 'a trust-weakening repair is rejected')
+      const body = await repair.json() as { repairAttempt?: { classification?: string; reason?: string } }
+      h.check(body.repairAttempt?.classification === 'REPAIR_REJECTED', 'the attempt is rejected')
+      h.check(/requires human approval/u.test(body.repairAttempt?.reason ?? ''), 'the rejection names the protected verifier')
+      const llmStage = rec.audit[0]?.stages.find((stage) => stage.agent === 'llm')
+      h.check(llmStage?.validation?.ok === false, 'mechanical validation rejected the model proposal')
+      h.check(createCalls === 0, 'no Session is created')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
+  },
+}
+
+export const s30: CertificationScenario = {
+  id: 'S30', title: 'Repair audit records both agents, the provider, proposal and retry result', group: 'control',
+  async run(ctx) {
+    const h = ctx.h
+    const repo = join(ctx.dirs.repo)
+    await initFixtureRepo(repo, { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+    const configs = join(ctx.dirs.root, 'configs')
+    await mkdir(configs, { recursive: true })
+    const rec = recordingRepairDeps()
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies: {
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      createWorkSession: fakeApp(() => undefined),
+      repairNotifier: rec.notifier,
+      repairAudit: rec.auditSink,
+      repairLlmAgent: scriptedLlmAgent([{ criterion: LLM_ONLY_CRITERION, requiredEvidence: ['npm test'] }]),
+      repairProvider: { id: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
+    } })
+    try {
+      await launchpad.start()
+      const repair = await postRepair(launchpad, request(`cert-s30-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+        acceptanceCriteria: [LLM_ONLY_CRITERION],
+      }))
+      h.check(repair.status === 202, 'the repair launches')
+      const entry = rec.audit[0]
+      h.check(entry !== undefined, 'the attempt is audited')
+      h.check(entry?.deterministicAttempted === true, 'audit records the deterministic attempt')
+      h.check(entry?.llmInvoked === true, 'audit records that the model was consulted')
+      h.check(entry?.provider?.id === 'codex' && entry?.provider?.model === 'gpt-5.6-terra', 'audit records provider and model')
+      h.check(entry?.proposal?.acceptanceCriteria.includes(LLM_ONLY_CRITERION) === true, 'audit records the applied proposal')
+      h.check(entry?.stages.map((stage) => stage.agent).join(',') === 'deterministic,llm', 'audit records both agents in order')
+      h.check(entry?.stages[1]?.validation?.ok === true, 'audit records the validation result')
+      h.check(entry?.stages[1]?.reflightPassed === true, 'audit records the re-preflight result')
+      h.check(entry?.reflightPassed === true && entry?.sessionStarted === true, 'audit records the retry result')
+      h.check(entry?.notification.success === true, 'audit records the notification outcome')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+      await removeTree(configs)
+    }
   },
 }

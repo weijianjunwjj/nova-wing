@@ -207,6 +207,7 @@ const KNOWN_LIMITATIONS: string[] = [
   'Task Contract Preflight v1 reports repository-valid verifier commands outside the existing deterministic allowlist as APPROVAL_REQUIRED before Session creation; it does not grant approval or widen the allowlist.',
   'Provider responses in Layer A are scripted at the documented createV2Dispatcher / executor seams; model cognition itself is not exercised deterministically.',
   'The Launchpad Task-Brief evidence-binding DSL is line based and cannot carry a literal newline inside one verifier command; S20 proves that literal => content is preserved after the first delimiter.',
+  'The Layer A repair scenarios script the Repair Model seam (S27/S29/S30) so the cascade, mechanical validation and preflight stay deterministic; S28 scripts a provider failure. The live Codex repair turn is exercised by the operator dogfood (guardian repair dogfood), not by the automated gate.',
 ]
 
 export async function main(): Promise<number> {

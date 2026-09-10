@@ -113,15 +113,27 @@ test('Recent Activity folds only consecutive Guardian events with identical safe
 })
 
 test('V2 progress uses neutral TASK_PHASE telemetry while V1 retains GUARDIAN_PHASE compatibility', () => {
-  const runtime = new FakeRuntime(makeDefinition({ controlPlane: 'v2' }))
-  let progressSink: GuardianProgressObserver | undefined
-  const controller = new WorkSessionControlController({
-    createRuntime: (eventSink) => { progressSink = eventSink; return runtime },
+  const v2Runtime = new FakeRuntime(makeDefinition({ controlPlane: 'v2' }))
+  let v2ProgressSink: GuardianProgressObserver | undefined
+  const v2Controller = new WorkSessionControlController({
+    createRuntime: (eventSink) => { v2ProgressSink = eventSink; return v2Runtime },
   })
-  progressSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0 })
-  assert.equal(controller.getRecentEvents().at(-1)?.type, 'TASK_PHASE')
-  assert.equal(controller.getRecentEvents().some((event) => event.type === 'GUARDIAN_PHASE'), false)
-  controller.close()
+  v2ProgressSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0 })
+  assert.equal(v2Controller.getSnapshot().configuredSession.controlPlane, 'v2')
+  assert.equal(v2Controller.getRecentEvents().at(-1)?.type, 'TASK_PHASE')
+  assert.equal(v2Controller.getRecentEvents().some((event) => event.type === 'GUARDIAN_PHASE'), false)
+
+  const v1Runtime = new FakeRuntime(makeDefinition({ controlPlane: 'v1' }))
+  let v1ProgressSink: GuardianProgressObserver | undefined
+  const v1Controller = new WorkSessionControlController({
+    createRuntime: (eventSink) => { v1ProgressSink = eventSink; return v1Runtime },
+  })
+  v1ProgressSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0 })
+  assert.equal(v1Controller.getSnapshot().configuredSession.controlPlane, 'v1')
+  assert.equal(v1Controller.getRecentEvents().at(-1)?.type, 'GUARDIAN_PHASE')
+
+  v2Controller.close()
+  v1Controller.close()
 })
 
 await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and reason', async () => {
