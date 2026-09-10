@@ -56,13 +56,14 @@ function definition(id: string, repoPath = process.cwd()): WorkSessionDefinition
   }
 }
 
-function completionEvidence(): TaskCompletionEvidence {
+function completionEvidence(overrides: Partial<TaskCompletionEvidence> = {}): TaskCompletionEvidence {
   return {
     changedFiles: ['src/t009.ts'],
     verificationResults: [{ name: 'npm test', status: 'passed' }],
     blockers: [],
     finalReviewerVerdict: 'done',
     requiredVerification: ['npm test'],
+    ...overrides,
   }
 }
 
@@ -528,6 +529,43 @@ await test('successful Git finalization records real commit and push facts', asy
     const events = runtime.readExecutionLedger()
     assert.equal(events.find((event) => event.eventType === 'GIT_COMMIT_COMPLETED')?.commitSha, 'commit-sha-009')
     assert.equal(events.find((event) => event.eventType === 'GIT_PUSH_COMPLETED')?.pushSha, 'push-sha-009')
+    await runtime.close()
+  })
+})
+
+await test('verified no-change finalization completes without GIT_COMMIT_FAILED', async () => {
+  await withTemp('ledger-git-no-changes-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    const runtime = new WorkSessionRuntime({
+      definition: definition('ledger-git-no-changes', repoPath),
+      storageUrl,
+      taskRunner: {
+        async run() {
+          return {
+            status: 'COMPLETED' as const,
+            completionEvidence: completionEvidence({ changedFiles: [] }),
+          }
+        },
+      },
+      gitCheckpoint: {
+        policy: { autoCommit: true, autoPush: false },
+        async finalizer() {
+          return {
+            disposition: 'ALREADY_SATISFIED' as const,
+            commitSha: 'existing-head',
+            committedFiles: [],
+          }
+        },
+      },
+    })
+
+    assert.equal((await runtime.start()).state, 'COMPLETED')
+    assert.equal(runtime.getDurableState()?.checkpointCommits?.T009, undefined)
+    const events = runtime.readExecutionLedger()
+    assert.ok(events.some((event) =>
+      event.eventType === 'GIT_COMMIT_SKIPPED' && event.safeMessage === 'NO_CHANGES_REQUIRED'))
+    assert.ok(events.some((event) => event.eventType === 'SESSION_COMPLETED'))
+    assert.ok(!events.some((event) => event.eventType === 'SESSION_FAILED'))
     await runtime.close()
   })
 })

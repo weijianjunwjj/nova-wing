@@ -42,6 +42,12 @@ export interface GitCheckpointPolicy {
 }
 
 export interface GitCheckpointResult {
+  /**
+   * A completed Task can legitimately require no new commit when its trusted
+   * repository snapshot is already clean and every required verifier passed.
+   * Keep that outcome distinct from a commit process failure.
+   */
+  disposition?: 'COMMITTED' | 'ALREADY_SATISFIED'
   commitSha: string
   committedFiles: readonly string[]
   /** W004-B: push 成功且远端 SHA 验证通过后的远端 SHA（仅 autoPush=true 时存在） */
@@ -584,7 +590,15 @@ export async function finalizeCompletedTask(
   }
 
   if (evidenceFiles.length === 0) {
-    throw new GitCheckpointError(`no meaningful files to commit for task ${task.id}`)
+    const headSha = await runGitString(runGit, ['rev-parse', 'HEAD'])
+    if (headSha.length === 0) {
+      throw new GitCheckpointError('cannot read HEAD for already-satisfied task')
+    }
+    return {
+      disposition: 'ALREADY_SATISFIED',
+      commitSha: headSha,
+      committedFiles: [],
+    }
   }
 
   // Capture the HEAD which authorizes rollback immediately before NovaWing
@@ -662,5 +676,10 @@ export async function finalizeCompletedTask(
     }
   }
 
-  return { commitSha, committedFiles: evidenceFiles, ...(pushSha !== undefined ? { pushSha } : {}) }
+  return {
+    disposition: 'COMMITTED',
+    commitSha,
+    committedFiles: evidenceFiles,
+    ...(pushSha !== undefined ? { pushSha } : {}),
+  }
 }

@@ -246,6 +246,29 @@ await test('W004 git-checkpoint CASE N positive: all required verifications pass
   }
 })
 
+await test('W004 git-checkpoint: clean verified Task is already satisfied, not a commit failure', async () => {
+  const tempBase = await mkdtemp(join(tmpdir(), 'w004-no-changes-'))
+  const { repoPath } = await setupRealRepo(tempBase)
+  try {
+    const before = (await gitOk(repoPath, ['rev-parse', 'HEAD'])).stdout.trim()
+    const result = await finalizeCompletedTask({
+      repoPath,
+      expectedBranch: 'feat/test',
+      task: TASK,
+      completionEvidence: evidence({ changedFiles: [] }),
+      policy: autoCommitPolicy(),
+    })
+
+    assert.equal(result.disposition, 'ALREADY_SATISFIED')
+    assert.equal(result.commitSha, before)
+    assert.deepEqual(result.committedFiles, [])
+    assert.equal((await gitOk(repoPath, ['rev-parse', 'HEAD'])).stdout.trim(), before)
+    assert.equal((await gitOk(repoPath, ['status', '--porcelain'])).stdout, '')
+  } finally {
+    await rm(tempBase, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
 // ============ autoPush / autoCommit ============
 
 await test('W004 git-checkpoint: autoPush=true -> fail closed (not implemented)', async () => {
