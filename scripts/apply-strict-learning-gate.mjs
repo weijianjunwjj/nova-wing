@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 
 const runnerPath = new URL('../packages/development-guardian/work-session/v2-controller-task-runner.ts', import.meta.url)
+const productionPath = new URL('../packages/development-guardian/work-session/production.ts', import.meta.url)
 const indexPath = new URL('../packages/development-guardian/work-session/index.ts', import.meta.url)
 const gatePath = new URL('../packages/development-guardian/work-session/learning-gate.ts', import.meta.url)
 
@@ -46,9 +47,60 @@ if (!runner.includes("from './learning-gate.js'")) {
     `      if (decision.action === 'COMPLETE') {\n        if (strictLearning !== undefined) {\n          if (state.gitState.changedFiles.length > strictLearning.maxFiles) {\n            const reason = 'strict learning scope exceeded: ' + state.gitState.changedFiles.length + ' changed files > ' + strictLearning.maxFiles\n            const blockedState: TaskStateV2 = {\n              ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',\n              blockers: ['LEARNING_SCOPE_EXCEEDED: ' + reason], updatedAt: new Date().toISOString(),\n            }\n            await context?.persistTaskStateV2?.(blockedState)\n            return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'LEARNING_SCOPE_EXCEEDED', reason }, taskStateV2: blockedState }\n          }\n          const stage = strictLearningStage(state)\n          if (stage !== 'MANUAL_VERIFY' && stage !== 'COMPLETE') {\n            // The manual challenge path is reserved for the human. If AI already\n            // touched it, aggregate worktree drift later cannot prove a human edit\n            // occurred on that path, so fail closed and require the task to be split.\n            if (state.gitState.changedFiles.includes(strictLearning.manualPath)) {\n              const reason = 'AI implementation touched reserved manual path: ' + strictLearning.manualPath\n              const blockedState: TaskStateV2 = {\n                ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',\n                blockers: ['LEARNING_MANUAL_PATH_CONTAMINATED: ' + reason], updatedAt: new Date().toISOString(),\n              }\n              await context?.persistTaskStateV2?.(blockedState)\n              return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'LEARNING_MANUAL_PATH_CONTAMINATED', reason }, taskStateV2: blockedState }\n            }\n            const gatedState = suspendForLearningExplanation(state)\n            await context?.persistTaskStateV2?.(gatedState)\n            return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired('EXPLANATION_REQUIRED'), taskStateV2: gatedState }\n          }\n          if (stage === 'MANUAL_VERIFY') {\n            state = markStrictLearningComplete(state)\n            await context?.persistTaskStateV2?.(state)\n          }\n        }\n        const verificationResults = state.verificationState.results`,
     'completion learning gate',
   )
-
-  await writeFile(runnerPath, runner)
 }
+
+if (!runner.includes("from './project-learning-policy.js'")) {
+  runner = replaceExactly(
+    runner,
+    "import type { WorkSessionTask } from './model.js'",
+    "import type { WorkSessionTask } from './model.js'\nimport { PROJECT_LEARNING_POLICY_RELATIVE_PATH } from './project-learning-policy.js'",
+    'project learning policy import',
+  )
+}
+if (!runner.includes('strictLearningRequired?: boolean')) {
+  runner = replaceExactly(
+    runner,
+    "    controller?: TaskController\n    maxActions?: number",
+    "    controller?: TaskController\n    maxActions?: number\n    strictLearningRequired?: boolean",
+    'strict learning runner option',
+  )
+}
+if (!runner.includes('LEARNING_CONTRACT_REQUIRED')) {
+  runner = replaceExactly(
+    runner,
+    "    const learningContract = parseStrictLearningContract(task)\n    if (learningContract.enabled && !learningContract.ok) {",
+    `    const learningContract = parseStrictLearningContract(task)\n    if (this.options.strictLearningRequired === true && !learningContract.enabled) {\n      const reason = 'repository policy requires strict learning; Task is missing LEARNING_MODE: STRICT and its learning contract'\n      const blockedState: TaskStateV2 = {\n        ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',\n        blockers: ['LEARNING_CONTRACT_REQUIRED: ' + reason], updatedAt: new Date().toISOString(),\n      }\n      await context?.persistTaskStateV2?.(blockedState)\n      return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'CONFIGURATION_REQUIRED', reason }, taskStateV2: blockedState }\n    }\n    if (learningContract.enabled && !learningContract.ok) {`,
+    'repository policy requires strict task contract',
+  )
+}
+if (!runner.includes('LEARNING_POLICY_MUTATION_FORBIDDEN')) {
+  runner = replaceExactly(
+    runner,
+    "      const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles)",
+    `      if (this.options.strictLearningRequired === true && state.gitState.changedFiles.includes(PROJECT_LEARNING_POLICY_RELATIVE_PATH)) {\n        const reason = 'strict learning policy file changed during the Work Session: ' + PROJECT_LEARNING_POLICY_RELATIVE_PATH\n        const blockedState: TaskStateV2 = {\n          ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',\n          blockers: ['LEARNING_POLICY_MUTATION_FORBIDDEN: ' + reason], updatedAt: new Date().toISOString(),\n        }\n        await context?.persistTaskStateV2?.(blockedState)\n        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'LEARNING_POLICY_MUTATION_FORBIDDEN', reason }, taskStateV2: blockedState }\n      }\n      const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles)`,
+    'protect repository learning policy from task edits',
+  )
+}
+await writeFile(runnerPath, runner)
+
+let production = await readFile(productionPath, 'utf8')
+if (!production.includes("from './project-learning-policy.js'")) {
+  production = replaceExactly(
+    production,
+    "import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'",
+    "import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'\nimport { loadProjectLearningPolicy } from './project-learning-policy.js'",
+    'production project policy import',
+  )
+}
+if (!production.includes('strictLearningRequired: projectLearningPolicy')) {
+  production = replaceExactly(
+    production,
+    "        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher })",
+    "        const projectLearningPolicy = await loadProjectLearningPolicy(definition.targetRepo)\n        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,\n          strictLearningRequired: projectLearningPolicy?.mode === 'strict' })",
+    'production strict learning policy wiring',
+  )
+}
+await writeFile(productionPath, production)
 
 let index = await readFile(indexPath, 'utf8')
 if (!index.includes("export * from './learning-gate.js'")) {
@@ -58,5 +110,13 @@ if (!index.includes("export * from './learning-gate.js'")) {
     "export * from './task-state-v2.js'\nexport * from './learning-gate.js'\nexport * from './task-controller.js'",
     'learning gate export',
   )
-  await writeFile(indexPath, index)
 }
+if (!index.includes("export * from './project-learning-policy.js'")) {
+  index = replaceExactly(
+    index,
+    "export * from './learning-gate.js'",
+    "export * from './learning-gate.js'\nexport * from './project-learning-policy.js'",
+    'project learning policy export',
+  )
+}
+await writeFile(indexPath, index)
