@@ -11,6 +11,7 @@ const codex: AgentCapabilityProfile = {
 }
 
 const manualPath = 'apps/api/src/runs/runs.controller.ts'
+const aiPath = 'apps/api/src/runs/runs.service.ts'
 const task = {
   id: 'learning-v2',
   goal: 'Implement the smallest visible Runs API slice',
@@ -47,7 +48,7 @@ test('strict learning freezes AI completion, requires explanation and a real man
       dispatch: async ({ action }) => {
         actions.push(action)
         if (action === 'EXECUTE') {
-          changedFiles = [manualPath]
+          changedFiles = [aiPath]
           fingerprint = 'ai-fingerprint'
           return { status: 'SUCCESS', changedFiles }
         }
@@ -80,6 +81,7 @@ test('strict learning freezes AI completion, requires explanation and a real man
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 
   // Simulate an edit made outside NovaWing while Executor access is blocked.
+  changedFiles = [aiPath, manualPath]
   fingerprint = 'human-fingerprint'
   const completed = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2 })
   assert.equal(completed.status, 'COMPLETED')
@@ -99,7 +101,7 @@ test('failed verification of the manual edit cannot fall through to AI EXECUTE r
       dispatch: async ({ action }) => {
         actions.push(action)
         if (action === 'EXECUTE') {
-          changedFiles = [manualPath]
+          changedFiles = [aiPath]
           fingerprint = 'ai-fingerprint'
           return { status: 'SUCCESS', changedFiles }
         }
@@ -117,6 +119,7 @@ test('failed verification of the manual edit cannot fall through to AI EXECUTE r
 
   const first = await runner.run(task)
   const explained = await runner.run(task, { decision: explanation }, undefined, { taskStateV2: first.taskStateV2 })
+  changedFiles = [aiPath, manualPath]
   fingerprint = 'human-broken'
   const failedManual = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2 })
   assert.equal(failedManual.status, 'HUMAN_REQUIRED')
@@ -131,4 +134,31 @@ test('failed verification of the manual edit cannot fall through to AI EXECUTE r
   assert.equal(fixed.status, 'COMPLETED')
   assert.equal(strictLearningStage(fixed.taskStateV2!), 'COMPLETE')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'VERIFY', 'VERIFY'])
+})
+
+test('AI touching the reserved manual path fails closed instead of pretending a later edit is human-owned', async () => {
+  let changedFiles: readonly string[] = []
+  let fingerprint = 'clean'
+  const actions: string[] = []
+  const runner = new V2ControllerTaskRunner({
+    sessionId: 's3', branch: 'feat/learning', agents: [codex],
+    dispatcher: {
+      inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'feat/learning', headSha: 'h1', changedFiles, worktreeFingerprint: fingerprint }),
+      dispatch: async ({ action }) => {
+        actions.push(action)
+        if (action === 'EXECUTE') {
+          changedFiles = [manualPath]
+          fingerprint = 'ai-contaminated'
+          return { status: 'SUCCESS', changedFiles }
+        }
+        if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: [{ name: 'npm test', status: 'passed' }] }
+        return { status: 'SUCCESS' }
+      },
+    },
+  })
+  const result = await runner.run(task)
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'LEARNING_MANUAL_PATH_CONTAMINATED')
+  assert.equal(strictLearningStage(result.taskStateV2!), undefined)
+  assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 })
