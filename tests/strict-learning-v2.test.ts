@@ -10,29 +10,28 @@ const codex: AgentCapabilityProfile = {
   capabilities: { coding: true, reasoning: true, verification: true },
 }
 
-const manualPath = 'apps/api/src/runs/runs.controller.ts'
-const aiPath = 'apps/api/src/runs/runs.service.ts'
+const manualPath = 'src/runs/runs.controller.ts'
+const aiPath = 'src/runs/runs.service.ts'
 const task = {
   id: 'learning-v2',
-  goal: 'Implement the smallest visible Runs API slice',
+  goal: 'Implement the smallest visible Runs slice',
   constraints: [
     'LEARNING_MODE: STRICT',
-    'LEARNING_OBJECTIVE: Understand how a Nest Controller delegates request behavior into a Service',
-    'LEARNING_PREDICTION: The Controller owns the HTTP boundary and forwards validated intent to the Service',
-    'LEARNING_PREDICTION: The Service owns the run lookup behavior and should not depend on HTTP response objects',
-    'LEARNING_UNKNOWN: How Nest resolves the Service provider when constructing the Controller',
+    'LEARNING_OBJECTIVE: Understand how a Controller delegates request behavior into a Service',
+    'LEARNING_PREDICTION: The Controller owns the transport boundary and forwards validated intent to the Service',
+    'LEARNING_PREDICTION: The Service owns the run lookup behavior and should not depend on transport response objects',
+    'LEARNING_UNKNOWN: How dependency injection resolves the Service instance when constructing the Controller',
     `LEARNING_MANUAL_PATH: ${manualPath}`,
     'LEARNING_MANUAL_CHALLENGE: Manually add a taskId lookup path and explain which layer owns the behavior',
     'LEARNING_MAX_FILES: 4',
   ],
-  acceptanceCriteria: ['runs API slice passes deterministic tests'],
-  acceptanceEvidenceBindings: [{ criterion: 'runs API slice passes deterministic tests', requiredEvidence: ['npm test'] }],
-  allowedPaths: ['apps/api/src/**'],
+  acceptanceCriteria: ['runs slice passes deterministic tests'],
+  acceptanceEvidenceBindings: [{ criterion: 'runs slice passes deterministic tests', requiredEvidence: ['npm test'] }],
 }
 
 const explanation = [
   'DATA_FLOW: The request enters RunsController, the transport input is interpreted there, and the Controller delegates the actual lookup to RunsService.',
-  'WHY: Separating the HTTP boundary from run lookup behavior keeps transport concerns out of the Service and makes the business behavior independently testable.',
+  'WHY: Separating the transport boundary from run lookup behavior keeps transport concerns out of the Service and makes the business behavior independently testable.',
   'FAILURE: If RunsService cannot find the requested task or throws, the Controller path must surface a deliberate error instead of returning an invented successful run.',
   'CHANGE: To add a taskId lookup I would add the route input at the Controller boundary and implement lookup behavior in the Service without touching unrelated modules.',
 ].join('\n')
