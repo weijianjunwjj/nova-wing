@@ -66,24 +66,24 @@ test('strict learning freezes AI completion, requires explanation and a real man
   assert.equal(strictLearningStage(first.taskStateV2!), 'EXPLANATION_REQUIRED')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 
-  const weak = await runner.run(task, { decision: 'I understand it' }, undefined, { taskStateV2: first.taskStateV2 })
+  const weak = await runner.run(task, { decision: 'I understand it' }, undefined, { taskStateV2: first.taskStateV2! })
   assert.equal(weak.humanRequired?.category, 'LEARNING_EXPLANATION_REQUIRED')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 
-  const explained = await runner.run(task, { decision: explanation }, undefined, { taskStateV2: first.taskStateV2 })
+  const explained = await runner.run(task, { decision: explanation }, undefined, { taskStateV2: first.taskStateV2! })
   assert.equal(explained.status, 'HUMAN_REQUIRED')
   assert.equal(explained.humanRequired?.category, 'LEARNING_MANUAL_CHANGE_REQUIRED')
   assert.equal(strictLearningStage(explained.taskStateV2!), 'MANUAL_CHANGE_REQUIRED')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 
-  const noManualChange = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2 })
+  const noManualChange = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2! })
   assert.equal(noManualChange.humanRequired?.category, 'LEARNING_MANUAL_CHANGE_REQUIRED')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
 
   // Simulate an edit made outside NovaWing while Executor access is blocked.
   changedFiles = [aiPath, manualPath]
   fingerprint = 'human-fingerprint'
-  const completed = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2 })
+  const completed = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2! })
   assert.equal(completed.status, 'COMPLETED')
   assert.equal(strictLearningStage(completed.taskStateV2!), 'COMPLETE')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'VERIFY'])
@@ -118,10 +118,10 @@ test('failed verification of the manual edit cannot fall through to AI EXECUTE r
   })
 
   const first = await runner.run(task)
-  const explained = await runner.run(task, { decision: explanation }, undefined, { taskStateV2: first.taskStateV2 })
+  const explained = await runner.run(task, { decision: explanation }, undefined, { taskStateV2: first.taskStateV2! })
   changedFiles = [aiPath, manualPath]
   fingerprint = 'human-broken'
-  const failedManual = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2 })
+  const failedManual = await runner.run(task, {}, undefined, { taskStateV2: explained.taskStateV2! })
   assert.equal(failedManual.status, 'HUMAN_REQUIRED')
   assert.equal(failedManual.humanRequired?.category, 'LEARNING_MANUAL_FIX_REQUIRED')
   assert.equal(strictLearningStage(failedManual.taskStateV2!), 'MANUAL_FIX_REQUIRED')
@@ -130,7 +130,7 @@ test('failed verification of the manual edit cannot fall through to AI EXECUTE r
 
   manualVerificationShouldFail = false
   fingerprint = 'human-fixed'
-  const fixed = await runner.run(task, {}, undefined, { taskStateV2: failedManual.taskStateV2 })
+  const fixed = await runner.run(task, {}, undefined, { taskStateV2: failedManual.taskStateV2! })
   assert.equal(fixed.status, 'COMPLETED')
   assert.equal(strictLearningStage(fixed.taskStateV2!), 'COMPLETE')
   assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'VERIFY', 'VERIFY'])
