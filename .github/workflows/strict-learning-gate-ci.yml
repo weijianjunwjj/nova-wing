@@ -1,0 +1,50 @@
+name: Strict Learning Gate Verification
+
+on:
+  push:
+    branches:
+      - feat/strict-learning-gate
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Apply deterministic source patch
+        run: node scripts/apply-strict-learning-gate.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Persist generated source only after verification passes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No generated source changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/development-guardian/work-session/v2-controller-task-runner.ts packages/development-guardian/work-session/index.ts
+          git commit -m "feat(guardian): enforce strict learning gate in V2 runner"
+          git push origin HEAD:feat/strict-learning-gate
