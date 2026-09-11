@@ -6,6 +6,16 @@ import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
+import {
+  acceptLearningExplanation,
+  inspectManualChange,
+  learningHumanRequired,
+  markManualFixRequired,
+  markStrictLearningComplete,
+  parseStrictLearningContract,
+  strictLearningStage,
+  suspendForLearningExplanation,
+} from './learning-gate.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import {
@@ -170,6 +180,46 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     } catch {
       return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } }
     }
+
+    // Strict learning is a trusted Task-contract extension. It is handled before
+    // any agent selection or dispatch so explanation/manual phases can never
+    // accidentally re-enter an Executor turn on resume.
+    const learningContract = parseStrictLearningContract(task)
+    if (learningContract.enabled && !learningContract.ok) {
+      const reason = learningContract.issues.map((issue) => issue.reason).join(' ')
+      const blockedState: TaskStateV2 = {
+        ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',
+        blockers: ['LEARNING_CONTRACT_INVALID: ' + reason], updatedAt: new Date().toISOString(),
+      }
+      await context?.persistTaskStateV2?.(blockedState)
+      return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'CONFIGURATION_REQUIRED', reason }, taskStateV2: blockedState }
+    }
+    const strictLearning = learningContract.enabled && learningContract.ok ? learningContract.contract : undefined
+    if (strictLearning !== undefined) {
+      const stage = strictLearningStage(state)
+      if (stage === 'EXPLANATION_REQUIRED') {
+        const decision = typeof resumeData === 'object' && resumeData !== null
+          ? (resumeData as { decision?: unknown }).decision
+          : undefined
+        const explained = acceptLearningExplanation(state, decision)
+        if (explained === undefined) {
+          return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired('EXPLANATION_REQUIRED'), taskStateV2: state }
+        }
+        await context?.persistTaskStateV2?.(explained)
+        return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired('MANUAL_CHANGE_REQUIRED', strictLearning.manualChallenge + ' Manual path: ' + strictLearning.manualPath), taskStateV2: explained }
+      }
+      if (stage === 'MANUAL_CHANGE_REQUIRED' || stage === 'MANUAL_FIX_REQUIRED') {
+        // Repository inspection is deterministic infrastructure, not Executor work.
+        const manual = inspectManualChange({
+          task: state, contract: strictLearning, reality: await this.options.dispatcher.inspectRepository(),
+        })
+        if (!manual.ok) {
+          return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired(stage, manual.reason), taskStateV2: state }
+        }
+        state = manual.task
+        await context?.persistTaskStateV2?.(state)
+      }
+    }
     // Explicit approval binds the persisted request, never the newly observed workspace.
     const approvalGrantedOnResume = state.currentAction === 'REQUEST_APPROVAL' && state.blockers.length === 0 &&
         typeof resumeData === 'object' && resumeData !== null && (resumeData as { approval?: unknown }).approval === true
@@ -248,6 +298,16 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles)
       if (violations.length) state = { ...state, blockers: [...new Set([...state.blockers, ...violations])] }
       const decision = controller.decide(state, { reconciliationRequired: !reconciliation.reconciled })
+      // Once the human has changed code, a failed verifier remains human-owned.
+      // Do not let the normal VERIFY -> EXECUTE repair loop hand that failure to AI.
+      if (
+        strictLearning !== undefined && strictLearningStage(state) === 'MANUAL_VERIFY' &&
+        decision.action === 'EXECUTE' && state.verificationState.results.some((result) => result.status === 'failed')
+      ) {
+        const manualFixState = markManualFixRequired(state)
+        await context?.persistTaskStateV2?.(manualFixState)
+        return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired('MANUAL_FIX_REQUIRED'), taskStateV2: manualFixState }
+      }
       state = { ...state, currentAction: decision.action,
         ...((decision.action === 'REQUEST_APPROVAL' || decision.action === 'SUSPEND') ? { status: 'SUSPENDED' as const } : {}) }
       note({ type: 'CONTROLLER_DECIDED', action: decision.action, reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, decision.action, {}, [], []) })
@@ -267,6 +327,39 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         reasonEvent('REVIEW_REQUIRED', 'REVIEW', 'RISK_REQUIRES_REVIEW', {}, decision.reason === undefined ? [] : [decision.reason], state)
       }
       if (decision.action === 'COMPLETE') {
+        if (strictLearning !== undefined) {
+          if (state.gitState.changedFiles.length > strictLearning.maxFiles) {
+            const reason = 'strict learning scope exceeded: ' + state.gitState.changedFiles.length + ' changed files > ' + strictLearning.maxFiles
+            const blockedState: TaskStateV2 = {
+              ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',
+              blockers: ['LEARNING_SCOPE_EXCEEDED: ' + reason], updatedAt: new Date().toISOString(),
+            }
+            await context?.persistTaskStateV2?.(blockedState)
+            return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'LEARNING_SCOPE_EXCEEDED', reason }, taskStateV2: blockedState }
+          }
+          const stage = strictLearningStage(state)
+          if (stage !== 'MANUAL_VERIFY' && stage !== 'COMPLETE') {
+            // The manual challenge path is reserved for the human. If AI already
+            // touched it, aggregate worktree drift later cannot prove a human edit
+            // occurred on that path, so fail closed and require the task to be split.
+            if (state.gitState.changedFiles.includes(strictLearning.manualPath)) {
+              const reason = 'AI implementation touched reserved manual path: ' + strictLearning.manualPath
+              const blockedState: TaskStateV2 = {
+                ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',
+                blockers: ['LEARNING_MANUAL_PATH_CONTAMINATED: ' + reason], updatedAt: new Date().toISOString(),
+              }
+              await context?.persistTaskStateV2?.(blockedState)
+              return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'LEARNING_MANUAL_PATH_CONTAMINATED', reason }, taskStateV2: blockedState }
+            }
+            const gatedState = suspendForLearningExplanation(state)
+            await context?.persistTaskStateV2?.(gatedState)
+            return { status: 'HUMAN_REQUIRED', humanRequired: learningHumanRequired('EXPLANATION_REQUIRED'), taskStateV2: gatedState }
+          }
+          if (stage === 'MANUAL_VERIFY') {
+            state = markStrictLearningComplete(state)
+            await context?.persistTaskStateV2?.(state)
+          }
+        }
         const verificationResults = state.verificationState.results
         note({ type: 'TASK_COMPLETED', action: 'COMPLETE', reasonCode: 'COMPLETION_CRITERIA_SATISFIED', ...repositoryFacts(state),
           evidenceRefs: [...new Set(state.completion.bindings.flatMap((binding) => binding.requiredEvidence))] })

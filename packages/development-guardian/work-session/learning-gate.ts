@@ -155,10 +155,6 @@ function withoutLearningStage(decisions: readonly string[]): string[] {
   return decisions.filter((decision) => !decision.startsWith(STAGE_PREFIX))
 }
 
-function withLearningStage(task: TaskStateV2, stage: StrictLearningStage): readonly string[] {
-  return [...withoutLearningStage(task.decisions), `${STAGE_PREFIX}${stage}`]
-}
-
 export function suspendForLearningExplanation(task: TaskStateV2): TaskStateV2 {
   const fingerprint = task.gitState.worktreeFingerprint
   if (fingerprint === undefined) throw new Error('strict learning requires a repository worktree fingerprint before explanation gate')
