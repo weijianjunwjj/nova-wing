@@ -25,6 +25,44 @@ export interface RepairProviderIdentity {
   reasoningEffort?: string
 }
 
+/**
+ * One step of an unattended (Automatic Preflight Repair) cycle. These records
+ * never contain a prompt, a credential, or a transport secret — only the cycle
+ * number, the issue codes that were seen, and the deterministic outcome.
+ */
+export type AutoRepairAuditEventType =
+  | 'AUTO_REPAIR_STARTED'
+  | 'AUTO_REPAIR_DETERMINISTIC'
+  | 'AUTO_REPAIR_LLM_STARTED'
+  | 'AUTO_REPAIR_VALIDATED'
+  | 'AUTO_REPAIR_SUCCEEDED'
+  | 'AUTO_REPAIR_FAILED'
+
+export interface AutoRepairAuditEvent {
+  event: AutoRepairAuditEventType
+  /** 1-based repair cycle; the cascade names one strategy per cycle. */
+  cycle: number
+  issueCodes: readonly string[]
+  /** Present on AUTO_REPAIR_DETERMINISTIC: whether the deterministic agent resolved everything it was given. */
+  deterministicResolved?: boolean
+  /** Present on AUTO_REPAIR_LLM_STARTED. */
+  llmInvoked?: boolean
+  provider?: RepairProviderIdentity
+  validation?: RepairValidationResult
+  /** Whether the contract that left this cycle passed preflight. */
+  reflightPassed?: boolean
+  reason?: string
+}
+
+/** Summary of an unattended repair run attached to the audit entry. */
+export interface AutoRepairAuditSummary {
+  maxCycles: number
+  cycles: number
+  /** True when the cycle bound was reached without a launch. */
+  exhausted: boolean
+  events: readonly AutoRepairAuditEvent[]
+}
+
 /** One append-only record for a Repair & Retry attempt. */
 export interface RepairAuditEntry {
   attemptId: string
@@ -51,6 +89,10 @@ export interface RepairAuditEntry {
   /** Per-agent results, including every mechanical validation outcome. */
   stages: readonly RepairAttemptStage[]
   notification: { success: boolean; failure: boolean }
+  /** True when the Launchpad started this repair without an operator click. */
+  automatic?: boolean
+  /** Present only for automatic repairs. */
+  autoRepair?: AutoRepairAuditSummary
 }
 
 /** Durable sink; the Launchpad injects the production file sink, tests a recorder. */

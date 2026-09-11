@@ -881,6 +881,10 @@ export class WorkSessionControlController {
         taskId: result.taskId,
         category: result.category,
         ...(result.kind === undefined ? {} : { kind: result.kind }),
+        // The overall event stays for existing consumers, but it always carries
+        // the per-channel truth so a delivered channel is never reported failed.
+        ...(result.overallStatus === undefined ? {} : { overallStatus: result.overallStatus }),
+        ...(result.channels === undefined ? {} : { channels: result.channels }),
       },
     })
     this.broadcastSnapshot()

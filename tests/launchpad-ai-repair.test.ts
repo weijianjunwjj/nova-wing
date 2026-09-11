@@ -248,7 +248,7 @@ test('deterministic agent refuses approval and reports unknown issues as NovaWin
   }
 })
 
-test('repair retry launches a V2 Session, records audit, and notifies success', async () => {
+test('v0.2.6 create auto-repairs a missing evidence binding and launches in one request', async () => {
   const repo = await repoFixture({
     'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
     'src/index.ts': 'export const x = 1\n',
@@ -268,24 +268,16 @@ test('repair retry launches a V2 Session, records audit, and notifies success', 
   })
   try {
     await launchpad.start()
+    // The operator clicks 创建并启动 exactly once; no second request is made.
     const create = await postJson(launchpad, '/api/session/create', composerRequest('ai-repair-missing-0001', repo, {
       acceptanceCriteria: ['Tests pass'],
     }))
-    assert.equal(create.status, 400)
-    const createBody = await create.json() as { error?: string; issues?: Array<{ issueCode: string }>; repairable?: boolean }
-    assert.equal(createBody.error, 'TASK_CONTRACT_INVALID')
-    assert.equal(createBody.repairable, true)
-    assert.ok(createBody.issues?.some((item) => item.issueCode === 'MISSING_EVIDENCE_BINDING'))
-    assert.equal(recorded.configs.length, 0)
-
-    const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-missing-0001', repo, {
-      acceptanceCriteria: ['Tests pass'],
-    }))
-    assert.equal(repair.status, 202)
-    const repairBody = await repair.json() as { accepted?: boolean; repaired?: boolean; controlUrl?: string }
-    assert.equal(repairBody.accepted, true)
-    assert.equal(repairBody.repaired, true)
-    assert.equal(typeof repairBody.controlUrl, 'string')
+    const createText = await create.text()
+    assert.equal(create.status, 202, createText)
+    const createBody = JSON.parse(createText) as { accepted?: boolean; repaired?: boolean; controlUrl?: string }
+    assert.equal(createBody.accepted, true)
+    assert.equal(createBody.repaired, true)
+    assert.equal(typeof createBody.controlUrl, 'string')
     assert.equal(recorded.configs.length, 1)
     assert.equal(recorded.configs[0]!.session.controlPlane, 'v2')
     assert.ok(recorded.configs[0]!.tasks[0]!.acceptanceEvidenceBindings?.some((binding) => binding.criterion === 'Tests pass' && binding.requiredEvidence.includes('npm test')))
@@ -294,10 +286,54 @@ test('repair retry launches a V2 Session, records audit, and notifies success', 
     assert.equal(deps.audit.length, 1)
     assert.equal(deps.audit[0]!.classification, 'REPAIRED')
     assert.equal(deps.audit[0]!.sessionStarted, true)
+    assert.equal(deps.audit[0]!.automatic, true, 'the audit marks the repair as unattended')
     assert.equal(deps.audit[0]!.deterministicAttempted, true)
     assert.equal(deps.audit[0]!.llmInvoked, false, 'a complete deterministic repair never calls the model')
     assert.equal(deps.llmCalls, 0)
     assert.deepEqual(deps.audit[0]!.stages.map((stage) => stage.agent), ['deterministic'])
+    assert.deepEqual(deps.audit[0]!.autoRepair?.events.map((event) => event.event), [
+      'AUTO_REPAIR_STARTED', 'AUTO_REPAIR_DETERMINISTIC', 'AUTO_REPAIR_VALIDATED', 'AUTO_REPAIR_SUCCEEDED',
+    ])
+  } finally {
+    await launchpad.close().catch(() => undefined)
+    await rm(repo, { recursive: true, force: true })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the manual repair endpoint remains available as an operator fallback', async () => {
+  const repo = await repoFixture({
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    'src/index.ts': 'export const x = 1\n',
+  })
+  const directory = await mkdtemp(join(tmpdir(), 'novawing-ai-repair-configs-'))
+  const recorded = { configs: [] as TrustedWorkSessionConfig[] }
+  const deps: RecordingDeps = { notifications: [], audit: [], llmCalls: 0 }
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeApp(recorded),
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      repairNotifier: recordingNotifier(deps),
+      repairAudit: recordingAudit(deps),
+      repairLlmAgent: recordingLlmAgent(deps),
+    },
+  })
+  try {
+    await launchpad.start()
+    const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-manual-0001', repo, {
+      acceptanceCriteria: ['Tests pass'],
+    }))
+    const repairText = await repair.text()
+    assert.equal(repair.status, 202, repairText)
+    const repairBody = JSON.parse(repairText) as { accepted?: boolean; repaired?: boolean; controlUrl?: string }
+    assert.equal(repairBody.accepted, true)
+    assert.equal(repairBody.repaired, true)
+    assert.equal(recorded.configs.length, 1)
+    assert.equal(deps.audit.length, 1)
+    assert.equal(deps.audit[0]!.automatic, undefined, 'an operator click is not an automatic repair')
+    assert.equal(deps.audit[0]!.llmInvoked, false)
+    assert.equal(deps.llmCalls, 0)
   } finally {
     await launchpad.close().catch(() => undefined)
     await rm(repo, { recursive: true, force: true })
@@ -594,10 +630,15 @@ test('the Launchpad serves an AI repair affordance wired to the repair endpoint'
     const address = await launchpad.start()
     const html = await (await fetch(address.url)).text()
     assert.match(html, /data-composer-repair hidden>AI 修复并重试<\/button>/u)
+    // v0.2.6: a repairable contract shows staged progress instead of an immediate red block.
+    assert.match(html, /data-composer-progress/u)
     const appJs = await (await fetch(`${address.url}/app.js`)).text()
     assert.match(appJs, /fetch\('\/api\/session\/repair'/u)
     assert.match(appJs, /result\.repairable === true/u)
     assert.match(appJs, /repairButton\.hidden = false/u)
+    assert.match(appJs, /正在检查 Task Contract/u)
+    assert.match(appJs, /正在自动修复配置/u)
+    assert.match(appJs, /autoRepairMessage/u)
   } finally {
     await launchpad.close().catch(() => undefined)
     await rm(directory, { recursive: true, force: true })

@@ -43,9 +43,22 @@ export type {
   WorkSessionFailedNotification,
   WorkSessionRecoveryRequiredNotification,
   WorkSessionNotifier,
+  WorkSessionNotificationKind,
+  WorkSessionNotificationPayload,
   NotificationDeliveryStatus,
   NotificationDeliveryResult,
   NotificationDeliveryObserver,
+  NotificationChannel,
+  NotificationChannelStatus,
+  NotificationChannelResult,
+  NotificationOverallStatus,
+} from './notifier.js'
+export {
+  deliverNotificationToChannels,
+  invokeNotificationDelivery,
+  NOTIFICATION_FAILURE_REASON,
+  overallNotificationStatus,
+  supportsNotificationKind,
 } from './notifier.js'
 export {
   SmtpWorkSessionNotifier,

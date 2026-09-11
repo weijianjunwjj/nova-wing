@@ -43,6 +43,13 @@ export interface SmtpNotifierEnvironmentOptions {
 }
 
 export class SmtpWorkSessionNotifier implements WorkSessionNotifier {
+  /**
+   * `sendMail` resolves only once the SMTP server accepted the message, so a
+   * resolved send is a real SENT for this channel and a later, unrelated
+   * channel failure must never rewrite it.
+   */
+  readonly notificationChannel = 'EMAIL' as const
+  readonly notificationKinds = ['HUMAN_REQUIRED', 'COMPLETED', 'FAILED', 'RECOVERY_REQUIRED'] as const
   private readonly transport: SmtpMailTransport
   private readonly from: string
   private readonly to: string

@@ -10,8 +10,9 @@ import type {
   WorkSessionFailureStage,
 } from './failure-classification.js'
 import { safeFailureMessage } from './failure-classification.js'
+import type { NotificationChannelResult, NotificationOverallStatus } from './notifier.js'
 
-export const EXECUTION_LEDGER_SCHEMA_VERSION = 5 as const
+export const EXECUTION_LEDGER_SCHEMA_VERSION = 6 as const
 
 export type ExecutionLedgerEventType =
   | 'SESSION_STARTED'
@@ -123,6 +124,9 @@ export type ExecutionLedgerEventInput = ExecutionLedgerEventBase & (
       notificationKind: ExecutionLedgerNotificationKind
       notificationId: string
       safeMessage?: string
+      /** Aggregated per-channel outcome; the overall event never replaces channel truth. */
+      notificationOverall?: NotificationOverallStatus
+      notificationChannels?: readonly NotificationChannelResult[]
     }
 )
 
@@ -188,6 +192,8 @@ function executionLedgerTableSql(tableName: string): string {
       safe_message TEXT,
       notification_kind TEXT,
       notification_id TEXT,
+      notification_overall TEXT,
+      notification_channels TEXT,
       command_fingerprint TEXT,
       verification_classification TEXT,
       raw_output_ref TEXT,
@@ -218,6 +224,7 @@ export class ExecutionLedgerStore {
     this.#migrateV3IfNeeded()
     this.#migrateV4IfNeeded()
     this.#migrateV5IfNeeded()
+    this.#migrateV6IfNeeded()
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS execution_ledger_session_order
       ON execution_ledger_events(session_id, event_id)
@@ -321,6 +328,24 @@ export class ExecutionLedgerStore {
     ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
   }
 
+  /** V6 adds only per-channel notification truth; it never rewrites an existing overall event. */
+  #migrateV6IfNeeded(): void {
+    const names = new Set((this.#database.prepare(
+      'SELECT name FROM pragma_table_info(\'execution_ledger_events\')',
+    ).all() as Array<{ name: string }>).map((column) => column.name))
+    const additions: ReadonlyArray<readonly [string, string]> = [
+      ['notification_overall', 'TEXT'], ['notification_channels', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!names.has(name)) {
+        this.#database.exec(`ALTER TABLE execution_ledger_events ADD COLUMN ${name} ${type}`)
+      }
+    }
+    this.#database.prepare(
+      'UPDATE execution_ledger_events SET schema_version = ? WHERE schema_version < ?',
+    ).run(EXECUTION_LEDGER_SCHEMA_VERSION, EXECUTION_LEDGER_SCHEMA_VERSION)
+  }
+
   append(input: ExecutionLedgerEventInput, dedupeKey: string): ExecutionLedgerEvent {
     this.#assertOpen()
     this.#database.prepare(`
@@ -330,7 +355,7 @@ export class ExecutionLedgerStore {
         active_elapsed_ms, verification_command, verification_status,
         verification_index, recovery_reason, recovery_bounded, recovery_kind, recovery_action, commit_sha,
         push_sha, completion_reason, failure_stage, failure_category, safe_message,
-        notification_kind, notification_id, command_fingerprint,
+        notification_kind, notification_id, notification_overall, notification_channels, command_fingerprint,
         verification_classification, raw_output_ref, first_failure_title,
         exception_type, failure_phase, final_summary, root_cause_count, affected_tests
       ) VALUES (
@@ -339,7 +364,7 @@ export class ExecutionLedgerStore {
         $activeElapsedMs, $verificationCommand, $verificationStatus,
         $verificationIndex, $recoveryReason, $recoveryBounded, $recoveryKind, $recoveryAction, $commitSha,
         $pushSha, $completionReason, $failureStage, $failureCategory, $safeMessage,
-        $notificationKind, $notificationId, $commandFingerprint,
+        $notificationKind, $notificationId, $notificationOverall, $notificationChannels, $commandFingerprint,
         $verificationClassification, $rawOutputRef, $firstFailureTitle,
         $exceptionType, $failurePhase, $finalSummary, $rootCauseCount, $affectedTests
       )
@@ -387,6 +412,10 @@ export class ExecutionLedgerStore {
         : null,
       notificationKind: 'notificationKind' in input ? input.notificationKind : null,
       notificationId: 'notificationId' in input ? input.notificationId : null,
+      notificationOverall: 'notificationOverall' in input ? input.notificationOverall ?? null : null,
+      notificationChannels: 'notificationChannels' in input && input.notificationChannels !== undefined
+        ? JSON.stringify(input.notificationChannels)
+        : null,
       commandFingerprint: 'commandFingerprint' in input ? input.commandFingerprint : null,
       verificationClassification: 'verificationClassification' in input
         ? input.verificationClassification ?? null : null,
@@ -490,6 +519,10 @@ function rowToExecutionLedgerEvent(row: SqlRow): ExecutionLedgerEvent {
     ...(optionalString(row, 'safe_message') === null ? {} : { safeMessage: optionalString(row, 'safe_message')! }),
     ...(optionalString(row, 'notification_kind') === null ? {} : { notificationKind: optionalString(row, 'notification_kind')! }),
     ...(optionalString(row, 'notification_id') === null ? {} : { notificationId: optionalString(row, 'notification_id')! }),
+    ...(optionalString(row, 'notification_overall') === null
+      ? {}
+      : { notificationOverall: optionalString(row, 'notification_overall')! as NotificationOverallStatus }),
+    ...(optionalNotificationChannels(row) === undefined ? {} : { notificationChannels: optionalNotificationChannels(row)! }),
     ...(optionalString(row, 'command_fingerprint') === null ? {} : { commandFingerprint: optionalString(row, 'command_fingerprint')! }),
     ...(approvalGenerationFromDedupeKey(row) === undefined
       ? {}
@@ -526,6 +559,23 @@ function requiredString(row: SqlRow, key: string): string {
   const value = row[key]
   if (typeof value !== 'string') throw new Error(`invalid Execution Ledger string column ${key}`)
   return value
+}
+
+/** Per-channel payloads are stored as a JSON array; a malformed value is dropped, never guessed. */
+function optionalNotificationChannels(row: SqlRow): readonly NotificationChannelResult[] | undefined {
+  const raw = optionalString(row, 'notification_channels')
+  if (raw === null) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return undefined
+    const channels = parsed.filter((entry): entry is NotificationChannelResult =>
+      typeof entry === 'object' && entry !== null &&
+      typeof (entry as NotificationChannelResult).channel === 'string' &&
+      ['SENT', 'FAILED', 'SKIPPED'].includes((entry as NotificationChannelResult).status))
+    return channels.length === 0 ? undefined : channels
+  } catch {
+    return undefined
+  }
 }
 
 function optionalString(row: SqlRow, key: string): string | null {

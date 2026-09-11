@@ -15,7 +15,7 @@ import {
   type ProductionWorkSessionUi,
   type TrustedWorkSessionConfig,
 } from '../production.js'
-import { WorkSessionRuntime } from '../runtime.js'
+import { WorkSessionRuntime, type PreflightRepairRecord } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
 import {
   CODING_EXECUTOR_DEFAULTS,
@@ -42,8 +42,11 @@ import {
 } from './contract-preflight.js'
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 import {
+  AUTO_REPAIR_EXHAUSTED,
   classifyRepairErrorCode,
   hasLlmRepairableIssue,
+  isAutoRepairableIssueSet,
+  MAX_AUTO_REPAIR_CYCLES,
   parseEffectiveRepairContract,
   protectedVerifierCommands,
   validateMechanicalRepair,
@@ -59,6 +62,8 @@ import { createLlmRepairAgent } from './repair-agent-llm.js'
 import { REPAIR_DEFAULT_MODEL, REPAIR_DEFAULT_REASONING_EFFORT } from './repair-model.js'
 import {
   createFileRepairAuditSink,
+  type AutoRepairAuditEvent,
+  type AutoRepairAuditSummary,
   type RepairAttemptStage,
   type RepairAuditEntry,
   type RepairAuditSink,
@@ -180,7 +185,7 @@ export interface NovaWingLaunchpadDependencies {
   resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
   createWorkSession?: (
     config: TrustedWorkSessionConfig,
-    options: { env: NodeJS.ProcessEnv; serverPort: 0 },
+    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord },
   ) => Promise<ManagedWorkSessionApp>
   gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
@@ -204,9 +209,41 @@ interface LaunchResult {
   accepted: true
   controlUrl: string
   alreadyStarted?: true
+  /** True when the Launchpad repaired the Task Contract before this launch. */
+  repaired?: boolean
 }
 
 type TaskContractSuccess = Extract<TaskContractPreflightResult, { ok: true }>
+
+type TaskContractFailure = Extract<TaskContractPreflightResult, { ok: false }>
+
+/** Result of the shared contract-repair cascade used by the automatic and manual paths. */
+interface ContractRepairOutcome {
+  launched?: LaunchResult
+  errorCode: RepairErrorCode
+  classification: RepairClassification
+  repairs: readonly string[]
+  reason?: string
+  appliedProposal?: ContractRepairProposal
+  structuredRepairTask?: StructuredRepairTask
+  llmInvoked: boolean
+  cycles: number
+  exhausted: boolean
+  autoEvents: readonly AutoRepairAuditEvent[]
+}
+
+/**
+ * Automatic preflight repair could not produce a launchable contract within its
+ * bounded cycles. The original Task is preserved and the issues are returned.
+ */
+class AutoRepairExhaustedError extends Error {
+  constructor(
+    readonly issues: readonly TaskContractIssue[],
+    readonly attempt: ContractRepairOutcome,
+  ) {
+    super('automatic preflight repair stopped without a launchable contract')
+  }
+}
 
 /** Outcome of a Repair & Retry attempt; success launches, failure preserves the original error. */
 type RepairLaunchResult =
@@ -800,6 +837,26 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 202, result)
     } catch (error) {
       if (this.respondPreflightError(response, error)) return
+      if (error instanceof AutoRepairExhaustedError) {
+        // Only a contract that the bounded automatic cascade could not repair
+        // reaches the operator, and it always carries the remaining issues.
+        this.respondJson(response, 400, {
+          error: 'TASK_CONTRACT_INVALID',
+          issues: error.issues,
+          repairable: true,
+          repairErrorCode: error.attempt.errorCode,
+          autoRepair: {
+            result: error.attempt.exhausted ? AUTO_REPAIR_EXHAUSTED : 'AUTO_REPAIR_FAILED',
+            maxCycles: MAX_AUTO_REPAIR_CYCLES,
+            cycles: error.attempt.cycles,
+            exhausted: error.attempt.exhausted,
+            classification: error.attempt.classification,
+            ...(error.attempt.reason === undefined ? {} : { reason: error.attempt.reason }),
+            events: error.attempt.autoEvents,
+          },
+        })
+        return
+      }
       if (error instanceof TaskContractPreflightError) {
         const repairErrorCode = classifyRepairErrorCode(error.issues)
         this.respondJson(response, 400, {
@@ -959,7 +1016,7 @@ export class NovaWingLaunchpad {
     }
   }
 
-  private async startWorkSession(configId: string): Promise<LaunchResult> {
+  private async startWorkSession(configId: string, preflightRepair?: PreflightRepairRecord): Promise<LaunchResult> {
     await assertLaunchpadRuntimeCurrent()
     if (this.activeDeletes.has(configId)) throw new Error('unknown config')
     const existing = this.activeStarts.get(configId)
@@ -970,7 +1027,7 @@ export class NovaWingLaunchpad {
     const discovered = this.configs.get(configId)
     if (discovered === undefined) throw new Error('unknown config')
 
-    const launch = this.launchWorkSession(configId, discovered)
+    const launch = this.launchWorkSession(configId, discovered, preflightRepair)
     this.activeStarts.set(configId, launch)
     try {
       return await launch
@@ -1042,6 +1099,7 @@ export class NovaWingLaunchpad {
   private async launchWorkSession(
     configId: string,
     discovered: DiscoveredLaunchpadConfig,
+    preflightRepair?: PreflightRepairRecord,
   ): Promise<LaunchResult> {
     if (this.closed) throw new Error('Launchpad is closed')
     const existing = this.liveApps.get(configId)
@@ -1059,7 +1117,11 @@ export class NovaWingLaunchpad {
     const config = await this.loadConfig(discovered.configPath)
     if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
     const env = await this.resolveEnvironment(config)
-    const app = await this.createWorkSession(config, { env, serverPort: 0 })
+    const app = await this.createWorkSession(config, {
+      env,
+      serverPort: 0,
+      ...(preflightRepair === undefined ? {} : { preflightRepair }),
+    })
     if (this.closed) {
       await app.close()
       throw new Error('Launchpad is closed')
@@ -1140,8 +1202,17 @@ export class NovaWingLaunchpad {
       acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
       acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
     })
-    if (!contract.ok) throw new TaskContractPreflightError(contract.issues)
-    return this.buildAndLaunchComposed(input, targetRepo, branch, contract)
+    if (contract.ok) return this.buildAndLaunchComposed(input, targetRepo, branch, contract)
+
+    // v0.2.6 Automatic Preflight Repair: when every remaining issue is a
+    // mechanical contract-shape problem, the Launchpad runs the existing repair
+    // cascade before the operator ever sees a red screen. Anything else — an
+    // approval, an ambiguous identity, an unresolvable semantic problem — still
+    // fails closed exactly as before.
+    if (!isAutoRepairableIssueSet(contract.issues)) throw new TaskContractPreflightError(contract.issues)
+    const outcome = await this.cascadeContractRepair({ request: input, targetRepo, branch, preflight: contract, automatic: true })
+    if (outcome.launched !== undefined) return outcome.launched
+    throw new AutoRepairExhaustedError(contract.issues, outcome)
   }
 
   private async buildAndLaunchComposed(
@@ -1149,6 +1220,7 @@ export class NovaWingLaunchpad {
     targetRepo: string,
     branch: string,
     contract: TaskContractSuccess,
+    preflightRepair?: PreflightRepairRecord,
   ): Promise<LaunchResult> {
     const config = await this.buildComposedConfig(input, targetRepo, branch, contract)
     const configPath = await persistComposedTrustedWorkSessionConfig(this.configDirectory, config)
@@ -1156,7 +1228,7 @@ export class NovaWingLaunchpad {
     const configId = randomBytes(16).toString('hex')
     this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
     try {
-      return await this.startWorkSession(configId)
+      return await this.startWorkSession(configId, preflightRepair)
     } catch {
       throw new ComposerLaunchError('SESSION_START_FAILED')
     }
@@ -1218,56 +1290,44 @@ export class NovaWingLaunchpad {
   }
 
   /**
-   * Repair & Retry cascade:
-   *   deterministic agent → validate → re-preflight → launch, or
-   *   LLM agent         → validate → re-preflight → launch, or
-   *   preserve the original Task and report the attempt.
+   * The one Repair & Retry cascade, shared by the manual "AI 修复并重试" button
+   * and by Automatic Preflight Repair:
+   *   deterministic agent → validate → re-preflight → launch, then
+   *   LLM agent           → validate → re-preflight → launch.
    *
    * Only `validateMechanicalRepair` and `preflightTaskContract` can authorize a
    * repair, so neither agent can widen goals, paths, risk, permissions, or the
-   * verifier allowlist.
+   * verifier allowlist. The cascade names one strategy per cycle, so the cycle
+   * bound is also the number of distinct strategies: it can never spin.
    */
-  private async repairComposedWorkSession(input: ComposerRequest): Promise<RepairLaunchResult> {
-    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
-    const targetRepo = resolve(input.targetRepo)
-    if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
-      throw new ComposerLaunchError('INVALID_PROJECT_PATH')
-    }
-    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo, 'v2')
-    const branch = await this.readCurrentBranch(targetRepo)
-    if (input.branch !== undefined && input.branch !== branch) {
-      throw new ComposerLaunchError('BRANCH_MISMATCH')
-    }
-
-    const rawContract = {
-      acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
-      acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
-    }
-    const preflight = await preflightTaskContract({ targetRepo, ...rawContract })
-    if (preflight.ok) {
-      const result = await this.buildAndLaunchComposed(input, targetRepo, branch, preflight)
-      return { ...result, repaired: false, repairs: [] }
-    }
-
-    const errorCode = classifyRepairErrorCode(preflight.issues)
-    if (errorCode === undefined) throw new TaskContractPreflightError(preflight.issues)
-
+  private async cascadeContractRepair(input: {
+    request: ComposerRequest
+    targetRepo: string
+    branch: string
+    preflight: TaskContractFailure
+    automatic: boolean
+  }): Promise<ContractRepairOutcome> {
+    const { request, targetRepo, branch, automatic } = input
+    const errorCode = classifyRepairErrorCode(input.preflight.issues) ?? 'TASK_CONTRACT_INVALID'
     // The Repair Agent operates on the parsed criterion/binding shape so inline
     // `criterion => verifier` criteria resolve to the same identities the
     // failing issues reference.
-    const originalContract = parseEffectiveRepairContract(rawContract)
+    const originalContract = parseEffectiveRepairContract({
+      acceptanceCriteria: request.guardian.acceptanceCriteria ?? [],
+      acceptanceEvidenceBindings: request.guardian.acceptanceEvidenceBindings ?? [],
+    })
     const context: RepairContext = {
       errorCode,
-      issues: preflight.issues,
+      issues: input.preflight.issues,
       contract: originalContract,
       targetRepo,
       branch,
       frozen: {
-        goals: input.tasks.map((task) => task.goal),
-        allowedPaths: input.guardian.allowedPaths,
-        forbiddenPaths: input.guardian.forbiddenPaths ?? [],
-        constraints: input.guardian.constraints ?? [],
-        doNotDo: input.guardian.doNotDo ?? [],
+        goals: request.tasks.map((task) => task.goal),
+        allowedPaths: request.guardian.allowedPaths,
+        forbiddenPaths: request.guardian.forbiddenPaths ?? [],
+        constraints: request.guardian.constraints ?? [],
+        doNotDo: request.guardian.doNotDo ?? [],
       },
     }
 
@@ -1275,21 +1335,31 @@ export class NovaWingLaunchpad {
     const allowedVerifiers = [...TRUSTED_VERIFIER_COMMANDS, ...(testEntry === undefined ? [] : [testEntry])]
     // A verifier that is valid but merely awaiting human approval must survive
     // every repair: substituting a weaker command would change what counts as proof.
-    const protectedVerifiers = protectedVerifierCommands(preflight.verifiers)
+    const protectedVerifiers = protectedVerifierCommands(input.preflight.verifiers)
 
     const stages: RepairAttemptStage[] = []
+    const autoEvents: AutoRepairAuditEvent[] = []
+    const issueCodes = input.preflight.issues.map((issue) => issue.issueCode)
+    if (automatic) autoEvents.push({ event: 'AUTO_REPAIR_STARTED', cycle: 1, issueCodes })
+
     let launched: LaunchResult | undefined
     let appliedProposal: ContractRepairProposal | undefined
     let structuredRepairTask: StructuredRepairTask | undefined
+    let llmInvoked = false
+    let cycles = 0
 
-    const attempt = async (
-      agent: 'deterministic' | 'llm',
-      run: () => Promise<RepairAgentOutcome | undefined>,
-    ): Promise<void> => {
+    const attempt = async (agent: 'deterministic' | 'llm'): Promise<void> => {
+      if (automatic) {
+        autoEvents.push(agent === 'deterministic'
+          ? { event: 'AUTO_REPAIR_DETERMINISTIC', cycle: cycles, issueCodes, deterministicResolved: false }
+          : { event: 'AUTO_REPAIR_LLM_STARTED', cycle: cycles, issueCodes, llmInvoked: true, provider: this.repairProvider })
+      }
       let outcome: RepairAgentOutcome | undefined
       let failureReason: string | undefined
       try {
-        outcome = await run()
+        outcome = agent === 'deterministic'
+          ? await this.repairAgent.repair(context)
+          : await this.repairLlmAgent.repair(context)
       } catch (error) {
         failureReason = error instanceof Error ? `Repair Agent failed: ${error.message}` : 'Repair Agent failed'
       }
@@ -1315,6 +1385,9 @@ export class NovaWingLaunchpad {
       if (!validation.ok) {
         stage.classification = 'REPAIR_REJECTED'
         stage.reason = `unsafe repair rejected: ${validation.reasons.join('; ')}`
+        if (automatic) {
+          autoEvents.push({ event: 'AUTO_REPAIR_VALIDATED', cycle: cycles, issueCodes, validation: stage.validation, reflightPassed: false, reason: stage.reason })
+        }
         return
       }
       const reflight = await preflightTaskContract({
@@ -1323,22 +1396,37 @@ export class NovaWingLaunchpad {
         acceptanceEvidenceBindings: outcome.proposal.acceptanceEvidenceBindings,
       })
       stage.reflightPassed = reflight.ok
+      if (automatic) {
+        autoEvents.push({
+          event: 'AUTO_REPAIR_VALIDATED', cycle: cycles, issueCodes, validation: stage.validation, reflightPassed: reflight.ok,
+          ...(reflight.ok ? {} : { reason: 'repaired contract still fails preflight; original contract preserved' }),
+        })
+      }
       if (!reflight.ok) {
         stage.classification = 'REPAIR_REJECTED'
         stage.reason = 'repaired contract still fails preflight; original contract preserved'
         return
       }
-      launched = await this.buildAndLaunchComposed(input, targetRepo, branch, reflight)
+      const launchedResult = await this.buildAndLaunchComposed(request, targetRepo, branch, reflight, {
+        automatic,
+        ...(agent === 'llm' ? { provider: { id: this.repairProvider.id, model: this.repairProvider.model } } : {}),
+        repairs: outcome.proposal.repairs,
+      })
+      launched = { ...launchedResult, repaired: true }
       appliedProposal = outcome.proposal
     }
 
-    // 1. Deterministic repair runs first and is always attempted.
-    await attempt('deterministic', () => this.repairAgent.repair(context))
-
-    // 2. The model is only consulted while a repairable mechanical issue remains.
-    const llmInvoked = launched === undefined && hasLlmRepairableIssue(preflight.issues)
-    if (llmInvoked) {
-      await attempt('llm', () => this.repairLlmAgent.repair(context))
+    for (let cycle = 1; cycle <= MAX_AUTO_REPAIR_CYCLES && launched === undefined; cycle++) {
+      const agent: 'deterministic' | 'llm' = cycle === 1 ? 'deterministic' : 'llm'
+      // The model is only consulted while a repairable mechanical issue remains.
+      if (agent === 'llm' && !hasLlmRepairableIssue(input.preflight.issues)) break
+      cycles = cycle
+      if (agent === 'llm') llmInvoked = true
+      await attempt(agent)
+      if (automatic && agent === 'deterministic') {
+        const marker = autoEvents.find((event) => event.event === 'AUTO_REPAIR_DETERMINISTIC' && event.cycle === cycle)
+        if (marker !== undefined) marker.deterministicResolved = launched !== undefined
+      }
     }
 
     const sessionStarted = launched !== undefined && launched.accepted === true
@@ -1350,6 +1438,15 @@ export class NovaWingLaunchpad {
       ? undefined
       : finalStage?.reason ?? (llmInvoked ? undefined : 'no repairable mechanical issue remained for the model')
     const repairs = appliedProposal?.repairs ?? stages.flatMap((stage) => stage.repairs)
+    const exhausted = launched === undefined && cycles >= MAX_AUTO_REPAIR_CYCLES
+    if (automatic) {
+      autoEvents.push(launched !== undefined
+        ? { event: 'AUTO_REPAIR_SUCCEEDED', cycle: Math.max(cycles, 1), issueCodes }
+        : {
+            event: 'AUTO_REPAIR_FAILED', cycle: Math.max(cycles, 1), issueCodes,
+            ...(exhausted ? { reason: AUTO_REPAIR_EXHAUSTED } : reason === undefined ? {} : { reason }),
+          })
+    }
 
     await this.recordRepairAttempt({
       errorCode,
@@ -1365,6 +1462,9 @@ export class NovaWingLaunchpad {
       deterministicAttempted: true,
       llmInvoked,
       stages,
+      ...(automatic
+        ? { automatic: true, autoRepair: { maxCycles: MAX_AUTO_REPAIR_CYCLES, cycles, exhausted, events: autoEvents } }
+        : {}),
     })
     await this.notifyRepairOutcome({
       kind: sessionStarted ? 'SUCCESS' : 'FAILURE',
@@ -1373,21 +1473,60 @@ export class NovaWingLaunchpad {
       sessionStarted,
     })
 
-    if (launched !== undefined) {
-      return { ...launched, repaired: true, repairs }
+    return {
+      ...(launched === undefined ? {} : { launched }),
+      errorCode,
+      classification,
+      repairs,
+      ...(reason === undefined ? {} : { reason }),
+      ...(appliedProposal === undefined ? {} : { appliedProposal }),
+      ...(structuredRepairTask === undefined ? {} : { structuredRepairTask }),
+      llmInvoked,
+      cycles,
+      exhausted,
+      autoEvents,
+    }
+  }
+
+  private async repairComposedWorkSession(input: ComposerRequest): Promise<RepairLaunchResult> {
+    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
+    const targetRepo = resolve(input.targetRepo)
+    if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
+      throw new ComposerLaunchError('INVALID_PROJECT_PATH')
+    }
+    if (input.scheduledStartAt === null || Date.parse(input.scheduledStartAt) <= Date.now()) await this.assertDependenciesReady(targetRepo, 'v2')
+    const branch = await this.readCurrentBranch(targetRepo)
+    if (input.branch !== undefined && input.branch !== branch) {
+      throw new ComposerLaunchError('BRANCH_MISMATCH')
+    }
+
+    const preflight = await preflightTaskContract({
+      targetRepo,
+      acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
+      acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
+    })
+    if (preflight.ok) {
+      const result = await this.buildAndLaunchComposed(input, targetRepo, branch, preflight)
+      return { ...result, repaired: false, repairs: [] }
+    }
+    if (classifyRepairErrorCode(preflight.issues) === undefined) throw new TaskContractPreflightError(preflight.issues)
+
+    const outcome = await this.cascadeContractRepair({ request: input, targetRepo, branch, preflight, automatic: false })
+    if (outcome.launched !== undefined) {
+      return { ...outcome.launched, repaired: true, repairs: outcome.repairs }
     }
     return {
       accepted: false,
       error: 'TASK_CONTRACT_INVALID',
       issues: preflight.issues,
-      repairErrorCode: errorCode,
+      repairErrorCode: outcome.errorCode,
       repairAttempt: {
-        classification,
-        ...(reason === undefined ? {} : { reason }),
-        repairs,
-        ...(structuredRepairTask === undefined ? {} : { structuredRepairTask }),
+        classification: outcome.classification,
+        ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+        repairs: outcome.repairs,
+        ...(outcome.structuredRepairTask === undefined ? {} : { structuredRepairTask: outcome.structuredRepairTask }),
         deterministicAttempted: true,
-        llmInvoked,
+        llmInvoked: outcome.llmInvoked,
         provider: this.repairProvider,
       },
     }
@@ -1408,6 +1547,9 @@ export class NovaWingLaunchpad {
     deterministicAttempted: boolean
     llmInvoked: boolean
     stages: readonly RepairAttemptStage[]
+    /** True when the Launchpad started this repair without an operator click. */
+    automatic?: boolean
+    autoRepair?: AutoRepairAuditSummary
   }): Promise<void> {
     const entry: RepairAuditEntry = {
       attemptId: randomBytes(16).toString('hex'),
@@ -1428,6 +1570,8 @@ export class NovaWingLaunchpad {
       ...(input.proposal === undefined ? {} : { proposal: input.proposal }),
       stages: input.stages.map((stage) => ({ ...stage, repairs: [...stage.repairs] })),
       notification: { success: input.sessionStarted, failure: !input.sessionStarted },
+      ...(input.automatic === true ? { automatic: true } : {}),
+      ...(input.autoRepair === undefined ? {} : { autoRepair: input.autoRepair }),
     }
     await this.repairAudit.record(entry).catch(() => {
       // A transient audit failure must not alter the repair outcome.

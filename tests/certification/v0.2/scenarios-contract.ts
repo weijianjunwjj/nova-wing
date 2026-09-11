@@ -193,7 +193,7 @@ function scriptedLlmAgent(bindings: readonly { criterion: string; requiredEviden
 }
 
 export const s21: CertificationScenario = {
-  id: 'S21', title: 'AI repair binds a missing evidence binding', group: 'control',
+  id: 'S21', title: 'One-click create auto-repairs a missing evidence binding', group: 'control',
   async run(ctx) {
     const h = ctx.h
     const repo = join(ctx.dirs.repo)
@@ -211,20 +211,19 @@ export const s21: CertificationScenario = {
     } })
     try {
       await launchpad.start()
-      const body = request(`cert-s21-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+      // A single POST /api/session/create — the operator never sees a red screen.
+      const response = await postCreate(launchpad, request(`cert-s21-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['Tests pass'],
-      })
-      const create = await postCreate(launchpad, body)
-      h.check(create.status === 400, 'unbound criterion is rejected before repair')
-      const createBody = await create.json() as { error?: string; repairable?: boolean }
-      h.check(createBody.error === 'TASK_CONTRACT_INVALID' && createBody.repairable === true, 'create error advertises a repairable TASK_CONTRACT_INVALID')
-
-      const repair = await postRepair(launchpad, body)
-      h.check(repair.status === 202, 'repair binds missing evidence and creates Session')
-      h.check(created.length === 1, 'exactly one Session is created by the retry')
+      }))
+      const responseText = await response.text()
+      h.check(response.status === 202, `create repairs the contract and launches (got ${response.status} ${responseText})`)
+      const body = JSON.parse(responseText) as { repaired?: boolean; accepted?: boolean }
+      h.check(body.accepted === true && body.repaired === true, 'the response reports a repaired launch')
+      h.check(created.length === 1, 'exactly one Session is created by the single click')
       h.check(created[0]?.tasks[0]?.acceptanceEvidenceBindings?.some((binding) => binding.criterion === 'Tests pass' && binding.requiredEvidence.includes('npm test')) === true,
         'missing criterion is bound to the repository test entry')
       h.check(rec.llmCalls === 0, 'a complete deterministic repair never consults the model')
+      h.check(rec.audit[0]?.automatic === true, 'the audit records an unattended repair')
     } finally {
       await launchpad.close().catch(() => undefined)
       await removeTree(configs)
@@ -233,7 +232,7 @@ export const s21: CertificationScenario = {
 }
 
 export const s22: CertificationScenario = {
-  id: 'S22', title: 'AI repair resolves a verifier placeholder', group: 'control',
+  id: 'S22', title: 'One-click create resolves a verifier placeholder', group: 'control',
   async run(ctx) {
     const h = ctx.h
     const repo = join(ctx.dirs.repo)
@@ -251,16 +250,10 @@ export const s22: CertificationScenario = {
     } })
     try {
       await launchpad.start()
-      const body = request(`cert-s22-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
+      const create = await postCreate(launchpad, request(`cert-s22-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['AC1 invalid input => npm test -- <对应测试>'],
-      })
-      const create = await postCreate(launchpad, body)
-      h.check(create.status === 400, 'placeholder is not resolved by the fail-closed preflight')
-      const createBody = await create.json() as { repairErrorCode?: string }
-      h.check(createBody.repairErrorCode === 'PLACEHOLDER_UNRESOLVED', 'create classifies the placeholder')
-
-      const repair = await postRepair(launchpad, body)
-      h.check(repair.status === 202, 'repair resolves the placeholder via the check script')
+      }))
+      h.check(create.status === 202, `create resolves the placeholder and launches (got ${create.status} ${await create.text()})`)
       h.check(created[0]?.tasks[0]?.acceptanceEvidenceBindings?.some((binding) => binding.criterion === 'AC1 invalid input' && binding.requiredEvidence.includes('npm run check')) === true,
         'placeholder is replaced with the repository check entry')
       h.check(rec.llmCalls === 0, 'the deterministic agent resolved the placeholder without the model')

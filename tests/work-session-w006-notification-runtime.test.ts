@@ -466,6 +466,10 @@ await test('W006 NOTIFY-H/I: two failures keep SUSPENDED, expose only safe resul
       notificationId: 'w006-failure:T1:1',
       taskId: 'T1',
       category: 'CREDENTIAL_REQUIRED',
+      // v0.2.6: the observer also carries per-channel truth; a failed channel
+      // never replaces another channel's own status.
+      channels: [{ channel: 'DESKTOP', status: 'FAILED', reason: '渠道投递失败。' }],
+      overallStatus: 'ALL_FAILED',
     }])
     assert.doesNotMatch(JSON.stringify(deliveries), /SUPER_SECRET|535 auth failed password/u)
     await runtime1.close()

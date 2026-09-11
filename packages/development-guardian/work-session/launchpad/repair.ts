@@ -228,6 +228,37 @@ export function hasLlmRepairableIssue(issues: readonly TaskContractIssue[]): boo
   return issues.some((issue) => LLM_REPAIRABLE_ISSUE_CODES.has(issue.issueCode))
 }
 
+/**
+ * The issue codes an automatic preflight repair may attempt unattended.
+ *
+ * This is exactly the existing model-repairable taxonomy: a criterion that lost
+ * its binding, or a verifier that is empty, unresolved, or points at a package
+ * script / test path that does not exist. Every other preflight code stays a
+ * human decision — approval cannot be granted by a program, and a duplicate or
+ * ambiguous binding has no mechanical resolution. The taxonomy is not widened
+ * here; automatic repair only changes *who* starts the existing cascade.
+ */
+export const AUTO_REPAIRABLE_ISSUE_CODES: ReadonlySet<TaskContractIssue['issueCode']> = LLM_REPAIRABLE_ISSUE_CODES
+
+/**
+ * True when every remaining issue is one an agent may safely attempt, so the
+ * create path may start the repair cascade without asking the operator first.
+ * An empty issue set is never auto-repairable.
+ */
+export function isAutoRepairableIssueSet(issues: readonly TaskContractIssue[]): boolean {
+  return issues.length > 0 && issues.every((issue) => AUTO_REPAIRABLE_ISSUE_CODES.has(issue.issueCode))
+}
+
+/**
+ * Upper bound on unattended repair cycles. The cascade names one repair
+ * strategy per cycle (deterministic, then the model), so the bound is also the
+ * number of distinct strategies: an automatic repair can never spin.
+ */
+export const MAX_AUTO_REPAIR_CYCLES = 2
+
+/** The single reason an automatic repair stops without launching. */
+export const AUTO_REPAIR_EXHAUSTED = 'AUTO_REPAIR_EXHAUSTED'
+
 /** Verifiers that preflight judged valid but outside the deterministic allowlist. */
 export function protectedVerifierCommands(verifiers: readonly { command: string; classification: string }[]): string[] {
   return [...new Set(verifiers.filter((verifier) => verifier.classification === 'APPROVAL_REQUIRED').map((verifier) => verifier.command))]

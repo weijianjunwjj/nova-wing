@@ -81,9 +81,115 @@ export interface WorkSessionNotifier {
   notifyFailed?(notification: WorkSessionFailedNotification): Promise<void>
   /** Additive infrastructure-recovery capability; production SMTP implements it. */
   notifyRecoveryRequired?(notification: WorkSessionRecoveryRequiredNotification): Promise<void>
+  /**
+   * Additive per-channel delivery. A notifier that reports several channels
+   * implements this so one failing channel can never overwrite another
+   * channel's truth. Single-channel notifiers may omit it.
+   */
+  notifyChannels?(
+    kind: WorkSessionNotificationKind,
+    notification: WorkSessionNotificationPayload,
+  ): Promise<readonly NotificationChannelResult[]>
+  /** Additive: the channel this notifier reports as when `notifyChannels` is absent. */
+  readonly notificationChannel?: NotificationChannel
+  /**
+   * Additive: the notification kinds this notifier actually delivers. A notifier
+   * that implements `notifyHumanRequired` only as a deliberate no-op (the desktop
+   * toast channel) declares its real kinds here so the runtime never schedules a
+   * notification that cannot be delivered.
+   */
+  readonly notificationKinds?: readonly WorkSessionNotificationKind[]
 }
 
 export type NotificationDeliveryStatus = 'SENT' | 'FAILED'
+
+/** A real delivery channel. A channel that is not applicable is SKIPPED, never FAILED. */
+export type NotificationChannel = 'EMAIL' | 'DESKTOP'
+
+export type NotificationChannelStatus = 'SENT' | 'FAILED' | 'SKIPPED'
+
+/** One channel's own delivery truth; a failure here never rewrites another channel. */
+export interface NotificationChannelResult {
+  channel: NotificationChannel
+  status: NotificationChannelStatus
+  reason?: string
+}
+
+/** Aggregated outcome across channels. PARTIAL_SUCCESS must never render as "发送失败". */
+export type NotificationOverallStatus = 'ALL_SUCCEEDED' | 'PARTIAL_SUCCESS' | 'ALL_FAILED'
+
+export type WorkSessionNotificationKind = 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED' | 'RECOVERY_REQUIRED'
+
+export type WorkSessionNotificationPayload =
+  | HumanRequiredNotification
+  | WorkSessionCompletedNotification
+  | WorkSessionFailedNotification
+  | WorkSessionRecoveryRequiredNotification
+
+/**
+ * Aggregate per-channel truth. A channel that was skipped is neither a success
+ * nor a failure, so it never turns a delivered notification into a failure.
+ */
+export function overallNotificationStatus(
+  channels: readonly NotificationChannelResult[],
+): NotificationOverallStatus {
+  const failed = channels.filter((channel) => channel.status === 'FAILED').length
+  const sent = channels.filter((channel) => channel.status === 'SENT').length
+  if (failed === 0) return 'ALL_SUCCEEDED'
+  return sent === 0 ? 'ALL_FAILED' : 'PARTIAL_SUCCESS'
+}
+
+/** Invoke the kind-specific delivery method, or `undefined` when unsupported. */
+export function invokeNotificationDelivery(
+  notifier: WorkSessionNotifier,
+  kind: WorkSessionNotificationKind,
+  notification: WorkSessionNotificationPayload,
+): Promise<void> | undefined {
+  if (kind === 'HUMAN_REQUIRED') return notifier.notifyHumanRequired(notification as HumanRequiredNotification)
+  if (kind === 'COMPLETED') return notifier.notifyCompleted?.(notification as WorkSessionCompletedNotification)
+  if (kind === 'FAILED') return notifier.notifyFailed?.(notification as WorkSessionFailedNotification)
+  return notifier.notifyRecoveryRequired?.(notification as WorkSessionRecoveryRequiredNotification)
+}
+
+/** Whether the notifier can deliver this kind at all. */
+export function supportsNotificationKind(
+  notifier: WorkSessionNotifier,
+  kind: WorkSessionNotificationKind,
+): boolean {
+  if (notifier.notificationKinds !== undefined) return notifier.notificationKinds.includes(kind)
+  if (kind === 'HUMAN_REQUIRED') return true
+  if (kind === 'COMPLETED') return notifier.notifyCompleted !== undefined
+  if (kind === 'FAILED') return notifier.notifyFailed !== undefined
+  return notifier.notifyRecoveryRequired !== undefined
+}
+
+/**
+ * Deliver one notification to one notifier and report every channel it touches.
+ * A single-channel notifier that omits `notifyChannels` is reported as one
+ * channel, so its failure stays observable without inventing a channel name.
+ */
+export async function deliverNotificationToChannels(
+  notifier: WorkSessionNotifier,
+  kind: WorkSessionNotificationKind,
+  notification: WorkSessionNotificationPayload,
+): Promise<readonly NotificationChannelResult[]> {
+  if (notifier.notifyChannels !== undefined) return await notifier.notifyChannels(kind, notification)
+  const channel = notifier.notificationChannel ?? 'DESKTOP'
+  try {
+    const pending = invokeNotificationDelivery(notifier, kind, notification)
+    if (pending === undefined) return [{ channel, status: 'SKIPPED', reason: '该渠道未实现此通知。' }]
+    await pending
+    return [{ channel, status: 'SENT' }]
+  } catch {
+    return [{ channel, status: 'FAILED', reason: NOTIFICATION_FAILURE_REASON }]
+  }
+}
+
+/**
+ * A transport error message can carry a credential, so the reason attached to a
+ * failed channel is always this fixed safe label — never the raw error text.
+ */
+export const NOTIFICATION_FAILURE_REASON = '渠道投递失败。'
 
 export interface NotificationDeliveryResult {
   status: NotificationDeliveryStatus
@@ -91,6 +197,10 @@ export interface NotificationDeliveryResult {
   taskId: string | null
   category: string
   kind?: 'HUMAN_REQUIRED' | 'COMPLETED' | 'FAILED' | 'RECOVERY_REQUIRED'
+  /** Per-channel truth. Absent only for a legacy single-channel observer. */
+  channels?: readonly NotificationChannelResult[]
+  /** Aggregated outcome derived from `channels`. */
+  overallStatus?: NotificationOverallStatus
 }
 
 export type NotificationDeliveryObserver = (

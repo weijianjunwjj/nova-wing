@@ -208,6 +208,8 @@ const KNOWN_LIMITATIONS: string[] = [
   'Provider responses in Layer A are scripted at the documented createV2Dispatcher / executor seams; model cognition itself is not exercised deterministically.',
   'The Launchpad Task-Brief evidence-binding DSL is line based and cannot carry a literal newline inside one verifier command; S20 proves that literal => content is preserved after the first delimiter.',
   'The Layer A repair scenarios script the Repair Model seam (S27/S29/S30) so the cascade, mechanical validation and preflight stay deterministic; S28 scripts a provider failure. The live Codex repair turn is exercised by the operator dogfood (guardian repair dogfood), not by the automated gate.',
+  'v0.2.6 Automatic Preflight Repair scenarios (S58/S60) script the Repair Model seam as well: the Launchpad, preflight, cascade order, cycle bound, mechanical validation, re-preflight and analytics recording are real, while the model answer itself is scripted. The live one-click create is exercised by the operator dogfood (scripts/dogfood-v026-preflight-repair.mjs).',
+  'v0.2.6 notification scenarios (S66–S69) drive the real per-channel delivery code with a scripted mail transport and toast spawner, so no SMTP connection or desktop toast is sent by the automated gate. The real SMTP acceptance and the real Windows toast are exercised by the operator smoke (npm run guardian:notification-channel:smoke).',
 ]
 
 export async function main(): Promise<number> {

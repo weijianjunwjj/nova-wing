@@ -32,6 +32,8 @@ import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
 import { combineWorkSessionNotifiers, createWindowsTaskRunNotifier } from './task-run-notifier.js'
 import {
   WorkSessionRuntime,
+  type NotificationChannelEntry,
+  type PreflightRepairRecord,
   type WorkSessionRuntimeConfig,
   type WorkSessionRuntimeRepairConfig,
 } from './runtime.js'
@@ -470,6 +472,8 @@ export interface ProductionWorkSessionDependencies {
     auditSink?: RuntimeRepairAuditSink
     notifier?: RuntimeRepairNotifier
   }
+  /** v0.2.6: a Launchpad Task Contract repair performed before this Session started. */
+  preflightRepair?: PreflightRepairRecord
 }
 
 export interface ReviewerAvailabilityRefreshOptions {
@@ -567,6 +571,12 @@ export async function createProductionWorkSessionUi(
     ? undefined
     : toastNotifier === undefined ? emailNotifier : combineWorkSessionNotifiers([emailNotifier, toastNotifier])
   const terminalNotifier = emailNotifier === undefined ? toastNotifier : undefined
+  // Explicit channel list: each channel reports its own delivery truth, so a
+  // failed Windows toast can no longer mark an accepted email as failed.
+  const notificationChannels: readonly NotificationChannelEntry[] = [
+    ...(emailNotifier === undefined ? [] : [{ channel: 'EMAIL' as const, notifier: emailNotifier }]),
+    ...(toastNotifier === undefined ? [] : [{ channel: 'DESKTOP' as const, notifier: toastNotifier }]),
+  ]
   const definition: WorkSessionDefinition = {
     id: trusted.session.id,
     targetRepo: trusted.session.targetRepo,
@@ -736,6 +746,8 @@ export async function createProductionWorkSessionUi(
           ...(analyticsProjector === undefined ? {} : { analyticsProjector }),
           ...(notifier === undefined ? {} : { notifier }),
           ...(terminalNotifier === undefined ? {} : { terminalNotifier }),
+          ...(notificationChannels.length === 0 ? {} : { notificationChannels }),
+          ...(dependencies.preflightRepair === undefined ? {} : { preflightRepair: dependencies.preflightRepair }),
           ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
           notificationObserver: notificationSink, localControlUrl: () => localControlUrl }
         runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
@@ -837,6 +849,8 @@ export async function createProductionWorkSessionUi(
         },
         ...(notifier === undefined ? {} : { notifier }),
         ...(terminalNotifier === undefined ? {} : { terminalNotifier }),
+        ...(notificationChannels.length === 0 ? {} : { notificationChannels }),
+        ...(dependencies.preflightRepair === undefined ? {} : { preflightRepair: dependencies.preflightRepair }),
         ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
         notificationObserver: notificationSink,
         localControlUrl: () => localControlUrl,

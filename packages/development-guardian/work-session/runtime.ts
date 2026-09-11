@@ -30,10 +30,34 @@ import {
   createWorkSessionFailedNotification,
   createWorkSessionRecoveryRequiredNotification,
   createHumanRequiredNotification,
+  deliverNotificationToChannels,
+  NOTIFICATION_FAILURE_REASON,
+  overallNotificationStatus,
+  supportsNotificationKind,
+  type NotificationChannel,
+  type NotificationChannelResult,
   type NotificationDeliveryObserver,
   type NotificationDeliveryResult,
+  type WorkSessionNotificationKind,
+  type WorkSessionNotificationPayload,
   type WorkSessionNotifier,
 } from './notifier.js'
+
+/** One explicitly configured notification channel and the notifier that serves it. */
+export interface NotificationChannelEntry {
+  channel: NotificationChannel
+  notifier: WorkSessionNotifier
+}
+
+/** A Task Contract repair performed by the Launchpad before this Session started. */
+export interface PreflightRepairRecord {
+  /** The contract repair was started by the Launchpad, not by an operator click. */
+  automatic: boolean
+  /** Provider that produced the accepted repair, when a model was consulted. */
+  provider?: { id: string; model: string }
+  /** Safe, bounded repair summary lines; never a prompt or a secret. */
+  repairs?: readonly string[]
+}
 import {
   classifyWorkSessionFailure,
   safeFailureMessage,
@@ -63,7 +87,7 @@ import {
 } from './verification-approval.js'
 import { TaskController, type TaskAction } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2 } from './task-state-v2.js'
-import { ProviderHealthRegistry, TaskEventLogV2 } from './task-observability.js'
+import { ProviderHealthRegistry, TaskEventLogV2, type TaskEventV2, type TaskEventType } from './task-observability.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { RuntimeRepairAgent } from './runtime-repair-engine.js'
 import {
@@ -99,6 +123,18 @@ export interface WorkSessionRuntimeConfig {
   notifier?: WorkSessionNotifier
   /** Completion/failed desktop channel; separate from opt-in SMTP/HUMAN_REQUIRED delivery. */
   terminalNotifier?: WorkSessionNotifier
+  /**
+   * v0.2.6: explicit per-channel notifiers. When present, every channel reports
+   * its own SENT / FAILED / SKIPPED status and one failing channel can never
+   * collapse the others into a false "notification failed".
+   */
+  notificationChannels?: readonly NotificationChannelEntry[]
+  /**
+   * v0.2.6: a Launchpad Task Contract repair that happened before this Session
+   * started. It is recorded as AI repair history (never as a human action) so
+   * `ai_repair_count` reflects it without changing zero-human semantics.
+   */
+  preflightRepair?: PreflightRepairRecord
   /** W006: safe structured delivery diagnostics for terminal/local control UI. */
   notificationObserver?: NotificationDeliveryObserver
   /** W006: optional safe local URL provider; runtime never depends on HTTP server types. */
@@ -540,6 +576,7 @@ export class WorkSessionRuntime {
   }
 
   private async startExecution(): Promise<WorkSessionDurableState> {
+    const preflightRepairEvents = this.preflightRepairEvents()
     const initialState: WorkflowState = {
       sessionId: this.config.definition.id,
       state: 'RUNNING',
@@ -554,6 +591,7 @@ export class WorkSessionRuntime {
       scheduleSource: this.latestState?.scheduleSource ?? this.config.definition.scheduleSource ?? 'immediate',
       startedAt: new Date(this.now()).toISOString(),
       updatedAt: new Date().toISOString(),
+      ...(preflightRepairEvents === undefined ? {} : { taskEventLogs: preflightRepairEvents }),
     }
 
     this.latestState = initialState
@@ -2759,7 +2797,7 @@ export class WorkSessionRuntime {
 
   private scheduleRecoveryRequiredNotification(state: WorkSessionDurableState): void {
     if (
-      this.config.notifier?.notifyRecoveryRequired === undefined ||
+      this.notificationChannelEntries('RECOVERY_REQUIRED').length === 0 ||
       state.state !== 'SUSPENDED' ||
       state.suspensionReason !== 'BRAIN_INFRASTRUCTURE_FAILED' ||
       state.brainFailure === undefined ||
@@ -2777,11 +2815,11 @@ export class WorkSessionRuntime {
   }
 
   private async deliverRecoveryRequiredNotification(state: WorkSessionDurableState): Promise<void> {
-    const notifier = this.config.notifier
     const generation = state.recoveryRequiredGeneration
-    if (notifier?.notifyRecoveryRequired === undefined || generation === undefined || state.brainFailure === undefined) {
+    if (generation === undefined || state.brainFailure === undefined) {
       return
     }
+    if (this.notificationChannelEntries('RECOVERY_REQUIRED').length === 0) return
     const localControlUrl = this.config.localControlUrl?.()
     const notification = createWorkSessionRecoveryRequiredNotification({
       definition: this.config.definition,
@@ -2795,20 +2833,9 @@ export class WorkSessionRuntime {
     )
     if (!claimed) return
 
-    let sent = false
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await notifier.notifyRecoveryRequired(notification)
-        sent = true
-        break
-      } catch {
-        if (attempt === 0) {
-          await (this.config.notificationWait ?? defaultNotificationWait)(
-            this.config.notificationRetryDelayMs ?? 1_000,
-          )
-        }
-      }
-    }
+    const channels = await this.deliverToChannels('RECOVERY_REQUIRED', notification)
+    const overallStatus = overallNotificationStatus(channels)
+    const sent = overallStatus !== 'ALL_FAILED'
     if (sent) {
       try {
         await this.persistRecoveryNotificationGeneration(
@@ -2825,6 +2852,8 @@ export class WorkSessionRuntime {
       taskId: state.currentTaskId,
       category: state.brainFailure.category,
       kind: 'RECOVERY_REQUIRED',
+      channels,
+      overallStatus,
     })
   }
 
@@ -2833,7 +2862,7 @@ export class WorkSessionRuntime {
     forceSafeReason: boolean,
   ): void {
     if (
-      this.config.notifier === undefined ||
+      this.notificationChannelEntries('HUMAN_REQUIRED').length === 0 ||
       state.state !== 'SUSPENDED' ||
       state.humanRequired === undefined ||
       state.suspensionReason === 'USER_PAUSED' ||
@@ -2856,9 +2885,8 @@ export class WorkSessionRuntime {
     state: WorkSessionDurableState,
     forceSafeReason: boolean,
   ): Promise<void> {
-    const notifier = this.config.notifier
     const generation = state.humanRequiredGeneration
-    if (notifier === undefined || generation === undefined || state.humanRequired === undefined) {
+    if (generation === undefined || state.humanRequired === undefined) {
       return
     }
     const localControlUrl = this.config.localControlUrl?.()
@@ -2882,20 +2910,9 @@ export class WorkSessionRuntime {
       )
       if (!claimed) return
 
-      let sent = false
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await notifier.notifyHumanRequired(notification)
-          sent = true
-          break
-        } catch {
-          if (attempt === 0) {
-            await (this.config.notificationWait ?? defaultNotificationWait)(
-              this.config.notificationRetryDelayMs ?? 1_000,
-            )
-          }
-        }
-      }
+      const channels = await this.deliverToChannels('HUMAN_REQUIRED', notification)
+      const overallStatus = overallNotificationStatus(channels)
+      const sent = overallStatus !== 'ALL_FAILED'
 
       if (sent) {
         try {
@@ -2910,16 +2927,23 @@ export class WorkSessionRuntime {
       }
       this.observeNotification({
         status: sent ? 'SENT' : 'FAILED',
+        channels,
+        overallStatus,
         ...deliveryBase,
       })
     } catch {
-      this.observeNotification({ status: 'FAILED', ...deliveryBase })
+      this.observeNotification({
+        status: 'FAILED',
+        channels: this.unattemptedChannels('HUMAN_REQUIRED', NOTIFICATION_FAILURE_REASON),
+        overallStatus: 'ALL_FAILED',
+        ...deliveryBase,
+      })
     }
   }
 
   private scheduleCompletedNotification(state: WorkSessionDurableState): void {
     if (
-      (this.config.notifier?.notifyCompleted === undefined && this.config.terminalNotifier?.notifyCompleted === undefined) ||
+      this.notificationChannelEntries('COMPLETED').length === 0 ||
       (this.config.notifyOnCompleted !== true && this.config.terminalNotifier === undefined) ||
       state.state !== 'COMPLETED' ||
       state.completionReason !== 'ALL_TASKS_COMPLETED' ||
@@ -2936,8 +2960,7 @@ export class WorkSessionRuntime {
   }
 
   private async deliverCompletedNotification(): Promise<void> {
-    const notifier = this.config.notifier ?? this.config.terminalNotifier
-    if (notifier?.notifyCompleted === undefined) return
+    if (this.notificationChannelEntries('COMPLETED').length === 0) return
     const claimed = await this.persistCompletionNotificationFlag('completionNotificationAttempted')
     if (!claimed) return
 
@@ -2954,20 +2977,9 @@ export class WorkSessionRuntime {
         : { analytics: this.analyticsSummaries.get(state.completedTaskIds.at(-1) ?? '')! }),
       ...(reportUrl === undefined ? {} : { reportUrl }),
     })
-    let sent = false
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await notifier.notifyCompleted(notification)
-        sent = true
-        break
-      } catch {
-        if (attempt === 0) {
-          await (this.config.notificationWait ?? defaultNotificationWait)(
-            this.config.notificationRetryDelayMs ?? 1_000,
-          )
-        }
-      }
-    }
+    const channels = await this.deliverToChannels('COMPLETED', notification)
+    const overallStatus = overallNotificationStatus(channels)
+    const sent = overallStatus !== 'ALL_FAILED'
     if (sent) {
       try {
         await this.persistCompletionNotificationFlag('completionNotified')
@@ -2981,12 +2993,14 @@ export class WorkSessionRuntime {
       taskId: null,
       category: 'ALL_TASKS_COMPLETED',
       kind: 'COMPLETED',
+      channels,
+      overallStatus,
     })
   }
 
   private scheduleFailedNotification(state: WorkSessionDurableState): void {
     if (
-      (this.config.notifier?.notifyFailed === undefined && this.config.terminalNotifier?.notifyFailed === undefined) ||
+      this.notificationChannelEntries('FAILED').length === 0 ||
       state.state !== 'FAILED' ||
       state.failureStage === undefined ||
       state.failureCategory === undefined ||
@@ -3006,8 +3020,7 @@ export class WorkSessionRuntime {
   }
 
   private async deliverFailedNotification(): Promise<void> {
-    const notifier = this.config.notifier ?? this.config.terminalNotifier
-    if (notifier?.notifyFailed === undefined) return
+    if (this.notificationChannelEntries('FAILED').length === 0) return
     const state = this.getDurableState()
     if (
       state === undefined ||
@@ -3027,29 +3040,13 @@ export class WorkSessionRuntime {
         : { analytics: this.analyticsSummaries.get(state.currentTaskId)! }),
       ...(localControlUrl === undefined ? {} : { reportUrl: localControlUrl }),
     })
-    let sent = false
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let shouldRetry = false
-      try {
-        await notifier.notifyFailed(notification)
-        sent = true
-        break
-      } catch {
-        shouldRetry = attempt === 0
-      } finally {
-        if (attempt === 0) {
-          try {
-            await this.persistFailureNotificationFlag('failureNotificationAttempted')
-          } catch {
-            // Delivery has already begun. Persist failure must not interrupt the bounded retry.
-          }
-        }
-      }
-      if (shouldRetry) {
-        await (this.config.notificationWait ?? defaultNotificationWait)(
-          this.config.notificationRetryDelayMs ?? 1_000,
-        )
-      }
+    const channels = await this.deliverToChannels('FAILED', notification)
+    const overallStatus = overallNotificationStatus(channels)
+    const sent = overallStatus !== 'ALL_FAILED'
+    try {
+      await this.persistFailureNotificationFlag('failureNotificationAttempted')
+    } catch {
+      // Delivery has already begun. Persist failure must not interrupt the bounded retry.
     }
     if (sent) {
       try {
@@ -3067,6 +3064,8 @@ export class WorkSessionRuntime {
       taskId: state.currentTaskId,
       category: notification.failureCategory,
       kind: 'FAILED',
+      channels,
+      overallStatus,
     })
   }
 
@@ -3213,6 +3212,7 @@ export class WorkSessionRuntime {
   private observeNotification(result: NotificationDeliveryResult): void {
     this.lastNotificationDelivery = result
     const notificationKind = result.kind ?? 'HUMAN_REQUIRED'
+    const channels = result.channels ?? []
     this.recordLedger({
       eventType: result.status === 'SENT' ? 'NOTIFICATION_SENT' : 'NOTIFICATION_FAILED',
       sessionId: this.config.definition.id,
@@ -3222,12 +3222,104 @@ export class WorkSessionRuntime {
       notificationKind,
       notificationId: result.notificationId,
       ...(result.status === 'FAILED' ? { safeMessage: '通知发送失败。' } : {}),
+      ...(result.overallStatus === undefined ? {} : { notificationOverall: result.overallStatus }),
+      ...(channels.length === 0 ? {} : { notificationChannels: channels }),
     }, `notification:${result.notificationId}:${result.status}`)
     try {
       this.config.notificationObserver?.(result)
     } catch {
       // Observer failures must not affect the suspended Work Session.
     }
+  }
+
+  /** The explicitly configured channels, or the legacy single-notifier channel. */
+  private notificationChannelEntries(kind: WorkSessionNotificationKind): readonly NotificationChannelEntry[] {
+    const configured = this.config.notificationChannels
+    if (configured !== undefined) {
+      return configured.filter((entry) => supportsNotificationKind(entry.notifier, kind))
+    }
+    const fallback = this.config.notifier ?? this.config.terminalNotifier
+    if (fallback === undefined || !supportsNotificationKind(fallback, kind)) return []
+    return [{ channel: fallback.notificationChannel ?? 'DESKTOP', notifier: fallback }]
+  }
+
+  /**
+   * Deliver one notification to every applicable channel, retrying only the
+   * channel that failed. A channel that already accepted the message is never
+   * re-sent by another channel's retry, and its SENT status is never rewritten.
+   */
+  private async deliverToChannels(
+    kind: WorkSessionNotificationKind,
+    notification: WorkSessionNotificationPayload,
+  ): Promise<readonly NotificationChannelResult[]> {
+    const entries = this.notificationChannelEntries(kind)
+    return await Promise.all(entries.map(async (entry) => await this.deliverToChannel(entry, kind, notification)))
+  }
+
+  private async deliverToChannel(
+    entry: NotificationChannelEntry,
+    kind: WorkSessionNotificationKind,
+    notification: WorkSessionNotificationPayload,
+  ): Promise<NotificationChannelResult> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const results = await deliverNotificationToChannels(entry.notifier, kind, notification)
+        const result = results.find((candidate) => candidate.channel === entry.channel) ?? results[0]
+        if (result === undefined || result.status !== 'FAILED') {
+          return result ?? { channel: entry.channel, status: 'SKIPPED', reason: '渠道未返回投递结果。' }
+        }
+        if (attempt === 0) {
+          await (this.config.notificationWait ?? defaultNotificationWait)(
+            this.config.notificationRetryDelayMs ?? 1_000,
+          )
+          continue
+        }
+        return result
+      } catch {
+        if (attempt === 0) {
+          await (this.config.notificationWait ?? defaultNotificationWait)(
+            this.config.notificationRetryDelayMs ?? 1_000,
+          )
+          continue
+        }
+        return { channel: entry.channel, status: 'FAILED', reason: NOTIFICATION_FAILURE_REASON }
+      }
+    }
+    return { channel: entry.channel, status: 'FAILED', reason: '渠道投递失败。' }
+  }
+
+  /** Every configured channel as FAILED; used only when delivery could not be attempted at all. */
+  private unattemptedChannels(kind: WorkSessionNotificationKind, reason: string): readonly NotificationChannelResult[] {
+    return this.notificationChannelEntries(kind).map((entry) => ({ channel: entry.channel, status: 'FAILED' as const, reason }))
+  }
+  /**
+   * Seed the append-only Task Event Log with a Launchpad Task Contract repair.
+   * It is history only — the Controller never reads it — and it deliberately
+   * records no human action for an automatic repair, so `zero_human_completion`
+   * keeps its v0.2.5 meaning.
+   */
+  private preflightRepairEvents(): Readonly<Record<string, readonly TaskEventV2[]>> | undefined {
+    const repair = this.config.preflightRepair
+    if (repair === undefined) return undefined
+    const sessionId = this.config.definition.id
+    const timestamp = new Date(this.now()).toISOString()
+    const events: Record<string, readonly TaskEventV2[]> = {}
+    for (const task of this.config.definition.tasks) {
+      let sequence = 1
+      const next = (type: TaskEventType, extra: Partial<TaskEventV2> = {}): TaskEventV2 => ({
+        eventId: String(sequence++), taskId: task.id, sessionId, type, timestamp, ...extra,
+      })
+      events[task.id] = [
+        // A manual retry is an operator action; an automatic repair is not.
+        ...(repair.automatic ? [] : [next('HUMAN_ACTION_RECORDED', { metadata: { action: 'AI_REPAIR' } })]),
+        next('AI_REPAIR_STARTED', {
+          ...(repair.provider === undefined ? {} : { provider: repair.provider.id }),
+          metadata: { automatic: repair.automatic, ...(repair.provider === undefined ? {} : { model: repair.provider.model }) },
+        }),
+        next('AI_REPAIR_COMPLETED', { metadata: { automatic: repair.automatic } }),
+      ]
+    }
+    return events
   }
 
   /**

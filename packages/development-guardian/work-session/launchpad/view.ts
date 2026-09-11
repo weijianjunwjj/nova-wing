@@ -194,6 +194,7 @@ export function renderLaunchpadHtml(input: {
           <label>Do not do（可选，每行一条）<textarea name="doNotDo" rows="2"></textarea></label>
           <label>Forbidden paths（可选，每行一条；会附加到安全默认值）<textarea name="forbiddenPaths" rows="2"></textarea></label>
         </details>
+        <p class="launch-progress" data-composer-progress role="status" aria-live="polite" hidden></p>
         <p class="launch-error" data-composer-error role="alert" aria-live="polite"></p>
         <button class="repair-button" type="button" data-composer-repair hidden>AI 修复并重试</button>
         <button class="launch-button" type="submit" data-composer-submit>创建并启动</button>
@@ -452,6 +453,40 @@ export const LAUNCHPAD_APP_JS = `
   const hardMinutes = form.elements.hardMinutes
   const pushRemote = form.querySelector('[data-push-remote]')
   const error = form.querySelector('[data-composer-error]')
+  const progress = form.querySelector('[data-composer-progress]')
+  let progressTimer
+  // 创建并启动可能包含自动契约修复；用分阶段文案替代先出现红色错误页。
+  const startProgress = () => {
+    if (!progress) return
+    const steps = ['正在检查 Task Contract…', '正在自动修复配置…', '修复完成，正在启动 Session…']
+    let index = 0
+    progress.hidden = false
+    progress.textContent = steps[0]
+    const advance = () => {
+      if (index >= steps.length - 1) return
+      index += 1
+      progress.textContent = steps[index]
+      progressTimer = setTimeout(advance, 2200)
+    }
+    progressTimer = setTimeout(advance, 1500)
+  }
+  const stopProgress = () => {
+    clearTimeout(progressTimer)
+    if (!progress) return
+    progress.hidden = true
+    progress.textContent = ''
+  }
+  // 只有最终无法安全修复时才展示自动修复的失败详情。
+  const autoRepairMessage = (result) => {
+    const attempt = result && result.autoRepair
+    if (!attempt) return ''
+    const headline = attempt.result === 'AUTO_REPAIR_EXHAUSTED'
+      ? '自动修复已达上限，仍未通过校验。'
+      : '自动修复未能通过校验。'
+    const cycles = '（已尝试 ' + attempt.cycles + '/' + attempt.maxCycles + ' 轮）'
+    const reason = attempt.reason ? ' 原因：' + attempt.reason : ''
+    return '\\n' + headline + cycles + reason
+  }
   const repairButton = form.querySelector('[data-composer-repair]')
   const briefInput = form.querySelector('[data-task-brief]')
   const briefFill = form.querySelector('[data-task-brief-fill]')
@@ -721,6 +756,7 @@ export const LAUNCHPAD_APP_JS = `
         guardian: { allowedPaths, ...optionalPolicy('constraints'), ...optionalPolicy('acceptanceCriteria'), ...evidenceBindingsPolicy(), ...optionalPolicy('doNotDo'), ...optionalPolicy('forbiddenPaths') },
       }
       if (repairButton) repairButton.hidden = true
+      startProgress()
       const response = await fetch('/api/session/create', {
         method: 'POST', headers: mutationHeaders(),
         body: JSON.stringify(lastComposerBody),
@@ -733,10 +769,12 @@ export const LAUNCHPAD_APP_JS = `
         const contractMessage = result.error === 'TASK_CONTRACT_INVALID' && Array.isArray(result.issues)
           ? result.issues.map((issue) => [issue.issueCode, issue.criterion, issue.reason].filter(Boolean).join(' · ')).join('\\n')
           : ''
-        throw new Error(contractMessage || result.message || 'Work Session 启动失败')
+        throw new Error((contractMessage || result.message || 'Work Session 启动失败') + autoRepairMessage(result))
       }
+      stopProgress()
       window.location.assign(result.controlUrl)
     } catch (cause) {
+      stopProgress()
       error.textContent = cause instanceof Error ? cause.message : 'Work Session 启动失败'
       submit.disabled = false
     }
@@ -1055,6 +1093,15 @@ h2 {
   min-height: 20px;
   margin: 14px 0 8px;
   color: #ef9b9b;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 正常可修复的契约只显示进度，不先闪出红色错误块。 */
+.launch-progress {
+  min-height: 20px;
+  margin: 14px 0 8px;
+  color: #9fc4ff;
   font-size: 12px;
   text-align: center;
 }

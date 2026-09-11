@@ -263,6 +263,21 @@ var GUARDIAN_PHASE_LABELS = {
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用'
 }
 
+// 通知内部 enum 保持英文；UI 一律映射为中文，不直接显示 PARTIAL_SUCCESS / ALL_FAILED。
+var NOTIFICATION_KIND_LABELS = {
+  HUMAN_REQUIRED: '需要人工处理', COMPLETED: '完成', FAILED: '失败', RECOVERY_REQUIRED: '需要恢复'
+}
+
+var NOTIFICATION_CHANNEL_LABELS = { EMAIL: '邮件', DESKTOP: '桌面通知' }
+
+var NOTIFICATION_CHANNEL_STATUS_LABELS = {
+  SENT: '已发送', FAILED: '发送失败', SKIPPED: '已跳过（不适用）'
+}
+
+var NOTIFICATION_OVERALL_LABELS = {
+  ALL_SUCCEEDED: '全部成功', PARTIAL_SUCCESS: '部分成功', ALL_FAILED: '全部失败'
+}
+
 var GUARDIAN_STATUS_LABELS = {
   active: '进行中',
   completed: '已完成',
@@ -409,6 +424,24 @@ function formatElapsed(ms) {
   return String(Number((Math.round(value * 100) / 100).toFixed(2))) + ' ' + unit
 }
 
+function notificationChannelText(data) {
+  if (!Array.isArray(data.channels) || data.channels.length === 0) return ''
+  var parts = []
+  for (var i = 0; i < data.channels.length; i++) {
+    var entry = data.channels[i]
+    if (!entry || typeof entry !== 'object') continue
+    var name = NOTIFICATION_CHANNEL_LABELS[entry.channel] || String(entry.channel || '未知渠道')
+    var state = NOTIFICATION_CHANNEL_STATUS_LABELS[entry.status] || String(entry.status || '')
+    parts.push(name + '：' + state)
+  }
+  return parts.join(' · ')
+}
+
+function notificationOverallText(data, fallback) {
+  var mapped = NOTIFICATION_OVERALL_LABELS[data.overallStatus]
+  return '总体：' + (mapped || fallback)
+}
+
 function summarizeEvent(ev) {
   var data = ev.data && typeof ev.data === 'object' ? ev.data : {}
   if (ev.type === 'GUARDIAN_PHASE' || ev.type === 'TASK_PHASE') {
@@ -419,6 +452,17 @@ function summarizeEvent(ev) {
     var elapsed = formatElapsed(data.elapsedMs)
     if (elapsed) parts.push(elapsed)
     return parts.join(' · ')
+  }
+  if (ev.type === 'NOTIFICATION_SENT' || ev.type === 'NOTIFICATION_FAILED') {
+    // Per-channel truth wins over the collapsed event type: a delivered email
+    // plus a failed desktop toast must read as 部分成功, not 发送失败.
+    var channelText = notificationChannelText(data)
+    var kind = data.kind === undefined ? '' : displayValue(data.kind, NOTIFICATION_KIND_LABELS) + '通知'
+    var sections = []
+    if (kind) sections.push(kind)
+    if (channelText) sections.push(channelText)
+    sections.push(notificationOverallText(data, ev.type === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
+    return sections.join(' · ')
   }
   var eventLabels = {
     SESSION_STARTED: 'Work Session 已开始', SESSION_STATE_CHANGED: 'Work Session 状态已更新',
@@ -495,8 +539,11 @@ function summarizeLedgerEvent(ev) {
       ' · ' + displayValue(ev.recoveryAction) + ' · ' + displayValue(ev.status)
   }
   if (ev.eventType === 'NOTIFICATION_SENT' || ev.eventType === 'NOTIFICATION_FAILED') {
-    return displayValue(ev.notificationKind) + ' 通知' +
-      (ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败')
+    var ledgerSections = [displayValue(ev.notificationKind, NOTIFICATION_KIND_LABELS) + '通知']
+    var ledgerChannels = notificationChannelText({ channels: ev.notificationChannels })
+    if (ledgerChannels) ledgerSections.push(ledgerChannels)
+    ledgerSections.push(notificationOverallText({ overallStatus: ev.notificationOverall }, ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
+    return ledgerSections.join(' · ')
   }
   var parts = [displayValue(ev.eventType)]
   if (ev.taskId) parts.push('Task：' + ev.taskId)
