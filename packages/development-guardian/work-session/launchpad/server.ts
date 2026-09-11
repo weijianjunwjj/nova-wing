@@ -65,6 +65,7 @@ import {
   type RepairProviderIdentity,
 } from './repair-audit.js'
 import { createWindowsToastRepairNotifier, type RepairNotifier } from './repair-notifier.js'
+import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsStore } from '../task-run-analytics.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
 
@@ -195,6 +196,8 @@ export interface NovaWingLaunchpadDependencies {
   repairProvider?: RepairProviderIdentity
   repairAudit?: RepairAuditSink
   repairNotifier?: RepairNotifier
+  /** Injectable analytics database for isolated tests and alternate local profiles. */
+  analyticsPath?: string
 }
 
 interface LaunchResult {
@@ -445,6 +448,7 @@ export class NovaWingLaunchpad {
   private readonly repairProvider: RepairProviderIdentity
   private readonly repairAudit: RepairAuditSink
   private readonly repairNotifier: RepairNotifier
+  private readonly analyticsPath: string
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
@@ -497,6 +501,7 @@ export class NovaWingLaunchpad {
     }
     this.repairAudit = dependencies.repairAudit ?? createFileRepairAuditSink()
     this.repairNotifier = dependencies.repairNotifier ?? createWindowsToastRepairNotifier()
+    this.analyticsPath = dependencies.analyticsPath ?? defaultTaskRunAnalyticsPath()
     this.server = createServer((request, response) => {
       void this.handle(request, response)
     })
@@ -647,6 +652,10 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 200, this.getConfigs())
       return
     }
+    if (method === 'GET' && path.startsWith('/api/analytics/')) {
+      this.serveAnalytics(request, response, path)
+      return
+    }
     if (method === 'GET' && path === '/styles.css') {
       this.serveAsset(response, 'text/css; charset=utf-8', LAUNCHPAD_STYLES_CSS)
       return
@@ -683,6 +692,34 @@ export class NovaWingLaunchpad {
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
       error: knownPaths.has(path) ? 'method not allowed' : 'not found',
     })
+  }
+
+  private serveAnalytics(request: IncomingMessage, response: ServerResponse, path: string): void {
+    let store: TaskRunAnalyticsStore | undefined
+    try {
+      store = new TaskRunAnalyticsStore(this.analyticsPath)
+      if (path === '/api/analytics/recent') {
+        const raw = new URL(request.url ?? path, this.origin()).searchParams.get('limit') ?? '5'
+        const limit = Number(raw)
+        if (limit !== 5 && limit !== 10 && limit !== 20) { this.respondJson(response, 400, { error: 'limit must be 5, 10, or 20' }); return }
+        this.respondJson(response, 200, store.recent(limit)); return
+      }
+      if (path === '/api/analytics/reasons') {
+        const raw = new URL(request.url ?? path, this.origin()).searchParams.get('limit') ?? '20'
+        const limit = Number(raw)
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) { this.respondJson(response, 400, { error: 'limit must be between 1 and 100' }); return }
+        this.respondJson(response, 200, store.reasons(limit)); return
+      }
+      const task = path.match(/^\/api\/analytics\/tasks\/([^/]+)$/u)
+      if (task !== null) { const rows = store.findByTask(decodeURIComponent(task[1]!)); this.respondJson(response, rows.length === 0 ? 404 : 200, rows.length === 0 ? { error: 'not found' } : rows); return }
+      const session = path.match(/^\/api\/analytics\/sessions\/([^/]+)$/u)
+      if (session !== null) { const rows = store.findBySession(decodeURIComponent(session[1]!)); this.respondJson(response, rows.length === 0 ? 404 : 200, rows.length === 0 ? { error: 'not found' } : rows); return }
+      this.respondJson(response, 404, { error: 'not found' })
+    } catch {
+      this.respondJson(response, 503, { error: 'analytics unavailable' })
+    } finally {
+      store?.close()
+    }
   }
 
   private serveHtml(response: ServerResponse): void {

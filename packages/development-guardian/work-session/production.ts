@@ -29,6 +29,7 @@ import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
 import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
+import { combineWorkSessionNotifiers, createWindowsTaskRunNotifier } from './task-run-notifier.js'
 import {
   WorkSessionRuntime,
   type WorkSessionRuntimeConfig,
@@ -38,6 +39,7 @@ import { createRuntimeRepairEngine } from './runtime-repair-engine.js'
 import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type RuntimeRepairAuditSink } from './runtime-repair-audit.js'
 import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 import type { RuntimeRepairRefresh } from './runtime-repair.js'
+import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalyticsStore } from './task-run-analytics.js'
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
 import {
@@ -552,7 +554,7 @@ export async function createProductionWorkSessionUi(
 ): Promise<ProductionWorkSessionUi> {
   const trusted = await validateTrustedWorkSessionConfig(config)
   const env = dependencies.env ?? process.env
-  const notifier = trusted.notification?.email.enabled === true
+  const emailNotifier = trusted.notification?.email.enabled === true
     ? createSmtpWorkSessionNotifierFromEnv({
         env,
         ...(dependencies.createSmtpTransport === undefined
@@ -560,6 +562,11 @@ export async function createProductionWorkSessionUi(
           : { createTransport: dependencies.createSmtpTransport }),
       })
     : undefined
+  const toastNotifier = dependencies.createRuntime === undefined ? createWindowsTaskRunNotifier() : undefined
+  const notifier = emailNotifier === undefined
+    ? undefined
+    : toastNotifier === undefined ? emailNotifier : combineWorkSessionNotifiers([emailNotifier, toastNotifier])
+  const terminalNotifier = emailNotifier === undefined ? toastNotifier : undefined
   const definition: WorkSessionDefinition = {
     id: trusted.session.id,
     targetRepo: trusted.session.targetRepo,
@@ -715,10 +722,22 @@ export async function createProductionWorkSessionUi(
             createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
           notifier: dependencies.runtimeRepair?.notifier ?? createWindowsToastRuntimeRepairNotifier(),
         }
+        let analyticsProjector: TaskRunAnalyticsProjector | undefined
+        if (dependencies.createRuntime === undefined) {
+          try {
+            analyticsProjector = new TaskRunAnalyticsProjector(new TaskRunAnalyticsStore(defaultTaskRunAnalyticsPath(env)))
+          } catch {
+            // Analytics initialization is fail-open for production task execution.
+          }
+        }
         const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl, runtimeRepair,
           gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
             ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },
-          ...(notifier === undefined ? {} : { notifier }), notificationObserver: notificationSink, localControlUrl: () => localControlUrl }
+          ...(analyticsProjector === undefined ? {} : { analyticsProjector }),
+          ...(notifier === undefined ? {} : { notifier }),
+          ...(terminalNotifier === undefined ? {} : { terminalNotifier }),
+          ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
+          notificationObserver: notificationSink, localControlUrl: () => localControlUrl }
         runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
         return runtime
       }
@@ -817,6 +836,7 @@ export async function createProductionWorkSessionUi(
           },
         },
         ...(notifier === undefined ? {} : { notifier }),
+        ...(terminalNotifier === undefined ? {} : { terminalNotifier }),
         ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
         notificationObserver: notificationSink,
         localControlUrl: () => localControlUrl,

@@ -77,6 +77,7 @@ import {
 import { implementerProvidersOf } from './reviewer-runtime.js'
 import type { RuntimeRepairAuditSink } from './runtime-repair-audit.js'
 import { runtimeRepairNotificationFrom, runtimeRepairCompletionNotification, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
+import type { TaskRunAnalyticsProjector, TaskRunSummary } from './task-run-analytics.js'
 
 export interface WorkSessionGitCheckpointConfig {
   policy: GitCheckpointPolicy
@@ -96,6 +97,8 @@ export interface WorkSessionRuntimeConfig {
   clock?: { now(): number }
   /** W006: alert-only port. Guardian/Brain/Executor never receive this capability. */
   notifier?: WorkSessionNotifier
+  /** Completion/failed desktop channel; separate from opt-in SMTP/HUMAN_REQUIRED delivery. */
+  terminalNotifier?: WorkSessionNotifier
   /** W006: safe structured delivery diagnostics for terminal/local control UI. */
   notificationObserver?: NotificationDeliveryObserver
   /** W006: optional safe local URL provider; runtime never depends on HTTP server types. */
@@ -109,6 +112,8 @@ export interface WorkSessionRuntimeConfig {
   recoverExecutorOwnership?: (checkpoint: GuardianTaskRecoveryCheckpoint) => Promise<void>
   /** v0.2.4: Runtime AI Repair & Resume capability. */
   runtimeRepair?: WorkSessionRuntimeRepairConfig
+  /** Read-only terminal projection. Every failure is fail-open for task execution. */
+  analyticsProjector?: TaskRunAnalyticsProjector
 }
 
 /**
@@ -365,6 +370,7 @@ export class WorkSessionRuntime {
   private runtimeRepairPromise: Promise<WorkSessionDurableState> | undefined
   /** Last Runtime Repair outcome, surfaced to the control snapshot for failure display. */
   private lastRuntimeRepairOutcome: import('./runtime-repair.js').RuntimeRepairOutcome | undefined
+  private readonly analyticsSummaries = new Map<string, TaskRunSummary>()
 
   constructor(config: WorkSessionRuntimeConfig) {
     // W004-B: invalid limits 必须在任何 TaskRunner / provider / git mutation 前 fail-fast
@@ -806,6 +812,11 @@ export class WorkSessionRuntime {
       },
       updatedAt: new Date().toISOString(),
     }
+    const repairLog = new TaskEventLogV2(repairedState.taskEventLogs?.[taskId])
+    repairLog.append({ taskId, sessionId: runId, type: 'HUMAN_ACTION_RECORDED', metadata: { action: 'RUNTIME_REPAIR' } })
+    repairLog.append({ taskId, sessionId: runId, type: 'RUNTIME_REPAIR_STARTED', reasonCode: 'PROVIDER_UNAVAILABLE' })
+    repairLog.append({ taskId, sessionId: runId, type: 'RUNTIME_REPAIR_COMPLETED', reasonCode: 'PROVIDER_UNAVAILABLE' })
+    repairedState.taskEventLogs = { ...(repairedState.taskEventLogs ?? {}), [taskId]: [...repairLog.events] }
     snapshot.value = repairedState as unknown as Record<string, string>
     await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
     this.latestState = repairedState
@@ -973,6 +984,10 @@ export class WorkSessionRuntime {
       pendingVerificationApproval: { ...pending, status: 'APPROVED' },
       updatedAt: new Date().toISOString(),
     }
+    const approvalLog = new TaskEventLogV2(approved.taskEventLogs?.[pending.taskId])
+    approvalLog.append({ taskId: pending.taskId, sessionId: runId, type: 'HUMAN_ACTION_RECORDED', metadata: { action: 'APPROVAL' } })
+    approvalLog.append({ taskId: pending.taskId, sessionId: runId, type: 'HUMAN_DECISION_RECORDED', metadata: { approval: true } })
+    approved.taskEventLogs = { ...(approved.taskEventLogs ?? {}), [pending.taskId]: [...approvalLog.events] }
     snapshot.value = approved as unknown as Record<string, string>
     await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
     this.latestState = approved
@@ -1406,6 +1421,19 @@ export class WorkSessionRuntime {
 
         // 使用本地变量追踪最新状态
         let currentState = state
+        if (currentState.currentTaskId !== null && (resumeData?.decision !== undefined || resumeData?.approval !== undefined)) {
+          const resumedTaskId = currentState.currentTaskId
+          const log = new TaskEventLogV2(currentState.taskEventLogs?.[resumedTaskId])
+          const base = { taskId: resumedTaskId, sessionId: currentState.sessionId } as const
+          log.append({ ...base, type: 'HUMAN_ACTION_RECORDED', metadata: { action: 'RESUME' } })
+          log.append({ ...base, type: 'HUMAN_DECISION_RECORDED', metadata: {
+            ...(resumeData.decision === undefined ? {} : { decision: resumeData.decision }),
+            ...(resumeData.approval === undefined ? {} : { approval: resumeData.approval }),
+          } })
+          currentState = { ...currentState, taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [resumedTaskId]: [...log.events] }, updatedAt: new Date().toISOString() }
+          await setState(currentState)
+          self.latestState = currentState
+        }
 
         // W004-B: 恢复（suspend 已清空 segment start）时重新开始 active segment。
         // 首次 start 已在 initialState 设置 segment start，此处不会重复触发。
@@ -1991,8 +2019,22 @@ export class WorkSessionRuntime {
               : sameApprovedCommand
                 ? existingVerificationApproval
                 : newVerificationApproval ?? existingVerificationApproval
+            if (taskEventLog !== undefined) {
+              taskEventLog.append({
+                taskId: task.id,
+                sessionId: currentState.sessionId,
+                type: 'HUMAN_REQUIRED',
+                reasonCode: result.humanRequired?.category === 'REPO_DRIFT'
+                  ? 'REPOSITORY_RECONCILIATION_REQUIRED'
+                  : 'HUMAN_DECISION_REQUIRED',
+                metadata: { category: result.humanRequired?.category ?? 'UNKNOWN' },
+              })
+            }
             const suspendedState: WorkflowState = {
               ...currentState,
+              ...(taskEventLog === undefined
+                ? {}
+                : { taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [task.id]: [...taskEventLog.events] } }),
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
               brainFailure: undefined,
@@ -2045,8 +2087,15 @@ export class WorkSessionRuntime {
               ...(result.failureStage === undefined ? {} : { failureStage: result.failureStage }),
               ...(result.failureCategory === undefined ? {} : { failureCategory: result.failureCategory }),
             })
+            if (taskEventLog !== undefined) {
+              taskEventLog.append({ taskId: task.id, sessionId: currentState.sessionId, type: 'TASK_FAILED',
+                metadata: { failureCategory: failure.failureCategory, failureStage: failure.failureStage } })
+            }
             const failedState: WorkflowState = {
               ...currentState,
+              ...(taskEventLog === undefined
+                ? {}
+                : { taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [task.id]: [...taskEventLog.events] } }),
               state: 'FAILED',
               failureReason,
               failureStage: failure.failureStage,
@@ -2281,6 +2330,7 @@ export class WorkSessionRuntime {
     this.ledger = undefined
     this.scheduleStore?.close()
     this.scheduleStore = undefined
+    this.config.analyticsProjector?.store.close()
     const storage = this.mastra.getStorage()
     if (storage) {
       await storage.close()
@@ -2673,10 +2723,38 @@ export class WorkSessionRuntime {
     state: WorkSessionDurableState,
     forceSafeReason: boolean,
   ): void {
+    this.projectTerminalAnalytics(state)
     this.scheduleHumanRequiredNotification(state, forceSafeReason)
     this.scheduleRecoveryRequiredNotification(state)
     this.scheduleCompletedNotification(state)
     this.scheduleFailedNotification(state)
+  }
+
+  private projectTerminalAnalytics(state: WorkSessionDurableState): void {
+    const projector = this.config.analyticsProjector
+    if (projector === undefined || (state.state !== 'COMPLETED' && state.state !== 'FAILED')) return
+    for (const definitionTask of this.config.definition.tasks) {
+      const task = state.taskStatesV2?.[definitionTask.id]
+      if (task === undefined || (task.status !== 'COMPLETED' && task.status !== 'FAILED')) continue
+      try {
+        const summary = projector.project({
+          definition: this.config.definition,
+          state,
+          task,
+          events: state.taskEventLogs?.[definitionTask.id] ?? [],
+          finalStatus: task.status,
+          commitHash: state.checkpointCommits?.[definitionTask.id] ?? null,
+        })
+        this.analyticsSummaries.set(definitionTask.id, summary)
+      } catch (error) {
+        try {
+          projector.store.recordDiagnostic({ sessionId: state.sessionId, taskId: definitionTask.id,
+            operation: 'TERMINAL_PROJECTION', message: error instanceof Error ? error.message : String(error) })
+        } catch {
+          // Analytics is an observability side channel and must stay fail-open.
+        }
+      }
+    }
   }
 
   private scheduleRecoveryRequiredNotification(state: WorkSessionDurableState): void {
@@ -2841,8 +2919,8 @@ export class WorkSessionRuntime {
 
   private scheduleCompletedNotification(state: WorkSessionDurableState): void {
     if (
-      this.config.notifier?.notifyCompleted === undefined ||
-      this.config.notifyOnCompleted !== true ||
+      (this.config.notifier?.notifyCompleted === undefined && this.config.terminalNotifier?.notifyCompleted === undefined) ||
+      (this.config.notifyOnCompleted !== true && this.config.terminalNotifier === undefined) ||
       state.state !== 'COMPLETED' ||
       state.completionReason !== 'ALL_TASKS_COMPLETED' ||
       state.completionNotificationAttempted === true
@@ -2858,7 +2936,7 @@ export class WorkSessionRuntime {
   }
 
   private async deliverCompletedNotification(): Promise<void> {
-    const notifier = this.config.notifier
+    const notifier = this.config.notifier ?? this.config.terminalNotifier
     if (notifier?.notifyCompleted === undefined) return
     const claimed = await this.persistCompletionNotificationFlag('completionNotificationAttempted')
     if (!claimed) return
@@ -2867,9 +2945,14 @@ export class WorkSessionRuntime {
     if (state === undefined || state.state !== 'COMPLETED' || state.completionReason !== 'ALL_TASKS_COMPLETED') {
       return
     }
+    const reportUrl = this.config.localControlUrl?.()
     const notification = createWorkSessionCompletedNotification({
       definition: this.config.definition,
       state,
+      ...(this.analyticsSummaries.get(state.completedTaskIds.at(-1) ?? '') === undefined
+        ? {}
+        : { analytics: this.analyticsSummaries.get(state.completedTaskIds.at(-1) ?? '')! }),
+      ...(reportUrl === undefined ? {} : { reportUrl }),
     })
     let sent = false
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -2903,7 +2986,7 @@ export class WorkSessionRuntime {
 
   private scheduleFailedNotification(state: WorkSessionDurableState): void {
     if (
-      this.config.notifier?.notifyFailed === undefined ||
+      (this.config.notifier?.notifyFailed === undefined && this.config.terminalNotifier?.notifyFailed === undefined) ||
       state.state !== 'FAILED' ||
       state.failureStage === undefined ||
       state.failureCategory === undefined ||
@@ -2923,7 +3006,7 @@ export class WorkSessionRuntime {
   }
 
   private async deliverFailedNotification(): Promise<void> {
-    const notifier = this.config.notifier
+    const notifier = this.config.notifier ?? this.config.terminalNotifier
     if (notifier?.notifyFailed === undefined) return
     const state = this.getDurableState()
     if (
@@ -2939,6 +3022,10 @@ export class WorkSessionRuntime {
       definition: this.config.definition,
       state,
       ...(localControlUrl === undefined ? {} : { localControlUrl }),
+      ...(state.currentTaskId === null || this.analyticsSummaries.get(state.currentTaskId) === undefined
+        ? {}
+        : { analytics: this.analyticsSummaries.get(state.currentTaskId)! }),
+      ...(localControlUrl === undefined ? {} : { reportUrl: localControlUrl }),
     })
     let sent = false
     for (let attempt = 0; attempt < 2; attempt++) {

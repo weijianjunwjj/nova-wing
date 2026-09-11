@@ -35,8 +35,8 @@ export interface ScenarioResult {
 export interface CertificationScenario {
   id: string
   title: string
-  group: 'control' | 'risk' | 'recovery' | 'compatibility'
-  run(ctx: ScenarioContext): Promise<void>
+  group?: 'control' | 'risk' | 'recovery' | 'compatibility'
+  run(ctx: ScenarioContext): Promise<void> | void
 }
 
 /** Implementer agent with a stable, trusted runtime identity. */

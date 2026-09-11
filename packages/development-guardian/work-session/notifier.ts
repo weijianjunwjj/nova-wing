@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 
 import type { HumanRequired, WorkSessionDefinition, WorkSessionDurableState } from './model.js'
+import type { TaskRunSummary } from './task-run-analytics.js'
 import {
   safeFailureMessage,
   type WorkSessionFailureCategory,
@@ -36,6 +37,8 @@ export interface WorkSessionCompletedNotification {
   completedTaskIds: readonly string[]
   completionReason: 'ALL_TASKS_COMPLETED'
   activeElapsedMs?: number
+  analytics?: TaskRunSummary
+  reportUrl?: string
 }
 
 export interface WorkSessionFailedNotification {
@@ -51,6 +54,8 @@ export interface WorkSessionFailedNotification {
   safeReason: string
   activeElapsedMs?: number
   control: { localUrl?: string }
+  analytics?: TaskRunSummary
+  reportUrl?: string
 }
 
 export interface WorkSessionRecoveryRequiredNotification {
@@ -201,6 +206,8 @@ export function createWorkSessionRecoveryRequiredNotification(input: {
 export function createWorkSessionCompletedNotification(input: {
   definition: WorkSessionDefinition
   state: WorkSessionDurableState
+  analytics?: TaskRunSummary
+  reportUrl?: string
 }): WorkSessionCompletedNotification {
   if (input.state.state !== 'COMPLETED' || input.state.completionReason !== 'ALL_TASKS_COMPLETED') {
     throw new Error('completion notification requires ALL_TASKS_COMPLETED state')
@@ -215,6 +222,8 @@ export function createWorkSessionCompletedNotification(input: {
     completedTaskIds: [...input.state.completedTaskIds],
     completionReason: 'ALL_TASKS_COMPLETED',
     ...(input.state.activeElapsedMs === undefined ? {} : { activeElapsedMs: input.state.activeElapsedMs }),
+    ...(input.analytics === undefined ? {} : { analytics: input.analytics }),
+    ...(input.reportUrl === undefined ? {} : { reportUrl: input.reportUrl }),
   }
 }
 
@@ -225,6 +234,8 @@ export function createWorkSessionFailedNotification(input: {
   definition: WorkSessionDefinition
   state: WorkSessionDurableState
   localControlUrl?: string
+  analytics?: TaskRunSummary
+  reportUrl?: string
 }): WorkSessionFailedNotification {
   if (
     input.state.state !== 'FAILED' ||
@@ -251,6 +262,8 @@ export function createWorkSessionFailedNotification(input: {
       ? {}
       : { activeElapsedMs: input.state.activeElapsedMs }),
     control: { ...(localUrl === undefined ? {} : { localUrl }) },
+    ...(input.analytics === undefined ? {} : { analytics: input.analytics }),
+    ...(input.reportUrl === undefined ? {} : { reportUrl: input.reportUrl }),
   }
 }
 

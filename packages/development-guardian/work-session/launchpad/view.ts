@@ -96,7 +96,13 @@ export function renderLaunchpadHtml(input: {
     serverOrigin: input.serverOrigin,
     initialExecutorMode,
   }).replaceAll('<', '\\u003c')
-  const content = `<section class="session-grid" data-session-list aria-label="Trusted Work Sessions"${input.configs.length === 0 ? ' hidden' : ''}>
+  const content = `<section class="analytics-panel" aria-label="最近任务统计">
+        <div class="analytics-head"><div><p class="eyebrow">TASK RUN ANALYTICS</p><h2>最近任务</h2></div>
+        <label>范围<select data-analytics-limit><option value="5">最近 5 个</option><option value="10">最近 10 个</option><option value="20">最近 20 个</option></select></label></div>
+        <div class="analytics-grid" data-analytics-summary><p>正在读取运行统计…</p></div>
+        <div data-analytics-runs></div>
+      </section>
+      <section class="session-grid" data-session-list aria-label="Trusted Work Sessions"${input.configs.length === 0 ? ' hidden' : ''}>
         ${input.configs.map(renderCard).join('\n')}
       </section>
       ${renderEmptyState(input.configs.length > 0)}`
@@ -238,6 +244,27 @@ export const LAUNCHPAD_APP_JS = `
       }
     } catch { /* A disconnected page does not own scheduling. */ }
   }, 10000)
+  const analyticsLimit = document.querySelector('[data-analytics-limit]')
+  const analyticsSummary = document.querySelector('[data-analytics-summary]')
+  const analyticsRuns = document.querySelector('[data-analytics-runs]')
+  const durationZh = (ms) => ms == null ? '未知' : Math.round(ms / 60000) + ' 分钟'
+  const loadAnalytics = async () => {
+    if (!analyticsLimit || !analyticsSummary || !analyticsRuns) return
+    try {
+      const response = await fetch('/api/analytics/recent?limit=' + analyticsLimit.value)
+      if (!response.ok) throw new Error('unavailable')
+      const result = await response.json(), a = result.aggregate
+      const rate = a.zeroHumanCompletionRate == null ? '未知' : Math.round(a.zeroHumanCompletionRate * 100) + '%'
+      const values = [['完成', a.completedCount + ' / ' + a.taskCount], ['零人工完成', a.zeroHumanCompletionCount + ' / ' + a.taskCount + ' · ' + rate],
+        ['首次通过', a.firstPassSuccessCount + ' / ' + a.taskCount], ['人工决策', a.humanDecisionCount + ' 次'], ['AI 修复', a.aiRepairCount + ' 次'],
+        ['运行时修复', a.runtimeRepairCount + ' 次'], ['平均总耗时', durationZh(a.averageTotalDurationMs)], ['平均执行耗时', durationZh(a.averageExecuteDurationMs)],
+        ['平均审查耗时', durationZh(a.averageReviewDurationMs)], ['验证失败', a.verificationFailureCount + ' 次'], ['审查失败', a.reviewFailureCount + ' 次'], ['Provider 切换', a.providerSwitchCount + ' 次']]
+      analyticsSummary.replaceChildren(...values.map(([label, value]) => { const item=document.createElement('div'); const name=document.createElement('span'); const data=document.createElement('strong'); name.textContent=label; data.textContent=value; item.append(name,data); return item }))
+      analyticsRuns.replaceChildren(...result.summaries.map((run) => { const details=document.createElement('details'); const title=document.createElement('summary'); title.textContent=run.taskId + ' · ' + (run.finalStatus==='COMPLETED'?'已完成':run.finalStatus==='FAILED'?'失败':run.finalStatus) + ' · ' + durationZh(run.totalDurationMs); const body=document.createElement('p'); body.textContent='执行 Provider：' + (run.implementerProviders.join('、')||'未知') + '｜审查 Provider：' + (run.reviewerProviders.join('、')||'无') + '｜人工决策：' + run.humanDecisionCount + ' 次｜首次通过：' + (run.firstPassSuccess==null?'未知':run.firstPassSuccess?'是':'否') + '｜Commit：' + (run.commitHash ? run.commitHash.slice(0,8) : run.commitResult); details.append(title,body); return details }))
+    } catch { analyticsSummary.textContent='运行统计暂不可用；不会影响 Task 执行。'; analyticsRuns.replaceChildren() }
+  }
+  analyticsLimit?.addEventListener('change', loadAnalytics)
+  void loadAnalytics()
   const buttons = Array.from(document.querySelectorAll('[data-config-id]'))
   for (const button of buttons) {
     button.addEventListener('click', async () => {
@@ -811,6 +838,18 @@ body {
   gap: 22px;
   align-items: start;
 }
+.analytics-panel { margin-bottom: 24px; padding: 24px; border: 1px solid rgba(151,170,202,.14); border-radius: 18px; background: rgba(18,23,33,.82); }
+.analytics-head { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.analytics-head h2 { margin:0; }
+.analytics-head label { color:#9da8b9; font-size:12px; }
+.analytics-head select { margin-left:8px; }
+.analytics-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:18px; }
+.analytics-grid div { padding:12px; border-radius:10px; background:rgba(146,183,255,.06); }
+.analytics-grid span,.analytics-grid strong { display:block; }
+.analytics-grid span { color:#7f899a; font-size:11px; }
+.analytics-grid strong { margin-top:5px; color:#e5ebf5; }
+[data-analytics-runs] details { margin-top:10px; color:#c7cfdb; }
+[data-analytics-runs] p { color:#8f9aad; }
 
 .composer {
   margin-bottom: 34px;
@@ -1063,6 +1102,7 @@ footer {
   body { min-width: 0; }
   .shell { width: min(100% - 32px, 680px); padding-top: 28px; }
   .session-grid { grid-template-columns: 1fr; }
+  .analytics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .composer-grid, .composer-grid:has([data-deepseek-model][hidden]) { grid-template-columns: 1fr; }
   .system-ready span { display: none; }
 }

@@ -62,6 +62,7 @@
     "guardian:notification:setup": "npm run build && node scripts/guardian-notification-setup.mjs",
     "guardian:repair-notification:smoke": "npm run build && node scripts/guardian-repair-notification-smoke.mjs",
     "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
+    "analytics:backfill": "npm run build && node scripts/analytics-backfill.mjs",
     "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
   },
   "devDependencies": {
