@@ -2,11 +2,19 @@ import { readFile, writeFile } from 'node:fs/promises'
 
 const runnerPath = new URL('../packages/development-guardian/work-session/v2-controller-task-runner.ts', import.meta.url)
 const indexPath = new URL('../packages/development-guardian/work-session/index.ts', import.meta.url)
+const gatePath = new URL('../packages/development-guardian/work-session/learning-gate.ts', import.meta.url)
 
 function replaceExactly(source, before, after, label) {
   const count = source.split(before).length - 1
   if (count !== 1) throw new Error(`${label}: expected exactly one anchor, found ${count}`)
   return source.replace(before, after)
+}
+
+let gate = await readFile(gatePath, 'utf8')
+const unusedLearningStageHelper = "function withLearningStage(task: TaskStateV2, stage: StrictLearningStage): readonly string[] {\n  return [...withoutLearningStage(task.decisions), `${STAGE_PREFIX}${stage}`]\n}\n\n"
+if (gate.includes(unusedLearningStageHelper)) {
+  gate = gate.replace(unusedLearningStageHelper, '')
+  await writeFile(gatePath, gate)
 }
 
 let runner = await readFile(runnerPath, 'utf8')
