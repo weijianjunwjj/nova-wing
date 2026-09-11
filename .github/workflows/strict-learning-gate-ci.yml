@@ -30,8 +30,18 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Build production and tests
+        run: |
+          npm run build
+          npm run build:tests
+
+      - name: Strict learning and adjacent V2 regression tests
+        run: |
+          node --test --test-concurrency=1 \
+            dist-tests/tests/learning-gate.test.js \
+            dist-tests/tests/strict-learning-v2.test.js \
+            dist-tests/tests/v2-controller-task-runner.test.js \
+            dist-tests/tests/task-state-v2.test.js
 
       - name: Diff check
         run: git diff --check
