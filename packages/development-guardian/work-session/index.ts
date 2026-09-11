@@ -61,6 +61,9 @@ export * from './runtime-repair.js'
 export * from './runtime-repair-engine.js'
 export * from './runtime-repair-audit.js'
 export * from './runtime-repair-notifier.js'
+export * from './reviewer-runtime.js'
+export * from './review-dispatcher.js'
+export * from './reviewer-adapters.js'
 export type {
   SmtpTransportConfig,
   SmtpMailOptions,

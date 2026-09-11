@@ -64,18 +64,22 @@ export function createDeterministicRuntimeRepairAgent(
     id: 'deterministic-runtime-repair-agent',
     async repair(context) {
       const refreshed = await refresh(context)
-      if (refreshed.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW') {
+      // A pending REVIEW needs an independent reviewer whether the reviewer was never
+      // found or the reviewer runtime itself failed (OFFLINE / QUOTA / TIMEOUT).
+      const needsReviewer =
+        refreshed.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW' || refreshed.currentAction === 'REVIEW'
+      if (needsReviewer) {
         const discovery = discoverIndependentReviewer(refreshed)
         if (discovery.reviewer === undefined) {
           return requiresHuman(
-            'NO_AVAILABLE_AGENT_FOR_REVIEW',
+            context.reasonCode,
             `no independent reviewer available: ${discovery.exclusions.join('; ')}`,
           )
         }
         const reviewer = discovery.reviewer
         const identity = reviewer.identity ?? { agent: reviewer.id, provider: reviewer.id, runtimeIdentity: reviewer.id }
         return repaired(context, {
-          reasonCode: 'NO_AVAILABLE_AGENT_FOR_REVIEW',
+          reasonCode: context.reasonCode,
           mechanism: 'SELECT_INDEPENDENT_REVIEWER',
           chosenReviewer: { ...identity },
           refreshedProviderHealth: [...refreshed.providerHealth],
@@ -272,7 +276,12 @@ export function createRuntimeRepairEngine(options: RuntimeRepairEngineOptions = 
         return deterministicOutcome
       }
       if (deterministicOutcome.classification === 'NOVAWING_PRODUCT_BUG') return deterministicOutcome
-      if (!hasLlmRuntimeRepairableReason(context)) return deterministicOutcome
+      // Independent-reviewer availability is fully determined by capability, runtime
+      // identity, provider health and policy facts. A refusal there is final and is
+      // never escalated to a model.
+      const reviewerAvailabilityDetermined =
+        context.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW' || context.currentAction === 'REVIEW'
+      if (reviewerAvailabilityDetermined || !hasLlmRuntimeRepairableReason(context)) return deterministicOutcome
 
       const llmOutcome = await llm.repair(context)
       if (llmOutcome.classification === 'REPAIRED') {

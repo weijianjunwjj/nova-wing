@@ -30,6 +30,8 @@ export type RuntimeRepairReasonCode =
 export interface RuntimeRepairReviewerConstraints {
   requireIndependentReviewer: boolean
   excludeRuntimeIdentities: readonly string[]
+  /** 真实产生实现的 provider；reviewer 不得来自其中之一。 */
+  excludeProviders: readonly string[]
 }
 
 /** 一次 provider health / runtime availability 刷新产生的新事实。 */
@@ -142,6 +144,7 @@ export interface ReviewerDiscovery {
  */
 export function discoverIndependentReviewer(context: RuntimeRepairContext): ReviewerDiscovery {
   const implementerRuntimeIdentity = context.implementer?.runtimeIdentity
+  const excludedProviders = context.requiredReviewerConstraints.excludeProviders
   const exclusions: string[] = []
   for (const agent of context.agents) {
     const identity = identityOf(agent)
@@ -157,6 +160,10 @@ export function discoverIndependentReviewer(context: RuntimeRepairContext): Revi
     }
     if (context.requiredReviewerConstraints.excludeRuntimeIdentities.includes(identity.runtimeIdentity)) {
       exclusions.push(`${agent.id}: excluded by the independent review policy`)
+      continue
+    }
+    if (excludedProviders.includes(identity.provider)) {
+      exclusions.push(`${agent.id}: uses provider ${identity.provider}, which produced the implementation`)
       continue
     }
     return { reviewer: agent, exclusions }
@@ -184,14 +191,19 @@ export function validateRuntimeRepairProposal(
   ) {
     reasons.push(`unknown repair mechanism: ${proposal.mechanism}`)
   }
-  if (proposal.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW') {
+  // A reviewer may be selected only when the pending action is an independent REVIEW.
+  const reviewerSelectionAllowed =
+    proposal.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW' || context.currentAction === 'REVIEW'
+  if (reviewerSelectionAllowed) {
     const chosen = proposal.chosenReviewer
-    if (chosen === undefined) {
+    if (chosen === undefined && proposal.reasonCode === 'NO_AVAILABLE_AGENT_FOR_REVIEW') {
       reasons.push('NO_AVAILABLE_AGENT_FOR_REVIEW requires a chosen independent reviewer')
-    } else {
+    }
+    if (chosen !== undefined) {
       const match = context.agents.find((agent) => {
         const identity = identityOf(agent)
-        return identity.runtimeIdentity === chosen.runtimeIdentity && agent.capabilities.review === true
+        return identity.runtimeIdentity === chosen.runtimeIdentity && identity.provider === chosen.provider &&
+          agent.capabilities.review === true
       })
       if (match === undefined) {
         reasons.push('chosen reviewer is not a review-capable agent in the current agent set')
@@ -199,8 +211,10 @@ export function validateRuntimeRepairProposal(
       if (context.implementer !== undefined && chosen.runtimeIdentity === context.implementer.runtimeIdentity) {
         reasons.push('chosen reviewer shares the implementer runtime identity (self-review)')
       }
-      if (context.requiredReviewerConstraints.requireIndependentReviewer &&
-          context.implementer !== undefined && chosen.runtimeIdentity === context.implementer.runtimeIdentity) {
+      if (context.requiredReviewerConstraints.excludeProviders.includes(chosen.provider)) {
+        reasons.push(`chosen reviewer uses provider ${chosen.provider}, which produced the implementation`)
+      }
+      if (context.requiredReviewerConstraints.excludeRuntimeIdentities.includes(chosen.runtimeIdentity)) {
         reasons.push('chosen reviewer violates the independent review policy')
       }
     }

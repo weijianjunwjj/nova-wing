@@ -5,6 +5,7 @@ import { approvalContext, assessRisk, type ApprovalEvidence, type ReviewEvidence
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
+import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import {
@@ -65,9 +66,16 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[] }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
+}
+
+/** A reviewer runtime failure: an environment problem, never a verdict on the implementation. */
+export interface ReviewerProviderFailure {
+  provider: string
+  status: 'AVAILABLE' | 'DEGRADED' | 'QUOTA_EXHAUSTED' | 'TIMEOUT' | 'OFFLINE'
+  reason: string
 }
 
 function requiredCapability(action: TaskAction): keyof AgentCapabilityProfile['capabilities'] | undefined {
@@ -267,8 +275,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           completionEvidence: completionEvidence(state, verificationResults),
         }
       }
+      // REVIEW excludes its implementer and every provider that produced the
+      // implementation; independence is a capability fact, not a role assumption.
       const eligibleAgents = decision.action === 'REVIEW'
-        ? this.options.agents.filter((candidate) => candidate.identity !== undefined && candidate.identity.runtimeIdentity !== state.implementer?.runtimeIdentity)
+        ? this.options.agents.filter((candidate) => isIndependentReviewerCandidate(candidate, state))
         : this.options.agents
       let agent = selectAgent(decision.action, eligibleAgents, decision.action === 'REVIEW' ? undefined : previousAgent)
       // A Runtime Repair may have durably selected an independent reviewer whose static
@@ -367,6 +377,19 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       previousAgent = agent.id
       if (result.status === 'BLOCKED') {
         const commands = state.blockers.filter((b) => b.startsWith(VERIFICATION_APPROVAL_BLOCKER)).map((b) => b.slice(VERIFICATION_APPROVAL_BLOCKER.length))
+        // A reviewer runtime failure is an environment problem, not a verdict on the
+        // implementation. It stays REVIEW-pending so Runtime Repair can reselect a
+        // legal independent reviewer instead of re-running the Executor, and it must
+        // not leave a semantic blocker behind: the implementation is not blocked.
+        if (decision.action === 'REVIEW' && result.providerFailure !== undefined) {
+          const marker = result.providerFailure.status === 'OFFLINE' ? 'PROVIDER_OFFLINE' : 'PROVIDER_UNAVAILABLE'
+          state = { ...state, blockers: [], currentAction: 'REVIEW', status: 'SUSPENDED' }
+          note({ type: 'TASK_SUSPENDED', action: 'REVIEW', reasonCode: 'PROVIDER_UNAVAILABLE', ...repositoryFacts(state),
+            metadata: { provider: result.providerFailure.provider, providerStatus: result.providerFailure.status },
+            explanation: explanation('PROVIDER_UNAVAILABLE', 'REVIEW', { selectedProvider: result.providerFailure.provider }, [result.providerFailure.reason]) })
+          return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ENVIRONMENT_REQUIRED',
+            reason: `${marker}: reviewer ${result.providerFailure.provider} is ${result.providerFailure.status}: ${result.providerFailure.reason}` }, taskStateV2: state }
+        }
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'DECISION_REQUIRED', reason: state.blockers[0] ?? decision.reason }, taskStateV2: state,
           ...(commands.length === 1 ? { pendingVerificationCommand: commands[0]! } : {}) }
       }

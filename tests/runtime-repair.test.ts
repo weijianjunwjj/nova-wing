@@ -37,7 +37,7 @@ function context(overrides: Partial<RuntimeRepairContext> = {}): RuntimeRepairCo
     reasonCode: 'NO_AVAILABLE_AGENT_FOR_REVIEW',
     humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: 'no available agent for REVIEW' },
     implementer: implementer.identity!,
-    requiredReviewerConstraints: { requireIndependentReviewer: true, excludeRuntimeIdentities: ['R1'] },
+    requiredReviewerConstraints: { requireIndependentReviewer: true, excludeRuntimeIdentities: ['R1'], excludeProviders: ['codex'] },
     agents: [implementer, reviewer],
     providerHealth: [],
     evidence: [], blockers: [], recentEvents: [],

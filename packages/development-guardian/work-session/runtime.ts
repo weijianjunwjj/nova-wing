@@ -74,6 +74,7 @@ import {
   type RuntimeRepairRefresh,
   type RuntimeRepairReasonCode,
 } from './runtime-repair.js'
+import { implementerProvidersOf } from './reviewer-runtime.js'
 import type { RuntimeRepairAuditSink } from './runtime-repair-audit.js'
 import { runtimeRepairNotificationFrom, runtimeRepairCompletionNotification, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 
@@ -815,6 +816,16 @@ export class WorkSessionRuntime {
 
     const resumed = await this.resume({})
     await audit?.record({ ...baseAudit, event: 'SESSION_RESUMED_AFTER_REPAIR', chosenReviewer: proposal.chosenReviewer })
+    // A resumed session that suspends again did not recover: the repair must not be
+    // reported as a success, and the new environment failure needs its own reason.
+    if (resumed.state === 'SUSPENDED' || resumed.state === 'FAILED') {
+      const reason = resumed.humanRequired?.reason ?? resumed.safeFailureMessage ?? 'the resumed session suspended again'
+      const unresolved = { classification: 'RUNTIME_REPAIR_REQUIRES_HUMAN' as const, reasonCode, reason, executorReran: false }
+      this.lastRuntimeRepairOutcome = unresolved
+      await audit?.record({ ...baseAudit, event: 'RUNTIME_REPAIR_FAILED', classification: unresolved.classification, reason })
+      await capability.notifier?.notify(runtimeRepairNotificationFrom(runId, unresolved))
+      return resumed
+    }
     await capability.notifier?.notify(runtimeRepairNotificationFrom(runId, outcome))
     if (resumed.state === 'COMPLETED') {
       await capability.notifier?.notify(runtimeRepairCompletionNotification(runId))
@@ -842,6 +853,7 @@ export class WorkSessionRuntime {
       requiredReviewerConstraints: {
         requireIndependentReviewer: true,
         excludeRuntimeIdentities: task.implementer === undefined ? [] : [task.implementer.runtimeIdentity],
+        excludeProviders: implementerProvidersOf(task),
       },
       agents,
       providerHealth,

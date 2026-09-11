@@ -203,7 +203,7 @@ export const s36: CertificationScenario = {
       reasonCode: 'NO_AVAILABLE_AGENT_FOR_REVIEW',
       humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: 'no available agent for REVIEW' },
       implementer: implementer.identity!,
-      requiredReviewerConstraints: { requireIndependentReviewer: true, excludeRuntimeIdentities: [implementer.identity!.runtimeIdentity] },
+      requiredReviewerConstraints: { requireIndependentReviewer: true, excludeRuntimeIdentities: [implementer.identity!.runtimeIdentity], excludeProviders: ['codex'] },
       agents: [implementer],
       providerHealth: [],
       evidence: [], blockers: [], recentEvents: [],
