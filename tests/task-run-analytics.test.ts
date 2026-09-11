@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
 import {
@@ -76,6 +77,16 @@ test('真实用户 decision 与 approval 使 zero-human completion 为 false', (
   assert.equal(summary.humanInterventionCount,1);assert.equal(summary.humanDecisionCount,1);assert.equal(summary.zeroHumanCompletion,false)
 })
 
+test('zero_human_completion 只对 COMPLETED 适用，暂停任务必须显示不适用而非是', () => {
+  const suspended: TaskStateV2 = { ...task(), status: 'SUSPENDED', currentAction: 'SUSPEND' }
+  const events=[event(1,0,'TASK_CREATED'),event(2,1,'HUMAN_REQUIRED'),event(3,2,'TASK_SUSPENDED')]
+  const summary=projectTaskRun(input(events,{task:suspended,state:state({state:'SUSPENDED',completedAt:new Date('2026-01-01T00:00:05.000Z')})})).summary
+  const report=renderChineseTaskRunReport(summary)
+  assert.equal(summary.finalStatus,'SUSPENDED');assert.equal(summary.humanDecisionCount,0);assert.equal(summary.zeroHumanCompletion,null)
+  assert.match(report,/最终结果：已暂停/u);assert.match(report,/实际人工决策：0 次/u);assert.match(report,/是否零人工完成：不适用/u)
+  assert.doesNotMatch(report,/是否零人工完成：是/u)
+})
+
 test('VERIFY/REVIEW failure 后重新 EXECUTE 才算 implementation first-pass failure；Provider failover 不算', () => {
   const failed=[event(1,0,'TASK_CREATED'),event(2,1,'AGENT_DISPATCHED',{action:'EXECUTE',provider:'codex'}),event(3,2,'AGENT_COMPLETED',{action:'EXECUTE'}),event(4,3,'VERIFICATION_STARTED'),event(5,4,'VERIFICATION_FAILED'),event(6,5,'AGENT_DISPATCHED',{action:'EXECUTE',provider:'codex'}),event(7,7,'AGENT_COMPLETED',{action:'EXECUTE'}),event(8,9,'TASK_COMPLETED')]
   assert.equal(projectTaskRun(input(failed)).summary.firstPassSuccess,false)
@@ -112,6 +123,100 @@ test('最近 5/10/20 聚合与 reasonCode 统计由 SQLite query 产生', async 
   try { for(let i=0;i<12;i++){const d={...definition,id:`S-${i}`,tasks:[{id:`T-${i}`,goal:'x'}]};const t={...task(),identity:{sessionId:d.id,taskId:`T-${i}`}};const events=[{...event(1,0,'TASK_CREATED'),sessionId:d.id,taskId:t.identity.taskId,reasonCode:'PROVIDER_UNAVAILABLE' as const},{...event(2,2,'TASK_COMPLETED'),sessionId:d.id,taskId:t.identity.taskId}];projector.project({definition:d,state:{...state(),sessionId:d.id,taskStatesV2:{[t.identity.taskId]:t}},task:t,events,now:`2026-01-${String(i+1).padStart(2,'0')}T00:00:00.000Z`})}
     assert.equal(store.recent(5).aggregate.taskCount,5);assert.equal(store.recent(10).aggregate.taskCount,10);assert.equal(store.recent(20).aggregate.taskCount,12)
     assert.deepEqual(store.reasons(20)[0],{reasonCode:'PROVIDER_UNAVAILABLE',count:12})
+  } finally {store.close();await rm(dir,{recursive:true,force:true})}
+})
+
+test('最近统计的零人工完成只统计 COMPLETED，恒有零人工完成数 <= 完成数', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'novawing-analytics-'));const store=new TaskRunAnalyticsStore(join(dir,'analytics.db'));const projector=new TaskRunAnalyticsProjector(store)
+  try {
+    const cases=[
+      { id:'C-zero',status:'COMPLETED' as const,currentAction:'COMPLETE' as const,events:[event(1,0,'TASK_CREATED'),event(2,2,'TASK_COMPLETED')] },
+      { id:'C-human',status:'COMPLETED' as const,currentAction:'COMPLETE' as const,events:[event(1,0,'TASK_CREATED'),event(2,1,'HUMAN_DECISION_RECORDED'),event(3,2,'TASK_COMPLETED')] },
+      { id:'S-suspend',status:'SUSPENDED' as const,currentAction:'SUSPEND' as const,events:[event(1,0,'TASK_CREATED'),event(2,1,'HUMAN_REQUIRED'),event(3,2,'TASK_SUSPENDED')] },
+    ]
+    for(const [index,item] of cases.entries()) {
+      const d={...definition,id:`S-${item.id}`,tasks:[{id:`T-${item.id}`,goal:'x'}]}
+      const t:TaskStateV2={...task(),identity:{sessionId:d.id,taskId:`T-${item.id}`},status:item.status,currentAction:item.currentAction}
+      const events=item.events.map((value)=>({...value,sessionId:d.id,taskId:t.identity.taskId}))
+      projector.project({definition:d,state:{...state(),sessionId:d.id,taskStatesV2:{[t.identity.taskId]:t}},task:t,events,now:`2026-02-0${index+1}T00:00:00.000Z`})
+    }
+    const { aggregate }=store.recent(5)
+    assert.equal(aggregate.taskCount,3);assert.equal(aggregate.completedCount,2);assert.equal(aggregate.zeroHumanCompletionCount,1)
+    assert.equal(aggregate.zeroHumanCompletionRate,0.5)
+    assert.ok(aggregate.zeroHumanCompletionCount<=aggregate.completedCount)
+    assert.equal(store.findByTask('T-S-suspend')[0]?.zeroHumanCompletion,null)
+  } finally {store.close();await rm(dir,{recursive:true,force:true})}
+})
+
+test('常见问题只统计 actionable reason，全量原因查询仍返回普通决策原因', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'novawing-analytics-'));const store=new TaskRunAnalyticsStore(join(dir,'analytics.db'));const projector=new TaskRunAnalyticsProjector(store)
+  const withReason=(eventId:number,seconds:number,reasonCode:string):TaskEventV2=>({...event(eventId,seconds,'TASK_CREATED'),reasonCode:reasonCode as NonNullable<TaskEventV2['reasonCode']>})
+  try {
+    const cases=['CAPABILITY_MATCH','CAPABILITY_MISMATCH','COMPLETION_CRITERIA_SATISFIED','TASK_NOT_STARTED','PROVIDER_UNAVAILABLE','PROVIDER_UNAVAILABLE','REVIEW_FAILED','VERIFICATION_FAILED','ACCEPTANCE_EVIDENCE_BINDING_MISSING','UNKNOWN_FUTURE_REASON']
+    for(const [index,reasonCode] of cases.entries()) {
+      const d={...definition,id:`S-r${index}`,tasks:[{id:`T-r${index}`,goal:'x'}]}
+      const t={...task(),identity:{sessionId:d.id,taskId:`T-r${index}`}}
+      projector.project({definition:d,state:{...state(),sessionId:d.id,taskStatesV2:{[t.identity.taskId]:t}},task:t,
+        events:[{...withReason(1,0,reasonCode),sessionId:d.id,taskId:t.identity.taskId},{...event(2,2,'TASK_COMPLETED'),sessionId:d.id,taskId:t.identity.taskId}],now:'2026-03-01T00:00:00.000Z'})
+    }
+    assert.deepEqual(store.actionableReasons(20),[
+      {reasonCode:'PROVIDER_UNAVAILABLE',count:2},
+      {reasonCode:'ACCEPTANCE_EVIDENCE_BINDING_MISSING',count:1},
+      {reasonCode:'REVIEW_FAILED',count:1},
+      {reasonCode:'UNKNOWN_FUTURE_REASON',count:1},
+      {reasonCode:'VERIFICATION_FAILED',count:1},
+    ])
+    const all=store.reasons(50)
+    assert.equal(all.reduce((sum,entry)=>sum+entry.count,0),cases.length)
+    for(const normal of ['CAPABILITY_MATCH','CAPABILITY_MISMATCH','COMPLETION_CRITERIA_SATISFIED','TASK_NOT_STARTED']) {
+      assert.ok(all.some((entry)=>entry.reasonCode===normal),`${normal} 应仍在全量原因中`)
+      assert.ok(!store.actionableReasons(50).some((entry)=>entry.reasonCode===normal),`${normal} 不得进入常见问题`)
+    }
+  } finally {store.close();await rm(dir,{recursive:true,force:true})}
+})
+
+test('v1 数据库迁移到 v2：暂停行改为不适用，已完成行与子表行保持不变', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'novawing-analytics-'));const path=join(dir,'analytics.db')
+  const zeros=(count:number):number[]=>Array.from({length:count},()=>0)
+  const legacyRow=(taskId:string,finalStatus:string,zeroHuman:number,completionReason:string|null):Array<string|number|null>=>[
+    'S-old',taskId,'D:\\repo','main',null,'2026-01-01T00:00:10.000Z',finalStatus,completionReason,
+    10000,1,1000,1,1000,0,1,1000,0,...zeros(11),
+    '[]','[]',...zeros(2),'NOT_REQUESTED',null,1,1,finalStatus==='COMPLETED'?1:null,zeroHuman,
+    '2026-01-01T00:00:00.000Z','2026-01-01T00:00:10.000Z']
+  const legacy=new DatabaseSync(path)
+  legacy.exec(`CREATE TABLE task_run_analytics_migration(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+   CREATE TABLE task_run_summary(
+    session_id TEXT NOT NULL, task_id TEXT NOT NULL, project_path TEXT NOT NULL, branch TEXT NOT NULL,
+    started_at TEXT, finished_at TEXT, final_status TEXT NOT NULL, completion_reason TEXT, total_duration_ms INTEGER,
+    execute_count INTEGER NOT NULL, execute_duration_ms INTEGER NOT NULL, verify_count INTEGER NOT NULL, verify_duration_ms INTEGER NOT NULL,
+    verification_failure_count INTEGER NOT NULL, review_count INTEGER NOT NULL, review_duration_ms INTEGER NOT NULL, review_failure_count INTEGER NOT NULL,
+    ai_repair_count INTEGER NOT NULL, ai_repair_duration_ms INTEGER NOT NULL, runtime_repair_count INTEGER NOT NULL, runtime_repair_duration_ms INTEGER NOT NULL,
+    human_required_count INTEGER NOT NULL, human_intervention_count INTEGER NOT NULL, human_action_count INTEGER NOT NULL, human_decision_count INTEGER NOT NULL,
+    repair_triggered_by_user INTEGER NOT NULL, human_wait_duration_ms INTEGER NOT NULL, provider_switch_count INTEGER NOT NULL,
+    implementer_providers TEXT NOT NULL, reviewer_providers TEXT NOT NULL, restart_count INTEGER NOT NULL, reconciliation_count INTEGER NOT NULL,
+    commit_result TEXT NOT NULL, commit_hash TEXT, changed_file_count INTEGER, evidence_count INTEGER NOT NULL,
+    first_pass_success INTEGER, zero_human_completion INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY(session_id, task_id));
+   CREATE TABLE task_run_stage(session_id TEXT NOT NULL, task_id TEXT NOT NULL, stage TEXT NOT NULL, occurrence INTEGER NOT NULL,
+    started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, result TEXT, provider TEXT, reason_code TEXT,
+    PRIMARY KEY(session_id,task_id,stage,occurrence), FOREIGN KEY(session_id,task_id) REFERENCES task_run_summary(session_id,task_id) ON DELETE CASCADE);
+   CREATE TABLE task_run_reason(session_id TEXT NOT NULL, task_id TEXT NOT NULL, event_id TEXT NOT NULL, reason_code TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY(session_id,task_id,event_id,reason_code), FOREIGN KEY(session_id,task_id) REFERENCES task_run_summary(session_id,task_id) ON DELETE CASCADE);
+   CREATE TABLE task_run_analytics_diagnostic(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, task_id TEXT, operation TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
+   INSERT INTO task_run_analytics_migration VALUES(1,'2026-01-01T00:00:00.000Z');`)
+  const insert=legacy.prepare(`INSERT INTO task_run_summary VALUES(${Array.from({length:40},()=>'?').join(',')})`)
+  insert.run(...legacyRow('T-done','COMPLETED',1,'TASK_COMPLETED'))
+  insert.run(...legacyRow('T-susp','SUSPENDED',1,'NO_AVAILABLE_AGENT'))
+  legacy.prepare('INSERT INTO task_run_reason VALUES(?,?,?,?,?)').run('S-old','T-susp','e1','NO_AVAILABLE_AGENT','2026-01-01T00:00:10.000Z')
+  legacy.close()
+  const store=new TaskRunAnalyticsStore(path)
+  try {
+    assert.equal(store.findByTask('T-susp')[0]?.zeroHumanCompletion,null)
+    assert.equal(store.findByTask('T-done')[0]?.zeroHumanCompletion,true)
+    assert.deepEqual(store.reasons(10),[{reasonCode:'NO_AVAILABLE_AGENT',count:1}])
+    assert.deepEqual(store.actionableReasons(10),[{reasonCode:'NO_AVAILABLE_AGENT',count:1}])
+    const { aggregate }=store.recent(5)
+    assert.equal(aggregate.completedCount,1);assert.equal(aggregate.zeroHumanCompletionCount,1)
   } finally {store.close();await rm(dir,{recursive:true,force:true})}
 })
 

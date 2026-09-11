@@ -101,6 +101,7 @@ export function renderLaunchpadHtml(input: {
         <label>范围<select data-analytics-limit><option value="5">最近 5 个</option><option value="10">最近 10 个</option><option value="20">最近 20 个</option></select></label></div>
         <div class="analytics-grid" data-analytics-summary><p>正在读取运行统计…</p></div>
         <div data-analytics-runs></div>
+        <div data-analytics-reasons><p>正在读取常见问题…</p></div>
       </section>
       <section class="session-grid" data-session-list aria-label="Trusted Work Sessions"${input.configs.length === 0 ? ' hidden' : ''}>
         ${input.configs.map(renderCard).join('\n')}
@@ -247,7 +248,9 @@ export const LAUNCHPAD_APP_JS = `
   const analyticsLimit = document.querySelector('[data-analytics-limit]')
   const analyticsSummary = document.querySelector('[data-analytics-summary]')
   const analyticsRuns = document.querySelector('[data-analytics-runs]')
+  const analyticsReasons = document.querySelector('[data-analytics-reasons]')
   const durationZh = (ms) => ms == null ? '未知' : Math.round(ms / 60000) + ' 分钟'
+  const triZh = (value) => value == null ? '不适用' : value ? '是' : '否'
   const loadAnalytics = async () => {
     if (!analyticsLimit || !analyticsSummary || !analyticsRuns) return
     try {
@@ -255,13 +258,26 @@ export const LAUNCHPAD_APP_JS = `
       if (!response.ok) throw new Error('unavailable')
       const result = await response.json(), a = result.aggregate
       const rate = a.zeroHumanCompletionRate == null ? '未知' : Math.round(a.zeroHumanCompletionRate * 100) + '%'
-      const values = [['完成', a.completedCount + ' / ' + a.taskCount], ['零人工完成', a.zeroHumanCompletionCount + ' / ' + a.taskCount + ' · ' + rate],
+      const zeroHuman = a.completedCount === 0 ? '不适用' : a.zeroHumanCompletionCount + ' / ' + a.completedCount + ' · ' + rate
+      const values = [['完成', a.completedCount + ' / ' + a.taskCount], ['零人工完成', zeroHuman],
         ['首次通过', a.firstPassSuccessCount + ' / ' + a.taskCount], ['人工决策', a.humanDecisionCount + ' 次'], ['AI 修复', a.aiRepairCount + ' 次'],
         ['运行时修复', a.runtimeRepairCount + ' 次'], ['平均总耗时', durationZh(a.averageTotalDurationMs)], ['平均执行耗时', durationZh(a.averageExecuteDurationMs)],
         ['平均审查耗时', durationZh(a.averageReviewDurationMs)], ['验证失败', a.verificationFailureCount + ' 次'], ['审查失败', a.reviewFailureCount + ' 次'], ['Provider 切换', a.providerSwitchCount + ' 次']]
       analyticsSummary.replaceChildren(...values.map(([label, value]) => { const item=document.createElement('div'); const name=document.createElement('span'); const data=document.createElement('strong'); name.textContent=label; data.textContent=value; item.append(name,data); return item }))
-      analyticsRuns.replaceChildren(...result.summaries.map((run) => { const details=document.createElement('details'); const title=document.createElement('summary'); title.textContent=run.taskId + ' · ' + (run.finalStatus==='COMPLETED'?'已完成':run.finalStatus==='FAILED'?'失败':run.finalStatus) + ' · ' + durationZh(run.totalDurationMs); const body=document.createElement('p'); body.textContent='执行 Provider：' + (run.implementerProviders.join('、')||'未知') + '｜审查 Provider：' + (run.reviewerProviders.join('、')||'无') + '｜人工决策：' + run.humanDecisionCount + ' 次｜首次通过：' + (run.firstPassSuccess==null?'未知':run.firstPassSuccess?'是':'否') + '｜Commit：' + (run.commitHash ? run.commitHash.slice(0,8) : run.commitResult); details.append(title,body); return details }))
-    } catch { analyticsSummary.textContent='运行统计暂不可用；不会影响 Task 执行。'; analyticsRuns.replaceChildren() }
+      analyticsRuns.replaceChildren(...result.summaries.map((run) => { const details=document.createElement('details'); const title=document.createElement('summary'); title.textContent=run.taskId + ' · ' + (run.finalStatus==='COMPLETED'?'已完成':run.finalStatus==='FAILED'?'失败':run.finalStatus) + ' · ' + durationZh(run.totalDurationMs); const body=document.createElement('p'); body.textContent='执行 Provider：' + (run.implementerProviders.join('、')||'未知') + '｜审查 Provider：' + (run.reviewerProviders.join('、')||'无') + '｜零人工完成：' + triZh(run.zeroHumanCompletion) + '｜人工决策：' + run.humanDecisionCount + ' 次｜首次通过：' + (run.firstPassSuccess==null?'未知':run.firstPassSuccess?'是':'否') + '｜Commit：' + (run.commitHash ? run.commitHash.slice(0,8) : run.commitResult); details.append(title,body); return details }))
+      if (analyticsReasons) {
+        const reasonsResponse = await fetch('/api/analytics/reasons?class=actionable&limit=5')
+        const reasons = reasonsResponse.ok ? await reasonsResponse.json() : []
+        const items = Array.isArray(reasons) ? reasons : []
+        if (items.length === 0) { analyticsReasons.textContent = '最近范围内没有异常或修复原因。' }
+        else {
+          const heading = document.createElement('p'); heading.className = 'eyebrow'; heading.textContent = '常见问题 / 修复原因'
+          const list = document.createElement('ul')
+          for (const item of items) { const li = document.createElement('li'); li.textContent = item.reasonCode + ' · ' + item.count + ' 次'; list.append(li) }
+          analyticsReasons.replaceChildren(heading, list)
+        }
+      }
+    } catch { analyticsSummary.textContent='运行统计暂不可用；不会影响 Task 执行。'; analyticsRuns.replaceChildren(); analyticsReasons?.replaceChildren() }
   }
   analyticsLimit?.addEventListener('change', loadAnalytics)
   void loadAnalytics()
@@ -850,6 +866,9 @@ body {
 .analytics-grid strong { margin-top:5px; color:#e5ebf5; }
 [data-analytics-runs] details { margin-top:10px; color:#c7cfdb; }
 [data-analytics-runs] p { color:#8f9aad; }
+[data-analytics-reasons] { margin-top:14px; color:#c7cfdb; }
+[data-analytics-reasons] p { color:#8f9aad; }
+[data-analytics-reasons] ul { margin:6px 0 0; padding-left:18px; color:#c7cfdb; }
 
 .composer {
   margin-bottom: 34px;

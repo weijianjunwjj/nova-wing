@@ -22,17 +22,22 @@ test('Launchpad exposes stable task/session/recent/reasons Analytics APIs', asyn
   const task = { ...createTaskStateV2(definition, definition.tasks[0]!), status: 'COMPLETED' as const, currentAction: 'COMPLETE' }
   const state: WorkSessionDurableState = { sessionId: 'S-api', state: 'COMPLETED', currentTaskIndex: 1, currentTaskId: null, completedTaskIds: ['T-api'], taskStatesV2: { 'T-api': task }, createdAt: new Date(0), updatedAt: new Date(1000), completedAt: new Date(1000), completionReason: 'ALL_TASKS_COMPLETED' }
   const store = new TaskRunAnalyticsStore(analyticsPath)
-  new TaskRunAnalyticsProjector(store).project({ definition, state, task, events: [{ eventId: '1', sessionId: 'S-api', taskId: 'T-api', type: 'TASK_CREATED', timestamp: new Date(0).toISOString(), reasonCode: 'PROVIDER_UNAVAILABLE' }, { eventId: '2', sessionId: 'S-api', taskId: 'T-api', type: 'TASK_COMPLETED', timestamp: new Date(1000).toISOString() }] })
+  new TaskRunAnalyticsProjector(store).project({ definition, state, task, events: [{ eventId: '1', sessionId: 'S-api', taskId: 'T-api', type: 'TASK_CREATED', timestamp: new Date(0).toISOString(), reasonCode: 'PROVIDER_UNAVAILABLE' }, { eventId: '2', sessionId: 'S-api', taskId: 'T-api', type: 'TASK_CREATED', timestamp: new Date(500).toISOString(), reasonCode: 'COMPLETION_CRITERIA_SATISFIED' }, { eventId: '3', sessionId: 'S-api', taskId: 'T-api', type: 'TASK_COMPLETED', timestamp: new Date(1000).toISOString() }] })
   store.close()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: { analyticsPath, readCodexAvailability: () => ({ state: 'available' }) } })
   try {
     const address = await launchpad.start()
-    const recent = await fetch(`${address.url}/api/analytics/recent?limit=5`).then((response) => response.json()) as { aggregate: { taskCount: number } }
+    const recent = await fetch(`${address.url}/api/analytics/recent?limit=5`).then((response) => response.json()) as { aggregate: { taskCount: number; completedCount: number; zeroHumanCompletionCount: number; zeroHumanCompletionRate: number | null } }
     const session = await fetch(`${address.url}/api/analytics/sessions/S-api`).then((response) => response.json()) as unknown[]
     const taskRows = await fetch(`${address.url}/api/analytics/tasks/T-api`).then((response) => response.json()) as unknown[]
     const reasons = await fetch(`${address.url}/api/analytics/reasons?limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
+    const actionable = await fetch(`${address.url}/api/analytics/reasons?class=actionable&limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
+    const invalid = await fetch(`${address.url}/api/analytics/reasons?class=everything`)
     assert.equal(recent.aggregate.taskCount, 1); assert.equal(session.length, 1); assert.equal(taskRows.length, 1)
-    assert.deepEqual(reasons, [{ reasonCode: 'PROVIDER_UNAVAILABLE', count: 1 }])
+    assert.equal(recent.aggregate.completedCount, 1); assert.equal(recent.aggregate.zeroHumanCompletionCount, 1); assert.equal(recent.aggregate.zeroHumanCompletionRate, 1)
+    assert.deepEqual(reasons, [{ reasonCode: 'COMPLETION_CRITERIA_SATISFIED', count: 1 }, { reasonCode: 'PROVIDER_UNAVAILABLE', count: 1 }])
+    assert.deepEqual(actionable, [{ reasonCode: 'PROVIDER_UNAVAILABLE', count: 1 }])
+    assert.equal(invalid.status, 400)
   } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
 })
 

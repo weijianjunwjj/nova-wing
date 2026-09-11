@@ -705,10 +705,13 @@ export class NovaWingLaunchpad {
         this.respondJson(response, 200, store.recent(limit)); return
       }
       if (path === '/api/analytics/reasons') {
-        const raw = new URL(request.url ?? path, this.origin()).searchParams.get('limit') ?? '20'
+        const query = new URL(request.url ?? path, this.origin()).searchParams
+        const raw = query.get('limit') ?? '20'
         const limit = Number(raw)
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) { this.respondJson(response, 400, { error: 'limit must be between 1 and 100' }); return }
-        this.respondJson(response, 200, store.reasons(limit)); return
+        const reasonClass = query.get('class') ?? 'all'
+        if (reasonClass !== 'all' && reasonClass !== 'actionable') { this.respondJson(response, 400, { error: 'class must be all or actionable' }); return }
+        this.respondJson(response, 200, reasonClass === 'actionable' ? store.actionableReasons(limit) : store.reasons(limit)); return
       }
       const task = path.match(/^\/api\/analytics\/tasks\/([^/]+)$/u)
       if (task !== null) { const rows = store.findByTask(decodeURIComponent(task[1]!)); this.respondJson(response, rows.length === 0 ? 404 : 200, rows.length === 0 ? { error: 'not found' } : rows); return }
