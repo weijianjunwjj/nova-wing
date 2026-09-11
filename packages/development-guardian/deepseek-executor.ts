@@ -19,23 +19,38 @@ export class DeepSeekExecutor extends ClaudeCodeExecutor {
 
 /** Read only relevant config in memory. Never return or log secret values. */
 export async function hasDeepSeekRoute(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  const effective: NodeJS.ProcessEnv = { ...env }
-  const settings = [join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'),
-    join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')]
   try {
-    for (const path of settings) {
-      const text = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return undefined
-        throw error
-      })
-      if (text === undefined) continue
-      const value = JSON.parse(text) as { env?: Record<string, unknown> }
-      for (const [name, entry] of Object.entries(value.env ?? {})) if (typeof entry === 'string') effective[name] = entry
-    }
+    const effective = await resolveClaudeProviderEnvironment(cwd, env)
     if (['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some((key) => effective[key] === '1')) return false
     const endpoint = new URL(effective.ANTHROPIC_BASE_URL ?? '')
     return endpoint.protocol === 'https:' && endpoint.hostname === 'api.deepseek.com' &&
       endpoint.username === '' && endpoint.password === '' && (endpoint.port === '' || endpoint.port === '443') &&
       Boolean(effective.ANTHROPIC_AUTH_TOKEN?.trim() || effective.ANTHROPIC_API_KEY?.trim())
   } catch { return false }
+}
+
+/**
+ * Merge the local Claude CLI settings' `env` block into the given environment.
+ *
+ * The CLI reads these values itself, but a provider route also needs them when the
+ * process was started without them on its own environment (for example a reviewer
+ * spawned by NovaWing). The values are returned in memory only and are never logged.
+ */
+export async function resolveClaudeProviderEnvironment(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<NodeJS.ProcessEnv> {
+  const effective: NodeJS.ProcessEnv = { ...env }
+  const settings = [join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'),
+    join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')]
+  for (const path of settings) {
+    const text = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (text === undefined) continue
+    const value = JSON.parse(text) as { env?: Record<string, unknown> }
+    for (const [name, entry] of Object.entries(value.env ?? {})) if (typeof entry === 'string') effective[name] = entry
+  }
+  return effective
 }

@@ -9,6 +9,7 @@
 
 import type { WorkSessionDefinition, WorkSessionDurableState } from '../model.js'
 import type { ExecutionLedgerEvent } from '../execution-ledger.js'
+import type { RuntimeRepairOutcome } from '../runtime-repair.js'
 import type {
   WorkSessionDisplayState,
   WorkSessionRecoverySummary,
@@ -109,6 +110,13 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    /** v0.2.4: Runtime AI Repair availability + last outcome for failure display. */
+    runtimeRepair?: {
+      available: boolean
+      reasonCode?: string
+      inProgress: boolean
+      lastOutcome?: { classification: string; reason?: string }
+    }
     verificationFailure?: {
       command: string
       classification: string
@@ -197,6 +205,10 @@ export interface WorkSessionControlRuntime {
   resumeWithDurableVerificationApproval?(): Promise<WorkSessionDurableState>
   approvePendingVerificationAndContinue?(): Promise<WorkSessionDurableState>
   recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
+  /** v0.2.4: diagnose → repair → resume the same Session; never re-runs Executor. */
+  repairRuntimeAndResume?(): Promise<WorkSessionDurableState>
+  /** v0.2.4: last Runtime Repair outcome, for failure display. */
+  getRuntimeRepairOutcome?(): RuntimeRepairOutcome | undefined
   /** T021: 当前进程内是否真正启动/恢复过执行；用于区分持久化 state 与 runtime liveness。 */
   hasActiveExecution?(): boolean
   /** T021: 显式恢复 crash-遗留的 RUNNING session（无 suspend step）。 */

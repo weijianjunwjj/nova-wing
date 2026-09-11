@@ -37,6 +37,11 @@ export class TaskController {
     if (results.some((result) => result.status === 'failed')) return { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic verification failed' }
     if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
+    // A failed independent review is a verdict on the implementation, so the
+    // Controller sends the work back for revision. The reviewer never edits code.
+    if (task.completion.review !== undefined && task.completion.review.passed !== true) {
+      return { action: 'EXECUTE', reasonCode: 'REVIEW_FAILED', reason: 'independent review found blocking issues' }
+    }
     const policy = task.completion
     if ((risk.level === 'CRITICAL' || policy.bindings.some((b) => b.requiresApproval)) && !approvalSatisfied(task)) return { action: 'REQUEST_APPROVAL', reasonCode: 'RISK_REQUIRES_APPROVAL', reason: `approval required: ${risk.factors.join(', ') || 'acceptance policy'}` }
     if (risk.level === 'HIGH' && !reviewSatisfied(task)) return { action: 'REVIEW', reasonCode: 'RISK_REQUIRES_REVIEW', reason: `independent review required: ${risk.factors.join(', ')}` }
@@ -60,7 +65,13 @@ export class TaskController {
       // Repository Inspector, not a provider report, owns git reality.
       gitState: task.gitState,
       verificationState: { ...task.verificationState, results: verificationResults },
-      completion: verified === undefined ? task.completion : {
+      completion: verified === undefined
+        ? (action === 'EXECUTE' && result.status === 'SUCCESS'
+            // A revision invalidates the previous review; it was a verdict on code
+            // that no longer exists. The Controller must ask for REVIEW again.
+            ? { ...task.completion, review: undefined }
+            : task.completion)
+        : {
         ...task.completion,
         evidence: verified.map((item) => ({ type: item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
         // Bindings come only from the trusted task definition; a passed verifier

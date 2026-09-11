@@ -41,8 +41,8 @@ export interface TaskStateV2 {
   completion: {
     evidence: readonly EvidenceV2[]
     bindings: readonly AcceptanceEvidenceBinding[]
-    review?: ReviewEvidence
-    approval?: ApprovalEvidence
+    review?: ReviewEvidence | undefined
+    approval?: ApprovalEvidence | undefined
   }
   providerHistory: readonly string[]
   /** Provider transport details are not semantic recovery authority. */

@@ -150,6 +150,9 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/approve-verification') {
       return this.serveApproveVerification(req, res)
     }
+    if (method === 'POST' && path === '/api/session/runtime-repair') {
+      return this.serveRuntimeRepair(req, res)
+    }
     if (method === 'POST' && path === '/api/session/recover-checkpoint') {
       return this.serveRecoverCheckpoint(req, res)
     }
@@ -166,6 +169,7 @@ export class WorkSessionControlServer {
       '/api/session/resume',
       '/api/session/resume-recoverable',
       '/api/session/approve-verification',
+      '/api/session/runtime-repair',
       '/api/session/recover-checkpoint',
     ])
     if (knownPaths.has(path)) {
@@ -324,6 +328,17 @@ export class WorkSessionControlServer {
       const result = this.controller.approvePendingVerificationAndContinue()
       if (result.accepted) this.respondJson(res, 202, { accepted: true })
       else this.respondJson(res, 409, { error: result.reason ?? 'verification approval rejected' })
+    })
+  }
+
+  private serveRuntimeRepair(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) return
+    this.readBodyWithLimit(req, res, (body) => {
+      // The runtime owns diagnosis/repair/resume; the browser supplies no decision data.
+      if (body.trim().length !== 0) return this.respondJson(res, 400, { error: 'runtime repair body must be empty' })
+      const result = this.controller.repairRuntimeAndResume()
+      if (result.accepted) this.respondJson(res, 202, { accepted: true })
+      else this.respondJson(res, 409, { error: result.reason ?? 'runtime repair rejected' })
     })
   }
 

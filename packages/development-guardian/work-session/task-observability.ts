@@ -55,6 +55,7 @@ export type DecisionReasonCode =
   | 'CAPABILITY_MISMATCH'
   | 'INDEPENDENT_REVIEW_REQUIRED'
   | 'RISK_REQUIRES_REVIEW'
+  | 'REVIEW_FAILED'
   | 'RISK_REQUIRES_APPROVAL'
   | 'REPOSITORY_RECONCILIATION_REQUIRED'
   | 'VERIFICATION_FAILED'
@@ -329,6 +330,9 @@ export function dispatchMessage(input: { reasonCode: DecisionReasonCode; action:
   }
   if (reasonCode === 'RISK_REQUIRES_REVIEW') {
     return `${action} required because HIGH risk requires independent review.`
+  }
+  if (reasonCode === 'REVIEW_FAILED') {
+    return `${action} required because the independent review found blocking issues.`
   }
   if (reasonCode === 'RISK_REQUIRES_APPROVAL') {
     return `${action} required because CRITICAL risk requires human approval.`

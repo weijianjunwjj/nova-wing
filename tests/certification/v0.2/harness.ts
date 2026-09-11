@@ -55,6 +55,14 @@ export interface TaskSpec {
   risk?: 'LOW' | 'NORMAL' | 'HIGH'
 }
 
+export interface TrustedAgentSpec {
+  id: string
+  provider: string
+  runtimeIdentity?: string
+  model?: string
+  capabilities: Partial<Record<'coding' | 'reasoning' | 'review' | 'repoNavigation' | 'debugging' | 'verification', boolean>>
+}
+
 export interface TrustedConfigSpec {
   sessionId: string
   repo: string
@@ -65,6 +73,8 @@ export interface TrustedConfigSpec {
   hardMinutes?: number
   maxTasks?: number
   scheduledStartAt?: string | null
+  /** Capability profiles declared by the trusted config (v0.2.4). */
+  agents?: readonly TrustedAgentSpec[]
 }
 
 export async function buildTrustedConfig(spec: TrustedConfigSpec): Promise<TrustedWorkSessionConfig> {
@@ -91,6 +101,9 @@ export async function buildTrustedConfig(spec: TrustedConfigSpec): Promise<Trust
     })),
     gitCheckpoint: { autoCommit: false, autoPush: false },
     executor: { model: 'codex', maxTurns: 4, allowNpmInstall: false, allowPythonBootstrap: false },
+    ...(spec.agents === undefined
+      ? {}
+      : { agents: spec.agents.map((agent) => ({ ...agent, capabilities: { ...agent.capabilities } })) }),
   })
 }
 
@@ -100,6 +113,16 @@ export interface ProductionAppOptions {
   agents: readonly AgentCapabilityProfile[]
   provider: ScenarioProvider
   dispatcherExtras?: Omit<ScriptedDispatcherOptions, 'repo' | 'provider'>
+  runtimeRepair?: import('../../../packages/development-guardian/work-session/production.js').ProductionWorkSessionDependencies['runtimeRepair']
+  /** Provider-agnostic reviewer runtimes injected into the production composition. */
+  reviewerRegistry?: import('../../../packages/development-guardian/work-session/reviewer-runtime.js').ReviewerRuntimeRegistry
+  /** Use the capability profiles declared by the trusted config instead of `agents`. */
+  useConfigAgents?: boolean
+  /**
+   * Script EXECUTE/VERIFY via the scenario provider but delegate REVIEW to the real
+   * production review dispatcher, so the production review path is under test.
+   */
+  productionReview?: boolean
   onRuntimeReady?: (runtime: WorkSessionRuntime) => void
 }
 
@@ -111,8 +134,16 @@ export async function createCertProductionApp(options: ProductionAppOptions): Pr
   })
   const app = await createProductionWorkSessionUi(options.config, {
     env: { ...process.env, LOCALAPPDATA: options.dataDir },
-    createV2Dispatcher: () => dispatcher,
-    v2Agents: options.agents,
+    createV2Dispatcher: options.productionReview === true
+      ? ({ defaultDispatcher }) => ({
+          inspectRepository: defaultDispatcher.inspectRepository,
+          dispatch: async (input) =>
+            input.action === 'REVIEW' ? defaultDispatcher.dispatch(input) : dispatcher.dispatch(input),
+        })
+      : () => dispatcher,
+    ...(options.useConfigAgents === true ? {} : { v2Agents: options.agents }),
+    ...(options.reviewerRegistry === undefined ? {} : { createReviewerRegistry: () => options.reviewerRegistry! }),
+    ...(options.runtimeRepair === undefined ? {} : { runtimeRepair: options.runtimeRepair }),
   })
   const runtime = app.runtime as unknown as WorkSessionRuntime
   options.onRuntimeReady?.(runtime)

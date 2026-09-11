@@ -10,7 +10,7 @@ import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.
 import {
   type ClaudeCodeExecutorOptions,
 } from '../claude-code-executor.js'
-import { DeepSeekExecutor } from '../deepseek-executor.js'
+import { DeepSeekExecutor, hasDeepSeekRoute } from '../deepseek-executor.js'
 import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
 import type { GuardianTask } from '../model.js'
 import { CodexExecutor, type CodexExecutorOptions } from '../codex-executor.js'
@@ -32,7 +32,19 @@ import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
 import {
   WorkSessionRuntime,
   type WorkSessionRuntimeConfig,
+  type WorkSessionRuntimeRepairConfig,
 } from './runtime.js'
+import { createRuntimeRepairEngine } from './runtime-repair-engine.js'
+import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type RuntimeRepairAuditSink } from './runtime-repair-audit.js'
+import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
+import type { RuntimeRepairRefresh } from './runtime-repair.js'
+import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
+import { createReviewDispatcher } from './review-dispatcher.js'
+import {
+  createCodexReviewerRuntime,
+  createDeepSeekReviewerRuntime,
+  REVIEW_DEFAULT_MODEL,
+} from './reviewer-adapters.js'
 import type { WorkSessionControlRuntime } from './control-ui/events.js'
 import {
   WorkSessionControlController,
@@ -111,6 +123,24 @@ const TrustedConfigSchema = z.object({
       notifyOnCompleted: z.boolean().optional(),
     }).strict(),
   }).strict().optional(),
+  /**
+   * Capability profiles for this session. A profile declares what an agent CAN do
+   * (coding / review / ...); which agent fills which role is a Controller decision.
+   */
+  agents: z.array(z.object({
+    id: z.string(),
+    provider: z.string(),
+    runtimeIdentity: z.string().optional(),
+    model: z.string().optional(),
+    capabilities: z.object({
+      coding: z.boolean().optional(),
+      reasoning: z.boolean().optional(),
+      review: z.boolean().optional(),
+      repoNavigation: z.boolean().optional(),
+      debugging: z.boolean().optional(),
+      verification: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict()).min(1).optional(),
   storageUrl: z.string().optional(),
 }).strict()
 
@@ -210,6 +240,27 @@ export async function validateTrustedWorkSessionConfig(
   }
 
   config.executor.model = requireTrimmed(config.executor.model, 'executor.model')
+  if (config.agents !== undefined) {
+    const agentIds = new Set<string>()
+    const runtimeIdentities = new Set<string>()
+    for (const agent of config.agents) {
+      agent.id = requireTrimmed(agent.id, 'agents[].id')
+      agent.provider = requireTrimmed(agent.provider, 'agents[].provider')
+      if (agent.runtimeIdentity !== undefined) {
+        agent.runtimeIdentity = requireTrimmed(agent.runtimeIdentity, `agents.${agent.id}.runtimeIdentity`)
+      }
+      if (agentIds.has(agent.id)) throw new Error(`duplicate agent id: ${agent.id}`)
+      agentIds.add(agent.id)
+      // Two profiles sharing one runtime identity would silently defeat the
+      // independent-review policy, so it is rejected at the trust boundary.
+      const identity = agent.runtimeIdentity ?? agent.id
+      if (runtimeIdentities.has(identity)) throw new Error(`duplicate agent runtime identity: ${identity}`)
+      runtimeIdentities.add(identity)
+      if (agent.capabilities === undefined || !Object.values(agent.capabilities).some((value) => value === true)) {
+        throw new Error(`agent ${agent.id} declares no capability`)
+      }
+    }
+  }
   if (config.codex !== undefined) {
     const resolved = resolvePersistedCodexConfiguration(config.codex)
     if (!isSupportedCodexConfiguration(resolved.model, resolved.reasoningEffort)) {
@@ -243,6 +294,37 @@ export async function validateTrustedWorkSessionConfig(
     }
   }
   return config
+}
+
+/**
+ * Capability profiles declared by the trusted config. Roles are never hardcoded:
+ * a profile says what an agent can do, and the Controller decides which profile
+ * fills EXECUTE / REVIEW for the current Task and Risk.
+ */
+export function trustedAgents(
+  config: TrustedWorkSessionConfig,
+  sessionId: string,
+): readonly AgentCapabilityProfile[] | undefined {
+  if (config.agents === undefined) return undefined
+  return config.agents.map((agent) => ({
+    id: agent.id,
+    identity: {
+      agent: agent.id,
+      provider: agent.provider,
+      runtimeIdentity: agent.runtimeIdentity ?? `session:${sessionId}:${agent.id}`,
+    },
+    available: true,
+    quotaExhausted: false,
+    degraded: false,
+    capabilities: {
+      coding: agent.capabilities?.coding ?? false,
+      reasoning: agent.capabilities?.reasoning ?? false,
+      review: agent.capabilities?.review ?? false,
+      repoNavigation: agent.capabilities?.repoNavigation ?? false,
+      debugging: agent.capabilities?.debugging ?? false,
+      verification: agent.capabilities?.verification ?? false,
+    },
+  }))
 }
 
 export async function loadTrustedWorkSessionConfig(
@@ -371,8 +453,73 @@ export interface ProductionWorkSessionDependencies {
   notificationRetryDelayMs?: number
   preflight?: (targetRepo: string) => Promise<DependencyHealthReport>
   /** Production V2 adapter seam. V1 remains available only when explicitly selected. */
-  createV2Dispatcher?: (input: { definition: WorkSessionDefinition; eventSink?: import('../progress.js').GuardianProgressObserver }) => V2ActionDispatcher
+  createV2Dispatcher?: (input: {
+    definition: WorkSessionDefinition
+    eventSink?: import('../progress.js').GuardianProgressObserver
+    /** The real provider-agnostic dispatcher; a scripted seam may delegate to it. */
+    defaultDispatcher: V2ActionDispatcher
+  }) => V2ActionDispatcher
   v2Agents?: readonly AgentCapabilityProfile[]
+  /** Provider-agnostic reviewer runtimes; default registers the read-only adapters. */
+  createReviewerRegistry?: (input: { definition: WorkSessionDefinition; env: NodeJS.ProcessEnv }) => ReviewerRuntimeRegistry
+  /** v0.2.4: Runtime Repair seams (refresh/audit/notifier); engine + agents defaulted. */
+  runtimeRepair?: {
+    refreshProviderHealth?: () => Promise<RuntimeRepairRefresh>
+    auditSink?: RuntimeRepairAuditSink
+    notifier?: RuntimeRepairNotifier
+  }
+}
+
+export interface ReviewerAvailabilityRefreshOptions {
+  agents: readonly AgentCapabilityProfile[]
+  /** Real ExecutorRouter / coding-store availability. */
+  availability: () => { state: 'available' | 'quota_exhausted' | 'unknown'; blockedUntil?: string; nextProbeAt?: string; lastQuotaErrorAt?: string }
+  /** Real provider route probe; must never guess "available". */
+  deepSeekRouteAvailable: () => Promise<boolean>
+  now?: () => string
+}
+
+/**
+ * Refresh real provider availability for Runtime Repair. A provider that cannot be
+ * probed is left as declared — its failure will surface as a review runtime failure
+ * rather than being silently assumed healthy.
+ */
+export async function refreshReviewerAvailability(
+  options: ReviewerAvailabilityRefreshOptions,
+): Promise<RuntimeRepairRefresh> {
+  const now = options.now?.() ?? new Date().toISOString()
+  const availability = options.availability()
+  const quotaBlocked = availability.state === 'quota_exhausted' &&
+    Date.parse(availability.blockedUntil ?? availability.nextProbeAt ?? '') > Date.now()
+  const deepSeekAvailable = await options.deepSeekRouteAvailable()
+  const providerHealth: ProviderHealthObservation[] = []
+  const agents = options.agents.map((agent) => {
+    const provider = agent.identity?.provider ?? agent.id
+    if (provider === 'deepseek') {
+      providerHealth.push({
+        provider,
+        status: deepSeekAvailable ? 'AVAILABLE' : 'OFFLINE',
+        ...(deepSeekAvailable ? {} : { reason: 'DeepSeek route is not configured in the local Claude CLI' }),
+        observedAt: now,
+        source: 'runtime',
+      })
+      return { ...agent, available: deepSeekAvailable }
+    }
+    if (provider === 'codex') {
+      const retryAfter = availability.blockedUntil ?? availability.nextProbeAt
+      providerHealth.push({
+        provider,
+        status: quotaBlocked ? 'QUOTA_EXHAUSTED' : 'AVAILABLE',
+        ...(quotaBlocked ? { reason: 'Codex quota exhausted' } : {}),
+        ...(quotaBlocked && retryAfter !== undefined ? { retryAfter } : {}),
+        observedAt: availability.lastQuotaErrorAt ?? now,
+        source: 'runtime',
+      })
+      return { ...agent, quotaExhausted: quotaBlocked }
+    }
+    return agent
+  })
+  return { providerHealth, agents }
 }
 
 export interface ProductionWorkSessionUi {
@@ -489,10 +636,24 @@ export async function createProductionWorkSessionUi(
           return { repositoryIdentity: await realpath(definition.targetRepo), branch: branch.stdout.trim(), headSha: head.stdout.trim(), changedFiles: entries.map((entry) => entry.path),
             worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(definition.targetRepo, entries, { strict: true })).update(indexDiff.stdout).digest('hex') }
         }
-        const dispatcher = dependencies.createV2Dispatcher?.({ definition, eventSink }) ?? {
+        // Reviewer runtimes are keyed by provider. Adding a provider is adding an
+        // adapter here; the Controller never learns which provider reviews.
+        const reviewerRegistry = dependencies.createReviewerRegistry?.({ definition, env }) ?? new ReviewerRuntimeRegistry([
+          createDeepSeekReviewerRuntime({
+            cwd: definition.targetRepo,
+            model: trusted.agents?.find((agent) => agent.provider === 'deepseek')?.model ?? REVIEW_DEFAULT_MODEL,
+            ...(env.NOVAWING_GIT_BASH_PATH?.trim() ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() } : {}),
+          }),
+          createCodexReviewerRuntime({ cwd: definition.targetRepo }),
+        ])
+        const reviewDispatcher = createReviewDispatcher({ registry: reviewerRegistry, inspectRepository })
+        const defaultDispatcher: V2ActionDispatcher = {
           inspectRepository,
-          dispatch: async ({ action, task: taskState, approvedVerificationCommand }) => {
-            if (action === 'ANALYZE' || action === 'RECONCILE' || action === 'REVIEW') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
+          dispatch: async ({ action, task: taskState, agent, approvedVerificationCommand }) => {
+            // The selected reviewer profile decides the provider; independence and the
+            // read-only guarantee are enforced by the dispatcher, not by the runner.
+            if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task: taskState })
+            if (action === 'ANALYZE' || action === 'RECONCILE') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
             if (action === 'REQUEST_APPROVAL' || action === 'SUSPEND') return { status: 'BLOCKED' as const, blockers: ['human decision required'] }
             const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
               allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory, ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) }
@@ -533,9 +694,28 @@ export async function createProductionWorkSessionUi(
               ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },
         }
-        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
-          agents: dependencies.v2Agents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }], dispatcher })
-        const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl,
+        // The production seam lets callers script individual actions (EXECUTE/VERIFY)
+        // while delegating REVIEW to the real provider-agnostic review path.
+        const dispatcher = dependencies.createV2Dispatcher?.({ definition, eventSink, defaultDispatcher }) ?? defaultDispatcher
+        // Capability profiles come from the trusted config when declared; the legacy
+        // single executor profile is retained only for pre-v0.2.4 configs.
+        const declaredAgents = trustedAgents(trusted, definition.id)
+        const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
+        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher })
+        const runtimeRepair: WorkSessionRuntimeRepairConfig = {
+          engine: createRuntimeRepairEngine(),
+          agents: () => v2Agents,
+          refreshProviderHealth: dependencies.runtimeRepair?.refreshProviderHealth ??
+            (() => refreshReviewerAvailability({
+              agents: v2Agents,
+              availability: () => codingStore.availability(),
+              deepSeekRouteAvailable: () => hasDeepSeekRoute(definition.targetRepo, env),
+            })),
+          auditSink: dependencies.runtimeRepair?.auditSink ??
+            createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
+          notifier: dependencies.runtimeRepair?.notifier ?? createWindowsToastRuntimeRepairNotifier(),
+        }
+        const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl, runtimeRepair,
           gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
             ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },
           ...(notifier === undefined ? {} : { notifier }), notificationObserver: notificationSink, localControlUrl: () => localControlUrl }

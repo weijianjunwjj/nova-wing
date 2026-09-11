@@ -63,7 +63,7 @@ export function reviewSatisfied(task: TaskStateV2): boolean {
 }
 
 /** Internal helper; TaskController.decide is the authoritative decision entry. */
-export function completionGate(input: { task: TaskStateV2; evidence: readonly EvidenceV2[]; bindings: readonly AcceptanceEvidenceBinding[]; risk: RiskAssessment; review?: ReviewEvidence; approval?: ApprovalEvidence }): boolean {
+export function completionGate(input: { task: TaskStateV2; evidence: readonly EvidenceV2[]; bindings: readonly AcceptanceEvidenceBinding[]; risk: RiskAssessment; review?: ReviewEvidence | undefined; approval?: ApprovalEvidence | undefined }): boolean {
   const { task, evidence, bindings, risk } = input
   if (task.blockers.length || task.acceptanceCriteria.length === 0 || bindings.length !== task.acceptanceCriteria.length || unmappedAcceptanceCriteria(task).length > 0) return false
   if (new Set(bindings.map((b) => b.criterion)).size !== bindings.length ||
