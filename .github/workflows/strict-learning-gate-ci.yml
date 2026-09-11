@@ -45,6 +45,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/development-guardian/work-session/v2-controller-task-runner.ts packages/development-guardian/work-session/index.ts
+          git add packages/development-guardian/work-session/learning-gate.ts packages/development-guardian/work-session/v2-controller-task-runner.ts packages/development-guardian/work-session/index.ts
           git commit -m "feat(guardian): enforce strict learning gate in V2 runner"
           git push origin HEAD:feat/strict-learning-gate
