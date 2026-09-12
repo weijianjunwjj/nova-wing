@@ -14,6 +14,7 @@ import {
   s58, s59, s60, s61, s62, s63, s64, s65,
   s66, s67, s68, s69,
 } from './scenarios-v026.js'
+import { s70, s71, s72, s73, s74, s75, s76, s77, s78, s79, s80, s81, s82, s83, s84, s85 } from './scenarios-v027.js'
 
 export const SCENARIOS: readonly CertificationScenario[] = [
   s01, s02, s03, s04, s05, s06, s07, s08,
@@ -25,4 +26,6 @@ export const SCENARIOS: readonly CertificationScenario[] = [
   s47, s48, s49, s50, s51, s52, s53, s54, s55, s56, s57,
   s58, s59, s60, s61, s62, s63, s64, s65,
   s66, s67, s68, s69,
+  s70, s71, s72, s73, s74, s75, s76, s77, s78, s79,
+  s80, s81, s82, s83, s84, s85,
 ]
