@@ -102,6 +102,12 @@ export interface DelegationPacket {
 export type VerificationStatus = 'passed' | 'failed' | 'skipped'
 
 export type VerificationFailureClassification =
+  | 'CODE_FAILURE'
+  | 'ENVIRONMENT_FAILURE'
+  | 'VERIFIER_CONFIGURATION_FAILURE'
+  | 'UNRELATED_TEST_FAILURE'
+  | 'EVIDENCE_MISSING'
+  /** Legacy persisted values remain readable; new evidence uses the v0.2.7 names above. */
   | 'CODE_VERIFICATION_FAILED'
   | 'ENVIRONMENT_REQUIRED'
   | 'PERMISSION_REQUIRED'

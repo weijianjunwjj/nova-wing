@@ -1,5 +1,5 @@
 import type { TaskStateV2 } from './task-state-v2.js'
-import type { VerificationResult } from '../model.js'
+import type { VerificationFailureClassification, VerificationResult } from '../model.js'
 import type { DecisionReasonCode } from './task-observability.js'
 import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale, unmappedAcceptanceCriteria } from './risk-evidence.js'
 
@@ -16,6 +16,20 @@ export interface TaskActionResult {
   changedFiles?: readonly string[]
   verificationResults?: readonly VerificationResult[]
   blockers?: readonly string[]
+  /** Repository Inspector facts supplied by the runner, never by an agent report. */
+  repositoryChanged?: boolean
+  implementationEvidenceAdded?: boolean
+}
+
+export type CanonicalVerificationFailure = 'CODE_FAILURE' | 'ENVIRONMENT_FAILURE' | 'VERIFIER_CONFIGURATION_FAILURE' | 'UNRELATED_TEST_FAILURE' | 'EVIDENCE_MISSING' | 'UNKNOWN'
+
+export function canonicalVerificationFailure(value: VerificationFailureClassification | undefined): CanonicalVerificationFailure {
+  if (value === 'CODE_FAILURE' || value === 'CODE_VERIFICATION_FAILED') return 'CODE_FAILURE'
+  if (value === 'ENVIRONMENT_FAILURE' || value === 'ENVIRONMENT_REQUIRED') return 'ENVIRONMENT_FAILURE'
+  if (value === 'VERIFIER_CONFIGURATION_FAILURE') return value
+  if (value === 'UNRELATED_TEST_FAILURE') return value
+  if (value === 'EVIDENCE_MISSING') return value
+  return 'UNKNOWN'
 }
 
 /**
@@ -34,7 +48,15 @@ export class TaskController {
     if (unmapped.length > 0) return { action: 'SUSPEND', reasonCode: 'ACCEPTANCE_EVIDENCE_BINDING_MISSING', reason: `Acceptance criterion ${unmapped[0]} has no evidence binding` }
     if (task.status === 'PENDING') return { action: 'EXECUTE', reasonCode: 'TASK_NOT_STARTED', reason: 'task has not started execution' }
     const results = task.verificationState.results
-    if (results.some((result) => result.status === 'failed')) return { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic verification failed' }
+    const failed = results.filter((result) => result.status === 'failed')
+    if (failed.length > 0) {
+      const classifications = failed.map((result) => canonicalVerificationFailure(result.classification))
+      if (classifications.includes('ENVIRONMENT_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFICATION_ENVIRONMENT_FAILURE', reason: 'verification requires environment/runtime recovery' }
+      if (classifications.includes('VERIFIER_CONFIGURATION_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFIER_CONFIGURATION_FAILURE', reason: 'verifier or Task Contract configuration requires repair' }
+      if (classifications.includes('UNRELATED_TEST_FAILURE')) return { action: 'SUSPEND', reasonCode: 'UNRELATED_TEST_FAILURE', reason: 'an audited pre-existing failure is unrelated to the Task; task-local disposition is required' }
+      if (classifications.every((item) => item === 'CODE_FAILURE')) return { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic evidence attributes the failure to the Task implementation' }
+      return { action: 'SUSPEND', reasonCode: 'VERIFICATION_UNKNOWN', reason: 'verification failure cannot be safely attributed to the Task implementation' }
+    }
     if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
     // A failed independent review is a verdict on the implementation, so the
@@ -58,7 +80,8 @@ export class TaskController {
       ? [result.summary ?? `${action} failed`]
       : result.blockers ?? []
     const verified = action === 'VERIFY' ? result.verificationResults : undefined
-    const verificationResults = verified ?? (action === 'EXECUTE' ? [] : task.verificationState.results)
+    const implementationProgress = action !== 'EXECUTE' || result.repositoryChanged === true || result.implementationEvidenceAdded === true
+    const verificationResults = verified ?? (action === 'EXECUTE' && implementationProgress ? [] : task.verificationState.results)
     return {
       ...task,
       artifacts: result.changedFiles === undefined ? task.artifacts : [...new Set([...task.artifacts, ...result.changedFiles])],
@@ -66,7 +89,7 @@ export class TaskController {
       gitState: task.gitState,
       verificationState: { ...task.verificationState, results: verificationResults },
       completion: verified === undefined
-        ? (action === 'EXECUTE' && result.status === 'SUCCESS'
+        ? (action === 'EXECUTE' && result.status === 'SUCCESS' && implementationProgress
             // A revision invalidates the previous review; it was a verdict on code
             // that no longer exists. The Controller must ask for REVIEW again.
             ? { ...task.completion, review: undefined }
@@ -82,7 +105,7 @@ export class TaskController {
       currentAction: action,
       status: result.status === 'BLOCKED' ? 'SUSPENDED' : 'ACTIVE',
       // A repair invalidates failed evidence; the next Controller decision is VERIFY.
-      ...(action === 'EXECUTE' && result.status === 'SUCCESS'
+      ...(action === 'EXECUTE' && result.status === 'SUCCESS' && implementationProgress
         ? { verificationState: { ...task.verificationState, results: verificationResults.filter((item) => item.status !== 'failed') } }
         : {}),
       updatedAt: new Date().toISOString(),

@@ -115,20 +115,34 @@ function rootCauseCount(
   return 1
 }
 
-function classifyFailure(
+export interface VerificationFailureMetadata {
+  /** A structured process-spawn/configuration fact, not an inference from exitCode. */
+  configurationFailure?: 'COMMAND_NOT_FOUND' | 'SCRIPT_NOT_FOUND' | 'CWD_NOT_FOUND' | 'TEST_PATH_NOT_FOUND' | 'EVIDENCE_BINDING_INVALID'
+  /** Audited relationship to the current task. Absence means unknown, never unrelated. */
+  relationToTask?: 'RELATED' | 'UNRELATED' | 'UNKNOWN'
+  failingTestIdentity?: string
+  baselineStatus?: 'PASSING' | 'FAILING' | 'UNKNOWN'
+}
+
+export function classifyVerificationFailure(
   text: string,
   exceptionType: string | undefined,
+  metadata: VerificationFailureMetadata = {},
 ): VerificationFailureClassification {
+  if (metadata.configurationFailure !== undefined) return 'VERIFIER_CONFIGURATION_FAILURE'
+  if (metadata.relationToTask === 'UNRELATED' && metadata.baselineStatus === 'FAILING' && metadata.failingTestIdentity !== undefined) {
+    return 'UNRELATED_TEST_FAILURE'
+  }
   const unreachableSignal =
     /\bECONNREFUSED\b|connection (?:was )?refused|actively refused|could not connect to server|unable to connect to (?:the )?server|failed to establish a new connection|is the server running[^\n]*accepting connections/iu.test(text)
   const serviceContext =
     /OperationalError|ConnectionRefusedError|OSError|psycopg|sqlalchemy|database|server|socket|connect/iu.test(
       `${exceptionType ?? ''}\n${text}`,
     )
-  if (unreachableSignal && serviceContext) return 'ENVIRONMENT_REQUIRED'
+  if (unreachableSignal && serviceContext) return 'ENVIRONMENT_FAILURE'
 
   if (/docker daemon/iu.test(text) && /not running|unavailable|cannot connect|failed to connect/iu.test(text)) {
-    return 'ENVIRONMENT_REQUIRED'
+    return 'ENVIRONMENT_FAILURE'
   }
   const venvTargetMissing =
     /\.venv[/\\]Scripts[/\\]python\.exe/iu.test(text) &&
@@ -137,14 +151,22 @@ function classifyFailure(
     /['"]?python['"]?(?:\.exe)? is not recognized|python(?:\.exe)?: command not found|no module named ['"]?venv['"]?|ensurepip[^\n]*(?:not available|unavailable|error)/iu.test(text)
   // A missing repository-local venv is a recoverable bootstrap prerequisite
   // when the host Python runtime itself remains available.
-  if (venvTargetMissing && !hostPythonUnavailable) return 'CODE_VERIFICATION_FAILED'
+  if (venvTargetMissing && !hostPythonUnavailable) return 'VERIFIER_CONFIGURATION_FAILURE'
   if (
     /(?:command not found|is not recognized|no such file or directory|\bENOENT\b|the system cannot find the file specified)/iu.test(text) &&
     /(?:executable|interpreter|python(?:\.exe)?|node(?:\.exe)?|docker(?:\.exe)?|runtime)/iu.test(text)
   ) {
-    return 'ENVIRONMENT_REQUIRED'
+    return 'ENVIRONMENT_FAILURE'
   }
-  return 'CODE_VERIFICATION_FAILED'
+  if (/missing script:\s*[^\s]+|unknown script|could not find a package\.json|no tests? found|test path does not exist|cannot find (?:module|file).*verif/iu.test(text)) {
+    return 'VERIFIER_CONFIGURATION_FAILURE'
+  }
+  // Exit code alone is never code evidence. Require a deterministic implementation-local
+  // signal; everything else fails safe as UNKNOWN.
+  if (/AssertionError|\bassert(?:ion)? failed\b|\bTS\d{4}:|\b(?:SyntaxError|TypeError|ReferenceError|NameError)\b|\bsyntax error at or near\b|\blint(?:ing)? error\b|\bstatic (?:analysis|check).*failed\b/iu.test(text)) {
+    return 'CODE_FAILURE'
+  }
+  return 'UNKNOWN'
 }
 
 function boundedDetails(firstFailure: VerificationFirstFailure, summary: string): string {
@@ -156,6 +178,7 @@ export interface VerificationEvidenceInput {
   result: GuardianCommandResult
   durationMs: number
   rawOutputRef?: string
+  metadata?: VerificationFailureMetadata
 }
 
 export function buildVerificationResult(input: VerificationEvidenceInput): VerificationResult {
@@ -185,7 +208,7 @@ export function buildVerificationResult(input: VerificationEvidenceInput): Verif
     durationMs: input.durationMs,
     details: boundedDetails(firstFailure, summary),
     firstFailure,
-    classification: classifyFailure(redacted, exceptionType),
+    classification: classifyVerificationFailure(redacted, exceptionType, input.metadata),
     ...(input.rawOutputRef === undefined ? {} : { rawOutputRef: input.rawOutputRef }),
     finalSummary: summary,
     rootCauseCount: rootCauseCount(redacted, phase, affectedTests),
@@ -228,6 +251,7 @@ export function environmentVerificationFailure(
   results: readonly VerificationResult[],
 ): VerificationResult | undefined {
   return results.find(
-    (result) => result.status === 'failed' && result.classification === 'ENVIRONMENT_REQUIRED',
+    (result) => result.status === 'failed' &&
+      (result.classification === 'ENVIRONMENT_FAILURE' || result.classification === 'ENVIRONMENT_REQUIRED'),
   )
 }
