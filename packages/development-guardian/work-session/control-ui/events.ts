@@ -61,6 +61,17 @@ export interface ControlEventInput {
   data?: Record<string, unknown>
 }
 
+export interface ExecutionActivityView {
+  id: number
+  timestamp: string
+  kind: import('../../progress.js').ExecutionActivityKind
+  phase: string
+  provider?: string
+  verifier?: string
+  outcome?: 'PASSED' | 'FAILED' | 'COMPLETED'
+  changedFileCount?: number
+}
+
 /**
  * 结构化只读 snapshot，直接作为 GET /api/status 与 SSE snapshot 的 payload。
  *
@@ -110,6 +121,14 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    actionBudgetRecovery?: {
+      available: boolean
+      originalLimit: number
+      originalConsumed: number
+      recoveryLimit: number
+      recoveryConsumed: number
+      terminal: boolean
+    }
     /** v0.2.4: Runtime AI Repair availability + last outcome for failure display. */
     runtimeRepair?: {
       available: boolean
@@ -174,6 +193,18 @@ export interface WorkSessionControlSnapshot {
     status?: string
     iteration?: number
     elapsedMs?: number
+  }
+  /** Process-local runtime activity. Heartbeat timing is derived at read time and never persisted. */
+  executionActivity?: {
+    running: boolean
+    currentPhase?: string
+    provider?: string
+    startedAt?: string
+    elapsedMs: number
+    lastActivityAt?: string
+    idleMs?: number
+    idleStatus: 'NORMAL' | 'QUIET' | 'LONG_QUIET'
+    items: readonly ExecutionActivityView[]
   }
   recentEvents: ControlEvent[]
   /** Durable SAFE PRODUCT DATA; never contains raw provider/error detail. */

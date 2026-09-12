@@ -128,10 +128,11 @@ function emptyMetrics(): BenchmarkMetrics {
   }
 }
 
-function verificationResultsOf(packetVerification: string[], values: Verdict[]): { name: string; status: 'passed' | 'failed' }[] {
+function verificationResultsOf(packetVerification: string[], values: Verdict[]): { name: string; status: 'passed' | 'failed'; classification?: 'CODE_FAILURE' }[] {
   return packetVerification.map((name, index) => ({
     name,
     status: values[Math.min(index, values.length - 1)] === 'passed' ? 'passed' : 'failed',
+    ...(values[Math.min(index, values.length - 1)] === 'passed' ? {} : { classification: 'CODE_FAILURE' as const }),
   }))
 }
 
@@ -270,7 +271,7 @@ export async function runV2Internal(spec: BenchmarkTaskSpec): Promise<TaskRun> {
         branch: 'main',
         headSha: 'h',
         changedFiles: [...observedChangedFiles],
-        worktreeFingerprint: 'w',
+        worktreeFingerprint: `w-${attemptIndex}-${observedChangedFiles.join('|')}`,
       }),
       dispatch: async ({ action }) => {
         if (action === 'EXECUTE') {

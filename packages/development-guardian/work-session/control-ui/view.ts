@@ -142,6 +142,16 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span id="guardian-iteration" class="value">—</span>
     </div>
     <p id="guardian-detail" class="detail">—</p>
+    <div class="row"><span class="label">Executor</span><span id="executor-running" class="value">—</span></div>
+    <div class="row"><span class="label">Provider</span><span id="execution-provider" class="value">—</span></div>
+    <div class="row"><span class="label">活动已运行</span><span id="execution-elapsed" class="value">—</span></div>
+    <div class="row"><span class="label">最后活动</span><span id="execution-last-activity" class="value">—</span></div>
+    <p id="execution-idle-status" class="note"></p>
+  </section>
+
+  <section class="card">
+    <h2>Execution Activity Feed</h2>
+    <ul id="execution-activity-list" class="recent-list"></ul>
   </section>
 
   <section class="card">
@@ -149,10 +159,10 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <ul id="recent-list" class="recent-list"></ul>
   </section>
 
-  <section class="card">
-    <h2>执行日志</h2>
+  <details class="card">
+    <summary>Raw Runtime Log</summary>
     <ul id="ledger-list" class="recent-list"></ul>
-  </section>
+  </details>
 
   <details class="card debug">
     <summary>Debug</summary>
@@ -246,6 +256,9 @@ var HUMAN_REQUIRED_LABELS = {
   EXECUTOR_RETRY_REQUIRED: 'Executor 需要重新执行',
   SAFETY_BLOCKED: '被安全策略阻止',
   BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
+  ACTION_BUDGET_EXHAUSTED: 'Controller action budget 已耗尽',
+  STALLED_NO_PROGRESS: 'Executor 未产生实现进展',
+  CYCLIC_NO_PROGRESS: 'Controller 检测到无进展循环',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 基础设施故障',
   STALLED: '执行停滞',
@@ -327,11 +340,49 @@ function render(snapshot) {
 
   renderTasks(cfg, rt)
   renderGuardian(guardian)
+  renderExecutionActivity(snapshot.executionActivity || {})
   renderRecent(snapshot.recentEvents || [])
   renderLedger(snapshot.executionLedger || [])
   renderDecision(rt)
   renderRecoverable(rt)
   renderControls(rt, snapshot.controls || {})
+}
+
+var ACTIVITY_KIND_LABELS = {
+  CONTROLLER_PHASE_CHANGED: 'Controller 阶段切换',
+  PROVIDER_DISPATCHED: '已派发 Provider', PROVIDER_COMPLETED: 'Provider 已完成', PROVIDER_FAILED: 'Provider 执行失败',
+  VERIFIER_STARTED: '开始运行 verifier', VERIFIER_COMPLETED: 'verifier 已完成',
+  REPOSITORY_CHANGED: 'Repository revision/diff 已变化', RUNTIME_REPAIR: '正在恢复运行环境'
+}
+
+function renderExecutionActivity(activity) {
+  setText('executor-running', activity.running ? '运行中' : '未运行')
+  setText('execution-provider', activity.provider || '—')
+  setText('execution-elapsed', formatDuration(activity.elapsedMs))
+  setText('execution-last-activity', activity.lastActivityAt
+    ? formatTime(activity.lastActivityAt) + (Number.isFinite(activity.idleMs) ? ' · ' + Math.floor(activity.idleMs / 1000) + ' 秒前' : '') : '—')
+  setText('execution-idle-status', activity.idleStatus === 'QUIET' ? '暂无新活动，Executor 仍在运行'
+    : activity.idleStatus === 'LONG_QUIET' ? '较长时间无新活动，正在等待 Executor' : '')
+  var list = el('execution-activity-list')
+  if (!list) return
+  list.textContent = ''
+  var items = activity.items || []
+  for (var i = Math.max(0, items.length - 30); i < items.length; i++) {
+    var item = items[i]
+    var li = document.createElement('li')
+    var time = document.createElement('span')
+    time.className = 'time'
+    time.textContent = formatTime(item.timestamp)
+    var data = document.createElement('span')
+    data.className = 'event-data'
+    var parts = [ACTIVITY_KIND_LABELS[item.kind] || item.kind, displayValue(item.phase, GUARDIAN_PHASE_LABELS)]
+    if (item.provider) parts.push(item.provider)
+    if (item.verifier) parts.push(item.verifier)
+    if (item.outcome) parts.push(item.outcome)
+    if (Number.isFinite(item.changedFileCount)) parts.push(String(item.changedFileCount) + ' 个文件')
+    data.textContent = parts.join(' · ')
+    li.appendChild(time); li.appendChild(data); list.appendChild(li)
+  }
 }
 
 function renderControls(rt, controls) {
@@ -616,7 +667,9 @@ function renderDecision(rt) {
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
-    var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED')
+    var budgetRecovery = rt.actionBudgetRecovery
+    var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED' ||
+      (category === 'ACTION_BUDGET_EXHAUSTED' && budgetRecovery && budgetRecovery.available === true))
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
     var repair = rt.runtimeRepair
     if (input) input.hidden = !needsDecision

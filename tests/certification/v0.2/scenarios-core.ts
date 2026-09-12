@@ -218,9 +218,9 @@ export const s13: CertificationScenario = {
     try {
       const durable = await runtime.start()
       h.check(durable.state !== 'COMPLETED', 'unconverged task must not complete')
-      h.check(durable.humanRequired?.category === 'STALLED_NO_PROGRESS', `suspended with STALLED_NO_PROGRESS (got ${durable.humanRequired?.category})`)
+      h.check(durable.humanRequired?.category === 'CYCLIC_NO_PROGRESS', `suspended with CYCLIC_NO_PROGRESS (got ${durable.humanRequired?.category})`)
       const log = durable.taskEventLogs?.T1 ?? []
-      h.check(log.some((event) => event.type === 'TASK_SUSPENDED' && event.reasonCode === 'STALLED_NO_PROGRESS'), 'event log recorded STALLED_NO_PROGRESS suspension')
+      h.check(log.some((event) => event.type === 'NO_PROGRESS_DETECTED' && event.reasonCode === 'CYCLIC_NO_PROGRESS'), 'event log recorded CYCLIC_NO_PROGRESS suspension')
       const verifies = log.filter((event) => event.type === 'AGENT_DISPATCHED' && event.action === 'VERIFY').length
       h.check(verifies <= 4, `verifier stopped after a small number of repeats (${verifies}) instead of exhausting the action budget`)
     } finally {

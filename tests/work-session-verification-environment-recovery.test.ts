@@ -61,7 +61,7 @@ function failedResult(output: string, rawOutputRef?: string): VerificationResult
 
 test('CASE A/D: shared pytest setup fan-out collapses to one environment root cause', () => {
   const result = failedResult(SHARED_SETUP_OUTPUT, 'D:/safe/session/raw.log')
-  assert.equal(result.classification, 'ENVIRONMENT_REQUIRED')
+  assert.equal(result.classification, 'ENVIRONMENT_FAILURE')
   assert.equal(result.affectedTests, 227)
   assert.equal(result.rootCauseCount, 1)
   assert.equal(result.firstFailure?.exceptionType, 'psycopg2.OperationalError')
@@ -78,7 +78,7 @@ _________________________ test_total _________________________
 E   AssertionError: expected 2, got 1
 ============================== 1 failed in 0.12s ==============================
 `)
-  assert.equal(assertion.classification, 'CODE_VERIFICATION_FAILED')
+  assert.equal(assertion.classification, 'CODE_FAILURE')
   assert.equal(assertion.firstFailure?.phase, 'test')
 
   const migrationNameError = failedResult(`
@@ -88,7 +88,7 @@ ________________ ERROR at setup of test_database _________________
 E   NameError: name 'missing_identifier' is not defined
 ============================== 1 error in 0.20s ==============================
 `)
-  assert.equal(migrationNameError.classification, 'CODE_VERIFICATION_FAILED')
+  assert.equal(migrationNameError.classification, 'CODE_FAILURE')
 
   const sqlCodeError = failedResult(`
 ________________ ERROR at setup of test_database _________________
@@ -96,12 +96,12 @@ ________________ ERROR at setup of test_database _________________
 E   sqlalchemy.exc.OperationalError: syntax error at or near "BROKEN"
 ============================== 1 error in 0.20s ==============================
 `)
-  assert.equal(sqlCodeError.classification, 'CODE_VERIFICATION_FAILED')
+  assert.equal(sqlCodeError.classification, 'CODE_FAILURE')
 
   const missingVenvOnly = failedResult(
     'bash: .venv/Scripts/python.exe: No such file or directory',
   )
-  assert.equal(missingVenvOnly.classification, 'CODE_VERIFICATION_FAILED')
+  assert.equal(missingVenvOnly.classification, 'VERIFIER_CONFIGURATION_FAILURE')
 })
 
 test('raw verification output is durable, complete and redacted outside the repository', async () => {
@@ -303,7 +303,7 @@ test('CASE F: environment evidence and raw output reference survive runtime recr
     try {
       const restored = await runtime2.loadPersistedState()
       assert.equal(restored?.state, 'SUSPENDED')
-      assert.equal(restored?.verificationFailure?.classification, 'ENVIRONMENT_REQUIRED')
+      assert.equal(restored?.verificationFailure?.classification, 'ENVIRONMENT_FAILURE')
       assert.equal(restored?.verificationFailure?.rawOutputRef, join(directory, 'raw.log'))
       assert.equal(restored?.currentTaskCheckpoint?.task.lastReport?.verificationResults[0]?.affectedTests, 227)
     } finally {

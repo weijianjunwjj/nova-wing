@@ -243,7 +243,7 @@ export async function verifyByCommand(task: TaskStateV2, repo: string): Promise<
     const outcome = await runVerifierCommand(command, repo)
     results.push(outcome.ok
       ? { name: command, status: 'passed' }
-      : { name: command, status: 'failed', ...(outcome.error === undefined ? {} : { details: outcome.error }) })
+      : { name: command, status: 'failed', classification: 'CODE_FAILURE', ...(outcome.error === undefined ? {} : { details: outcome.error }) })
   }
   return results
 }

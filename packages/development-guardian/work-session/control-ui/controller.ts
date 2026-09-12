@@ -34,6 +34,7 @@ import type {
   WorkSessionControlSnapshot,
   WorkSessionControlRuntime,
   ControlSubscriber,
+  ExecutionActivityView,
 } from './events.js'
 import { isExecutorProviderCredentialRecovery } from '../guardian-task-runner.js'
 import { deriveRuntimeRepairReasonCode, isRuntimeRepairable } from '../runtime-repair.js'
@@ -122,6 +123,11 @@ export class WorkSessionControlController {
   private resumeInputRedactionTaskId: string | undefined
 
   private guardianPhase: GuardianPhaseSnapshot | undefined
+  private readonly executionActivities: ExecutionActivityView[] = []
+  private executionActivityId = 0
+  private executionActivityStartedAt: string | undefined
+  private lastExecutionActivityAt: string | undefined
+  private executionActivityProvider: string | undefined
   /** Last event identity after applying the same safe presentation rules as Recent Activity. */
   private lastGuardianPresentationKey: string | undefined
   private serverInfo: WorkSessionControlSnapshot['server'] = {
@@ -515,6 +521,13 @@ export class WorkSessionControlController {
             message: '已找到此前的验证授权，将从 checkpoint 继续，无需再次批准。',
           }
         : undefined
+    const currentBudget = state?.currentTaskId === null || state?.currentTaskId === undefined
+      ? undefined : state.taskStatesV2?.[state.currentTaskId]?.actionBudget
+    const now = this.clock?.now() ?? Date.now()
+    const lastActivityMs = this.lastExecutionActivityAt === undefined ? undefined : Date.parse(this.lastExecutionActivityAt)
+    const activityStartedMs = this.executionActivityStartedAt === undefined ? undefined : Date.parse(this.executionActivityStartedAt)
+    const idleMs = lastActivityMs === undefined ? undefined : Math.max(0, now - lastActivityMs)
+    const activityElapsedMs = activityStartedMs === undefined ? 0 : Math.max(0, now - activityStartedMs)
 
     return {
       server: { ...this.serverInfo },
@@ -562,6 +575,12 @@ export class WorkSessionControlController {
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
                 : {}),
+              ...(currentBudget === undefined ? {} : { actionBudgetRecovery: {
+                available: currentBudget.originalExhausted && !currentBudget.recoveryGranted,
+                originalLimit: currentBudget.originalLimit, originalConsumed: currentBudget.originalConsumed,
+                recoveryLimit: currentBudget.recoveryLimit, recoveryConsumed: currentBudget.recoveryConsumed,
+                terminal: currentBudget.recoveryExhausted,
+              } }),
               ...(runtimeRepairProjection === undefined
                 ? {}
                 : { runtimeRepair: runtimeRepairProjection }),
@@ -623,6 +642,17 @@ export class WorkSessionControlController {
       },
       controls,
       guardian: this.guardianPhase !== undefined ? { ...this.guardianPhase } : {},
+      executionActivity: {
+        running: state?.state === 'RUNNING' && hasActiveExecution,
+        ...(this.guardianPhase?.phase === undefined ? {} : { currentPhase: this.guardianPhase.phase }),
+        ...(this.executionActivityProvider === undefined ? {} : { provider: this.executionActivityProvider }),
+        ...(this.executionActivityStartedAt === undefined ? {} : { startedAt: this.executionActivityStartedAt }),
+        elapsedMs: activityElapsedMs,
+        ...(this.lastExecutionActivityAt === undefined ? {} : { lastActivityAt: this.lastExecutionActivityAt }),
+        ...(idleMs === undefined ? {} : { idleMs }),
+        idleStatus: idleMs === undefined || idleMs < 120_000 ? 'NORMAL' : idleMs < 300_000 ? 'QUIET' : 'LONG_QUIET',
+        items: [...this.executionActivities],
+      },
       recentEvents: [...this.recentEvents],
       ...(executionLedger === undefined ? {} : { executionLedger }),
     }
@@ -856,6 +886,24 @@ export class WorkSessionControlController {
       iteration: event.iteration,
       elapsedMs: event.elapsedMs,
     }
+    if (event.activity !== undefined) {
+      const timestamp = new Date(this.clock?.now() ?? Date.now()).toISOString()
+      if (this.executionActivityStartedAt === undefined) this.executionActivityStartedAt = timestamp
+      this.lastExecutionActivityAt = timestamp
+      if (event.activity.provider !== undefined && /^[A-Za-z0-9._-]{1,80}$/u.test(event.activity.provider)) {
+        this.executionActivityProvider = event.activity.provider
+      }
+      const verifier = event.activity.verifier !== undefined && /^[A-Za-z0-9._:/ -]{1,120}$/u.test(event.activity.verifier)
+        ? event.activity.verifier : undefined
+      this.executionActivities.push({
+        id: ++this.executionActivityId, timestamp, kind: event.activity.kind, phase: event.phase,
+        ...(this.executionActivityProvider === undefined ? {} : { provider: this.executionActivityProvider }),
+        ...(verifier === undefined ? {} : { verifier }),
+        ...(event.activity.outcome === undefined ? {} : { outcome: event.activity.outcome }),
+        ...(event.activity.changedFileCount === undefined ? {} : { changedFileCount: Math.max(0, Math.trunc(event.activity.changedFileCount)) }),
+      })
+      if (this.executionActivities.length > 30) this.executionActivities.shift()
+    }
     const data = {
       phase: event.phase,
       status: event.status,
@@ -1068,6 +1116,15 @@ function validateResumeForState(
       return { accepted: false, reason: 'repository drift requires recovery or adoption' }
     case 'BUDGET_EXHAUSTED':
       return { accepted: false, reason: 'session limits are exhausted' }
+    case 'ACTION_BUDGET_EXHAUSTED': {
+      const taskState = state.currentTaskId === null ? undefined : state.taskStatesV2?.[state.currentTaskId]
+      const budget = taskState?.actionBudget
+      if (budget === undefined || !budget.originalExhausted || budget.recoveryGranted || budget.recoveryExhausted) {
+        return { accepted: false, reason: 'controller recovery budget is unavailable or already consumed' }
+      }
+      if (!hasDecision || hasApproval) return { accepted: false, reason: 'a recovery decision is required' }
+      return { accepted: true, input: { decision } }
+    }
     case 'REVIEWER_PROTOCOL_FAILURE':
       return { accepted: false, reason: 'reviewer protocol failure requires a new session' }
     default:
