@@ -45,28 +45,29 @@ test('same controller decision and unchanged facts stall early without exhaustin
     dispatch: async () => { dispatches++; return { status: 'SUCCESS', verificationResults: [{ name: 'irrelevant-proof', status: 'passed' }] } },
   } })
   const result = await runner.run(stuckTask, undefined, undefined, { taskStateV2, taskEventLog: eventLog })
-  assert.equal(result.humanRequired?.category, 'STALLED_NO_PROGRESS')
-  assert.equal(dispatches, 3)
-  assert.equal(eventLog.count('CONTROLLER_DECIDED'), 3)
-  assert.equal(eventLog.last('TASK_SUSPENDED')?.reasonCode, 'STALLED_NO_PROGRESS')
+  assert.equal(result.humanRequired?.category, 'CYCLIC_NO_PROGRESS')
+  assert.equal(dispatches, 2)
+  assert.equal(eventLog.count('CONTROLLER_DECIDED'), 2)
+  assert.equal(eventLog.last('NO_PROGRESS_DETECTED')?.reasonCode, 'CYCLIC_NO_PROGRESS')
   assert.doesNotMatch(result.humanRequired?.reason ?? '', /quota|action budget exhausted/iu)
 })
 
 test('V2 runner owns execute/verify/fix/complete loop and preserves agent continuity', async () => {
   const calls: Array<{ action: string; agent: string }> = []
   let verificationAttempt = 0
+  let executeAttempt = 0
   let changedFiles: readonly string[] = []
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [codex, deepseek],
-    dispatcher: { inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }), dispatch: async ({ action, agent }) => {
+    dispatcher: { inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: `w-${executeAttempt}` }), dispatch: async ({ action, agent }) => {
       calls.push({ action, agent: agent.id })
       if (action === 'VERIFY') {
         verificationAttempt++
         return verificationAttempt === 1
-          ? { status: 'FAILED', verificationResults: [{ name: 'test', status: 'failed' }] }
+          ? { status: 'FAILED', verificationResults: [{ name: 'test', status: 'failed', classification: 'CODE_FAILURE' }] }
           : { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
       }
-      if (action === 'EXECUTE') changedFiles = ['src/a.ts']
+      if (action === 'EXECUTE') { executeAttempt++; changedFiles = ['src/a.ts'] }
       return { status: 'SUCCESS', changedFiles: action === 'EXECUTE' ? changedFiles : [] }
     } },
   })

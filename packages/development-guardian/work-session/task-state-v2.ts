@@ -22,6 +22,21 @@ export interface TaskGitStateV2 {
   worktreeFingerprint?: string
 }
 
+export interface ControllerDecisionTraceV2 {
+  decisionKey: string
+  realityKey: string
+}
+
+export interface TaskActionBudgetV2 {
+  originalLimit: number
+  originalConsumed: number
+  originalExhausted: boolean
+  recoveryLimit: number
+  recoveryGranted: boolean
+  recoveryConsumed: number
+  recoveryExhausted: boolean
+}
+
 /** A serializable, task-centric projection of the established Work Session facts. */
 export interface TaskStateV2 {
   version: typeof TASK_STATE_V2_VERSION
@@ -52,6 +67,12 @@ export interface TaskStateV2 {
   risk: 'LOW' | 'NORMAL' | 'HIGH'
   status: TaskStateV2Status
   blockers: readonly string[]
+  /** Bounded canonical convergence memory; event logs remain audit-only. */
+  controllerConvergence?: {
+    recentDecisions: readonly ControllerDecisionTraceV2[]
+  }
+  /** Per-Task durable action accounting. At most one bounded recovery grant is legal. */
+  actionBudget?: TaskActionBudgetV2
   updatedAt: string
 }
 
@@ -82,6 +103,8 @@ export function createTaskStateV2(
     verificationState: { results: [] },
     completion: { evidence: [], bindings: task.acceptanceEvidenceBindings ?? [] },
     providerHistory: [], risk: 'NORMAL', status: 'PENDING', blockers: [], updatedAt: new Date().toISOString(),
+    controllerConvergence: { recentDecisions: [] },
+    actionBudget: { originalLimit: 20, originalConsumed: 0, originalExhausted: false, recoveryLimit: 4, recoveryGranted: false, recoveryConsumed: 0, recoveryExhausted: false },
   }
 }
 
@@ -104,6 +127,11 @@ const persistedTask = z.object({
   }),
   providerHistory: strings, currentAgent: z.string().optional(), implementer: actor.optional(), currentAction: z.string().optional(),
   risk: z.enum(['LOW', 'NORMAL', 'HIGH']), status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'COMPLETED', 'FAILED']), blockers: strings, updatedAt: z.string(),
+  controllerConvergence: z.object({ recentDecisions: z.array(z.object({ decisionKey: z.string(), realityKey: z.string() })).max(12) }).optional(),
+  actionBudget: z.object({
+    originalLimit: z.number().int().positive(), originalConsumed: z.number().int().nonnegative(), originalExhausted: z.boolean(),
+    recoveryLimit: z.number().int().positive(), recoveryGranted: z.boolean(), recoveryConsumed: z.number().int().nonnegative(), recoveryExhausted: z.boolean(),
+  }).optional(),
 })
 
 /** Validate every semantic field before persisted JSON may enter the controller. */

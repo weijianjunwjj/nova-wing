@@ -1,5 +1,5 @@
 import type { VerificationResult } from '../model.js'
-import { TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
+import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
 import { approvalContext, assessRisk, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
@@ -8,6 +8,7 @@ import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
+import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
 import {
   deriveProviderSwitches,
   dispatchMessage,
@@ -110,6 +111,8 @@ function appendProviderHistory(history: readonly string[], provider: string): re
 }
 
 const MAX_NO_PROGRESS_REPEATS = 2
+const RECOVERY_ACTION_BUDGET = 4
+const CONVERGENCE_HISTORY_LIMIT = 12
 
 function semanticProgressKey(task: TaskStateV2, health: ProviderHealthRegistry): string {
   return JSON.stringify({
@@ -144,6 +147,38 @@ function semanticProgressKey(task: TaskStateV2, health: ProviderHealthRegistry):
   })
 }
 
+function convergenceRealityKey(task: TaskStateV2, health?: ProviderHealthRegistry): string {
+  return JSON.stringify({
+    repositoryIdentity: task.gitState.repositoryIdentity,
+    headSha: task.gitState.headSha,
+    worktreeFingerprint: task.gitState.worktreeFingerprint,
+    changedFiles: task.gitState.changedFiles,
+    progress: task.progress,
+    evidenceGap: task.verificationState.results.map((result) => ({ name: result.name, status: result.status, classification: result.classification })),
+    evidence: task.completion.evidence.map(({ timestamp: _timestamp, ...evidence }) => evidence),
+    currentAgent: task.currentAgent,
+    providerHistory: task.providerHistory,
+    providerHealth: health === undefined ? undefined : Object.fromEntries(Object.entries(health.entries()).sort(([left], [right]) => left.localeCompare(right)).map(([provider, observation]) => {
+      const { observedAt: _observedAt, ...stable } = observation
+      return [provider, stable]
+    })),
+  })
+}
+
+/** Detect a repeated 1-3 decision cycle only while every repository/evidence reality key is unchanged. */
+export function detectCyclicNoProgress(history: readonly { decisionKey: string; realityKey: string }[]): { pattern: readonly string[]; cycles: number } | undefined {
+  for (let length = 1; length <= 3; length++) {
+    const required = length * 2
+    if (history.length < required) continue
+    const tail = history.slice(-required)
+    if (!tail.every((entry) => entry.realityKey === tail[0]!.realityKey)) continue
+    const first = tail.slice(0, length).map((entry) => entry.decisionKey)
+    const second = tail.slice(length).map((entry) => entry.decisionKey)
+    if (first.every((key, index) => key === second[index])) return { pattern: first, cycles: 2 }
+  }
+  return undefined
+}
+
 /**
  * V2 execution entry point. It owns the action loop; Guardian remains usable
  * separately through GuardianWorkSessionTaskRunner for V1 compatibility.
@@ -156,6 +191,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     dispatcher: V2ActionDispatcher
     controller?: TaskController
     maxActions?: number
+    progressObserver?: GuardianProgressObserver
   }) {}
 
   async run(task: WorkSessionTask, resumeData?: unknown, _checkpoint?: unknown, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
@@ -169,6 +205,19 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, configured.completion.bindings])) throw new Error('persisted task policy does not match trusted definition')
     } catch {
       return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } }
+    }
+    const originalLimit = this.options.maxActions ?? state.actionBudget?.originalLimit ?? 20
+    state = { ...state,
+      controllerConvergence: state.controllerConvergence ?? { recentDecisions: [] },
+      actionBudget: state.actionBudget === undefined
+        ? { originalLimit, originalConsumed: 0, originalExhausted: false, recoveryLimit: RECOVERY_ACTION_BUDGET, recoveryGranted: false, recoveryConsumed: 0, recoveryExhausted: false }
+        : { ...state.actionBudget, originalLimit } }
+    const normalizedBudget = state.actionBudget!
+    const validRecoveryDecision = normalizedBudget.originalExhausted && !normalizedBudget.recoveryGranted &&
+      typeof (resumeData as { decision?: unknown } | undefined)?.decision === 'string' &&
+      (resumeData as { decision: string }).decision.trim().length > 0
+    if (validRecoveryDecision) {
+      state = { ...state, status: 'ACTIVE', blockers: [], actionBudget: { ...normalizedBudget, recoveryGranted: true, recoveryConsumed: 0, recoveryExhausted: false } }
     }
     // Explicit approval binds the persisted request, never the newly observed workspace.
     const approvalGrantedOnResume = state.currentAction === 'REQUEST_APPROVAL' && state.blockers.length === 0 &&
@@ -202,6 +251,11 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     // Task Event Log 是 append-only 历史；即使上下文给了 log，也绝不反向影响 decision。
     const note = (input: Omit<TaskEventV2, 'eventId' | 'taskId' | 'sessionId' | 'timestamp'> & { timestamp?: string }): TaskEventV2 | undefined =>
       eventLog === undefined ? undefined : eventLog.append({ taskId, sessionId, ...input })
+    const emitProgress = (phase: GuardianPhase, status: 'active' | 'completed' | 'failed', activity?: import('../progress.js').ExecutionActivityFact): void => {
+      const event = { phase, status, iteration: 0, elapsedMs: 0, ...(activity === undefined ? {} : { activity }) } as const
+      context?.onProgress?.(event)
+      this.options.progressObserver?.(event)
+    }
     const explanation = (reasonCode: DecisionReasonCode, action: TaskAction, detail: { selectedAgent?: string; selectedProvider?: string; previousAgent?: string; previousProvider?: string }, factors: readonly string[], alternativesConsidered: readonly string[] = []): DispatchExplanation => ({
       action, reasonCode, timestamp: new Date().toISOString(),
       ...(detail.selectedAgent === undefined ? {} : { selectedAgent: detail.selectedAgent }),
@@ -228,10 +282,21 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       if (approvalGrantedOnResume) {
         note({ type: 'APPROVAL_GRANTED', action: 'REQUEST_APPROVAL', reasonCode: 'RISK_REQUIRES_APPROVAL', ...repositoryFacts(state), explanation: explanation('RISK_REQUIRES_APPROVAL', 'REQUEST_APPROVAL', {}, [], []) })
       }
+      if (validRecoveryDecision) {
+        note({ type: 'RECOVERY_BUDGET_GRANTED', action: 'SUSPEND', reasonCode: 'RECOVERY_BUDGET_GRANTED', ...repositoryFacts(state), metadata: {
+          originalBudgetExhausted: true, humanDecision: true, recoveryBudget: state.actionBudget!.recoveryLimit,
+        } })
+      }
+    }
+    if (state.actionBudget!.recoveryExhausted ||
+        (state.actionBudget!.recoveryGranted && state.actionBudget!.recoveryConsumed >= state.actionBudget!.recoveryLimit)) {
+      state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND', actionBudget: { ...state.actionBudget!, recoveryExhausted: true } }
+      note({ type: 'RECOVERY_BUDGET_EXHAUSTED', action: 'SUSPEND', reasonCode: 'RECOVERY_BUDGET_EXHAUSTED', ...repositoryFacts(state), metadata: { terminalForSession: true } })
+      return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ACTION_BUDGET_EXHAUSTED', reason: 'recovery action budget exhausted; session is terminal' }, taskStateV2: state }
     }
     let previousDecisionKey: string | undefined
     let noProgressRepeats = 0
-    for (let iteration = 0; iteration < (this.options.maxActions ?? 20); iteration++) {
+    for (let iteration = 0; iteration < originalLimit + RECOVERY_ACTION_BUDGET + 8; iteration++) {
       if (context?.shouldPauseAutonomousWork?.() || (context?.hardDeadlineAtMs !== undefined && Date.now() >= context.hardDeadlineAtMs)) return { status: 'PAUSED', taskStateV2: state }
       const persistedRepositoryIdentity = state.gitState.repositoryIdentity
       const persistedHeadSha = state.gitState.headSha
@@ -251,6 +316,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       state = { ...state, currentAction: decision.action,
         ...((decision.action === 'REQUEST_APPROVAL' || decision.action === 'SUSPEND') ? { status: 'SUSPENDED' as const } : {}) }
       note({ type: 'CONTROLLER_DECIDED', action: decision.action, reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, decision.action, {}, [], []) })
+      const phase: GuardianPhase = decision.action === 'VERIFY' ? 'VERIFYING' : decision.action === 'REVIEW' ? 'FINAL_REVIEW' : decision.action === 'EXECUTE' ? 'EXECUTING' : decision.action === 'RECONCILE' ? 'RECOVERING' : 'REVIEWING'
+      emitProgress(phase, 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
       await context?.persistTaskStateV2?.(state)
       if (decision.action === 'RECONCILE') {
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT', reason: decision.reason }, taskStateV2: state }
@@ -261,7 +328,13 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         } else {
           note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, 'SUSPEND', {}, [], []) })
         }
-        return { status: 'HUMAN_REQUIRED', humanRequired: { category: decision.reasonCode === 'ACCEPTANCE_EVIDENCE_BINDING_MISSING' ? 'CONFIGURATION_REQUIRED' : 'DECISION_REQUIRED', reason: decision.reason }, taskStateV2: state }
+        const category = decision.reasonCode === 'ACCEPTANCE_EVIDENCE_BINDING_MISSING' || decision.reasonCode === 'VERIFIER_CONFIGURATION_FAILURE'
+          ? 'CONFIGURATION_REQUIRED'
+          : decision.reasonCode === 'VERIFICATION_ENVIRONMENT_FAILURE' ? 'ENVIRONMENT_REQUIRED'
+            : decision.reasonCode === 'UNRELATED_TEST_FAILURE' || decision.reasonCode === 'VERIFICATION_UNKNOWN' ? 'DECISION_REQUIRED' : 'DECISION_REQUIRED'
+        const failedVerification = state.verificationState.results.find((result) => result.status === 'failed')
+        if (failedVerification !== undefined) note({ type: 'VERIFICATION_CLASSIFIED', action: 'VERIFY', reasonCode: decision.reasonCode, ...repositoryFacts(state), metadata: { classification: canonicalVerificationFailure(failedVerification.classification), verifier: failedVerification.name } })
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category, reason: decision.reason }, taskStateV2: state, ...(failedVerification === undefined ? {} : { verificationFailure: failedVerification }) }
       }
       if (decision.action === 'REVIEW') {
         reasonEvent('REVIEW_REQUIRED', 'REVIEW', 'RISK_REQUIRES_REVIEW', {}, decision.reason === undefined ? [] : [decision.reason], state)
@@ -274,6 +347,19 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           status: 'COMPLETED', taskStateV2: { ...state, status: 'COMPLETED', currentAction: 'COMPLETE' },
           completionEvidence: completionEvidence(state, verificationResults),
         }
+      }
+      const budget = state.actionBudget!
+      const recoveryMode = budget.originalExhausted
+      const consumed = recoveryMode ? budget.recoveryConsumed : budget.originalConsumed
+      const limit = recoveryMode ? budget.recoveryLimit : budget.originalLimit
+      if (consumed >= limit) {
+        const reasonCode = recoveryMode ? 'RECOVERY_BUDGET_EXHAUSTED' : 'ACTION_BUDGET_EXHAUSTED'
+        state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND', actionBudget: recoveryMode
+          ? { ...budget, recoveryExhausted: true }
+          : { ...budget, originalExhausted: true } }
+        note({ type: recoveryMode ? 'RECOVERY_BUDGET_EXHAUSTED' : 'ACTION_BUDGET_EXHAUSTED', action: 'SUSPEND', reasonCode, ...repositoryFacts(state), metadata: { limit, consumed, terminalForSession: recoveryMode } })
+        await context?.persistTaskStateV2?.(state)
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ACTION_BUDGET_EXHAUSTED', reason: recoveryMode ? 'recovery action budget exhausted; session is terminal' : 'controller action budget exhausted; one bounded human recovery decision is available' }, taskStateV2: state }
       }
       // REVIEW excludes its implementer and every provider that produced the
       // implementation; independence is a capability fact, not a role assumption.
@@ -306,6 +392,11 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         ...repositoryFacts(state),
         explanation: explanation(selectionCode, decision.action, { selectedAgent, selectedProvider, ...(previousAgent === undefined ? {} : { previousAgent }), ...(previousProvider === undefined ? {} : { previousProvider }) }, selectionFactors) })
       if (decision.action === 'VERIFY') note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...repositoryFacts(state) })
+      emitProgress(phase, 'active', { kind: decision.action === 'VERIFY' ? 'VERIFIER_STARTED' : 'PROVIDER_DISPATCHED', provider: selectedProvider, ...(decision.action === 'VERIFY' ? { verifier: 'deterministic' } : {}) })
+      state = { ...state, actionBudget: recoveryMode
+        ? { ...state.actionBudget!, recoveryConsumed: state.actionBudget!.recoveryConsumed + 1 }
+        : { ...state.actionBudget!, originalConsumed: state.actionBudget!.originalConsumed + 1 } }
+      await context?.persistTaskStateV2?.(state)
       const progressBefore = semanticProgressKey(state, health)
       const decisionKey = `${decision.action}:${decision.reasonCode}`
       const dispatchedState = structuredClone(state)
@@ -334,9 +425,12 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT', reason: 'repository changed during action' }, taskStateV2: state }
       }
       const providerHistoryBefore = state.providerHistory
+      const repositoryChanged = observed.headSha !== state.gitState.headSha || observed.worktreeFingerprint !== state.gitState.worktreeFingerprint ||
+        JSON.stringify(observed.changedFiles) !== JSON.stringify(state.gitState.changedFiles)
+      const implementationEvidenceAdded = result.implementationEvidenceAdded === true
       const observedState: TaskStateV2 = { ...state, gitState: { repositoryIdentity: observed.repositoryIdentity, branch: observed.branch, headSha: observed.headSha, changedFiles: observed.changedFiles, worktreeFingerprint: observed.worktreeFingerprint } }
       state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: result.providerHistory ?? appendProviderHistory(state.providerHistory, agent.id),
-        ...(decision.action === 'EXECUTE' && agent.identity !== undefined ? { implementer: selected.identity! } : {}) }, decision.action, result)
+        ...(decision.action === 'EXECUTE' && agent.identity !== undefined ? { implementer: selected.identity! } : {}) }, decision.action, { ...result, repositoryChanged, implementationEvidenceAdded })
       // Provider switches are derived from the authoritative providerHistory delta,
       // never reconstructed from memory or agent narrative after the fact.
       const providerSwitches = deriveProviderSwitches(providerHistoryBefore, state.providerHistory)
@@ -348,7 +442,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       if (decision.action === 'VERIFY' && verificationResults !== undefined) {
         const passed = verificationResults.length > 0 && verificationResults.every((resultItem) => resultItem.status === 'passed')
         if (passed) note({ type: 'VERIFICATION_PASSED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
-        else note({ type: 'VERIFICATION_FAILED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
+        else {
+          note({ type: 'VERIFICATION_FAILED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
+          for (const failure of verificationResults.filter((item) => item.status === 'failed')) note({ type: 'VERIFICATION_CLASSIFIED', action: 'VERIFY', reasonCode: canonicalVerificationFailure(failure.classification) === 'ENVIRONMENT_FAILURE' ? 'VERIFICATION_ENVIRONMENT_FAILURE' : canonicalVerificationFailure(failure.classification) === 'VERIFIER_CONFIGURATION_FAILURE' ? 'VERIFIER_CONFIGURATION_FAILURE' : canonicalVerificationFailure(failure.classification) === 'UNRELATED_TEST_FAILURE' ? 'UNRELATED_TEST_FAILURE' : canonicalVerificationFailure(failure.classification) === 'CODE_FAILURE' ? 'VERIFICATION_FAILED' : 'VERIFICATION_UNKNOWN', ...repositoryFacts(state), metadata: { classification: canonicalVerificationFailure(failure.classification), verifier: failure.name } })
+        }
       }
       if (result.review !== undefined) {
         // Review evidence is accepted only when its reviewer matches the
@@ -363,6 +460,28 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         }
       }
       note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, provider: selectedProvider, ...repositoryFacts(state) })
+      emitProgress(phase, result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', provider: selectedProvider, outcome: result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
+      if (repositoryChanged) emitProgress('EXECUTING', 'completed', { kind: 'REPOSITORY_CHANGED', changedFileCount: observed.changedFiles.length })
+      const hadVerificationFailure = dispatchedState.verificationState.results.some((item) => item.status === 'failed')
+      if (decision.action === 'EXECUTE' && result.status === 'SUCCESS' && hadVerificationFailure && !repositoryChanged && !implementationEvidenceAdded) {
+        const failure = dispatchedState.verificationState.results.find((item) => item.status === 'failed')!
+        const reason = `Executor completed without repository or implementation-evidence progress after ${canonicalVerificationFailure(failure.classification)}`
+        state = { ...state, verificationState: dispatchedState.verificationState, completion: dispatchedState.completion, status: 'SUSPENDED', currentAction: 'SUSPEND' }
+        note({ type: 'NO_IMPLEMENTATION_PROGRESS', action: 'EXECUTE', reasonCode: 'NO_IMPLEMENTATION_PROGRESS', ...repositoryFacts(state), metadata: { repoChanged: false, evidenceChanged: false, originalFailureClassification: canonicalVerificationFailure(failure.classification), verifier: failure.name } })
+        note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', reasonCode: 'NO_IMPLEMENTATION_PROGRESS', ...repositoryFacts(state) })
+        await context?.persistTaskStateV2?.(state)
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'STALLED_NO_PROGRESS', reason }, taskStateV2: state, verificationFailure: failure }
+      }
+      const convergenceHistory = [...(state.controllerConvergence?.recentDecisions ?? []), { decisionKey, realityKey: convergenceRealityKey(state, health) }].slice(-CONVERGENCE_HISTORY_LIMIT)
+      state = { ...state, controllerConvergence: { recentDecisions: convergenceHistory } }
+      const cycle = detectCyclicNoProgress(convergenceHistory)
+      if (cycle !== undefined) {
+        const reason = `${cycle.pattern.join(' -> ')} repeated ${cycle.cycles} times without repository or evidence progress`
+        state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND' }
+        note({ type: 'NO_PROGRESS_DETECTED', action: 'SUSPEND', reasonCode: 'CYCLIC_NO_PROGRESS', ...repositoryFacts(state), metadata: { pattern: cycle.pattern, cycles: cycle.cycles } })
+        await context?.persistTaskStateV2?.(state)
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'CYCLIC_NO_PROGRESS', reason }, taskStateV2: state }
+      }
       const progressAfter = semanticProgressKey(state, health)
       noProgressRepeats = decisionKey === previousDecisionKey && progressAfter === progressBefore ? noProgressRepeats + 1 : 0
       previousDecisionKey = decisionKey
@@ -394,7 +513,12 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           ...(commands.length === 1 ? { pendingVerificationCommand: commands[0]! } : {}) }
       }
     }
-    return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'STALLED', reason: 'controller action budget exhausted' }, taskStateV2: { ...state, status: 'SUSPENDED' } }
+    const recoveryMode = state.actionBudget?.originalExhausted === true
+    state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND', actionBudget: recoveryMode
+      ? { ...state.actionBudget!, recoveryExhausted: true }
+      : { ...state.actionBudget!, originalExhausted: true } }
+    note({ type: recoveryMode ? 'RECOVERY_BUDGET_EXHAUSTED' : 'ACTION_BUDGET_EXHAUSTED', action: 'SUSPEND', reasonCode: recoveryMode ? 'RECOVERY_BUDGET_EXHAUSTED' : 'ACTION_BUDGET_EXHAUSTED', ...repositoryFacts(state) })
+    return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ACTION_BUDGET_EXHAUSTED', reason: recoveryMode ? 'recovery action budget exhausted; session is terminal' : 'controller action budget exhausted; one bounded human recovery decision is available' }, taskStateV2: state }
   }
 }
 
