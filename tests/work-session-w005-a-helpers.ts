@@ -54,6 +54,7 @@ export class FakeRuntime implements WorkSessionControlRuntime {
   resumeInputs: Array<{ decision?: string; approval?: boolean }> = []
   pauseRequested = false
   stopAfterTaskRequested = false
+  activeExecution = false
   startDeferred:
     | {
         promise: Promise<WorkSessionDurableState>
@@ -129,6 +130,10 @@ export class FakeRuntime implements WorkSessionControlRuntime {
       pauseRequested: this.pauseRequested,
       stopAfterTaskRequested: this.stopAfterTaskRequested,
     }
+  }
+
+  hasActiveExecution(): boolean {
+    return this.activeExecution
   }
 
   getDurableState(): WorkSessionDurableState | undefined {

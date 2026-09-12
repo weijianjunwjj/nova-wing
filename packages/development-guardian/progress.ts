@@ -12,6 +12,25 @@ export type GuardianPhase =
 
 export type GuardianProgressStatus = 'pending' | 'active' | 'completed' | 'failed'
 
+export type ExecutionActivityKind =
+  | 'CONTROLLER_PHASE_CHANGED'
+  | 'PROVIDER_DISPATCHED'
+  | 'PROVIDER_COMPLETED'
+  | 'PROVIDER_FAILED'
+  | 'VERIFIER_STARTED'
+  | 'VERIFIER_COMPLETED'
+  | 'REPOSITORY_CHANGED'
+  | 'RUNTIME_REPAIR'
+
+/** Observable tool/runtime fact only. Free-form model reasoning is deliberately absent. */
+export interface ExecutionActivityFact {
+  kind: ExecutionActivityKind
+  provider?: string
+  verifier?: string
+  outcome?: 'PASSED' | 'FAILED' | 'COMPLETED'
+  changedFileCount?: number
+}
+
 export interface GuardianProgressEvent {
   phase: GuardianPhase
   status: GuardianProgressStatus
@@ -32,6 +51,7 @@ export interface GuardianProgressEvent {
     durationMs?: number
     evidence?: import('./model.js').VerificationResult
   }
+  activity?: ExecutionActivityFact
 }
 
 export type GuardianProgressObserver = (event: GuardianProgressEvent) => void

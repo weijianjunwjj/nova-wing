@@ -718,7 +718,7 @@ export async function createProductionWorkSessionUi(
         // single executor profile is retained only for pre-v0.2.4 configs.
         const declaredAgents = trustedAgents(trusted, definition.id)
         const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
-        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher })
+        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
         const runtimeRepair: WorkSessionRuntimeRepairConfig = {
           engine: createRuntimeRepairEngine(),
           agents: () => v2Agents,
