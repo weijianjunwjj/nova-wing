@@ -32,6 +32,8 @@ export interface WorkSessionTask {
   forbiddenPaths?: readonly string[]
   /** Explicit criterion-to-evidence contract for the V2 completion gate. */
   acceptanceEvidenceBindings?: readonly import('./risk-evidence.js').AcceptanceEvidenceBinding[] | undefined
+  /** Optional trusted risk declaration. Path names alone never elevate this value. */
+  risk?: import('./risk-evidence.js').RiskLevel | undefined
 }
 
 export interface WorkSessionLimits {
@@ -65,6 +67,8 @@ export interface WorkSessionDefinition {
   createdAt?: string
   /** V2 makes TaskStateV2 authoritative; absent preserves established V1 behavior. */
   controlPlane?: 'v1' | 'v2'
+  /** V2.8 kill switch. Omission is resolved by the production default. */
+  directPath?: { enabled: boolean }
 }
 
 export interface HumanRequired {
