@@ -40,6 +40,7 @@ export type TaskContractPreflightResult =
       acceptanceEvidenceBindings: AcceptanceEvidenceBinding[]
       verifiers: VerifierPreflightResult[]
       repairs: string[]
+      planningRequired?: boolean
     }
   | {
       ok: false
@@ -236,6 +237,7 @@ export async function preflightTaskContract(input: {
   targetRepo: string
   acceptanceCriteria: readonly string[]
   acceptanceEvidenceBindings: readonly AcceptanceEvidenceBinding[]
+  verificationPlannerEnabled?: boolean
 }): Promise<TaskContractPreflightResult> {
   const root = resolve(input.targetRepo)
   const facts = await inspectRepository(root)
@@ -298,6 +300,10 @@ export async function preflightTaskContract(input: {
         repairs.push(`Bound command-shaped criterion to its exact verifier: ${criterion}`)
         continue
       }
+      if (input.verificationPlannerEnabled === true) {
+        repairs.push(`Deferred evidence selection to Verification Planner: ${criterion}`)
+        continue
+      }
       issues.push({ issueCode: 'MISSING_EVIDENCE_BINDING', criterion, reason: 'Acceptance criterion has no evidence binding.',
         attemptedRepair: 'Search explicit and inline bindings.', whyRepairWasUnsafeOrImpossible: 'Selecting evidence without an explicit verifier would guess what proves the criterion.' })
     }
@@ -357,5 +363,6 @@ export async function preflightTaskContract(input: {
 
   return issues.length > 0
     ? { ok: false, issues, verifiers, repairs }
-    : { ok: true, acceptanceCriteria: criteria, acceptanceEvidenceBindings: bindings, verifiers, repairs }
+    : { ok: true, acceptanceCriteria: criteria, acceptanceEvidenceBindings: bindings, verifiers, repairs,
+        ...(criteria.some((criterion) => !bindingsByCriterion.has(criterion)) ? { planningRequired: true } : {}) }
 }
