@@ -87,6 +87,7 @@ const TrustedConfigSchema = z.object({
     scheduleSource: z.enum(['immediate', 'custom', 'deepseek_off_peak']).optional(),
     createdAt: z.string().optional(),
     controlPlane: z.enum(['v1', 'v2']).optional(),
+    directPath: z.object({ enabled: z.boolean() }).strict().optional(),
     limits: z.object({
       softMinutes: z.number(),
       hardMinutes: z.number(),
@@ -99,6 +100,7 @@ const TrustedConfigSchema = z.object({
     guardian: GuardianPolicySchema,
     executorMode: z.enum(['auto', 'codex', 'deepseek']).optional(),
     acceptanceEvidenceBindings: z.array(AcceptanceEvidenceBindingSchema).optional(),
+    risk: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
   }).strict()).min(1),
   gitCheckpoint: z.object({
     autoCommit: z.boolean(),
@@ -583,12 +585,14 @@ export async function createProductionWorkSessionUi(
     branch: trusted.session.branch,
     tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal, constraints: task.guardian.constraints,
       acceptanceCriteria: task.guardian.acceptanceCriteria, allowedPaths: task.guardian.allowedPaths, forbiddenPaths: task.guardian.forbiddenPaths,
-      ...(task.acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings: task.acceptanceEvidenceBindings }) })),
+      ...(task.acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings: task.acceptanceEvidenceBindings }),
+      ...(task.risk === undefined ? {} : { risk: task.risk }) })),
     limits: { ...trusted.session.limits },
     ...(trusted.session.scheduledStartAt === undefined ? {} : { scheduledStartAt: trusted.session.scheduledStartAt }),
     ...(trusted.session.scheduleSource === undefined ? {} : { scheduleSource: trusted.session.scheduleSource }),
     ...(trusted.session.createdAt === undefined ? {} : { createdAt: trusted.session.createdAt }),
     ...(trusted.session.controlPlane === undefined ? {} : { controlPlane: trusted.session.controlPlane }),
+    ...(trusted.session.directPath === undefined ? {} : { directPath: { ...trusted.session.directPath } }),
   }
   const storageUrl = trusted.storageUrl ?? defaultStorageUrl(trusted.session.id, env)
   const storagePath = storagePathFromUrl(storageUrl)
@@ -718,7 +722,9 @@ export async function createProductionWorkSessionUi(
         // single executor profile is retained only for pre-v0.2.4 configs.
         const declaredAgents = trustedAgents(trusted, definition.id)
         const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
-        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
+        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
+          directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
+          ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
         const runtimeRepair: WorkSessionRuntimeRepairConfig = {
           engine: createRuntimeRepairEngine(),
           agents: () => v2Agents,

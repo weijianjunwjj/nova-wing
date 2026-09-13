@@ -272,6 +272,7 @@ type RepairLaunchResult =
     }
 
 interface ComposerRequest {
+  directPathEnabled: boolean
   executorMode: ExecutorMode
   codexModel: string
   codexReasoningEffort: string
@@ -1201,6 +1202,7 @@ export class NovaWingLaunchpad {
       targetRepo,
       acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
       acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
+      verificationPlannerEnabled: input.directPathEnabled,
     })
     if (contract.ok) return this.buildAndLaunchComposed(input, targetRepo, branch, contract)
 
@@ -1246,6 +1248,7 @@ export class NovaWingLaunchpad {
         id: sessionId,
         // New Composer sessions opt into V2; persisted legacy configs keep their semantics.
         controlPlane: 'v2',
+        directPath: { enabled: input.directPathEnabled },
         targetRepo,
         branch,
         scheduledStartAt: input.scheduledStartAt !== null && Date.parse(input.scheduledStartAt) > Date.now() ? input.scheduledStartAt : null,
@@ -1263,7 +1266,11 @@ export class NovaWingLaunchpad {
           allowedPaths: input.guardian.allowedPaths,
           forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
         },
-        acceptanceEvidenceBindings: composerEvidenceBindings(contract.acceptanceCriteria, contract.acceptanceEvidenceBindings),
+        acceptanceEvidenceBindings: composerEvidenceBindings(
+          contract.acceptanceCriteria,
+          contract.acceptanceEvidenceBindings,
+          input.directPathEnabled,
+        ),
       })),
       gitCheckpoint: {
         autoCommit: input.autoCommit,
@@ -1394,6 +1401,7 @@ export class NovaWingLaunchpad {
         targetRepo,
         acceptanceCriteria: outcome.proposal.acceptanceCriteria,
         acceptanceEvidenceBindings: outcome.proposal.acceptanceEvidenceBindings,
+        verificationPlannerEnabled: request.directPathEnabled,
       })
       stage.reflightPassed = reflight.ok
       if (automatic) {
@@ -1504,6 +1512,7 @@ export class NovaWingLaunchpad {
       targetRepo,
       acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
       acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
+      verificationPlannerEnabled: input.directPathEnabled,
     })
     if (preflight.ok) {
       const result = await this.buildAndLaunchComposed(input, targetRepo, branch, preflight)
@@ -1692,6 +1701,7 @@ function createSessionId(targetRepo: string): string {
 
 function canonicalComposerPayload(input: ComposerRequest): string {
   return JSON.stringify({
+    directPathEnabled: input.directPathEnabled,
     targetRepo: input.targetRepo,
     branch: input.branch,
     tasks: input.tasks,
@@ -1811,7 +1821,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   const allowed = new Set([
     'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
-    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch',
+    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch', 'directPathEnabled',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
   let scheduledStartAt: string | null
@@ -1860,7 +1870,8 @@ function parseComposerBody(body: string): ComposerParseResult {
   const autoCommit = record.autoCommit ?? true
   const autoPush = record.autoPush ?? false
   const emailEnabled = record.emailEnabled ?? false
-  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean') {
+  const directPathEnabled = record.directPathEnabled ?? false
+  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean' || typeof directPathEnabled !== 'boolean') {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
   if (autoPush && !autoCommit) return { ok: false, error: 'AUTO_PUSH_REQUIRES_AUTO_COMMIT' }
@@ -1874,6 +1885,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   return {
     ok: true,
     value: {
+      directPathEnabled,
       requestId: record.requestId,
       scheduledStartAt,
       scheduleSource,
@@ -2024,7 +2036,11 @@ function looksLikeTestVerifierCommand(command: string): boolean {
   return /^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|node\s+--test\b|npx\s+(?:vitest|jest)\b|(?:vitest|jest)\b|\.venv\/Scripts\/python\.exe\s+-m\s+pytest\b)/iu.test(command.trim())
 }
 
-function composerEvidenceBindings(criteria: readonly string[], explicit: readonly AcceptanceEvidenceBinding[]): AcceptanceEvidenceBinding[] {
+function composerEvidenceBindings(
+  criteria: readonly string[],
+  explicit: readonly AcceptanceEvidenceBinding[],
+  verificationPlannerEnabled = false,
+): AcceptanceEvidenceBinding[] {
   const criterionSet = new Set(criteria)
   const byCriterion = new Map<string, AcceptanceEvidenceBinding>()
   for (const binding of explicit) {
@@ -2036,7 +2052,9 @@ function composerEvidenceBindings(criteria: readonly string[], explicit: readonl
   const relevantTests = [...new Set([...explicitEvidence, ...criteria.filter(looksLikeVerifierCommand)].filter(looksLikeTestVerifierCommand))]
   return [
     { criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[0], requiredEvidence: ['git diff --check'] },
-    { criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: relevantTests.length > 0 ? relevantTests : ['npm test'] },
+    ...(relevantTests.length > 0
+      ? [{ criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: relevantTests }]
+      : verificationPlannerEnabled ? [] : [{ criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: ['npm test'] }]),
     ...custom,
   ]
 }

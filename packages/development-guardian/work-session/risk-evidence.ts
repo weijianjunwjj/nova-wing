@@ -23,14 +23,28 @@ export function unmappedAcceptanceCriteria(task: Pick<TaskStateV2, 'acceptanceCr
 export function assessRisk(task: TaskStateV2): RiskAssessment {
   const files = task.gitState.changedFiles
   const factors: string[] = []
-  if (task.risk === 'HIGH') factors.push('configured HIGH risk')
-  if (files.some((p) => /(?:auth|permission|security|secret)/iu.test(p))) factors.push('security-sensitive path')
-  if (files.some((p) => /(?:migration|schema|database|sqlite)/iu.test(p))) factors.push('database or migration path')
-  if (files.some((p) => /(?:index|public|api)/iu.test(p))) factors.push('public API path')
-  if (files.length >= 10) factors.push(`${files.length} changed files`)
+  const contract = [task.goal, ...task.constraints, ...task.acceptanceCriteria].join(' ')
+  if (task.risk === 'HIGH' || task.risk === 'CRITICAL') factors.push(`configured ${task.risk} risk`)
+  if (task.risk === 'MEDIUM') factors.push('configured MEDIUM risk')
+  const securityContract = /\b(?:authentication|authorization|credential|security boundary|permission model)\b/iu.test(contract)
+  const migrationContract = /\b(?:migration|schema change|database migration|destructive)\b/iu.test(contract)
+  const publicContract = /\b(?:public API|exported (?:surface|contract)|breaking change|compatibility)\b/iu.test(contract)
+  if (securityContract) factors.push('security boundary contract')
+  if (migrationContract) factors.push('database or migration contract')
+  if (publicContract) factors.push('public compatibility contract')
+  // A sensitive-looking path is a signal only. It cannot independently force HIGH.
+  if (files.some((p) => /(?:auth|permission|security|secret|migration|schema|database|sqlite|public|api)/iu.test(p))) factors.push('sensitive path signal')
+  if (files.length >= 10) factors.push(`${files.length} changed files signal`)
   if (task.verificationState.results.filter((r) => r.status === 'failed').length >= 2) factors.push('repeated verification failures')
-  const critical = factors.some((f) => f.includes('security')) && factors.some((f) => f.includes('database'))
-  return { level: critical ? 'CRITICAL' : factors.some((f) => /security|database|public API|changed files|configured HIGH/.test(f)) ? 'HIGH' : factors.length ? 'MEDIUM' : 'LOW', factors }
+  // Controller-only sessions retain the v0.2.7 conservative heuristic. The
+  // Direct fast gate uses contract/export facts and treats a path as one signal.
+  const legacyController = task.execution?.path !== 'DIRECT'
+  const legacySecurityPath = legacyController && files.some((path) => /(?:auth|permission|security|secret)/iu.test(path))
+  const legacyDataPath = legacyController && files.some((path) => /(?:migration|schema|database|sqlite)/iu.test(path))
+  const legacyPublicPath = legacyController && files.some((path) => /(?:index|public|api)/iu.test(path))
+  const critical = task.risk === 'CRITICAL' || (securityContract && migrationContract) || (legacySecurityPath && legacyDataPath)
+  const high = task.risk === 'HIGH' || securityContract || migrationContract || publicContract || legacySecurityPath || legacyDataPath || legacyPublicPath || (legacyController && files.length >= 10)
+  return { level: critical ? 'CRITICAL' : high ? 'HIGH' : factors.length ? 'MEDIUM' : 'LOW', factors }
 }
 
 export function evidenceIsStale(evidence: EvidenceV2, task: TaskStateV2): boolean {

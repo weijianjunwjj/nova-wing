@@ -207,7 +207,10 @@ test('production VERIFY uses router deterministic retry without starting a codin
     assert.equal(result.status, 'COMPLETED')
     assert.equal(executions, 0)
     assert.equal(verifications, 1)
-    assert.deepEqual(result.taskStateV2?.providerHistory, ['deepseek'])
+    // providerHistory is implementation provenance: a VERIFY-only task never
+    // executes, so no implementer provider is recorded even though the router
+    // deterministically retries verification through the configured executor.
+    assert.deepEqual(result.taskStateV2?.providerHistory, [])
   } finally { await app.close(); await rm(root, { recursive: true, force: true }); await cleanupRuntimeData(data) }
 })
 

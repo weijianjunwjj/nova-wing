@@ -1,7 +1,7 @@
 import type { VerificationResult } from '../model.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
-import { approvalContext, assessRisk, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
+import { approvalContext, assessRisk, completionGate, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
@@ -9,6 +9,8 @@ import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
+import { assessDirectPathEligibility, concreteRuntimeProvider, phaseForAction } from './direct-path.js'
+import { bindingsFromVerificationPlan, planVerification, validateVerificationPlanAfterExecution, verificationPlanFingerprintValid } from './verification-planner.js'
 import {
   deriveProviderSwitches,
   dispatchMessage,
@@ -192,17 +194,116 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     controller?: TaskController
     maxActions?: number
     progressObserver?: GuardianProgressObserver
+    directPath?: { enabled: boolean; repositoryRoot: string }
   }) {}
 
   async run(task: WorkSessionTask, resumeData?: unknown, _checkpoint?: unknown, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
+    if (this.options.directPath?.enabled !== true || context?.taskStateV2?.execution?.escalated === true || context?.taskStateV2?.status !== undefined && context.taskStateV2.status !== 'PENDING') {
+      return this.runController(task, resumeData, _checkpoint, context)
+    }
+    const direct = await this.runDirect(task, context)
+    if (direct.result !== undefined) return direct.result
+    return this.runController(task, resumeData, _checkpoint, { ...context, ...(direct.escalationState === undefined ? {} : { taskStateV2: direct.escalationState }) })
+  }
+
+  private async runDirect(task: WorkSessionTask, context?: WorkSessionTaskRunContext): Promise<{ result?: WorkSessionTaskResult; escalationState?: TaskStateV2 }> {
+    const controller = this.options.controller ?? new TaskController()
+    const eventLog = context?.taskEventLog
+    const note = (input: Omit<TaskEventV2, 'eventId' | 'taskId' | 'sessionId' | 'timestamp'>): void => { eventLog?.append({ taskId: task.id, sessionId: this.options.sessionId, ...input }) }
+    const emit = (phase: GuardianPhase, status: 'active' | 'completed' | 'failed', activity?: import('../progress.js').ExecutionActivityFact): void => {
+      const event = { phase, status, iteration: 0, elapsedMs: 0, ...(activity === undefined ? {} : { activity }) } as const
+      context?.onProgress?.(event); this.options.progressObserver?.(event)
+    }
+    let state = createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task)
+    if (context?.taskStateV2 !== undefined) {
+      try { state = loadTaskStateV2(context.taskStateV2) } catch { return { result: { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } } } }
+    }
+    note({ type: 'TASK_CREATED', ...repositoryFacts(state) })
+    emit('PLANNING', 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
+    const start = await this.options.dispatcher.inspectRepository()
+    const initial = reconcileTaskState(state, start)
+    state = initial.state
+    const plan = await planVerification({ repositoryRoot: this.options.directPath!.repositoryRoot, task, risk: assessRisk(state).level, ...(task.allowedPaths === undefined ? {} : { changedAreaHint: task.allowedPaths }) })
+    state = { ...state, verificationPlan: plan, completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+      execution: { path: 'DIRECT', escalated: false, startCheckpoint: { ...state.gitState } }, updatedAt: new Date().toISOString() }
+    note({ type: 'VERIFICATION_PLANNED', ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command), metadata: { planId: plan.planId, fingerprint: plan.fingerprint, confidence: plan.confidence, scope: plan.estimatedScope } })
+    await context?.persistTaskStateV2?.(state)
+    if (plan.confidence === 'INSUFFICIENT') {
+      state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND' }
+      note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', ...repositoryFacts(state), metadata: { reason: 'verification planning requires human evidence selection' } })
+      return { result: { status: 'HUMAN_REQUIRED', humanRequired: { category: 'PLANNING_REQUIRED', reason: 'no trustworthy task-local or package-local verifier; root-suite fallback is forbidden' }, taskStateV2: state } }
+    }
+    const eligibility = assessDirectPathEligibility({
+      task: state,
+      plan,
+      agents: this.options.agents,
+      repositoryConsistent: initial.reconciled,
+      unownedDirtyChanges: start.changedFiles.length > 0,
+    })
+    if (!eligibility.eligible) {
+      state = { ...state, execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
+      note({ type: 'DIRECT_PATH_ESCALATED', ...repositoryFacts(state), metadata: { stage: 'ELIGIBILITY', reasons: eligibility.reasons } })
+      return { escalationState: state }
+    }
+    const agent = selectAgent('EXECUTE', this.options.agents)
+    if (agent === undefined) return { escalationState: { ...state, execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } } }
+    const routeProvider = providerOf(agent)
+    note({ type: 'DIRECT_PATH_STARTED', action: 'EXECUTE', agent: agent.id, ...repositoryFacts(state), metadata: { routeProfile: routeProvider, eligibleProviders: this.options.agents.filter((item) => item.available && !item.degraded && !item.quotaExhausted).map(providerOf) } })
+    note({ type: 'AGENT_DISPATCHED', action: 'EXECUTE', agent: agent.id, ...repositoryFacts(state), metadata: { routeProfile: routeProvider } })
+    emit('EXECUTING', 'active', { kind: 'PROVIDER_DISPATCHED' })
+    const execute = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state) })
+    const end = await this.options.dispatcher.inspectRepository()
+    const repositoryChanged = end.headSha !== start.headSha || end.worktreeFingerprint !== start.worktreeFingerprint || JSON.stringify(end.changedFiles) !== JSON.stringify(start.changedFiles)
+    const actualProvider = execute.providerHistory?.at(-1) ?? (routeProvider === 'codex-or-deepseek' ? undefined : routeProvider)
+    const identity = agentIdentity(agent)
+    const actualIdentity = actualProvider === undefined ? identity : { ...identity, provider: actualProvider }
+    const observedState: TaskStateV2 = { ...state, gitState: { ...end }, currentAgent: agent.id, implementer: actualIdentity,
+      providerHistory: execute.providerHistory ?? (actualProvider === undefined ? state.providerHistory : appendProviderHistory(state.providerHistory, actualProvider)) }
+    state = controller.applyResult(observedState, 'EXECUTE', { ...execute, repositoryChanged, implementationEvidenceAdded: execute.implementationEvidenceAdded === true })
+    note({ type: execute.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: 'EXECUTE', agent: agent.id, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
+    emit('EXECUTING', execute.status === 'SUCCESS' ? 'completed' : 'failed', { kind: execute.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: execute.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
+    const riskBefore = assessRisk({ ...state, gitState: { ...state.gitState, changedFiles: [] } }).level
+    const riskAfter = assessRisk(state).level
+    const planValidity = validateVerificationPlanAfterExecution({ plan, changedFiles: end.changedFiles, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths, riskBefore, riskAfter })
+    await context?.persistTaskStateV2?.(state)
+    if (execute.status !== 'SUCCESS' || !planValidity.valid) {
+      state = { ...state, execution: { ...state.execution!, escalated: true, path: 'CONTROLLER' }, ...(planValidity.valid ? {} : { blockers: [...state.blockers, ...planValidity.reasons] }) }
+      note({ type: 'DIRECT_PATH_ESCALATED', action: 'EXECUTE', ...repositoryFacts(state), metadata: { stage: planValidity.valid ? 'EXECUTE' : 'PLAN_INVALIDATED', reasons: planValidity.valid ? execute.blockers ?? [execute.summary ?? 'execution failed'] : planValidity.reasons, verificationPlan: plan } })
+      return { escalationState: state }
+    }
+    note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command) })
+    emit('VERIFYING', 'active', { kind: 'VERIFIER_STARTED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId })
+    const verification = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state) })
+    state = controller.applyResult(state, 'VERIFY', verification)
+    const passed = verification.status === 'SUCCESS' && state.verificationState.results.length > 0 && state.verificationState.results.every((item) => item.status === 'passed')
+    note({ type: passed ? 'VERIFICATION_PASSED' : 'VERIFICATION_FAILED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: state.verificationState.results.map((item) => item.name) })
+    emit('VERIFYING', passed ? 'completed' : 'failed', { kind: 'VERIFIER_COMPLETED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId, outcome: passed ? 'PASSED' : 'FAILED' })
+    await context?.persistTaskStateV2?.(state)
+    const risk = assessRisk(state)
+    if (!passed || !completionGate({ task: state, ...state.completion, risk })) {
+      state = { ...state, execution: { ...state.execution!, escalated: true, path: 'CONTROLLER' } }
+      note({ type: 'DIRECT_PATH_ESCALATED', action: 'VERIFY', ...repositoryFacts(state), metadata: { stage: 'VERIFY', verificationPlan: plan, failureClassification: state.verificationState.results.find((item) => item.status === 'failed')?.classification ?? 'EVIDENCE_MISSING' } })
+      return { escalationState: state }
+    }
+    emit('FINALIZING', 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
+    state = { ...state, status: 'COMPLETED', currentAction: 'COMPLETE', updatedAt: new Date().toISOString() }
+    note({ type: 'TASK_COMPLETED', action: 'COMPLETE', ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command), metadata: { executionPath: 'DIRECT', outcome: end.changedFiles.length === 0 ? 'ALREADY_SATISFIED' : 'COMPLETED' } })
+    await context?.persistTaskStateV2?.(state)
+    emit('COMPLETED', 'completed', { kind: 'PROVIDER_COMPLETED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: 'COMPLETED' })
+    return { result: { status: 'COMPLETED', taskStateV2: state, completionEvidence: completionEvidence(state, state.verificationState.results) } }
+  }
+
+  private async runController(task: WorkSessionTask, resumeData?: unknown, _checkpoint?: unknown, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
     const controller = this.options.controller ?? new TaskController()
     let state: TaskStateV2
     try {
       state = context?.taskStateV2 === undefined ? createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task) : loadTaskStateV2(context.taskStateV2)
       if (state.identity.taskId !== task.id || state.identity.sessionId !== this.options.sessionId) throw new Error('task identity mismatch')
       const configured = createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task)
+      const trustedBindings = state.verificationPlan !== undefined && verificationPlanFingerprintValid(state.verificationPlan)
+        ? bindingsFromVerificationPlan(state.verificationPlan) : configured.completion.bindings
       if (JSON.stringify([state.goal, state.constraints, state.acceptanceCriteria, state.permissions, state.completion.bindings]) !==
-          JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, configured.completion.bindings])) throw new Error('persisted task policy does not match trusted definition')
+          JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, trustedBindings])) throw new Error('persisted task policy does not match trusted definition')
     } catch {
       return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } }
     }
@@ -213,6 +314,13 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         ? { originalLimit, originalConsumed: 0, originalExhausted: false, recoveryLimit: RECOVERY_ACTION_BUDGET, recoveryGranted: false, recoveryConsumed: 0, recoveryExhausted: false }
         : { ...state.actionBudget, originalLimit } }
     const normalizedBudget = state.actionBudget!
+    const humanDecision = typeof (resumeData as { decision?: unknown } | undefined)?.decision === 'string'
+      ? (resumeData as { decision: string }).decision.trim().toLocaleUpperCase('en-US') : undefined
+    if (humanDecision !== undefined && /(?:VERIFY\s*ONLY|NO\s+RE-?EXECUTE)/u.test(humanDecision)) {
+      state = { ...state, humanConstraints: { verifyOnly: true }, status: 'ACTIVE', blockers: [] }
+    } else if (humanDecision !== undefined && /(?:ALLOW\s+RE-?EXECUTE|REVOKE\s+VERIFY\s*ONLY)/u.test(humanDecision)) {
+      state = { ...state, humanConstraints: { verifyOnly: false }, status: 'ACTIVE', blockers: [] }
+    }
     const validRecoveryDecision = normalizedBudget.originalExhausted && !normalizedBudget.recoveryGranted &&
       typeof (resumeData as { decision?: unknown } | undefined)?.decision === 'string' &&
       (resumeData as { decision: string }).decision.trim().length > 0
@@ -316,7 +424,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       state = { ...state, currentAction: decision.action,
         ...((decision.action === 'REQUEST_APPROVAL' || decision.action === 'SUSPEND') ? { status: 'SUSPENDED' as const } : {}) }
       note({ type: 'CONTROLLER_DECIDED', action: decision.action, reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, decision.action, {}, [], []) })
-      const phase: GuardianPhase = decision.action === 'VERIFY' ? 'VERIFYING' : decision.action === 'REVIEW' ? 'FINAL_REVIEW' : decision.action === 'EXECUTE' ? 'EXECUTING' : decision.action === 'RECONCILE' ? 'RECOVERING' : 'REVIEWING'
+      const phase: GuardianPhase = phaseForAction(decision.action, false)
       emitProgress(phase, 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
       await context?.persistTaskStateV2?.(state)
       if (decision.action === 'RECONCILE') {
@@ -381,18 +489,23 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       }
       const selectedAgent = agent.id
       const selectedProvider = providerOf(agent)
+      const projectedProvider = concreteRuntimeProvider(selectedProvider)
       const previousProfile = previousAgent === undefined ? undefined : this.options.agents.find((candidate) => candidate.id === previousAgent)
       const previousProvider = previousAgent === undefined ? undefined : providerOf(previousProfile ?? { id: previousAgent })
       const selectionCode = selectionReasonCode({ action: decision.action, selected: agent, ...(previousAgent === undefined ? {} : { previousAgent }), ...(previousProfile === undefined ? {} : { previousProfile }) })
       const selectionFactors: string[] = previousProfile === undefined
         ? [`${selectedAgent} satisfies ${decision.action}`]
         : [`previous provider ${previousProvider} is not usable for ${decision.action}`]
-      note({ type: 'AGENT_DISPATCHED', action: decision.action, reasonCode: selectionCode, agent: selectedAgent, provider: selectedProvider,
+      if (decision.action === 'REVIEW') {
+        note({ type: 'REVIEW_STARTED', action: 'REVIEW', agent: selectedAgent, ...(projectedProvider === undefined ? {} : { provider: projectedProvider }), ...repositoryFacts(state) })
+        emitProgress('REVIEWING', 'active', { kind: 'PROVIDER_DISPATCHED', ...(projectedProvider === undefined ? {} : { provider: projectedProvider }) })
+      }
+      note({ type: 'AGENT_DISPATCHED', action: decision.action, reasonCode: selectionCode, agent: selectedAgent, ...(projectedProvider === undefined ? {} : { provider: projectedProvider }),
         ...(agent.identity?.runtimeIdentity === undefined ? {} : { runtimeIdentity: agent.identity.runtimeIdentity }),
         ...repositoryFacts(state),
         explanation: explanation(selectionCode, decision.action, { selectedAgent, selectedProvider, ...(previousAgent === undefined ? {} : { previousAgent }), ...(previousProvider === undefined ? {} : { previousProvider }) }, selectionFactors) })
       if (decision.action === 'VERIFY') note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...repositoryFacts(state) })
-      emitProgress(phase, 'active', { kind: decision.action === 'VERIFY' ? 'VERIFIER_STARTED' : 'PROVIDER_DISPATCHED', provider: selectedProvider, ...(decision.action === 'VERIFY' ? { verifier: 'deterministic' } : {}) })
+      emitProgress(phase, 'active', { kind: decision.action === 'VERIFY' ? 'VERIFIER_STARTED' : 'PROVIDER_DISPATCHED', ...(projectedProvider === undefined ? {} : { provider: projectedProvider }), ...(decision.action === 'VERIFY' ? { verifier: 'deterministic' } : {}) })
       state = { ...state, actionBudget: recoveryMode
         ? { ...state.actionBudget!, recoveryConsumed: state.actionBudget!.recoveryConsumed + 1 }
         : { ...state.actionBudget!, originalConsumed: state.actionBudget!.originalConsumed + 1 } }
@@ -404,6 +517,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
         : createStructuredHandoff(dispatchedState, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
       const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState, ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) })
+      const actualProvider = result.providerHistory?.at(-1) ?? projectedProvider
       approvedVerificationCommand = undefined
       // Real runtime/router observations from this dispatch become Provider Health facts.
       if (result.providerHealth !== undefined) {
@@ -429,8 +543,14 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         JSON.stringify(observed.changedFiles) !== JSON.stringify(state.gitState.changedFiles)
       const implementationEvidenceAdded = result.implementationEvidenceAdded === true
       const observedState: TaskStateV2 = { ...state, gitState: { repositoryIdentity: observed.repositoryIdentity, branch: observed.branch, headSha: observed.headSha, changedFiles: observed.changedFiles, worktreeFingerprint: observed.worktreeFingerprint } }
-      state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: result.providerHistory ?? appendProviderHistory(state.providerHistory, agent.id),
-        ...(decision.action === 'EXECUTE' && agent.identity !== undefined ? { implementer: selected.identity! } : {}) }, decision.action, { ...result, repositoryChanged, implementationEvidenceAdded })
+      const actualImplementer = actualProvider === undefined || agent.identity === undefined ? agent.identity : { ...agent.identity, provider: actualProvider }
+      // providerHistory is implementation provenance, not a list of every runtime
+      // that observed or reviewed the task. Polluting it with a reviewer would make
+      // that same independent reviewer ineligible during Runtime Repair.
+      const nextProviderHistory = decision.action !== 'EXECUTE' ? state.providerHistory
+        : result.providerHistory ?? (actualProvider === undefined ? state.providerHistory : appendProviderHistory(state.providerHistory, actualProvider))
+      state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: nextProviderHistory,
+        ...(decision.action === 'EXECUTE' && actualImplementer !== undefined ? { implementer: actualImplementer } : {}) }, decision.action, { ...result, repositoryChanged, implementationEvidenceAdded })
       // Provider switches are derived from the authoritative providerHistory delta,
       // never reconstructed from memory or agent narrative after the fact.
       const providerSwitches = deriveProviderSwitches(providerHistoryBefore, state.providerHistory)
@@ -459,8 +579,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           note({ type: 'REVIEW_FAILED', action: 'REVIEW', agent: selectedAgent, provider: selectedProvider, ...repositoryFacts(state), metadata: { reason: 'reviewer identity did not match selected agent' } })
         }
       }
-      note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, provider: selectedProvider, ...repositoryFacts(state) })
-      emitProgress(phase, result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', provider: selectedProvider, outcome: result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
+      note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
+      emitProgress(decision.action === 'REVIEW' ? 'REVIEWING' : phase, result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
       if (repositoryChanged) emitProgress('EXECUTING', 'completed', { kind: 'REPOSITORY_CHANGED', changedFileCount: observed.changedFiles.length })
       const hadVerificationFailure = dispatchedState.verificationState.results.some((item) => item.status === 'failed')
       if (decision.action === 'EXECUTE' && result.status === 'SUCCESS' && hadVerificationFailure && !repositoryChanged && !implementationEvidenceAdded) {

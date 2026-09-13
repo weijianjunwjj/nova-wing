@@ -287,6 +287,26 @@ test('executor blocks verification command outside MVP allowlist', async () => {
   assert.equal(runner.requests.length, 4)
 })
 
+test('executor runs a strictly scoped Node test command but rejects path and shell escapes', async () => {
+  const safe = 'node --test ticketFilters.test.mjs'
+  const runner = new QueueRunner([
+    result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('targeted tests passed'),
+  ])
+  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const report = await executor.execute({ task: task(), packet: packet([safe]) })
+  assert.deepEqual(report.blockers, [])
+  assert.equal(report.verificationResults.find((item) => item.name === safe)?.status, 'passed')
+  assert.ok(runner.requests.some((request) => request.args.includes(safe)))
+
+  for (const unsafe of ['node --test ../outside.test.mjs', 'node --test ticket.test.mjs && whoami']) {
+    const unsafeRunner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean')])
+    const unsafeExecutor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: unsafeRunner.run })
+    const unsafeReport = await unsafeExecutor.execute({ task: task(), packet: packet([unsafe]) })
+    assert.match(unsafeReport.blockers[0] ?? '', /human approval/u)
+    assert.equal(unsafeRunner.requests.some((request) => request.args.includes(unsafe)), false)
+  }
+})
+
 test('runtime-approved exact verification command is executable only once', async () => {
   const command = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
   const runner = new QueueRunner([

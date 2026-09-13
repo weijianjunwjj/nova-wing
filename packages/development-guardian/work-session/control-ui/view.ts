@@ -260,17 +260,26 @@ var HUMAN_REQUIRED_LABELS = {
   STALLED_NO_PROGRESS: 'Executor 未产生实现进展',
   CYCLIC_NO_PROGRESS: 'Controller 检测到无进展循环',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
+  PLANNING_REQUIRED: '需要补充验证计划',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 基础设施故障',
   STALLED: '执行停滞',
   USER_PAUSED: '用户已暂停'
 }
 
 var GUARDIAN_PHASE_LABELS = {
+  PLANNING: '正在规划验证',
+  ANALYZING: '正在分析',
   EXECUTING: 'Executor 执行中',
   VERIFYING: '正在验证',
   RECOVERING: '正在恢复',
   REVIEWING: 'Reviewer 审查',
   FINAL_REVIEW: 'Final Review',
+  FINALIZING: '正在完成收尾',
+  WAITING: '等待下一阶段',
+  WAITING_FOR_ENVIRONMENT: '等待运行环境',
+  WAITING_FOR_APPROVAL: '等待审批',
+  RECONCILING: '正在核对 Repository',
+  UNKNOWN: '状态未知',
   COMPLETED: '已完成',
   HUMAN_REQUIRED: '需要人工处理',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用'

@@ -314,7 +314,7 @@ export const s44: CertificationScenario = {
           providerHealth: [{ provider: 'deepseek', status: 'AVAILABLE', reason: 'restored', observedAt: new Date().toISOString(), source: 'runtime' }],
           agents: certAgents(),
         }),
-        auditSink: { record: async (entry) => { audit.push(`${entry.event}:${entry.classification ?? entry.mechanism ?? ''}`) } },
+        auditSink: { record: async (entry) => { audit.push(`${entry.event}:${entry.classification ?? entry.mechanism ?? ''}:${entry.reason ?? ''}`) } },
         notifier: { notify: async () => undefined },
       },
     })

@@ -42,11 +42,12 @@ export class TaskController {
     if (runtime.reconciliationRequired) return { action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', reason: 'persisted task facts require repository reconciliation' }
     if (task.status === 'FAILED') return { action: 'SUSPEND', reasonCode: 'FAILED_TASK_RECOVERY', reason: 'failed task requires recovery' }
     if (task.blockers.length > 0) return { action: 'SUSPEND', reasonCode: 'BLOCKER_PRESENT', reason: 'unresolved blocker prevents completion' }
-    if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'task requires a human decision or approval' }
     if (task.acceptanceCriteria.length === 0) return { action: 'ANALYZE', reasonCode: 'ACCEPTANCE_ANALYSIS_REQUIRED', reason: 'acceptance criteria are not yet established' }
     const unmapped = unmappedAcceptanceCriteria(task)
     if (unmapped.length > 0) return { action: 'SUSPEND', reasonCode: 'ACCEPTANCE_EVIDENCE_BINDING_MISSING', reason: `Acceptance criterion ${unmapped[0]} has no evidence binding` }
-    if (task.status === 'PENDING') return { action: 'EXECUTE', reasonCode: 'TASK_NOT_STARTED', reason: 'task has not started execution' }
+    if (task.status === 'PENDING') return task.humanConstraints?.verifyOnly === true
+      ? { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'durable VERIFY ONLY constraint skips implementation execution' }
+      : { action: 'EXECUTE', reasonCode: 'TASK_NOT_STARTED', reason: 'task has not started execution' }
     const results = task.verificationState.results
     const failed = results.filter((result) => result.status === 'failed')
     if (failed.length > 0) {
@@ -54,15 +55,20 @@ export class TaskController {
       if (classifications.includes('ENVIRONMENT_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFICATION_ENVIRONMENT_FAILURE', reason: 'verification requires environment/runtime recovery' }
       if (classifications.includes('VERIFIER_CONFIGURATION_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFIER_CONFIGURATION_FAILURE', reason: 'verifier or Task Contract configuration requires repair' }
       if (classifications.includes('UNRELATED_TEST_FAILURE')) return { action: 'SUSPEND', reasonCode: 'UNRELATED_TEST_FAILURE', reason: 'an audited pre-existing failure is unrelated to the Task; task-local disposition is required' }
-      if (classifications.every((item) => item === 'CODE_FAILURE')) return { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic evidence attributes the failure to the Task implementation' }
+      if (classifications.every((item) => item === 'CODE_FAILURE')) return task.humanConstraints?.verifyOnly === true
+        ? { action: 'SUSPEND', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'CODE_FAILURE requires implementation, but durable VERIFY ONLY forbids re-execution' }
+        : { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic evidence attributes the failure to the Task implementation' }
       return { action: 'SUSPEND', reasonCode: 'VERIFICATION_UNKNOWN', reason: 'verification failure cannot be safely attributed to the Task implementation' }
     }
+    if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'task requires a human decision or approval' }
     if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
     // A failed independent review is a verdict on the implementation, so the
     // Controller sends the work back for revision. The reviewer never edits code.
     if (task.completion.review !== undefined && task.completion.review.passed !== true) {
-      return { action: 'EXECUTE', reasonCode: 'REVIEW_FAILED', reason: 'independent review found blocking issues' }
+      return task.humanConstraints?.verifyOnly === true
+        ? { action: 'SUSPEND', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'review requires implementation revision, but durable VERIFY ONLY forbids re-execution' }
+        : { action: 'EXECUTE', reasonCode: 'REVIEW_FAILED', reason: 'independent review found blocking issues' }
     }
     const policy = task.completion
     if ((risk.level === 'CRITICAL' || policy.bindings.some((b) => b.requiresApproval)) && !approvalSatisfied(task)) return { action: 'REQUEST_APPROVAL', reasonCode: 'RISK_REQUIRES_APPROVAL', reason: `approval required: ${risk.factors.join(', ') || 'acceptance policy'}` }

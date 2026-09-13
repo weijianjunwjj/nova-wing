@@ -210,6 +210,8 @@ const KNOWN_LIMITATIONS: string[] = [
   'The Layer A repair scenarios script the Repair Model seam (S27/S29/S30) so the cascade, mechanical validation and preflight stay deterministic; S28 scripts a provider failure. The live Codex repair turn is exercised by the operator dogfood (guardian repair dogfood), not by the automated gate.',
   'v0.2.6 Automatic Preflight Repair scenarios (S58/S60) script the Repair Model seam as well: the Launchpad, preflight, cascade order, cycle bound, mechanical validation, re-preflight and analytics recording are real, while the model answer itself is scripted. The live one-click create is exercised by the operator dogfood (scripts/dogfood-v026-preflight-repair.mjs).',
   'v0.2.6 notification scenarios (S66–S69) drive the real per-channel delivery code with a scripted mail transport and toast spawner, so no SMTP connection or desktop toast is sent by the automated gate. The real SMTP acceptance and the real Windows toast are exercised by the operator smoke (npm run guardian:notification-channel:smoke).',
+  'v0.2.8 planner ranking uses package ownership, existing scripts and source/test proximity; automatic import-graph and historical-success ranking remain future refinements, and no absent verifier is invented.',
+  'v0.2.8 A/B scenarios use the production V2 runner/state/event/dispatcher seams with scripted provider responses. The isolated dogfood uses real Git and verifier subprocesses, while its implementer response is deterministically scripted.',
 ]
 
 export async function main(): Promise<number> {
