@@ -1,0 +1,527 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-13T03:35:24.395Z",
+  "methodology": "same Task Contract, scripted provider behavior, repository state and verifier results through the production V2 runner seams",
+  "categories": [
+    {
+      "id": "AB-A",
+      "category": "A",
+      "description": "single-file UI copy"
+    },
+    {
+      "id": "AB-B",
+      "category": "B",
+      "description": "frontend interaction and targeted test"
+    },
+    {
+      "id": "AB-C",
+      "category": "C",
+      "description": "logic change and targeted test"
+    },
+    {
+      "id": "AB-D",
+      "category": "D",
+      "description": "code failure then repair"
+    },
+    {
+      "id": "AB-E",
+      "category": "E",
+      "description": "medium multi-file change"
+    },
+    {
+      "id": "AB-F",
+      "category": "F",
+      "description": "public API contract high risk"
+    },
+    {
+      "id": "AB-G",
+      "category": "G",
+      "description": "REAL-002 PostgreSQL root-suite trap"
+    },
+    {
+      "id": "AB-H",
+      "category": "H",
+      "description": "REAL-003 X/Y counter"
+    }
+  ],
+  "runs": [
+    {
+      "taskId": "AB-A",
+      "category": "A",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 12.002099999999999,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-A",
+      "category": "A",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 7.9813000000000045,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-B",
+      "category": "B",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.8565000000000111,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-B",
+      "category": "B",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 4.272099999999995,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-C",
+      "category": "C",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.6517000000000053,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-C",
+      "category": "C",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 3.5353999999999814,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-D",
+      "category": "D",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": false,
+        "wallClockMs": 1.318000000000012,
+        "controllerDecisionCount": 5,
+        "dispatchCount": 4,
+        "executeCount": 2,
+        "verifyCount": 2,
+        "reviewCount": 0,
+        "repoInspectionCount": 9,
+        "gitProcessCount": 36,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 13,
+        "modelProviderCallCount": 2,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [
+          "CODE_FAILURE"
+        ],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-D",
+      "category": "D",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": false,
+        "wallClockMs": 16.122199999999992,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 3,
+        "executeCount": 2,
+        "verifyCount": 2,
+        "reviewCount": 0,
+        "repoInspectionCount": 7,
+        "gitProcessCount": 28,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 10,
+        "modelProviderCallCount": 2,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": true,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-E",
+      "category": "E",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.7782000000000266,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-E",
+      "category": "E",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 4.85390000000001,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-F",
+      "category": "F",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.9615000000000009,
+        "controllerDecisionCount": 4,
+        "dispatchCount": 3,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 1,
+        "repoInspectionCount": 7,
+        "gitProcessCount": 28,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 10,
+        "modelProviderCallCount": 2,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-F",
+      "category": "F",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 3.4805999999999813,
+        "controllerDecisionCount": 4,
+        "dispatchCount": 3,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 1,
+        "repoInspectionCount": 8,
+        "gitProcessCount": 32,
+        "verifierProcessCount": 2,
+        "stateWriteCount": 11,
+        "modelProviderCallCount": 2,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": true,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-G",
+      "category": "G",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.38430000000005293,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-G",
+      "category": "G",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 3.1043000000000234,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-H",
+      "category": "H",
+      "mode": "CONTROLLER",
+      "metrics": {
+        "executionPath": "CONTROLLER",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 0.3721999999999639,
+        "controllerDecisionCount": 3,
+        "dispatchCount": 2,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 5,
+        "gitProcessCount": 20,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 7,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    },
+    {
+      "taskId": "AB-H",
+      "category": "H",
+      "mode": "DIRECT",
+      "metrics": {
+        "executionPath": "DIRECT",
+        "completed": true,
+        "firstPass": true,
+        "wallClockMs": 2.157699999999977,
+        "controllerDecisionCount": 0,
+        "dispatchCount": 1,
+        "executeCount": 1,
+        "verifyCount": 1,
+        "reviewCount": 0,
+        "repoInspectionCount": 2,
+        "gitProcessCount": 8,
+        "verifierProcessCount": 3,
+        "stateWriteCount": 4,
+        "modelProviderCallCount": 1,
+        "humanActionCount": 0,
+        "humanDecisionCount": 0,
+        "failureSurface": [],
+        "escalated": false,
+        "finalStatus": "COMPLETED"
+      }
+    }
+  ],
+  "simpleTaskComparison": {
+    "categories": [
+      "A",
+      "B",
+      "C",
+      "H"
+    ],
+    "averages": {
+      "wallClockMs": {
+        "controller": 3.4706249999999947,
+        "direct": 4.486624999999989
+      },
+      "controllerDecisionCount": {
+        "controller": 3,
+        "direct": 0
+      },
+      "dispatchCount": {
+        "controller": 2,
+        "direct": 1
+      },
+      "repoInspectionCount": {
+        "controller": 5,
+        "direct": 2
+      },
+      "gitProcessCount": {
+        "controller": 20,
+        "direct": 8
+      },
+      "verifierProcessCount": {
+        "controller": 2.5,
+        "direct": 2.5
+      },
+      "stateWriteCount": {
+        "controller": 7,
+        "direct": 4
+      },
+      "modelProviderCallCount": {
+        "controller": 1,
+        "direct": 1
+      }
+    },
+    "reductionsPercent": {
+      "wallClockMs": -29.27,
+      "controllerDecisionCount": 100,
+      "dispatchCount": 50,
+      "repoInspectionCount": 60,
+      "gitProcessCount": 60,
+      "verifierProcessCount": 0,
+      "stateWriteCount": 42.86,
+      "modelProviderCallCount": 0
+    },
+    "completionRate": {
+      "controller": 1,
+      "direct": 1
+    },
+    "firstPassRate": {
+      "controller": 1,
+      "direct": 1
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { executedTasks, loadCatalog, runTask } from './benchmark/harness.js'
+import { architectureBenchmarkTasks, executedTasks, loadCatalog, runArchitectureBenchmark, runTask } from './benchmark/harness.js'
 import type { BenchmarkTaskSpec } from './benchmark/harness.js'
 
 function taskById(catalogTasks: BenchmarkTaskSpec[], id: string): BenchmarkTaskSpec {
@@ -62,4 +62,35 @@ test('T01 normal: v0.2 emits a full decision event history on completion', async
   assert.equal(v2.metrics.providerSwitchCount, 0, 'no provider switch on a healthy single-provider run')
   const v1 = await runTask(task, 'v1')
   assert.equal(v1.outcome.completed, true)
+})
+
+test('v0.2.8 architecture A/B covers A-H and removes Controller tax on simple Direct tasks', async () => {
+  assert.deepEqual(architectureBenchmarkTasks.map((task) => task.category), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'])
+  for (const spec of architectureBenchmarkTasks.filter((task) => ['A', 'B', 'C', 'H'].includes(task.category))) {
+    const baseline = await runArchitectureBenchmark(spec, 'CONTROLLER')
+    const direct = await runArchitectureBenchmark(spec, 'DIRECT')
+    assert.equal(baseline.metrics.completed, true)
+    assert.equal(direct.metrics.completed, true)
+    assert.equal(direct.metrics.executeCount, 1)
+    assert.equal(direct.metrics.verifyCount, 1)
+    assert.equal(direct.metrics.controllerDecisionCount, 0)
+    assert.equal(direct.metrics.reviewCount, 0)
+    assert.equal(direct.metrics.repoInspectionCount, 2)
+    assert.deepEqual(direct.metrics.failureSurface, [])
+    assert.ok(direct.metrics.dispatchCount < baseline.metrics.dispatchCount)
+    assert.ok(direct.metrics.stateWriteCount < baseline.metrics.stateWriteCount)
+  }
+})
+
+test('v0.2.8 architecture A/B safety categories converge through escalation', async () => {
+  const codeFailure = architectureBenchmarkTasks.find((task) => task.category === 'D')!
+  const highRisk = architectureBenchmarkTasks.find((task) => task.category === 'F')!
+  const repaired = await runArchitectureBenchmark(codeFailure, 'DIRECT')
+  assert.equal(repaired.metrics.completed, true)
+  assert.equal(repaired.metrics.escalated, true)
+  assert.equal(repaired.metrics.executeCount, 2)
+  const reviewed = await runArchitectureBenchmark(highRisk, 'DIRECT')
+  assert.equal(reviewed.metrics.completed, true)
+  assert.equal(reviewed.metrics.escalated, true)
+  assert.ok(reviewed.metrics.reviewCount >= 1)
 })

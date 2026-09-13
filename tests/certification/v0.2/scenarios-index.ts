@@ -15,6 +15,10 @@ import {
   s66, s67, s68, s69,
 } from './scenarios-v026.js'
 import { s70, s71, s72, s73, s74, s75, s76, s77, s78, s79, s80, s81, s82, s83, s84, s85 } from './scenarios-v027.js'
+import {
+  s86, s87, s88, s89, s90, s91, s92, s93, s94, s95, s96, s97, s98, s99,
+  s100, s101, s102, s103, s104, s105, s106, s107, s108, s109, s110,
+} from './scenarios-v028.js'
 
 export const SCENARIOS: readonly CertificationScenario[] = [
   s01, s02, s03, s04, s05, s06, s07, s08,
@@ -28,4 +32,6 @@ export const SCENARIOS: readonly CertificationScenario[] = [
   s66, s67, s68, s69,
   s70, s71, s72, s73, s74, s75, s76, s77, s78, s79,
   s80, s81, s82, s83, s84, s85,
+  s86, s87, s88, s89, s90, s91, s92, s93, s94, s95, s96, s97, s98, s99,
+  s100, s101, s102, s103, s104, s105, s106, s107, s108, s109, s110,
 ]

@@ -22,8 +22,9 @@ import type { GuardianProgressEvent } from '../../packages/development-guardian/
 import { V2ControllerTaskRunner } from '../../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { TaskEventLogV2 } from '../../packages/development-guardian/work-session/task-observability.js'
 import type { WorkSessionTask } from '../../packages/development-guardian/work-session/model.js'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 
 export type Verdict = 'passed' | 'failed'
@@ -326,4 +327,106 @@ export async function runTask(spec: BenchmarkTaskSpec, mode: 'v1' | 'v2'): Promi
     return { taskId: spec.id, mode, outcome: { mode, taskId: spec.id, completed: false, humanRequired: false, failed: false, terminalState: 'NOT_RUN' }, metrics: emptyMetrics(), valid: false, invalidReason: 'no deterministic work plan' }
   }
   return mode === 'v1' ? runV1Internal(spec) : runV2Internal(spec)
+}
+
+export type ArchitectureBenchmarkCategory = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H'
+export interface ArchitectureBenchmarkSpec {
+  id: string
+  category: ArchitectureBenchmarkCategory
+  description: string
+  risk: 'LOW' | 'MEDIUM' | 'HIGH'
+  changedFiles: readonly string[]
+  evidence: readonly string[]
+  firstVerificationFails?: boolean
+}
+
+export const architectureBenchmarkTasks: readonly ArchitectureBenchmarkSpec[] = [
+  { id: 'AB-A', category: 'A', description: 'single-file UI copy', risk: 'LOW', changedFiles: ['apps/web/src/copy.ts'], evidence: ['npm run test:ui', 'git diff --check'] },
+  { id: 'AB-B', category: 'B', description: 'frontend interaction and targeted test', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
+  { id: 'AB-C', category: 'C', description: 'logic change and targeted test', risk: 'LOW', changedFiles: ['packages/core/src/counter.ts'], evidence: ['npm run test:logic', 'git diff --check'] },
+  { id: 'AB-D', category: 'D', description: 'code failure then repair', risk: 'LOW', changedFiles: ['packages/core/src/repair.ts'], evidence: ['npm run test:logic'], firstVerificationFails: true },
+  { id: 'AB-E', category: 'E', description: 'medium multi-file change', risk: 'MEDIUM', changedFiles: ['apps/web/src/a.ts', 'apps/web/src/b.ts', 'apps/web/tests/a.test.ts'], evidence: ['npm run test:ui', 'npm run typecheck'] },
+  { id: 'AB-F', category: 'F', description: 'public API contract high risk', risk: 'HIGH', changedFiles: ['packages/core/src/public-contract.ts'], evidence: ['npm run test:logic', 'npm run typecheck'] },
+  { id: 'AB-G', category: 'G', description: 'REAL-002 PostgreSQL root-suite trap', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
+  { id: 'AB-H', category: 'H', description: 'REAL-003 X/Y counter', risk: 'LOW', changedFiles: ['apps/web/src/ticket-count.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
+]
+
+export interface ArchitectureBenchmarkMetrics {
+  executionPath: 'DIRECT' | 'CONTROLLER'
+  completed: boolean
+  firstPass: boolean
+  wallClockMs: number
+  controllerDecisionCount: number
+  dispatchCount: number
+  executeCount: number
+  verifyCount: number
+  reviewCount: number
+  repoInspectionCount: number
+  gitProcessCount: number
+  verifierProcessCount: number
+  stateWriteCount: number
+  modelProviderCallCount: number
+  humanActionCount: number
+  humanDecisionCount: number
+  failureSurface: readonly string[]
+  escalated: boolean
+  finalStatus: string
+}
+
+export interface ArchitectureBenchmarkRun { taskId: string; category: ArchitectureBenchmarkCategory; mode: 'CONTROLLER' | 'DIRECT'; metrics: ArchitectureBenchmarkMetrics }
+
+function architectureFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'novawing-ab-'))
+  for (const directory of ['apps/web/src', 'apps/web/tests', 'packages/core/src', 'packages/core/tests']) mkdirSync(join(root, directory), { recursive: true })
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node unavailable-postgres.js', 'test:logic': 'node --test packages/core/tests', typecheck: 'tsc --noEmit' } }))
+  writeFileSync(join(root, 'apps/web/package.json'), JSON.stringify({ scripts: { test: 'node --test', 'test:ticket': 'node --test tests/ticket.test.js', 'test:ui': 'node --test tests/ui.test.js', typecheck: 'tsc --noEmit' } }))
+  writeFileSync(join(root, 'packages/core/package.json'), JSON.stringify({ scripts: { test: 'node --test', 'test:logic': 'node --test tests/logic.test.js', typecheck: 'tsc --noEmit' } }))
+  for (const file of ['apps/web/tests/ticket.test.js', 'apps/web/tests/ui.test.js', 'packages/core/tests/logic.test.js']) writeFileSync(join(root, file), 'export {}\n')
+  return root
+}
+
+/** Production-shaped A/B seam: same TaskState/dispatcher/events, only the Direct flag differs. */
+export async function runArchitectureBenchmark(spec: ArchitectureBenchmarkSpec, mode: 'CONTROLLER' | 'DIRECT'): Promise<ArchitectureBenchmarkRun> {
+  const root = architectureFixture()
+  const started = performance.now()
+  const eventLog = new TaskEventLogV2()
+  let repoInspectionCount = 0, gitProcessCount = 0, verifierProcessCount = 0, stateWriteCount = 0, modelProviderCallCount = 0
+  let changed = false, executeCount = 0, verifyCount = 0
+  try {
+    const task: WorkSessionTask = { id: spec.id, goal: spec.description, constraints: [], acceptanceCriteria: [`${spec.id} accepted`],
+      allowedPaths: spec.category === 'C' || spec.category === 'D' || spec.category === 'F' ? ['packages/core'] : ['apps/web'], forbiddenPaths: ['.env'], risk: spec.risk,
+      acceptanceEvidenceBindings: [{ criterion: `${spec.id} accepted`, requiredEvidence: [...spec.evidence] }] }
+    const reality = () => ({ repositoryIdentity: root, branch: 'main', headSha: 'benchmark-head', changedFiles: changed ? [...spec.changedFiles] : [], worktreeFingerprint: changed ? `changed-${executeCount}` : 'clean' })
+    const runner = new V2ControllerTaskRunner({ sessionId: `bench-${mode.toLowerCase()}`, branch: 'main', directPath: { enabled: mode === 'DIRECT', repositoryRoot: root },
+      agents: [
+        { id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: 'router' }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } },
+        { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'reviewer' }, available: true, quotaExhausted: false, degraded: false, capabilities: { review: true } },
+      ], dispatcher: {
+        async inspectRepository() { repoInspectionCount += 1; gitProcessCount += 4; return reality() },
+        async dispatch({ action, task: state, agent }) {
+          if (action === 'EXECUTE') { executeCount += 1; modelProviderCallCount += 1; changed = true; return { status: 'SUCCESS' as const, changedFiles: [...spec.changedFiles], providerHistory: ['codex'], ...(executeCount > 1 ? { implementationEvidenceAdded: true } : {}) } }
+          if (action === 'VERIFY') { verifyCount += 1; const evidence = state.verificationPlan?.steps.map((step) => step.command) ?? state.completion.bindings.flatMap((binding) => binding.requiredEvidence); verifierProcessCount += evidence.length
+            const failed = spec.firstVerificationFails === true && verifyCount === 1
+            return { status: 'SUCCESS' as const, verificationResults: [...new Set(evidence)].map((name) => ({ name, status: failed ? 'failed' as const : 'passed' as const, ...(failed ? { classification: 'CODE_FAILURE' as const } : {}) })) } }
+          if (action === 'REVIEW') { modelProviderCallCount += 1; const reviewer = agent.identity!; return { status: 'SUCCESS' as const, review: { passed: true, findings: [], blockingFindings: [], severity: 'HIGH' as const, reviewer,
+            implementer: state.implementer!, reviewedRepository: state.gitState.repositoryIdentity!, reviewedBranch: state.gitState.branch!, reviewedCommit: state.gitState.headSha!, reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } } }
+          return { status: 'SUCCESS' as const }
+        },
+      } })
+    const result = await runner.run(task, undefined, undefined, { taskEventLog: eventLog, persistTaskStateV2: async () => { stateWriteCount += 1 } })
+    const events = eventLog.events
+    const failureSurface = events
+      .filter((event) => event.type === 'VERIFICATION_CLASSIFIED' || event.type === 'AGENT_FAILED' || event.type === 'TASK_SUSPENDED')
+      .map((event) => String(event.metadata?.classification ?? event.reasonCode ?? event.type))
+    return { taskId: spec.id, category: spec.category, mode, metrics: {
+      executionPath: result.taskStateV2?.execution?.path ?? 'CONTROLLER', completed: result.status === 'COMPLETED',
+      firstPass: result.status === 'COMPLETED' && events.filter((event) => event.type === 'VERIFICATION_FAILED').length === 0,
+      wallClockMs: performance.now() - started, controllerDecisionCount: events.filter((event) => event.type === 'CONTROLLER_DECIDED').length,
+      dispatchCount: events.filter((event) => event.type === 'AGENT_DISPATCHED').length, executeCount: events.filter((event) => event.type === 'AGENT_DISPATCHED' && event.action === 'EXECUTE').length,
+      verifyCount: events.filter((event) => event.type === 'VERIFICATION_STARTED').length, reviewCount: events.filter((event) => event.type === 'REVIEW_STARTED').length,
+      repoInspectionCount, gitProcessCount, verifierProcessCount, stateWriteCount, modelProviderCallCount, humanActionCount: events.filter((event) => event.type === 'HUMAN_ACTION_RECORDED').length,
+      humanDecisionCount: events.filter((event) => event.type === 'HUMAN_DECISION_RECORDED').length, failureSurface,
+      escalated: events.some((event) => event.type === 'DIRECT_PATH_ESCALATED'), finalStatus: result.status,
+    } }
+  } finally { rmSync(root, { recursive: true, force: true }) }
 }
