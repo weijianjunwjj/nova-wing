@@ -55,6 +55,42 @@ test('v0.2.8 planner: explicit evidence binding has precedence', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('v0.2.8 planner: partial explicit bindings do not shadow inferred mappings for natural-language criteria', async () => {
+  const root = await fixture()
+  try {
+    const criteria = ['Implement the requested task.', 'Run relevant deterministic tests.', 'ticket filter count is correct']
+    const plan = await planVerification({ repositoryRoot: root, task: task({
+      acceptanceCriteria: criteria,
+      acceptanceEvidenceBindings: [{ criterion: criteria[0]!, requiredEvidence: ['git diff --check'] }],
+    }) })
+    assert.equal(plan.confidence, 'HIGH')
+    assert.deepEqual(plan.mappings.find((mapping) => mapping.criterion === criteria[0])?.evidence, ['git diff --check'])
+    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[1])?.evidence.includes('npm run test:ticket'))
+    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[2])?.evidence.includes('npm run test:ticket'))
+    assert.equal(plan.mappings.some((mapping) => mapping.evidence.length === 0), false)
+    assert.equal(plan.steps.some((step) => step.command === 'npm test' && step.cwd === '.'), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.2.8 planner: filter intent ranks the filter test above an unrelated package test', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'novawing-v028-ranking-'))
+  try {
+    await mkdir(join(root, 'apps', 'web'), { recursive: true })
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node unavailable-postgres-test.js' } }), 'utf8')
+    await writeFile(join(root, 'apps', 'web', 'package.json'), JSON.stringify({ scripts: { test: 'node --test overview.test.mjs ticketFilters.test.mjs', typecheck: 'tsc --noEmit' } }), 'utf8')
+    await writeFile(join(root, 'apps', 'web', 'overview.test.mjs'), 'export {}\n', 'utf8')
+    await writeFile(join(root, 'apps', 'web', 'ticketFilters.test.mjs'), 'export {}\n', 'utf8')
+    const plan = await planVerification({ repositoryRoot: root, task: task({
+      goal: 'Reuse the existing filtering logic and show the filtered ticket count.',
+      acceptanceCriteria: ['Run relevant deterministic tests.'],
+      allowedPaths: ['apps/web/**'],
+    }) })
+    assert.equal(plan.confidence, 'HIGH')
+    assert.equal(plan.steps[0]?.command, 'node --test apps/web/ticketFilters.test.mjs')
+    assert.equal(plan.steps[0]?.cwd, 'apps/web')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('v0.2.8 planner: insufficient evidence stops before execution and never guesses root test', async () => {
   const root = await fixture('empty')
   try {
@@ -253,5 +289,15 @@ test('v0.2.8 plan invalidation detects package-boundary expansion', async () => 
     const plan = await planVerification({ repositoryRoot: root, task: task() })
     const validation = validateVerificationPlanAfterExecution({ plan, changedFiles: ['packages/api/index.ts'], allowedPaths: ['apps/web'], forbiddenPaths: [], riskBefore: 'LOW', riskAfter: 'LOW' })
     assert.equal(validation.valid, false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.2.8 plan invalidation honors trusted recursive scope rules and still fails closed', async () => {
+  const root = await fixture()
+  try {
+    const plan = await planVerification({ repositoryRoot: root, task: task({ allowedPaths: ['apps/web/**'], forbiddenPaths: ['apps/web/generated/**'] }) })
+    assert.equal(validateVerificationPlanAfterExecution({ plan, changedFiles: ['apps/web/src/ticket-filter.ts'], allowedPaths: ['apps/web/**'], forbiddenPaths: ['apps/web/generated/**'], riskBefore: 'LOW', riskAfter: 'LOW' }).valid, true)
+    assert.equal(validateVerificationPlanAfterExecution({ plan, changedFiles: ['apps/api/index.ts'], allowedPaths: ['apps/web/**'], forbiddenPaths: [], riskBefore: 'LOW', riskAfter: 'LOW' }).valid, false)
+    assert.equal(validateVerificationPlanAfterExecution({ plan, changedFiles: ['apps/web/generated/client.ts'], allowedPaths: ['apps/web/**'], forbiddenPaths: ['apps/web/generated/**'], riskBefore: 'LOW', riskAfter: 'LOW' }).valid, false)
   } finally { await rm(root, { recursive: true, force: true }) }
 })

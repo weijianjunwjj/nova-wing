@@ -1,8 +1,8 @@
 # NovaWing v0.1 vs v0.2 Architecture Retrospective
 
-> 复盘基线：`v0.1.0-work-session-mvp`（`04fa262`）对比 `v0.2.7`（`61f061`，当前 `main`）。  
-> 复盘日期：2026-09-13。  
-> 范围：只读架构、源码、测试、基准和历史 Work Session 证据；不包含实现、数据修复或版本发布。  
+> 复盘基线：`v0.1.0-work-session-mvp`（`04fa262`）对比 `v0.2.7`（`61f061`，当前 `main`）。
+> 复盘日期：2026-09-13。
+> 范围：只读架构、源码、测试、基准和历史 Work Session 证据；不包含实现、数据修复或版本发布。
 > 版本口径：仓库根 `package.json`/README 仍标记 NovaWing domain kernel 为 `0.1.0`；本文的 `v0.2.7` 指 Development Guardian / Work Session control plane 发布标签，不应误写成整个 NovaWing domain kernel 已升级到 0.2.7。
 
 ## 1. Executive Summary
@@ -437,9 +437,9 @@ Planner 应位于 Contract Preflight 之后、任何 Executor dispatch 之前。
 
 ---
 
-CURRENT_V0_2_ARCHITECTURE: OVERWEIGHT  
-V0_1_TO_V0_2_DIRECTION: PARTIALLY_CORRECT  
-DIRECT_PATH_RECOMMENDATION: YES  
-VERIFICATION_PLANNER_PRIORITY: P0  
-DESKTOP_V0_3_NOW: NO  
+CURRENT_V0_2_ARCHITECTURE: OVERWEIGHT
+V0_1_TO_V0_2_DIRECTION: PARTIALLY_CORRECT
+DIRECT_PATH_RECOMMENDATION: YES
+VERIFICATION_PLANNER_PRIORITY: P0
+DESKTOP_V0_3_NOW: NO
 RECOMMENDED_NEXT_STEP: 先交付 Verification Planner 与 feature-flagged Direct Path，并用 REAL/GOLDEN 同型任务做真实 A/B 收敛验证后再进入 Desktop v0.3。

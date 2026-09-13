@@ -116,7 +116,12 @@ function ownerOf(path: string, packages: readonly PackageFacts[]): PackageFacts 
 
 function keywords(input: VerificationPlannerInput): Set<string> {
   const source = [input.task.goal, ...(input.task.acceptanceCriteria ?? []), ...(input.changedAreaHint ?? []), ...(input.task.allowedPaths ?? [])].join(' ')
-  return new Set((source.match(TOKEN) ?? []).map((token) => token.toLocaleLowerCase('en-US')).filter((token) => !['with', 'from', 'that', 'this', '显示', '修改', '功能'].includes(token)))
+  return new Set((source.match(TOKEN) ?? []).map((token) => {
+    const normalized = token.toLocaleLowerCase('en-US')
+    if (normalized.length > 6 && normalized.endsWith('ing')) return normalized.slice(0, -3)
+    if (normalized.length > 5 && normalized.endsWith('s')) return normalized.slice(0, -1)
+    return normalized
+  }).filter((token) => !['with', 'from', 'that', 'this', '显示', '修改', '功能'].includes(token)))
 }
 
 function relevance(value: string, words: ReadonlySet<string>): number {
@@ -192,7 +197,9 @@ export async function planVerification(input: VerificationPlannerInput): Promise
     const automatic = await planVerification({ ...input, task: { ...taskWithoutBindings(input.task), acceptanceCriteria: missingCriteria } })
     const steps = [...explicit.steps]
     for (const step of automatic.steps) if (!steps.some((candidate) => candidate.command === step.command && candidate.cwd === step.cwd)) steps.push(step)
-    const mappings = (input.task.acceptanceCriteria ?? []).map((criterion) => explicit.mappings.find((mapping) => mapping.criterion === criterion) ?? automatic.mappings.find((mapping) => mapping.criterion === criterion)!)
+    const mappings = (input.task.acceptanceCriteria ?? []).map((criterion) => explicitCriteria.has(criterion)
+      ? explicit.mappings.find((mapping) => mapping.criterion === criterion)!
+      : automatic.mappings.find((mapping) => mapping.criterion === criterion)!)
     return finish({ mappings, steps, escalationSequence: explicit.escalationSequence,
       estimatedScope: scopeRank(explicit.estimatedScope) > scopeRank(automatic.estimatedScope) ? explicit.estimatedScope : automatic.estimatedScope,
       estimatedCost: explicit.estimatedCost === 'HIGH' || automatic.estimatedCost === 'HIGH' ? 'HIGH' : 'MEDIUM',
@@ -222,7 +229,8 @@ export async function planVerification(input: VerificationPlannerInput): Promise
       rationale.push('Selected an existing task-local named test script before broader suites.')
     } else if (nearbyTests[0]?.score && owner.scripts.test !== undefined) {
       const local = owner.root.length === 0 ? nearbyTests[0].file : nearbyTests[0].file.slice(owner.root.length + 1)
-      selected.push({ id: 'targeted-test', command: `npm test -- ${local}`, cwd: cwdFor(owner.root), scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
+      const command = /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test) ? `node --test ${nearbyTests[0].file}` : `npm test -- ${local}`
+      selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
       rationale.push('Selected the nearest existing test file before a package suite.')
     } else if (owner.root.length > 0 && owner.scripts.test !== undefined) {
@@ -268,6 +276,16 @@ export interface VerificationPlanValidation {
   reasons: readonly string[]
 }
 
+function matchesPathRule(path: string, rule: string): boolean {
+  const normalizedPath = normalizePath(path)
+  const normalizedRule = normalizePath(rule)
+  if (normalizedRule.endsWith('/**')) {
+    const prefix = normalizedRule.slice(0, -3)
+    return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`)
+  }
+  return normalizedPath === normalizedRule || normalizedPath.startsWith(`${normalizedRule}/`)
+}
+
 export function validateVerificationPlanAfterExecution(input: {
   plan: VerificationPlan
   changedFiles: readonly string[]
@@ -280,8 +298,8 @@ export function validateVerificationPlanAfterExecution(input: {
   const forbidden = input.forbiddenPaths.map(normalizePath)
   const changed = input.changedFiles.map(normalizePath)
   const reasons: string[] = []
-  if (changed.some((file) => forbidden.some((path) => file === path || file.startsWith(`${path}/`)))) reasons.push('changed path is forbidden')
-  if (allowed.length > 0 && changed.some((file) => !allowed.some((path) => file === path || file.startsWith(`${path}/`) || path.startsWith(`${file}/`)))) reasons.push('changed path is outside allowed scope')
+  if (changed.some((file) => forbidden.some((path) => matchesPathRule(file, path)))) reasons.push('changed path is forbidden')
+  if (allowed.length > 0 && changed.some((file) => !allowed.some((path) => matchesPathRule(file, path)))) reasons.push('changed path is outside allowed scope')
   if (input.plan.packageRoots.length > 0 && changed.some((file) => !input.plan.packageRoots.some((root) => root.length === 0 || file === root || file.startsWith(`${root}/`)))) reasons.push('changed path crossed a planned package boundary')
   if (scopeRank(input.riskAfter === 'CRITICAL' || input.riskAfter === 'HIGH' ? 'REPOSITORY' : input.riskAfter === 'MEDIUM' ? 'WORKSPACE' : 'FILE') >
       scopeRank(input.riskBefore === 'CRITICAL' || input.riskBefore === 'HIGH' ? 'REPOSITORY' : input.riskBefore === 'MEDIUM' ? 'WORKSPACE' : 'FILE')) reasons.push('risk surface expanded')

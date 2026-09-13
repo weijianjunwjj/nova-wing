@@ -1,11 +1,16 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { architectureBenchmarkTasks, runArchitectureBenchmark } from '../../benchmark/harness.js'
 import { createTaskStateV2, TaskController } from '../../../packages/development-guardian/work-session/index.js'
 import { concreteRuntimeProvider, phaseForAction, resumeTargetForFailure } from '../../../packages/development-guardian/work-session/direct-path.js'
 import { planVerification } from '../../../packages/development-guardian/work-session/verification-planner.js'
+import { createNovaWingLaunchpad, discoverTrustedWorkSessionConfigs } from '../../../packages/development-guardian/work-session/launchpad/server.js'
+import { createProductionWorkSessionUi, type ProductionWorkSessionUi, type TrustedWorkSessionConfig } from '../../../packages/development-guardian/work-session/production.js'
+import { WorkSessionRuntime } from '../../../packages/development-guardian/work-session/runtime.js'
+import type { DependencyHealthReport } from '../../../packages/development-guardian/work-session/dependency-health.js'
 import type { CertificationScenario, ScenarioContext } from './scenario.js'
+import { initFixtureRepo, repoWrite } from './util.js'
 
 const task = { id: 'S-v028', goal: 'Implement ticket X / Y counter', constraints: [] as string[], acceptanceCriteria: ['counter shows X / Y'], allowedPaths: ['apps/web'], forbiddenPaths: ['.env'] }
 
@@ -49,3 +54,102 @@ export const s107: CertificationScenario = { id: 'S107', title: 'Feature flag OF
 export const s108: CertificationScenario = { id: 'S108', title: 'Direct versus Controller instrumentation is comparable', group: 'compatibility', async run({ h }) { const oldRun = await benchmark('C', 'CONTROLLER'); const direct = await benchmark('C', 'DIRECT'); h.check(oldRun.metrics.dispatchCount === 2 && direct.metrics.dispatchCount === 1 && oldRun.metrics.repoInspectionCount === 5 && direct.metrics.repoInspectionCount === 2, 'same counters expose both paths') } }
 export const s109: CertificationScenario = { id: 'S109', title: 'Direct preserves zero-human and first-pass analytics semantics', group: 'compatibility', async run({ h }) { const run = await benchmark('H', 'DIRECT'); h.check(run.metrics.firstPass && run.metrics.humanActionCount === 0 && run.metrics.humanDecisionCount === 0, 'zero-human first-pass remains truthful') } }
 export const s110: CertificationScenario = { id: 'S110', title: 'Direct escalation retains the Controller safety net', group: 'compatibility', async run({ h }) { const run = await benchmark('D', 'DIRECT'); h.check(run.metrics.escalated && run.metrics.completed && run.metrics.controllerDecisionCount > 0, 'fallback safety net converges') } }
+
+function healthyReport(): DependencyHealthReport {
+  return { overall: 'READY', canStart: true, checkedAt: new Date().toISOString(), dependencies: [] }
+}
+
+async function postCreate(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
+  const address = launchpad.getAddress()
+  if (address === undefined) throw new Error('Launchpad is not listening')
+  return fetch(`${address.url}/api/session/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    body: JSON.stringify(body),
+  })
+}
+
+export const s111: CertificationScenario = {
+  id: 'S111',
+  title: 'REAL-003-V028 Launchpad create plans unbound natural-language ACs before Direct execution',
+  group: 'control',
+  async run(ctx) {
+    const repo = await initFixtureRepo(ctx.dirs.repo, {
+      'package.json': JSON.stringify({ scripts: { test: 'node unavailable-postgres-test.js' } }),
+      'apps/web/package.json': JSON.stringify({ scripts: { test: 'node --test overview.test.mjs ticketFilters.test.mjs', typecheck: 'node -e "process.exit(0)"' } }),
+      'apps/web/overview.test.mjs': 'export {}\n',
+      'apps/web/ticketFilters.test.mjs': 'export {}\n',
+      'apps/web/src/tickets.ts': 'export const tickets = []\n',
+    }, 'feat/real-003-v028-smoke')
+    const configsDir = join(ctx.dirs.root, 'configs')
+    await mkdir(configsDir, { recursive: true })
+    let app: ProductionWorkSessionUi | undefined
+    const actions: string[] = []
+    const launchpad = await createNovaWingLaunchpad({ configDirectory: configsDir, dependencies: {
+      resolveEnvironment: async () => ({ ...process.env, LOCALAPPDATA: ctx.dirs.data }),
+      preflight: async () => healthyReport(),
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'feat/real-003-v028-smoke\n', stderr: '' }),
+      createWorkSession: async (config, input) => {
+        const created = await createProductionWorkSessionUi(config, {
+          ...input,
+          createRuntime: (runtimeConfig) => new WorkSessionRuntime(runtimeConfig),
+          v2Agents: [{ id: 'codex', identity: { agent: 'codex', provider: 'codex', runtimeIdentity: 'cert:s111:codex' }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }],
+          createV2Dispatcher: ({ defaultDispatcher }) => ({
+            inspectRepository: defaultDispatcher.inspectRepository,
+            dispatch: async ({ action, task: state }) => {
+              actions.push(action)
+              if (action === 'EXECUTE') {
+                await repoWrite(repo, 'apps/web/src/ticket-count.ts', 'export const ticketCount = true\n')
+                return { status: 'SUCCESS', providerHistory: ['codex'] }
+              }
+              if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: state.verificationPlan!.steps.map((step) => ({ name: step.command, status: 'passed' as const })) }
+              return { status: 'BLOCKED', blockers: [`unexpected action ${action}`] }
+            },
+          }),
+        })
+        app = created
+        return created
+      },
+    } })
+    try {
+      await launchpad.start()
+      const response = await postCreate(launchpad, {
+        requestId: `cert-s111-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}-00000000`,
+        targetRepo: repo,
+        branch: 'feat/real-003-v028-smoke',
+        tasks: [{ id: 'REAL-003-V028', goal: 'Add a filtered X / Y ticket count beside the existing ticket filters.' }],
+        directPathEnabled: true,
+        guardian: {
+          allowedPaths: ['apps/web/**'],
+          acceptanceCriteria: ['AC1:', '没有筛选时显示 X = Y。'],
+          constraints: ['不修改后端。', '不修改数据库 schema。', '不新增依赖。'],
+          forbiddenPaths: ['apps/api/**', 'database/**', 'migrations/**'],
+        },
+        autoCommit: false,
+      })
+      ctx.h.check(response.status === 202, `Launchpad accepted REAL-003-V028 (got ${response.status} ${(await response.text()).slice(0, 200)})`)
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && app?.runtime.getDurableState()?.state !== 'COMPLETED' && app?.runtime.getDurableState()?.state !== 'SUSPENDED') {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+      }
+      const state = app?.runtime.getDurableState()
+      const taskState = state?.taskStatesV2?.['REAL-003-V028']
+      const events = taskState === undefined ? [] : state?.taskEventLogs?.['REAL-003-V028'] ?? []
+      ctx.h.check(state?.state === 'COMPLETED', `real production runtime completed (got ${state?.state ?? 'missing'}: ${state?.humanRequired?.category ?? 'no-category'} / ${state?.humanRequired?.reason ?? 'no-reason'}; actions=${actions.join(' -> ')}; blockers=${JSON.stringify(taskState?.blockers)}; escalation=${JSON.stringify(events.find((event) => event.type === 'DIRECT_PATH_ESCALATED')?.metadata)})`)
+      ctx.h.check(taskState?.verificationPlan?.confidence === 'HIGH', 'VerificationPlan generated with HIGH confidence')
+      ctx.h.check(taskState?.execution?.path === 'DIRECT' && taskState.execution.escalated === false, 'task remained DIRECT eligible')
+      ctx.h.check(actions.join(' -> ') === 'EXECUTE -> VERIFY', `Direct protocol dispatched EXECUTE -> VERIFY (got ${actions.join(' -> ')})`)
+      ctx.h.check(events.some((event) => event.type === 'VERIFICATION_PLANNED') && events.some((event) => event.type === 'DIRECT_PATH_STARTED'), 'PLANNING preceded Direct execution')
+      ctx.h.check(!events.some((event) => event.type === 'CONTROLLER_DECIDED'), 'legacy Controller missing-binding validator was not reached')
+      ctx.h.check(taskState?.completion.bindings.every((binding) => binding.requiredEvidence.length > 0), 'all natural-language ACs received Planner evidence')
+      ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command === 'npm test' && step.cwd === '.'), 'Planner did not invent a root npm test fallback')
+      ctx.h.check(taskState?.verificationPlan?.steps.some((step) => step.command === 'node --test apps/web/ticketFilters.test.mjs'), 'Planner selected the closest filter test with a repository-relative execution path')
+      ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command.includes('overview.test.mjs')), 'Planner excluded the unrelated same-package test')
+      const persisted = await discoverTrustedWorkSessionConfigs(configsDir)
+      const serialized = JSON.parse(await readFile(persisted[0]!.configPath, 'utf8')) as TrustedWorkSessionConfig
+      ctx.h.check(serialized.session.directPath?.enabled === true, 'directPath.enabled survived the real Launchpad persistence boundary')
+    } finally {
+      await launchpad.close().catch(() => undefined)
+    }
+  },
+}

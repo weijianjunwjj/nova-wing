@@ -191,6 +191,14 @@ const ALLOWED_VERIFICATION_COMMANDS = new Set([
   '.venv/Scripts/python.exe -m pytest',
 ])
 
+function isAllowedVerificationCommand(command: string): boolean {
+  if (ALLOWED_VERIFICATION_COMMANDS.has(command)) return true
+  const scopedNodeTest = /^node --test ([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:cjs|mjs|js|ts))$/u.exec(command)
+  if (scopedNodeTest === null) return false
+  const path = scopedNodeTest[1]!
+  return !path.split('/').includes('..') && !path.includes('//')
+}
+
 /**
  * 敏感字段列表，必须 redact
  */
@@ -930,7 +938,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       }
       const runtimeApproved = this.approvedVerificationCommandAvailable &&
         this.options.approvedVerificationCommand === command
-      if (!ALLOWED_VERIFICATION_COMMANDS.has(command) && !runtimeApproved) {
+      if (!isAllowedVerificationCommand(command) && !runtimeApproved) {
         results.push({
           name: command,
           status: 'skipped',
