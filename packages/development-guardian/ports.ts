@@ -3,6 +3,7 @@ import type {
   ExecutionReport,
   GuardianBrainTransportMetrics,
   GuardianTask,
+  VerificationExecutionStep,
 } from './model.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
@@ -39,6 +40,7 @@ export interface GuardianExecutor {
   retryVerification?(input: {
     task: GuardianTask
     report: ExecutionReport
+    verificationSteps?: readonly VerificationExecutionStep[]
   }): Promise<ExecutionReport>
 }
 

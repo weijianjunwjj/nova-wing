@@ -230,10 +230,12 @@ const expectedRuntimeExports = {
     'resumeTargetForFailure',
     'resumeTargetForRuntimeFailure',
     'validateVerificationPlanAfterExecution',
+    'verificationPlanApprovalSatisfied',
     'verificationPlanFingerprintValid',
     // v0.3.0 Golden Path
     'GoldenPathTaskRunner',
     'assessGoldenPathEligibility',
+    'assessGoldenVerification',
     'agentIdentity',
     'completionEvidence',
     'isConfirmedNoOp',

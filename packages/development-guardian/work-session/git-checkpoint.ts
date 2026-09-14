@@ -475,7 +475,7 @@ function validateCompletionEvidence(evidence: TaskCompletionEvidence): void {
   // requiredVerification 中每个命令都必须有同名且 passed 的 verificationResults entry，
   // 不能只凭 verificationResults 全 passed 就放行（可能漏跑了 Reviewer 要求的 verification）。
   for (const required of evidence.requiredVerification) {
-    const match = evidence.verificationResults.find((v) => v.name === required)
+    const match = evidence.verificationResults.find((v) => (v.stepId ?? v.name) === required)
     if (match === undefined || match.status !== 'passed') {
       throw new GitCheckpointError(
         `required verification ${required} not passed; refusing to commit`,

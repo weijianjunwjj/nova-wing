@@ -6,7 +6,7 @@ import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-cod
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
 import { classifyCodexError, type ClassifiedCodexError } from './codex-error.js'
 import { CodexWorkspaceTools, type CodexWorkspaceProbeResult } from './codex-workspace-tools.js'
-import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
+import type { DelegationPacket, ExecutionReport, GuardianTask, VerificationExecutionStep } from './model.js'
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
@@ -252,7 +252,7 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   }
   restoreProviderState(state: ProviderSessionState): void { this.threadId = state.codingExecution?.codexThreadId }
   setRecoveryCheckpoint(checkpoint: RepositoryCheckpoint): void { this.guarded.setRecoveryCheckpoint(checkpoint) }
-  retryVerification(input: { task: GuardianTask; report: ExecutionReport }): Promise<ExecutionReport> {
+  retryVerification(input: { task: GuardianTask; report: ExecutionReport; verificationSteps?: readonly VerificationExecutionStep[] }): Promise<ExecutionReport> {
     return this.guarded.retryVerification(input)
   }
   execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {

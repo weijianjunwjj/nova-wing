@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import type {
   DelegationPacket,
   ExecutionReport,
   GuardianTask,
+  VerificationExecutionStep,
   VerificationResult,
   PermissionDenialEvidence,
 } from './model.js'
@@ -21,6 +22,7 @@ import {
   buildVerificationResult,
   persistVerificationOutput,
 } from './verification-evidence.js'
+import { assessVerificationCommand, deterministicVerificationCapabilities, npmScriptFingerprint } from './verification-command-policy.js'
 
 export interface GuardianCommandRequest {
   executable: string
@@ -180,25 +182,6 @@ const DEFAULT_ALLOWED_TOOLS = [
   'Bash(git diff:*)',
 ] as const
 
-const ALLOWED_VERIFICATION_COMMANDS = new Set([
-  'npm test',
-  'npm run test',
-  'npm run typecheck',
-  'npm run build',
-  'npm run lint',
-  'npm run check',
-  'git diff --check',
-  '.venv/Scripts/python.exe -m pytest',
-])
-
-function isAllowedVerificationCommand(command: string): boolean {
-  if (ALLOWED_VERIFICATION_COMMANDS.has(command)) return true
-  const scopedNodeTest = /^node --test ([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:cjs|mjs|js|ts))$/u.exec(command)
-  if (scopedNodeTest === null) return false
-  const path = scopedNodeTest[1]!
-  return !path.split('/').includes('..') && !path.includes('//')
-}
-
 /**
  * 敏感字段列表，必须 redact
  */
@@ -296,7 +279,7 @@ function extractPermissionDenialEvidence(
  * 命中这里时，应把验证命令放进 verification 由 Guardian 执行，而不是 blocked。
  */
 function getDeterministicVerificationCapabilities(): string[] {
-  return [...ALLOWED_VERIFICATION_COMMANDS]
+  return deterministicVerificationCapabilities()
 }
 
 /**
@@ -702,8 +685,9 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
 
   private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv | undefined {
     if (nativeGitBash !== true) return undefined
+    const { NODE_TEST_CONTEXT: _nodeTestContext, ...ambient } = process.env
     return {
-      ...process.env,
+      ...ambient,
       BASH: executable,
       NOVAWING_GIT_BASH_PATH: executable,
       SHELL: executable,
@@ -726,13 +710,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     })
   }
 
-  private async runBash(command: string, timeoutMs = this.timeoutMs): Promise<GuardianCommandResult> {
+  private async runBash(command: string, timeoutMs = this.timeoutMs, cwd = this.options.cwd): Promise<GuardianCommandResult> {
     const spec = guardianShellCommand(command, this.shellOptions())
     const env = this.commandEnvironment(spec.executable, spec.nativeGitBash)
     return this.runner({
       executable: spec.executable,
       args: spec.args,
-      cwd: this.options.cwd,
+      cwd,
       timeoutMs,
       ...(env === undefined ? {} : { env }),
       ...(spec.nativeGitBash === true ? { nativeGitBash: true } : {}),
@@ -919,32 +903,96 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     task: GuardianTask,
     commands: readonly string[],
     includeBaseline = true,
+    scopedSteps?: readonly VerificationExecutionStep[],
   ): Promise<{
     results: VerificationResult[]
     blockers: string[]
     commandsRun: string[]
   }> {
-    const effectiveCommands = [...new Set([
-      ...(includeBaseline ? ['git diff --check'] : []),
-      ...commands.map((command) => command.trim()),
-    ])]
+    const scoped = scopedSteps !== undefined
+    const effectiveSteps: VerificationExecutionStep[] = scopedSteps === undefined
+      ? [...new Set([...(includeBaseline ? ['git diff --check'] : []), ...commands.map((command) => command.trim())])]
+        .filter(Boolean).map((command, index) => ({ stepId: `legacy-${index + 1}`, command, cwd: '.' }))
+      : [
+          ...(includeBaseline && !scopedSteps.some((step) => step.command === 'git diff --check' && step.cwd === '.')
+            ? [{ stepId: 'baseline-diff-check', command: 'git diff --check', cwd: '.' }]
+            : []),
+          ...scopedSteps,
+        ]
     const results: VerificationResult[] = []
     const blockers: string[] = []
     const commandsRun: string[] = []
 
-    for (const [index, command] of effectiveCommands.entries()) {
+    const repositoryRoot = await realpath(this.options.cwd)
+    for (const [index, step] of effectiveSteps.entries()) {
+      const command = step.command.trim()
       if (command.length === 0) {
         continue
       }
+      let actualCwd: string | undefined
+      let cwdFailure: string | undefined
+      if (isAbsolute(step.cwd)) cwdFailure = 'verification cwd must be repository-relative'
+      else {
+        try {
+          actualCwd = await realpath(resolve(repositoryRoot, step.cwd))
+          const escaped = relative(repositoryRoot, actualCwd)
+          if (escaped === '..' || escaped.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(escaped)) {
+            cwdFailure = 'verification cwd escapes the repository workspace'
+          }
+        } catch {
+          cwdFailure = 'verification cwd does not exist or cannot be resolved'
+        }
+      }
+      if (cwdFailure !== undefined || actualCwd === undefined) {
+        const reason = `${cwdFailure ?? 'verification cwd is invalid'}: ${step.cwd}`
+        results.push({ name: command, ...(scoped ? { stepId: step.stepId, command, cwd: step.cwd, admission: 'UNSUPPORTED' as const } : {}),
+          status: 'skipped', details: reason, classification: 'VERIFIER_CONFIGURATION_FAILURE' })
+        blockers.push(`verification step ${step.stepId} was not started: ${reason}`)
+        continue
+      }
+
+      if (step.sourceManifest !== undefined || step.sourceScript !== undefined || step.sourceFingerprint !== undefined) {
+        let sourceValid = step.sourceManifest !== undefined && step.sourceScript !== undefined && step.sourceFingerprint !== undefined
+        if (sourceValid) {
+          try {
+            if (isAbsolute(step.sourceManifest!)) sourceValid = false
+            else {
+              const manifestPath = await realpath(resolve(repositoryRoot, step.sourceManifest!))
+              const escaped = relative(repositoryRoot, manifestPath)
+              if (escaped === '..' || escaped.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(escaped)) sourceValid = false
+              else {
+                const parsed = JSON.parse(await readFile(manifestPath, 'utf8')) as { scripts?: unknown }
+                const scripts = parsed.scripts !== null && typeof parsed.scripts === 'object' && !Array.isArray(parsed.scripts)
+                  ? Object.fromEntries(Object.entries(parsed.scripts as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+                  : {}
+                sourceValid = npmScriptFingerprint(scripts, step.sourceScript!) === step.sourceFingerprint
+              }
+            }
+          } catch { sourceValid = false }
+        }
+        if (!sourceValid) {
+          const reason = `verification plan source changed or is invalid: ${step.sourceManifest ?? 'missing manifest'}`
+          results.push({ name: command, ...(scoped ? { stepId: step.stepId, command, cwd: step.cwd, admission: 'UNSUPPORTED' as const } : {}),
+            status: 'skipped', details: reason, classification: 'VERIFIER_CONFIGURATION_FAILURE' })
+          blockers.push(`verification step ${step.stepId} was not started: ${reason}`)
+          continue
+        }
+      }
+
+      const admission = assessVerificationCommand(command)
       const runtimeApproved = this.approvedVerificationCommandAvailable &&
         this.options.approvedVerificationCommand === command
-      if (!isAllowedVerificationCommand(command) && !runtimeApproved) {
+      if (admission.status !== 'ALLOWED' && !runtimeApproved) {
         results.push({
           name: command,
+          ...(scoped ? { stepId: step.stepId, command, cwd: step.cwd, admission: admission.status } : {}),
           status: 'skipped',
-          details: 'verification command is not in the MVP allowlist',
+          details: admission.reason,
+          classification: admission.status === 'UNSUPPORTED' ? 'VERIFIER_CONFIGURATION_FAILURE' : 'PERMISSION_REQUIRED',
         })
-        blockers.push(`verification command requires human approval: ${command}`)
+        blockers.push(admission.status === 'UNSUPPORTED'
+          ? `verification step ${step.stepId} is unsupported and was not started: ${command}`
+          : `verification command requires human approval: ${command}`)
         continue
       }
 
@@ -961,7 +1009,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       // seam; production always uses the isolated index implementation.
       const result = command === 'git diff --check' && this.options.commandRunner === undefined
         ? await runStagedEquivalentDiffCheck(this.options.cwd, this.timeoutMs)
-        : await this.runBash(command)
+        : await this.runBash(command, this.timeoutMs, command === 'git diff --check' ? repositoryRoot : actualCwd)
       const durationMs = performance.now() - startedAt
       if (result.terminationConfirmed === false) this.executionOwnershipReleased = false
       this.emitTiming(task, 'verification', durationMs, { command })
@@ -992,7 +1040,9 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         durationMs,
         evidence,
       })
-      results.push(evidence)
+      results.push({ ...evidence, ...(scoped
+        ? { stepId: step.stepId, command, cwd: step.cwd, admission: runtimeApproved ? 'ALLOWED' as const : admission.status }
+        : {}) })
     }
 
     return { results, blockers, commandsRun }
@@ -1006,13 +1056,19 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   async retryVerification(input: {
     task: GuardianTask
     report: ExecutionReport
+    verificationSteps?: readonly VerificationExecutionStep[]
   }): Promise<ExecutionReport> {
     const failedCommands = input.report.verificationResults
       .filter((result) => result.status === 'failed')
       .map((result) => result.name)
-    if (failedCommands.length === 0) return input.report
+    if (failedCommands.length === 0 && input.verificationSteps === undefined) return input.report
 
-    const retry = await this.verify(input.task, failedCommands, false)
+    const retry = await this.verify(input.task, failedCommands, false, input.verificationSteps)
+    if (input.verificationSteps !== undefined) {
+      const latestRawOutputRef = retry.results.find((result) => result.rawOutputRef !== undefined)?.rawOutputRef
+      return { ...input.report, commandsRun: [...input.report.commandsRun, ...retry.commandsRun], verificationResults: retry.results,
+        blockers: [...input.report.blockers, ...retry.blockers], ...(latestRawOutputRef === undefined ? {} : { rawOutputRef: latestRawOutputRef }) }
+    }
     const retriedByName = new Map(retry.results.map((result) => [result.name, result]))
     const verificationResults = input.report.verificationResults.map(
       (result) => retriedByName.get(result.name) ?? result,
@@ -1306,7 +1362,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
           : result.blockers
         const blockers = [...runtimeBlockers, ...scopeBlockers(input.task, changed.changedFiles),
           ...(changed.blocker === undefined ? [] : [changed.blocker])]
-        const verification = blockers.length === 0 && result.incompleteReason === undefined
+        const verification = blockers.length === 0 && result.incompleteReason === undefined && input.packet.deferVerification !== true
           ? await this.verify(input.task, input.packet.verification)
           : { results: [], blockers: [], commandsRun: [] }
         return {
@@ -1524,7 +1580,9 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         }
       }
 
-      const verification = await this.verify(input.task, input.packet.verification)
+      const verification = input.packet.deferVerification === true
+        ? { results: [], blockers: [], commandsRun: [] }
+        : await this.verify(input.task, input.packet.verification)
       allBlockers.push(...verification.blockers)
       const rawOutputRef = verification.results.find(
         (result) => result.rawOutputRef !== undefined,

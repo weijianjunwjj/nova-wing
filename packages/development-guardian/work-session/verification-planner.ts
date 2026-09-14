@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
+import type { VerificationExecutionStep } from '../model.js'
+import { assessVerificationCommand, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
 import type { WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, RiskLevel } from './risk-evidence.js'
 
@@ -15,10 +17,8 @@ export type VerificationFailureExpectation =
   | 'EVIDENCE_MISSING'
   | 'UNKNOWN'
 
-export interface VerificationPlanStep {
+export interface VerificationPlanStep extends Omit<VerificationExecutionStep, 'stepId'> {
   id: string
-  command: string
-  cwd: string
   scope: VerificationScope
   reason: string
   expectedCoverage: readonly string[]
@@ -31,6 +31,7 @@ export interface VerificationAcceptanceMapping {
   evidence: readonly string[]
   scope: VerificationScope
   reason: string
+  requiresApproval?: boolean
 }
 
 export interface VerificationPlan {
@@ -138,7 +139,12 @@ function scopeRank(scope: VerificationScope): number {
 function cwdFor(root: string): string { return root.length === 0 ? '.' : root }
 
 function canonicalPlan(plan: Omit<VerificationPlan, 'planId' | 'fingerprint'>): string {
-  return JSON.stringify(plan)
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value !== null && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).filter((entry) => entry[1] !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, stable(item)]))
+      : value
+  return JSON.stringify(stable(plan))
 }
 
 function finish(plan: Omit<VerificationPlan, 'planId' | 'fingerprint'>): VerificationPlan {
@@ -148,7 +154,9 @@ function finish(plan: Omit<VerificationPlan, 'planId' | 'fingerprint'>): Verific
 
 export function verificationPlanFingerprintValid(plan: VerificationPlan): boolean {
   const { planId: _planId, fingerprint, ...content } = plan
-  return createHash('sha256').update(canonicalPlan(content)).digest('hex') === fingerprint
+  const stable = createHash('sha256').update(canonicalPlan(content)).digest('hex')
+  const legacy = createHash('sha256').update(JSON.stringify(content)).digest('hex')
+  return fingerprint === stable || fingerprint === legacy
 }
 
 function explicitPlan(input: VerificationPlannerInput, packages: readonly PackageFacts[]): VerificationPlan {
@@ -162,7 +170,8 @@ function explicitPlan(input: VerificationPlannerInput, packages: readonly Packag
     const script = /^(?:npm|pnpm|yarn)\s+(?:run\s+)?([^\s]+)(?:\s|$)/u.exec(command)?.[1]
     if (script !== undefined && owner?.scripts[script] === undefined) invalidCommand = true
     if (!/^(?:npm|pnpm|yarn|node|npx|git|tsc|vitest|jest|pytest|\.venv[\\/])/iu.test(command)) invalidCommand = true
-    return { id: `verify-${index + 1}`, command, cwd: cwdFor(root), scope: root.length > 0 ? 'PACKAGE' : 'REPOSITORY',
+    const admission = assessVerificationCommand(command)
+    return { id: `verify-${index + 1}`, command, cwd: cwdFor(root), admission: admission.status, admissionReason: admission.reason, scope: root.length > 0 ? 'PACKAGE' : 'REPOSITORY',
       reason: 'Explicit user evidence binding has precedence.', expectedCoverage: bindings.filter((binding) => binding.requiredEvidence.includes(command)).map((binding) => binding.criterion),
       environmentPrerequisites: command.startsWith('npm') ? ['node', 'package manager'] : command.startsWith('git') ? ['git'] : [],
       failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] }
@@ -172,10 +181,10 @@ function explicitPlan(input: VerificationPlannerInput, packages: readonly Packag
   const invalid = bindings.length !== (input.task.acceptanceCriteria ?? []).length || commands.length === 0 || invalidCommand || unavailablePrerequisites.length > 0
   const maxScope = steps.reduce<VerificationScope>((scope, step) => scopeRank(step.scope) > scopeRank(scope) ? step.scope : scope, 'FILE')
   return finish({
-    mappings: (input.task.acceptanceCriteria ?? []).map((criterion) => { const binding = bindings.find((item) => item.criterion === criterion); return { criterion, evidence: binding?.requiredEvidence ?? [], scope: maxScope, reason: 'Explicit user binding.' } }),
+    mappings: (input.task.acceptanceCriteria ?? []).map((criterion) => { const binding = bindings.find((item) => item.criterion === criterion); return { criterion, evidence: binding?.requiredEvidence ?? [], scope: maxScope, reason: 'Explicit user binding.', ...(binding?.requiresApproval === undefined ? {} : { requiresApproval: binding.requiresApproval }) } }),
     steps, escalationSequence: ['PLAN_INVALIDATED', 'CONTROLLER'], estimatedScope: maxScope,
     estimatedCost: maxScope === 'REPOSITORY' ? 'HIGH' : 'LOW', confidence: invalid ? 'INSUFFICIENT' : 'HIGH',
-    approvalRequired: bindings.some((binding) => binding.requiresApproval === true),
+    approvalRequired: bindings.some((binding) => binding.requiresApproval === true) || steps.some((step) => step.admission !== 'ALLOWED'),
     invalidationConditions: ['changed paths leave allowed scope', 'package boundary expands', 'risk surface expands', 'explicit binding changes'],
     packageRoots, explicitBindings: true, rationale: [
       'Explicit evidence bindings were preserved without planner substitution.',
@@ -224,30 +233,48 @@ export async function planVerification(input: VerificationPlannerInput): Promise
     const nearbyTests = owner.files.filter((file) => TEST_FILE.test(file)).map((file) => ({ file, score: relevance(file, words) }))
       .sort((left, right) => right.score - left.score || left.file.localeCompare(right.file))
     if (bestNamed !== undefined) {
-      selected.push({ id: 'targeted-test', command: `npm run ${bestNamed.name}`, cwd: cwdFor(owner.root), scope: 'FILE', reason: `Closest existing named test script (${bestNamed.name}) matches task terms.`,
-        expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
-      rationale.push('Selected an existing task-local named test script before broader suites.')
-    } else if (nearbyTests[0]?.score && owner.scripts.test !== undefined) {
+      const packageFiles = owner.files.map((file) => owner.root.length === 0 ? file : file.slice(owner.root.length + 1))
+      const normalized = normalizeNamedNpmTestScript({ scriptName: bestNamed.name, scripts: owner.scripts, packageFiles })
+      if (normalized !== undefined) {
+        selected.push({ id: 'targeted-test', command: normalized.command, originalCommand: normalized.originalCommand,
+          cwd: cwdFor(owner.root), admission: 'ALLOWED', admissionReason: normalized.reason,
+          sourceManifest: owner.root.length === 0 ? 'package.json' : `${owner.root}/package.json`, sourceScript: bestNamed.name,
+          sourceFingerprint: normalized.sourceFingerprint, scope: 'FILE', reason: normalized.reason,
+          expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
+        rationale.push(normalized.reason)
+      } else {
+        rationale.push(`Named script ${bestNamed.name} was not auto-approved because it is not one existing, hook-free scoped node --test command.`)
+      }
+    }
+    if (!selected.some((step) => step.id === 'targeted-test') && nearbyTests[0]?.score && owner.scripts.test !== undefined) {
       const local = owner.root.length === 0 ? nearbyTests[0].file : nearbyTests[0].file.slice(owner.root.length + 1)
-      const command = /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test) ? `node --test ${nearbyTests[0].file}` : `npm test -- ${local}`
-      selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
+      const command = /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test) ? `node --test ${local}` : `npm test -- ${local}`
+      const admission = assessVerificationCommand(command)
+      selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
       rationale.push('Selected the nearest existing test file before a package suite.')
-    } else if (owner.root.length > 0 && owner.scripts.test !== undefined) {
-      selected.push({ id: 'package-test', command: 'npm test', cwd: cwdFor(owner.root), scope: 'PACKAGE', reason: 'Owning package exposes an existing test script.',
+    } else if (!selected.some((step) => step.id === 'targeted-test') && owner.root.length > 0 && owner.scripts.test !== undefined) {
+      selected.push({ id: 'package-test', command: 'npm test', cwd: cwdFor(owner.root), admission: 'ALLOWED', admissionReason: assessVerificationCommand('npm test').reason, scope: 'PACKAGE', reason: 'Owning package exposes an existing test script.',
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
       rationale.push('Selected package-local tests; root suite was not considered sufficient by default.')
+    } else if (!selected.some((step) => step.id === 'targeted-test' || step.id === 'package-test') && bestNamed !== undefined) {
+      const originalCommand = `npm run ${bestNamed.name}`
+      const admission = assessVerificationCommand(originalCommand)
+      selected.push({ id: 'targeted-test', command: originalCommand, originalCommand, cwd: cwdFor(owner.root), admission: admission.status,
+        admissionReason: 'Named script could not be proven equivalent to one hook-free scoped node --test command.', scope: 'FILE',
+        reason: `Closest named test script (${bestNamed.name}) requires explicit approval.`, expectedCoverage: input.task.acceptanceCriteria ?? [],
+        environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNKNOWN'] })
     }
     if (owner.scripts.typecheck !== undefined) {
-      selected.push({ id: 'package-typecheck', command: 'npm run typecheck', cwd: cwdFor(owner.root), scope: 'PACKAGE', reason: 'Owning package exposes an existing typecheck script.',
+      selected.push({ id: 'package-typecheck', command: 'npm run typecheck', cwd: cwdFor(owner.root), admission: 'ALLOWED', admissionReason: assessVerificationCommand('npm run typecheck').reason, scope: 'PACKAGE', reason: 'Owning package exposes an existing typecheck script.',
         expectedCoverage: ['static compatibility of changed package'], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNKNOWN'] })
     } else if (owner.scripts.lint !== undefined) {
-      selected.push({ id: 'package-lint', command: 'npm run lint', cwd: cwdFor(owner.root), scope: 'PACKAGE', reason: 'Owning package exposes an existing static lint check.',
+      selected.push({ id: 'package-lint', command: 'npm run lint', cwd: cwdFor(owner.root), admission: 'ALLOWED', admissionReason: assessVerificationCommand('npm run lint').reason, scope: 'PACKAGE', reason: 'Owning package exposes an existing static lint check.',
         expectedCoverage: ['static consistency of changed package'], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNKNOWN'] })
     }
   }
 
-  if (selected.length > 0) selected.push({ id: 'diff-check', command: 'git diff --check', cwd: '.', scope: 'REPOSITORY', reason: 'Repository-native whitespace and patch integrity check.',
+  if (selected.length > 0) selected.push({ id: 'diff-check', command: 'git diff --check', cwd: '.', admission: 'ALLOWED', admissionReason: assessVerificationCommand('git diff --check').reason, scope: 'REPOSITORY', reason: 'Repository-native whitespace and patch integrity check.',
     expectedCoverage: ['patch integrity'], environmentPrerequisites: ['git'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'UNKNOWN'] })
 
   const criteria = input.task.acceptanceCriteria ?? []
@@ -262,13 +289,32 @@ export async function planVerification(input: VerificationPlannerInput): Promise
   if (unavailablePrerequisites.length > 0) rationale.push(`Known environment prerequisites are unavailable: ${unavailablePrerequisites.join(', ')}.`)
   return finish({ mappings: criteria.map((criterion) => ({ criterion, evidence: sufficient ? evidence : [], scope: estimatedScope, reason: sufficient ? 'Minimal sufficient package evidence selected from repository facts.' : 'Planning requires human evidence selection.' })),
     steps: selected, escalationSequence: ['PLAN_INVALIDATED', 'CONTROLLER'], estimatedScope, estimatedCost: selected.length <= 2 ? 'LOW' : 'MEDIUM',
-    confidence: sufficient ? (selected[0]?.scope === 'FILE' ? 'HIGH' : 'MEDIUM') : 'INSUFFICIENT', approvalRequired: false,
+    confidence: sufficient ? (selected[0]?.scope === 'FILE' ? 'HIGH' : 'MEDIUM') : 'INSUFFICIENT', approvalRequired: selected.some((step) => step.admission !== 'ALLOWED'),
     invalidationConditions: ['changed paths leave allowed scope', 'package boundary expands', 'risk surface expands', 'repository scripts or tests change'],
     packageRoots: owners, explicitBindings: false, rationale })
 }
 
-export function bindingsFromVerificationPlan(plan: VerificationPlan): AcceptanceEvidenceBinding[] {
-  return plan.mappings.map((mapping) => ({ criterion: mapping.criterion, requiredEvidence: mapping.evidence }))
+export function bindingsFromVerificationPlan(
+  plan: VerificationPlan,
+  options: { identity?: 'command' | 'step' } = {},
+): AcceptanceEvidenceBinding[] {
+  return plan.mappings.map((mapping) => ({
+    criterion: mapping.criterion,
+    requiredEvidence: options.identity === 'step'
+      ? [...new Set(mapping.evidence.flatMap((evidence) => {
+          const matching = plan.steps.filter((step) => step.command === evidence || step.originalCommand === evidence)
+          return matching.length === 0 ? [evidence] : matching.map((step) => step.id)
+        }))]
+      : [...new Set(mapping.evidence)],
+    ...(mapping.requiresApproval === undefined ? {} : { requiresApproval: mapping.requiresApproval }),
+  }))
+}
+
+/** One runtime-owned exact command can satisfy at most one non-allowed plan step. */
+export function verificationPlanApprovalSatisfied(plan: VerificationPlan, approvedCommand: string | undefined): boolean {
+  const blocked = plan.steps.filter((step) => step.admission !== undefined && step.admission !== 'ALLOWED')
+  return blocked.length === 0 || (blocked.length === 1 && approvedCommand !== undefined &&
+    (blocked[0]!.originalCommand ?? blocked[0]!.command) === approvedCommand)
 }
 
 export interface VerificationPlanValidation {

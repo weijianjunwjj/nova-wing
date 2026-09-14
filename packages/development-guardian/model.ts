@@ -95,11 +95,27 @@ export interface DelegationPacket {
   instructions: readonly string[]
   constraints: readonly string[]
   verification: readonly string[]
+  /** Golden implementation packets defer every deterministic verifier, including baseline diff checks, to VERIFY. */
+  deferVerification?: boolean
   doNotDo: readonly string[]
   rationale?: string
 }
 
 export type VerificationStatus = 'passed' | 'failed' | 'skipped'
+
+export interface VerificationExecutionStep {
+  stepId: string
+  command: string
+  /** Repository-relative working directory. Legacy callers omit the step and keep repo-root behavior. */
+  cwd: string
+  originalCommand?: string
+  admission?: 'ALLOWED' | 'APPROVAL_REQUIRED' | 'UNSUPPORTED'
+  admissionReason?: string
+  /** Repository-relative package manifest used to prove a safe npm-script normalization. */
+  sourceManifest?: string
+  sourceScript?: string
+  sourceFingerprint?: string
+}
 
 export type VerificationFailureClassification =
   | 'CODE_FAILURE'
@@ -134,9 +150,14 @@ export interface VerificationFirstFailure {
 
 export interface VerificationResult {
   name: string
+  stepId?: string
+  command?: string
+  cwd?: string
+  admission?: 'ALLOWED' | 'APPROVAL_REQUIRED' | 'UNSUPPORTED'
   status: VerificationStatus
   details?: string
   exitCode?: number | null
+  signal?: NodeJS.Signals | null
   durationMs?: number
   firstFailure?: VerificationFirstFailure
   classification?: VerificationFailureClassification

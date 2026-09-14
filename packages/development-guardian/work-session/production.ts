@@ -708,16 +708,36 @@ export async function createProductionWorkSessionUi(
               allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths,
               lastReport: { summary: 'TaskStateV2 transport projection', changedFiles: taskState.gitState.changedFiles, commandsRun: [], verificationResults: taskState.verificationState.results, blockers: [] } }
             const report = action === 'VERIFY'
-              ? await router.retryVerification({ task: transportTask, report: {
-                summary: 'Controller requested deterministic verification', changedFiles: taskState.gitState.changedFiles, commandsRun: [], blockers: [],
-                verificationResults: [...new Set(['git diff --check', ...requiredEvidence])].map((name) => ({ name, status: 'failed' as const })),
-              } })
+              ? await (() => {
+                const planned = taskState.verificationPlan?.steps.map((step) => ({
+                  stepId: step.id, command: step.command, cwd: step.cwd,
+                  ...(step.originalCommand === undefined ? {} : { originalCommand: step.originalCommand }),
+                  ...(step.admission === undefined ? {} : { admission: step.admission }),
+                  ...(step.admissionReason === undefined ? {} : { admissionReason: step.admissionReason }),
+                  ...(step.sourceManifest === undefined ? {} : { sourceManifest: step.sourceManifest }),
+                  ...(step.sourceScript === undefined ? {} : { sourceScript: step.sourceScript }),
+                  ...(step.sourceFingerprint === undefined ? {} : { sourceFingerprint: step.sourceFingerprint }),
+                }))
+                const verificationSteps = planned === undefined ? undefined : [
+                  ...(planned.some((step) => step.command === 'git diff --check' && step.cwd === '.')
+                    ? [] : [{ stepId: 'baseline-diff-check', command: 'git diff --check', cwd: '.' }]),
+                  ...planned,
+                ]
+                const legacyCommands = [...new Set(['git diff --check', ...requiredEvidence])]
+                return router.retryVerification({ task: transportTask, report: {
+                  summary: 'Controller requested deterministic verification', changedFiles: taskState.gitState.changedFiles, commandsRun: [], blockers: [],
+                  verificationResults: verificationSteps === undefined
+                    ? legacyCommands.map((name) => ({ name, status: 'failed' as const }))
+                    : verificationSteps.map((step) => ({ name: step.command, stepId: step.stepId, command: step.command, cwd: step.cwd, status: 'failed' as const })),
+                }, ...(verificationSteps === undefined ? {} : { verificationSteps }) })
+              })()
               : await router.execute({ task: transportTask,
               packet: { verdict: 'proceed', goal: taskState.goal,
                 instructions: [action, ...(retry === undefined ? [] : [retry.instruction]), ...(goldenImplementationOnly
                   ? ['Implement only: inspect the repository and edit the scoped files. Do not execute verification commands; NovaWing runs deterministic verification separately after implementation.']
                   : [])],
-                constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
+                constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : requiredEvidence,
+                ...(goldenImplementationOnly ? { deferVerification: true } : {}), doNotDo: taskState.permissions.forbiddenPaths } })
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),

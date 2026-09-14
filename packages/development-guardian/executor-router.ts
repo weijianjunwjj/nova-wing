@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises'
 import type { GuardianRecoverableExecutor } from './ports.js'
-import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
+import type { DelegationPacket, ExecutionReport, GuardianTask, VerificationExecutionStep } from './model.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 import { CODING_EXECUTOR_DEFAULTS, type CodingExecutionMetadata, type ExecutorMode } from './coding-executor-config.js'
 import type { ClassifiedCodexError } from './codex-error.js'
@@ -262,7 +262,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     } finally { if (ownershipReleased) release() }
   }
 
-  async retryVerification(input: { task: GuardianTask; report: ExecutionReport }): Promise<ExecutionReport> {
+  async retryVerification(input: { task: GuardianTask; report: ExecutionReport; verificationSteps?: readonly VerificationExecutionStep[] }): Promise<ExecutionReport> {
     const workspace = await realpath(this.options.cwd)
     const release = this.options.store.acquire(process.platform === 'win32' ? workspace.toLowerCase() : workspace, this.options.taskKey)
     let ownershipReleased = false

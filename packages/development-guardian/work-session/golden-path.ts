@@ -7,6 +7,7 @@ import {
   bindingsFromVerificationPlan,
   planVerification,
   validateVerificationPlanAfterExecution,
+  verificationPlanApprovalSatisfied,
   type VerificationPlan,
 } from './verification-planner.js'
 import { assessDirectPathEligibility, concreteRuntimeProvider } from './direct-path.js'
@@ -56,6 +57,8 @@ export type GoldenPathTerminal =
   | 'CODE_FAILURE_AFTER_SINGLE_FIX'
   | 'ENVIRONMENT_REQUIRED'
   | 'VERIFIER_CONFIGURATION_REQUIRED'
+  | 'APPROVAL_REQUIRED'
+  | 'EVIDENCE_MISSING'
   | 'UNRELATED_TEST_FAILURE'
   | 'EXECUTOR_FAILED'
   | 'SAFETY_BLOCKED'
@@ -115,7 +118,7 @@ function repositoryChangedSince(before: TaskGitStateV2, after: RepositoryReality
 function applyGoldenVerify(state: TaskStateV2, verification: GoldenDispatchResult): TaskStateV2 {
   const results = verification.verificationResults ?? []
   const evidence = results.map((item) => ({
-    type: item.name,
+    type: item.stepId ?? item.name,
     status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const,
     source: 'deterministic' as const,
     ...(state.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: state.gitState.repositoryIdentity }),
@@ -128,10 +131,86 @@ function applyGoldenVerify(state: TaskStateV2, verification: GoldenDispatchResul
     ...state,
     verificationState: { ...state.verificationState, results },
     completion: { ...state.completion, evidence },
+    blockers: verification.status === 'SUCCESS'
+      ? state.blockers
+      : [...new Set([...state.blockers, ...(verification.blockers ?? []), ...(verification.summary === undefined ? [] : [verification.summary])])],
     currentAction: 'VERIFY',
     status: 'ACTIVE',
     updatedAt: new Date().toISOString(),
   }
+}
+
+type GoldenVerificationAssessment = {
+  passed: boolean
+  category?: GoldenPathTerminal
+  reason?: string
+  verifier?: string | undefined
+}
+
+/** Validate the complete VERIFY contract before classifying any code failure. */
+export function assessGoldenVerification(plan: VerificationPlan, verification: GoldenDispatchResult): GoldenVerificationAssessment {
+  const results = verification.verificationResults ?? []
+  const blockers = verification.blockers ?? []
+  const approval = results.find((item) => item.status === 'skipped' && item.classification === 'PERMISSION_REQUIRED')
+  if (approval !== undefined || blockers.some((blocker) => /requires human approval|approval required/iu.test(blocker))) {
+    const verifier = approval?.command ?? approval?.name ?? blockers.find((blocker) => /approval/iu.test(blocker))
+    return { passed: false, category: 'APPROVAL_REQUIRED', verifier,
+      reason: `验证未执行，需要批准：${verifier ?? '具体 verifier command 未返回'}` }
+  }
+  if (verification.status === 'BLOCKED' || blockers.length > 0) {
+    return { passed: false, category: 'SAFETY_BLOCKED', verifier: results.find((item) => item.status !== 'passed')?.stepId,
+      reason: `VERIFY 返回未解决 blocker：${blockers.join('; ') || verification.summary || '未提供具体原因'}` }
+  }
+  if (verification.status === 'FAILED' && results.every((item) => item.status === 'passed')) {
+    return { passed: false, category: 'SAFETY_BLOCKED', reason: `VERIFY adapter returned FAILED despite passed results: ${verification.summary ?? '未提供具体原因'}` }
+  }
+  const requiredIds = plan.steps.map((step) => step.id)
+  if (requiredIds.length === 0 || new Set(requiredIds).size !== requiredIds.length) {
+    return { passed: false, category: 'VERIFIER_CONFIGURATION_REQUIRED', reason: 'VerificationPlan contains empty or duplicate step identities.' }
+  }
+  const byStep = new Map<string, typeof results>()
+  for (const result of results) {
+    if (result.stepId === undefined) continue
+    byStep.set(result.stepId, [...(byStep.get(result.stepId) ?? []), result])
+  }
+  for (const step of plan.steps) {
+    const matching = byStep.get(step.id) ?? []
+    if (matching.length === 0) return { passed: false, category: 'EVIDENCE_MISSING', verifier: step.id,
+      reason: `缺少必需验证结果：stepId=${step.id}, command=${step.command}, cwd=${step.cwd}` }
+    if (matching.length !== 1) return { passed: false, category: 'VERIFIER_CONFIGURATION_REQUIRED', verifier: step.id,
+      reason: `验证结果身份重复或歧义：stepId=${step.id}, count=${matching.length}` }
+    const result = matching[0]!
+    if ((result.command ?? result.name) !== step.command || result.cwd !== step.cwd) {
+      return { passed: false, category: 'VERIFIER_CONFIGURATION_REQUIRED', verifier: step.id,
+        reason: `验证结果与计划不匹配：stepId=${step.id}, expected=${step.command}@${step.cwd}, actual=${result.command ?? result.name}@${result.cwd ?? 'missing'}` }
+    }
+  }
+  const required = requiredIds.map((id) => byStep.get(id)![0]!)
+  const skipped = required.find((item) => item.status === 'skipped')
+  if (skipped !== undefined) {
+    const classification = canonicalVerificationFailure(skipped.classification)
+    if (classification === 'ENVIRONMENT_FAILURE') return { passed: false, category: 'ENVIRONMENT_REQUIRED', verifier: skipped.stepId, reason: skipped.details ?? '验证环境不可用。' }
+    return { passed: false, category: classification === 'VERIFIER_CONFIGURATION_FAILURE' ? 'VERIFIER_CONFIGURATION_REQUIRED' : 'EVIDENCE_MISSING',
+      verifier: skipped.stepId, reason: `验证步骤未启动：${skipped.command ?? skipped.name}; ${skipped.details ?? '未提供原因'}` }
+  }
+  const failed = required.filter((item) => item.status === 'failed')
+  if (failed.length === 0) return { passed: true }
+  const classified = failed.map((item) => ({ item, classification: canonicalVerificationFailure(item.classification) }))
+  const priority = classified.find((entry) => entry.classification === 'ENVIRONMENT_FAILURE') ??
+    classified.find((entry) => entry.classification === 'VERIFIER_CONFIGURATION_FAILURE') ??
+    classified.find((entry) => entry.classification === 'UNRELATED_TEST_FAILURE') ??
+    classified.find((entry) => entry.classification === 'EVIDENCE_MISSING') ??
+    classified.find((entry) => entry.classification === 'UNKNOWN')
+  if (priority !== undefined) {
+    const category = priority.classification === 'ENVIRONMENT_FAILURE' ? 'ENVIRONMENT_REQUIRED'
+      : priority.classification === 'VERIFIER_CONFIGURATION_FAILURE' ? 'VERIFIER_CONFIGURATION_REQUIRED'
+        : priority.classification === 'UNRELATED_TEST_FAILURE' ? 'UNRELATED_TEST_FAILURE'
+          : priority.classification === 'EVIDENCE_MISSING' ? 'EVIDENCE_MISSING' : 'UNKNOWN'
+    return { passed: false, category, verifier: priority.item.stepId ?? priority.item.name,
+      reason: priority.item.details ?? `Verification failed: ${priority.item.command ?? priority.item.name}` }
+  }
+  return { passed: false, category: 'CODE_FAILURE_AFTER_SINGLE_FIX', verifier: failed[0]?.stepId ?? failed[0]?.name,
+    reason: failed[0]?.details ?? `deterministic CODE_FAILURE: ${failed[0]?.command ?? failed[0]?.name}` }
 }
 
 function applyGoldenExecute(
@@ -245,7 +324,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     state = {
       ...state,
       verificationPlan: plan,
-      completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+      completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
       execution: { path: 'GOLDEN', escalated: false, startCheckpoint: { ...state.gitState } },
       updatedAt: new Date().toISOString(),
     }
@@ -258,15 +337,32 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'PLANNING_REQUIRED', reason: 'no trustworthy task-local or package-local verifier; root-suite fallback is forbidden' }, taskStateV2: state }
     }
 
+    if (plan.approvalRequired && !verificationPlanApprovalSatisfied(plan, context?.approvedVerificationCommand)) {
+      const blockedStep = plan.steps.find((step) => step.admission !== undefined && step.admission !== 'ALLOWED')
+      const category: GoldenPathTerminal = blockedStep?.admission === 'UNSUPPORTED' ? 'VERIFIER_CONFIGURATION_REQUIRED' : 'APPROVAL_REQUIRED'
+      const reason = blockedStep?.admission === 'UNSUPPORTED'
+        ? `验证计划包含不支持的步骤，未启动 Executor：${blockedStep.originalCommand ?? blockedStep.command}; ${blockedStep.admissionReason ?? 'unsupported verifier'}`
+        : `验证命令需要精确批准，未启动 Executor：${blockedStep?.originalCommand ?? blockedStep?.command ?? 'unknown verifier'}`
+      state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND', blockers: [reason], updatedAt: new Date().toISOString() }
+      note({ type: 'TASK_SUSPENDED', action: 'SUSPEND', ...repositoryFacts(state), metadata: { reason, planId: plan.planId } })
+      await context?.persistTaskStateV2?.(state)
+      return { ...goldenTerminal({ category, reason, state, executeCount: 0, verifyCount: 0, provider: undefined,
+        verifier: blockedStep?.id ?? plan.planId, changedFiles: state.gitState.changedFiles })
+      , ...(blockedStep === undefined ? {} : { pendingVerificationCommand: blockedStep.originalCommand ?? blockedStep.command }) }
+    }
+
     const eligibility = assessGoldenPathEligibility({
       task: state,
       plan,
       agents: this.options.agents,
       repositoryConsistent: initial.reconciled,
       unownedDirtyChanges: start.changedFiles.length > 0,
+      ...(context?.approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand: context.approvedVerificationCommand }),
     })
     if (!eligibility.eligible) {
-      state = { ...state, execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
+      state = { ...state,
+        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+        execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
       note({ type: 'DIRECT_PATH_ESCALATED', ...repositoryFacts(state), metadata: { stage: 'ELIGIBILITY', reasons: eligibility.reasons } })
       await context?.persistTaskStateV2?.(state)
       return this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: state })
@@ -274,7 +370,9 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
 
     const agent = selectAgent('EXECUTE', this.options.agents)
     if (agent === undefined) {
-      state = { ...state, execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
+      state = { ...state,
+        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+        execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
       return this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: state })
     }
 
@@ -333,30 +431,29 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       return goldenTerminal({ category: 'SAFETY_BLOCKED', reason: `execution crossed a safety boundary: ${planValidity.reasons.join('; ')}`, state, executeCount, verifyCount, provider: actualProvider, verifier: plan.planId, changedFiles: end.changedFiles })
     }
 
-    const verifyOnce = async (): Promise<void> => {
+    const verifyOnce = async (): Promise<GoldenDispatchResult> => {
       verifyCount += 1
       note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command) })
       emit('VERIFYING', 'active', { kind: 'VERIFIER_STARTED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId })
-      const result = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state) })
+      const result = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state),
+        ...(context?.approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand: context.approvedVerificationCommand }) })
       state = applyGoldenVerify(state, result)
+      return result
     }
 
-    const passedNow = (): boolean => state.verificationState.results.length > 0 && state.verificationState.results.every((item) => item.status === 'passed')
-
-    await verifyOnce()
-    let passed = passedNow()
+    let verification = await verifyOnce()
+    let assessment = assessGoldenVerification(plan, verification)
+    let passed = assessment.passed
     note({ type: passed ? 'VERIFICATION_PASSED' : 'VERIFICATION_FAILED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: state.verificationState.results.map((item) => item.name) })
     emit('VERIFYING', passed ? 'completed' : 'failed', { kind: 'VERIFIER_COMPLETED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId, outcome: passed ? 'PASSED' : 'FAILED' })
     await context?.persistTaskStateV2?.(state)
 
     if (!passed) {
-      const firstFailed = state.verificationState.results.find((item) => item.status === 'failed')
-      const classification = canonicalVerificationFailure(firstFailed?.classification)
-      note({ type: 'VERIFICATION_CLASSIFIED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { classification, verifier: firstFailed?.name, executeCount, verifyCount } })
+      note({ type: 'VERIFICATION_CLASSIFIED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { classification: assessment.category, verifier: assessment.verifier, executeCount, verifyCount } })
 
-      if (classification === 'CODE_FAILURE') {
+      if (assessment.category === 'CODE_FAILURE_AFTER_SINGLE_FIX') {
         if (executeCount >= 2) {
-          return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'deterministic CODE_FAILURE remains and the EXECUTE bound is already spent; stopping instead of a third EXECUTE.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
+          return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'deterministic CODE_FAILURE remains and the EXECUTE bound is already spent; stopping instead of a third EXECUTE.', state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
         }
         const fix = await dispatchExecute()
         const fixChanged = repositoryChangedSince(state.gitState, fix.end)
@@ -365,36 +462,30 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
         emit('EXECUTING', fix.result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: fix.result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: fix.result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
         await context?.persistTaskStateV2?.(state)
         if (fix.result.status !== 'SUCCESS' || (!fixChanged && fix.result.implementationEvidenceAdded !== true)) {
-          note({ type: 'NO_IMPLEMENTATION_PROGRESS', action: 'EXECUTE', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { repoChanged: fixChanged, executeCount, verifyCount, originalFailureClassification: classification, verifier: firstFailed?.name } })
-          return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'the single CODE_FAILURE fix produced no repository or implementation-evidence progress; stopping instead of a third EXECUTE.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
+          note({ type: 'NO_IMPLEMENTATION_PROGRESS', action: 'EXECUTE', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { repoChanged: fixChanged, executeCount, verifyCount, originalFailureClassification: 'CODE_FAILURE', verifier: assessment.verifier } })
+          return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'the single CODE_FAILURE fix produced no repository or implementation-evidence progress; stopping instead of a third EXECUTE.', state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
         }
         const fixRisk = assessRisk(state).level
         const fixValidity = validateVerificationPlanAfterExecution({ plan, changedFiles: fix.end.changedFiles, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths, riskBefore, riskAfter: fixRisk })
         if (!fixValidity.valid) {
           state = { ...state, blockers: [...new Set([...state.blockers, ...fixValidity.reasons])] }
-          return goldenTerminal({ category: 'SAFETY_BLOCKED', reason: `fix crossed a safety boundary: ${fixValidity.reasons.join('; ')}`, state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
+          return goldenTerminal({ category: 'SAFETY_BLOCKED', reason: `fix crossed a safety boundary: ${fixValidity.reasons.join('; ')}`, state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
         }
-        await verifyOnce()
-        passed = passedNow()
+        verification = await verifyOnce()
+        assessment = assessGoldenVerification(plan, verification)
+        passed = assessment.passed
         note({ type: passed ? 'VERIFICATION_PASSED' : 'VERIFICATION_FAILED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: state.verificationState.results.map((item) => item.name) })
         emit('VERIFYING', passed ? 'completed' : 'failed', { kind: 'VERIFIER_COMPLETED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId, outcome: passed ? 'PASSED' : 'FAILED' })
         await context?.persistTaskStateV2?.(state)
         if (!passed) {
-          const secondFailed = state.verificationState.results.find((item) => item.status === 'failed')
-          const secondClassification = canonicalVerificationFailure(secondFailed?.classification)
-          if (secondClassification === 'ENVIRONMENT_FAILURE') return goldenTerminal({ category: 'ENVIRONMENT_REQUIRED', reason: 'verification requires an unavailable environment or runtime.', state, executeCount, verifyCount, provider: actualProvider, verifier: secondFailed?.name, changedFiles: state.gitState.changedFiles })
-          if (secondClassification === 'VERIFIER_CONFIGURATION_FAILURE') return goldenTerminal({ category: 'VERIFIER_CONFIGURATION_REQUIRED', reason: 'verifier or Task Contract configuration requires repair.', state, executeCount, verifyCount, provider: actualProvider, verifier: secondFailed?.name, changedFiles: state.gitState.changedFiles })
-          if (secondClassification === 'UNRELATED_TEST_FAILURE') return goldenTerminal({ category: 'UNRELATED_TEST_FAILURE', reason: 'an audited pre-existing failure is unrelated to the Task; task-local disposition is required.', state, executeCount, verifyCount, provider: actualProvider, verifier: secondFailed?.name, changedFiles: state.gitState.changedFiles })
-          return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'deterministic CODE_FAILURE remains after the single allowed fix; stopping.', state, executeCount, verifyCount, provider: actualProvider, verifier: secondFailed?.name, changedFiles: state.gitState.changedFiles })
+          return goldenTerminal({ category: assessment.category ?? 'UNKNOWN', reason: assessment.category === 'CODE_FAILURE_AFTER_SINGLE_FIX'
+            ? 'deterministic CODE_FAILURE remains after the single allowed fix; stopping.'
+            : assessment.reason ?? 'verification failed after the single implementation fix.', state, executeCount, verifyCount, provider: actualProvider,
+          verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
         }
-      } else if (classification === 'ENVIRONMENT_FAILURE') {
-        return goldenTerminal({ category: 'ENVIRONMENT_REQUIRED', reason: 'verification requires an unavailable environment or runtime.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
-      } else if (classification === 'VERIFIER_CONFIGURATION_FAILURE') {
-        return goldenTerminal({ category: 'VERIFIER_CONFIGURATION_REQUIRED', reason: 'verifier or Task Contract configuration requires repair.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
-      } else if (classification === 'UNRELATED_TEST_FAILURE') {
-        return goldenTerminal({ category: 'UNRELATED_TEST_FAILURE', reason: 'an audited pre-existing failure is unrelated to the Task; task-local disposition is required.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
       } else {
-        return goldenTerminal({ category: 'UNKNOWN', reason: 'verification failure cannot be safely attributed to the Task implementation.', state, executeCount, verifyCount, provider: actualProvider, verifier: firstFailed?.name, changedFiles: state.gitState.changedFiles })
+        return goldenTerminal({ category: assessment.category ?? 'UNKNOWN', reason: assessment.reason ?? 'verification failure cannot be safely attributed to the Task implementation.',
+          state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
       }
     }
 

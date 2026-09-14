@@ -2,7 +2,7 @@ import type { GuardianPhase } from '../progress.js'
 import type { CanonicalVerificationFailure, TaskAction } from './task-controller.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { TaskStateV2 } from './task-state-v2.js'
-import { verificationPlanFingerprintValid, type VerificationPlan } from './verification-planner.js'
+import { verificationPlanApprovalSatisfied, verificationPlanFingerprintValid, type VerificationPlan } from './verification-planner.js'
 import { assessRisk, unmappedAcceptanceCriteria } from './risk-evidence.js'
 
 export interface DirectPathEligibility {
@@ -22,6 +22,7 @@ export function assessDirectPathEligibility(input: {
   knownEnvironmentBlocker?: boolean
   destructiveAction?: boolean
   independentReviewRequired?: boolean
+  approvedVerificationCommand?: string
 }): DirectPathEligibility {
   const { task, plan } = input
   const risk = assessRisk(task)
@@ -31,7 +32,7 @@ export function assessDirectPathEligibility(input: {
     plan.mappings.some((mapping) => mapping.criterion === criterion && mapping.evidence.length > 0))
   if (!verificationPlanFingerprintValid(plan) || plan.confidence === 'INSUFFICIENT' || plan.steps.length === 0 ||
       !everyCriterionMapped || unmappedAcceptanceCriteria(task).length > 0) reasons.push('verification plan is insufficient')
-  if (plan.approvalRequired) reasons.push('verification plan requires approval')
+  if (plan.approvalRequired && !verificationPlanApprovalSatisfied(plan, input.approvedVerificationCommand)) reasons.push('verification plan requires approval')
   if (risk.level === 'HIGH' || risk.level === 'CRITICAL') reasons.push(`${risk.level} risk requires the Controller safety net`)
   if (!input.repositoryConsistent) reasons.push('repository is inconsistent with the task checkpoint')
   if (input.unownedDirtyChanges ?? task.gitState.changedFiles.length > 0) reasons.push('repository has unowned dirty changes')

@@ -126,8 +126,11 @@ const persistedTask = z.object({
   verificationState: z.object({ results: z.array(z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
   verificationPlan: z.object({
     planId: z.string(), fingerprint: z.string(),
-    mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string() })),
-    steps: z.array(z.object({ id: z.string(), command: z.string(), cwd: z.string(), scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), expectedCoverage: strings, environmentPrerequisites: strings, failureClassifications: strings })),
+    mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), requiresApproval: z.boolean().optional() })),
+    steps: z.array(z.object({ id: z.string(), command: z.string(), cwd: z.string(), originalCommand: z.string().optional(),
+      admission: z.enum(['ALLOWED', 'APPROVAL_REQUIRED', 'UNSUPPORTED']).optional(), admissionReason: z.string().optional(),
+      sourceManifest: z.string().optional(), sourceScript: z.string().optional(), sourceFingerprint: z.string().optional(),
+      scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), expectedCoverage: strings, environmentPrerequisites: strings, failureClassifications: strings })),
     escalationSequence: strings, estimatedScope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), estimatedCost: z.enum(['LOW', 'MEDIUM', 'HIGH']), confidence: z.enum(['HIGH', 'MEDIUM', 'INSUFFICIENT']), approvalRequired: z.boolean(), invalidationConditions: strings, packageRoots: strings, explicitBindings: z.boolean(), rationale: strings,
   }).optional(),
   completion: z.object({
@@ -151,6 +154,6 @@ const persistedTask = z.object({
 /** Validate every semantic field before persisted JSON may enter the controller. */
 export function loadTaskStateV2(value: unknown): TaskStateV2 {
   const result = persistedTask.safeParse(value)
-  if (!result.success) throw new Error('invalid or unsupported Task State V2')
+  if (!result.success) throw new Error(`invalid or unsupported Task State V2: ${result.error.issues.slice(0, 3).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`)
   return result.data as TaskStateV2
 }
