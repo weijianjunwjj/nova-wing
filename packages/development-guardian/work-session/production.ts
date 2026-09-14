@@ -670,7 +670,7 @@ export async function createProductionWorkSessionUi(
         const reviewDispatcher = createReviewDispatcher({ registry: reviewerRegistry, inspectRepository })
         const defaultDispatcher: V2ActionDispatcher = {
           inspectRepository,
-          dispatch: async ({ action, task: taskState, agent, approvedVerificationCommand }) => {
+          dispatch: async ({ action, task: taskState, agent, approvedVerificationCommand, retry }) => {
             // The selected reviewer profile decides the provider; independence and the
             // read-only guarantee are enforced by the dispatcher, not by the runner.
             if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task: taskState })
@@ -693,6 +693,7 @@ export async function createProductionWorkSessionUi(
               },
               onEvent(event) { eventSink?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0, detail: `${event.type}: ${event.executor ?? event.reason ?? ''}` }) },
             })
+            if (retry?.reason === 'NO_OP_EXECUTION') router.prepareNoOpRetry()
             // Reuse the mature dirty-workspace continuation gate with current inspected facts.
             const entries = parseGitStatus((await gitRunner('git status --porcelain --untracked-files=all')).stdout)
             router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
@@ -708,7 +709,7 @@ export async function createProductionWorkSessionUi(
                 verificationResults: [...new Set(['git diff --check', ...requiredEvidence])].map((name) => ({ name, status: 'failed' as const })),
               } })
               : await router.execute({ task: transportTask,
-              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
+              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action, ...(retry === undefined ? [] : [retry.instruction])], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),

@@ -69,9 +69,24 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
+}
+
+export interface NoOpExecutionRetry {
+  reason: 'NO_OP_EXECUTION'
+  instruction: string
+}
+
+const NO_OP_AUTO_RETRY: NoOpExecutionRetry = {
+  reason: 'NO_OP_EXECUTION',
+  instruction: 'Automatic no-op retry: before deciding whether work is needed, use the workspace tools to inspect git status and the relevant repository files. A verbal claim that the task is already satisfied is not evidence. If no edit is needed, still inspect repository reality; deterministic verification runs separately.',
+}
+
+function isConfirmedNoOp(result: TaskActionResult, repositoryChanged: boolean): boolean {
+  return !repositoryChanged && result.status !== 'SUCCESS' &&
+    result.blockers?.some((blocker) => blocker.startsWith('NO_OP_EXECUTION:')) === true
 }
 
 /** A reviewer runtime failure: an environment problem, never a verdict on the implementation. */
@@ -251,9 +266,20 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     note({ type: 'DIRECT_PATH_STARTED', action: 'EXECUTE', agent: agent.id, ...repositoryFacts(state), metadata: { routeProfile: routeProvider, eligibleProviders: this.options.agents.filter((item) => item.available && !item.degraded && !item.quotaExhausted).map(providerOf) } })
     note({ type: 'AGENT_DISPATCHED', action: 'EXECUTE', agent: agent.id, ...repositoryFacts(state), metadata: { routeProfile: routeProvider } })
     emit('EXECUTING', 'active', { kind: 'PROVIDER_DISPATCHED' })
-    const execute = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state) })
-    const end = await this.options.dispatcher.inspectRepository()
-    const repositoryChanged = end.headSha !== start.headSha || end.worktreeFingerprint !== start.worktreeFingerprint || JSON.stringify(end.changedFiles) !== JSON.stringify(start.changedFiles)
+    let execute = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state) })
+    let end = await this.options.dispatcher.inspectRepository()
+    let repositoryChanged = end.headSha !== start.headSha || end.worktreeFingerprint !== start.worktreeFingerprint || JSON.stringify(end.changedFiles) !== JSON.stringify(start.changedFiles)
+    if (isConfirmedNoOp(execute, repositoryChanged)) {
+      const firstProvider = execute.providerHistory?.at(-1) ?? (routeProvider === 'codex-or-deepseek' ? undefined : routeProvider)
+      note({ type: 'AGENT_FAILED', action: 'EXECUTE', agent: agent.id, ...(firstProvider === undefined ? {} : { provider: firstProvider }), ...repositoryFacts(state), metadata: { reason: 'NO_OP_EXECUTION', autoRetry: true, attempt: 1 } })
+      emit('EXECUTING', 'failed', { kind: 'PROVIDER_FAILED', ...(firstProvider === undefined ? {} : { provider: firstProvider }), outcome: 'FAILED' })
+      await context?.persistTaskStateV2?.(state)
+      note({ type: 'AGENT_DISPATCHED', action: 'EXECUTE', agent: agent.id, ...repositoryFacts(state), metadata: { routeProfile: routeProvider, reason: 'NO_OP_EXECUTION', autoRetry: true, attempt: 2 } })
+      emit('EXECUTING', 'active', { kind: 'PROVIDER_DISPATCHED', ...(firstProvider === undefined ? {} : { provider: firstProvider }) })
+      execute = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state), retry: NO_OP_AUTO_RETRY })
+      end = await this.options.dispatcher.inspectRepository()
+      repositoryChanged = end.headSha !== start.headSha || end.worktreeFingerprint !== start.worktreeFingerprint || JSON.stringify(end.changedFiles) !== JSON.stringify(start.changedFiles)
+    }
     const actualProvider = execute.providerHistory?.at(-1) ?? (routeProvider === 'codex-or-deepseek' ? undefined : routeProvider)
     const identity = agentIdentity(agent)
     const actualIdentity = actualProvider === undefined ? identity : { ...identity, provider: actualProvider }
@@ -267,7 +293,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     const planValidity = validateVerificationPlanAfterExecution({ plan, changedFiles: end.changedFiles, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths, riskBefore, riskAfter })
     await context?.persistTaskStateV2?.(state)
     if (execute.status !== 'SUCCESS' || !planValidity.valid) {
-      state = { ...state, execution: { ...state.execution!, escalated: true, path: 'CONTROLLER' }, ...(planValidity.valid ? {} : { blockers: [...state.blockers, ...planValidity.reasons] }) }
+      const noOpRecovery = planValidity.valid && isConfirmedNoOp(execute, repositoryChanged)
+      state = { ...state, execution: { ...state.execution!, escalated: true, path: 'CONTROLLER' },
+        ...(noOpRecovery ? { status: 'PENDING', currentAction: 'EXECUTE', blockers: [] }
+          : planValidity.valid ? {} : { blockers: [...state.blockers, ...planValidity.reasons] }) }
       note({ type: 'DIRECT_PATH_ESCALATED', action: 'EXECUTE', ...repositoryFacts(state), metadata: { stage: planValidity.valid ? 'EXECUTE' : 'PLAN_INVALIDATED', reasons: planValidity.valid ? execute.blockers ?? [execute.summary ?? 'execution failed'] : planValidity.reasons, verificationPlan: plan } })
       return { escalationState: state }
     }

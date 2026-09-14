@@ -362,3 +362,21 @@ test('CodexExecutor passes effective SDK options, persists/resumes thread and ig
     assert.equal(runtimes[0]?.apiKey, undefined)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('Codex verbal already-satisfied claim without workspace inspection remains a no-op failure', async () => {
+  const root = await codexTestRepo()
+  try {
+    const executor = new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+      createCodex: () => {
+        const thread = { runStreamed: async () => ({ events: (async function* () {
+          yield { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'Already satisfied; no changes needed.' } } as ThreadEvent
+          yield { type: 'turn.completed', usage: {} } as ThreadEvent
+        })() }) } as unknown as Thread
+        return { startThread: () => thread, resumeThread: () => thread }
+      } })
+    const report = await executor.execute({ task, packet })
+    assert.equal(executor.lastError?.kind, 'no_op_execution')
+    assert.match(report.blockers[0] ?? '', /^NO_OP_EXECUTION:/u)
+    assert.deepEqual(report.verificationResults, [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

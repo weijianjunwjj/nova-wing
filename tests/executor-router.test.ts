@@ -320,3 +320,23 @@ test('confirmed no-op retry replaces only the stale Codex thread identity', asyn
     assert.equal(f.store.events(f.options.taskKey).at(-1)?.type, 'codex_thread_replaced')
   } finally { await f.close() }
 })
+
+test('Direct no-op auto retry replaces only the stale Codex thread identity', async () => {
+  const f = await fixture()
+  try {
+    f.store.save(f.options.taskKey, {
+      mode: 'auto', activeExecutor: 'codex', history: ['codex'],
+      model: 'gpt-5.6-sol', reasoningEffort: 'medium', codexThreadId: 'stale-direct-thread',
+      lastError: 'NO_OP_EXECUTION: workspace inspection missing', lastErrorKind: 'no_op_execution',
+    })
+    const router = new ExecutorRouter(f.options)
+    assert.equal(router.prepareNoOpRetry(), true)
+    const persisted = f.store.read(f.options.taskKey)
+    assert.equal(persisted?.codexThreadId, undefined)
+    assert.equal(persisted?.lastError, undefined)
+    assert.equal(persisted?.lastErrorKind, undefined)
+    assert.equal(persisted?.activeExecutor, 'codex')
+    assert.deepEqual(persisted?.history, ['codex'])
+    assert.equal(f.store.events(f.options.taskKey).at(-1)?.type, 'codex_thread_replaced')
+  } finally { await f.close() }
+})

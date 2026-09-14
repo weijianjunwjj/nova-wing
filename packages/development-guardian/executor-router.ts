@@ -109,6 +109,18 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     return { ...report, execution: structuredClone(this.metadata!) }
   }
 
+  /** Replace only a Codex thread that produced a confirmed zero-evidence no-op. */
+  prepareNoOpRetry(): boolean {
+    this.select()
+    if (this.metadata!.activeExecutor !== 'codex' || this.metadata!.lastErrorKind !== 'no_op_execution') return false
+    delete this.metadata!.codexThreadId
+    delete this.metadata!.lastError
+    delete this.metadata!.lastErrorKind
+    this.codex = undefined
+    this.save({ type: 'codex_thread_replaced', executor: 'codex', reason: 'no_op_execution' })
+    return true
+  }
+
   async preflight(task: GuardianTask): Promise<void> {
     if (this.taskId !== undefined && this.taskId !== task.id) throw new Error('Executor router belongs to another Task')
     this.taskId = task.id
@@ -120,11 +132,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
       // scope, provider choice, and every non-thread recovery fact.
       if (task.recoveryContinuation === true && task.resumeInput?.approval === true &&
           this.metadata!.lastErrorKind === 'no_op_execution') {
-        delete this.metadata!.codexThreadId
-        delete this.metadata!.lastError
-        delete this.metadata!.lastErrorKind
-        this.codex = undefined
-        this.save({ type: 'codex_thread_replaced', executor: 'codex', reason: 'no_op_execution' })
+        this.prepareNoOpRetry()
       }
       await this.codexExecutor().preflight?.(task)
     }

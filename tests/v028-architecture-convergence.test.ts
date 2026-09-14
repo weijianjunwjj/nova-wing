@@ -120,7 +120,7 @@ test('v0.2.8 preflight: missing natural-language binding becomes planning-requir
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-interface ScriptOptions { verify?: 'pass' | 'code' | 'environment'; noChange?: boolean; fixAfterFailure?: boolean }
+interface ScriptOptions { verify?: 'pass' | 'code' | 'environment'; noChange?: boolean; fixAfterFailure?: boolean; noOpAttempts?: number }
 
 async function directRun(root: string, options: ScriptOptions = {}) {
   const events = new TaskEventLogV2()
@@ -130,13 +130,19 @@ async function directRun(root: string, options: ScriptOptions = {}) {
   let verificationCount = 0
   let changed = false
   let fixed = false
+  const retryInstructions: string[] = []
   const reality = () => ({ repositoryIdentity: root, branch: 'main', headSha: 'head-1', changedFiles: changed ? ['apps/web/src/ticket-filter.ts'] : [], worktreeFingerprint: changed ? 'changed' : 'clean' })
   const dispatcher: V2ActionDispatcher = {
     async inspectRepository() { inspections += 1; return reality() },
-    async dispatch({ action, task: state, agent }) {
+    async dispatch({ action, task: state, agent, retry }) {
       actions.push(action)
       if (action === 'EXECUTE') {
         executeCount += 1
+        if (retry !== undefined) retryInstructions.push(retry.instruction)
+        if (executeCount <= (options.noOpAttempts ?? 0)) {
+          return { status: 'BLOCKED' as const, changedFiles: [], providerHistory: ['codex'],
+            blockers: ['NO_OP_EXECUTION: Codex completed without workspace inspection; execution evidence is missing'] }
+        }
         if (!options.noChange) changed = true
         if (executeCount > 1) fixed = true
         return { status: 'SUCCESS' as const, changedFiles: reality().changedFiles, providerHistory: ['codex'], ...(executeCount > 1 ? { implementationEvidenceAdded: true } : {}) }
@@ -162,7 +168,7 @@ async function directRun(root: string, options: ScriptOptions = {}) {
       { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'reviewer-1' }, available: true, quotaExhausted: false, degraded: false, capabilities: { review: true } },
     ] })
   const result = await runner.run(task(), undefined, undefined, { taskEventLog: events })
-  return { result, events: events.events, actions, inspections, executeCount, verificationCount }
+  return { result, events: events.events, actions, inspections, executeCount, verificationCount, retryInstructions }
 }
 
 test('v0.2.8 direct: happy path is one execute, one verify, zero Controller decisions, two inspections', async () => {
@@ -196,6 +202,51 @@ test('v0.2.8 direct: no-change verification completes as already satisfied evide
     assert.equal(run.result.status, 'COMPLETED')
     assert.deepEqual(run.result.completionEvidence?.changedFiles, [])
     assert.equal(run.events.find((event) => event.type === 'TASK_COMPLETED')?.metadata?.outcome, 'ALREADY_SATISFIED')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.2.8 hotfix: first Executor no-op retries once, then verifies without Human Required', async () => {
+  const root = await fixture()
+  try {
+    const run = await directRun(root, { noOpAttempts: 1 })
+    assert.equal(run.result.status, 'COMPLETED')
+    assert.equal(run.executeCount, 2)
+    assert.equal(run.verificationCount, 1)
+    assert.equal(run.inspections, 3)
+    assert.equal(run.events.some((event) => event.type === 'HUMAN_REQUIRED'), false)
+    assert.equal(run.events.some((event) => event.type === 'DIRECT_PATH_ESCALATED'), false)
+    assert.match(run.retryInstructions[0] ?? '', /inspect git status and the relevant repository files/u)
+    assert.match(run.retryInstructions[0] ?? '', /verbal claim.*already satisfied is not evidence/u)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.2.8 hotfix: two Direct no-ops enter bounded Controller recovery before Human Required', async () => {
+  const root = await fixture()
+  try {
+    const run = await directRun(root, { noOpAttempts: 10 })
+    assert.equal(run.result.status, 'HUMAN_REQUIRED')
+    assert.equal(run.executeCount, 3)
+    assert.equal(run.verificationCount, 0)
+    assert.equal(run.retryInstructions.length, 1)
+    const escalation = run.events.find((event) => event.type === 'DIRECT_PATH_ESCALATED')
+    const controller = run.events.find((event) => event.type === 'CONTROLLER_DECIDED' && event.action === 'EXECUTE')
+    assert.ok(escalation)
+    assert.ok(controller)
+    assert.ok(Number(escalation!.eventId) < Number(controller!.eventId))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.2.8 hotfix: already satisfied requires repository inspection before deterministic verification evidence', async () => {
+  const root = await fixture()
+  try {
+    const run = await directRun(root, { noOpAttempts: 1, noChange: true })
+    assert.equal(run.result.status, 'COMPLETED')
+    assert.deepEqual(run.result.completionEvidence?.changedFiles, [])
+    assert.ok((run.result.completionEvidence?.verificationResults.length ?? 0) > 0)
+    assert.ok(run.result.completionEvidence?.verificationResults.every((result) => result.status === 'passed'))
+    assert.equal(run.events.find((event) => event.type === 'TASK_COMPLETED')?.metadata?.outcome, 'ALREADY_SATISFIED')
+    assert.equal(run.executeCount, 2)
+    assert.equal(run.retryInstructions.length, 1)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
