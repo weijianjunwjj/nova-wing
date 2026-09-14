@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import type { RouterCodexExecutor } from '../packages/development-guardian/executor-router.js'
+import { ClaudeCodeExecutor } from '../packages/development-guardian/claude-code-executor.js'
 import type { DelegationPacket } from '../packages/development-guardian/model.js'
 import {
   createProductionWorkSessionUi,
   GoldenPathTaskRunner,
   TaskEventLogV2,
+  loadTaskStateV2,
   validateTrustedWorkSessionConfig,
   V2ControllerTaskRunner,
   type TaskAction,
@@ -135,54 +136,27 @@ async function createGoldenBoundaryCase(input: {
   const counts = { execute: 0, verify: 0 }
   const executePackets: DelegationPacket[] = []
   const verifierCommands: string[] = []
-  const verifierEnvironment = { ...process.env }
-  delete verifierEnvironment.NODE_TEST_CONTEXT
   let runtime: WorkSessionRuntimeConfig | undefined
   const app = await createProductionWorkSessionUi(config, {
     serverPort: 0,
     env: { LOCALAPPDATA: input.outside },
     v2Agents: [AGENT],
     createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
-    createCodexExecutor(): RouterCodexExecutor {
-      return {
-        async execute({ packet }) {
+    createCodexExecutor(options) {
+      return new ClaudeCodeExecutor({ ...options,
+        codingRuntime: { label: 'Scripted implementation model', async run({ packet }) {
           counts.execute++
           executePackets.push(structuredClone(packet))
           const implementation = input.failFirstVerification && counts.execute === 1 ? 'broken' : 'cleared'
           await writeFile(join(input.repo, 'apps', 'web', 'src', 'filter.js'), `export const clearFilters = () => "${implementation}"\n`)
-          return { summary: 'implementation edited; NovaWing verification follows', changedFiles: ['apps/web/src/filter.js'],
-            commandsRun: ['git_status', 'read_file', 'write_file'], verificationResults: [], blockers: [] }
+          return { summary: 'implementation edited; NovaWing verification follows', commandsRun: ['git_status', 'read_file', 'write_file'], blockers: [] }
+        } },
+        onVerification(event) {
+          if (event.status !== 'running') return
+          verifierCommands.push(event.command)
+          if (event.command.startsWith('node --test ')) counts.verify++
         },
-        async retryVerification({ report }) {
-          counts.verify++
-          const sourceBeforeVerification = await readFile(join(input.repo, 'apps', 'web', 'src', 'filter.js'), 'utf8')
-          if (input.failFirstVerification && counts.verify === 1) assert.match(sourceBeforeVerification, /broken/u)
-          const verificationResults = report.verificationResults.map((result) => {
-            verifierCommands.push(result.name)
-            let passed = true
-            let output = ''
-            try {
-              if (result.name === 'git diff --check') execFileSync('git', ['diff', '--check'], { cwd: input.repo, stdio: 'pipe', windowsHide: true })
-              else if (result.name.startsWith('npm ')) {
-                output = execFileSync(process.platform === 'win32' ? 'pwsh' : 'npm', process.platform === 'win32'
-                  ? ['-NoProfile', '-Command', `${result.name}; exit $LASTEXITCODE`]
-                  : result.name.split(' ').slice(1),
-                { cwd: join(input.repo, 'apps', 'web'), encoding: 'utf8', env: verifierEnvironment, windowsHide: true })
-              }
-              else throw new Error(`unexpected verifier command: ${result.name}`)
-            } catch {
-              passed = false
-            }
-            if (input.failFirstVerification && counts.verify === 1 && result.name === 'npm run test:filter-empty') {
-              assert.equal(passed, false, `broken implementation unexpectedly passed verifier:\n${sourceBeforeVerification}\n${output}`)
-            }
-            return passed
-              ? { ...result, status: 'passed' as const }
-              : { ...result, status: 'failed' as const, classification: 'CODE_FAILURE' as const }
-          })
-          return { ...report, commandsRun: verificationResults.map((result) => result.name), verificationResults }
-        },
-      }
+      })
     },
   })
   assert.ok(runtime)
@@ -191,6 +165,7 @@ async function createGoldenBoundaryCase(input: {
 
 function assertGoldenImplementationPacket(packet: DelegationPacket): void {
   assert.deepEqual(packet.verification, [], 'Golden EXECUTE must not expose executable verifier commands')
+  assert.equal(packet.deferVerification, true, 'Golden EXECUTE must defer baseline and planned verification')
   assert.ok(packet.instructions.some((instruction) => /Do not execute verification commands/u.test(instruction)))
   assert.ok(packet.instructions.some((instruction) => /NovaWing runs deterministic verification separately/u.test(instruction)))
   assert.equal(packet.instructions.some((instruction) => instruction.includes('npm run test:filter-empty')), false)
@@ -209,7 +184,11 @@ await test('v0.3.0 production A: Launchpad-style LOW config selects Golden with 
     assert.deepEqual(created.counts, { execute: 1, verify: 1 })
     assert.equal(created.executePackets.length, 1)
     assertGoldenImplementationPacket(created.executePackets[0]!)
-    assert.ok(created.verifierCommands.includes('npm run test:filter-empty'), 'VERIFY executes the planned task-local verifier')
+    assert.ok(created.verifierCommands.includes('node --test tests/filter.test.js'), 'VERIFY executes the safely normalized task-local verifier')
+    const targeted = result.completionEvidence?.verificationResults.find((item) => item.stepId === 'targeted-test')
+    assert.deepEqual({ command: targeted?.command, cwd: targeted?.cwd, status: targeted?.status },
+      { command: 'node --test tests/filter.test.js', cwd: 'apps/web', status: 'passed' })
+    assert.equal(result.completionEvidence?.verificationResults.some((item) => item.command?.includes('apps/web/apps/web')), false)
     assert.equal(events.count('CONTROLLER_DECIDED'), 0)
     assert.equal(events.count('TASK_SUSPENDED'), 0)
   } finally {
@@ -247,9 +226,12 @@ await test('v0.3.0 production C: Launchpad-style HIGH task falls back to advance
     } })
     app = created.app
     const events = new TaskEventLogV2()
-    const result = await created.runtime.taskRunner.run(created.runtime.definition.tasks[0]!, undefined, undefined, { taskEventLog: events })
+    let persisted: TaskStateV2 | undefined
+    const result = await created.runtime.taskRunner.run(created.runtime.definition.tasks[0]!, undefined, undefined, { taskEventLog: events,
+      async persistTaskStateV2(state) { persisted = structuredClone(state) } })
+    if (result.humanRequired?.reason === 'invalid persisted TaskStateV2' && persisted !== undefined) loadTaskStateV2(persisted)
     assert.notEqual(result.status, 'COMPLETED')
-    assert.equal(result.taskStateV2?.execution?.path, 'CONTROLLER')
+    assert.equal(result.taskStateV2?.execution?.path, 'CONTROLLER', JSON.stringify(result))
     assert.ok(events.has('CONTROLLER_DECIDED'))
     assert.ok(actions.length > 0, 'advanced Controller owns the post-fallback action')
   } finally {
@@ -271,7 +253,7 @@ await test('v0.3.0 production D: one CODE_FAILURE gets one fix and a second pass
     assert.deepEqual(created.counts, { execute: 2, verify: 2 })
     assert.equal(created.executePackets.length, 2)
     created.executePackets.forEach(assertGoldenImplementationPacket)
-    assert.equal(created.verifierCommands.filter((command) => command === 'npm run test:filter-empty').length, 2)
+    assert.equal(created.verifierCommands.filter((command) => command === 'node --test tests/filter.test.js').length, 2)
     assert.equal(events.count('CONTROLLER_DECIDED'), 0)
     assert.equal(events.count('TASK_SUSPENDED'), 0)
   } finally {

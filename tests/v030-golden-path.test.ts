@@ -51,6 +51,8 @@ interface ScriptOptions {
   alwaysCodeFailure?: boolean
   /** When true, the task is ineligible (HIGH risk) and the fallback is exercised. */
   highRisk?: boolean
+  taskOverrides?: Partial<WorkSessionTask>
+  approvedVerificationCommand?: string
 }
 
 interface RunResult {
@@ -90,7 +92,7 @@ async function goldenRun(root: string, options: ScriptOptions = {}): Promise<Run
       }
       if (action === 'VERIFY') {
         verifyCount += 1
-        const steps = state.verificationPlan?.steps.map((step) => step.command) ?? []
+        const steps = state.verificationPlan?.steps ?? []
         const fail = options.alwaysCodeFailure === true
           ? true
           : options.verify !== undefined && options.verify !== 'pass' && !(options.verify === 'code' && executeCount >= 2 && !options.fixNoProgress)
@@ -98,7 +100,8 @@ async function goldenRun(root: string, options: ScriptOptions = {}): Promise<Run
           : options.verify === 'config' ? 'VERIFIER_CONFIGURATION_FAILURE' as const
             : options.verify === 'unrelated' ? 'UNRELATED_TEST_FAILURE' as const
               : 'CODE_FAILURE' as const
-        const results: VerificationResult[] = steps.map((name) => ({ name, status: fail ? 'failed' as const : 'passed' as const, ...(fail ? { classification } : {}) }))
+        const results: VerificationResult[] = steps.map((step) => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd,
+          status: fail ? 'failed' as const : 'passed' as const, ...(fail ? { classification } : {}) }))
         return { status: 'SUCCESS' as const, verificationResults: results }
       }
       return { status: 'FAILED' as const, summary: `unexpected action ${action}` }
@@ -113,7 +116,8 @@ async function goldenRun(root: string, options: ScriptOptions = {}): Promise<Run
   const runner = new GoldenPathTaskRunner({
     sessionId: 'S-v030', branch: 'main', agents, dispatcher, repositoryRoot: root, fallbackRunner: fallback,
   })
-  const result = await runner.run(task(options.highRisk ? { risk: 'HIGH' } : {}), undefined, undefined, { taskEventLog: events })
+  const result = await runner.run(task({ ...(options.highRisk ? { risk: 'HIGH' as const } : {}), ...options.taskOverrides }), undefined, undefined,
+    { taskEventLog: events, ...(options.approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand: options.approvedVerificationCommand }) })
   return { result, events: events.events, executeCount, verifyCount, fallbackCalled }
 }
 
@@ -138,6 +142,28 @@ test('v0.3.0 golden: first Executor no-op retries once then verifies and complet
     assert.equal(run.result.status, 'COMPLETED')
     assert.equal(run.executeCount, 2)
     assert.equal(run.verifyCount, 1)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('v0.3.0 golden: unapproved explicit verifier stops before EXECUTE with the exact command', async () => {
+  const root = await fixture()
+  try {
+    const criterion = 'counter shows X / Y'
+    const run = await goldenRun(root, { taskOverrides: { acceptanceEvidenceBindings: [
+      { criterion, requiredEvidence: ['npm run test:ticket'] },
+    ] } })
+    assert.equal(run.result.status, 'HUMAN_REQUIRED')
+    assert.equal(run.result.humanRequired?.category, 'APPROVAL_REQUIRED')
+    assert.match(run.result.humanRequired?.reason ?? '', /npm run test:ticket/u)
+    assert.equal(run.result.pendingVerificationCommand, 'npm run test:ticket')
+    assert.equal(run.executeCount, 0)
+    assert.equal(run.verifyCount, 0)
+    const approved = await goldenRun(root, { approvedVerificationCommand: 'npm run test:ticket', taskOverrides: { acceptanceEvidenceBindings: [
+      { criterion, requiredEvidence: ['npm run test:ticket'] },
+    ] } })
+    assert.equal(approved.result.status, 'COMPLETED')
+    assert.equal(approved.executeCount, 1)
+    assert.equal(approved.verifyCount, 1)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
