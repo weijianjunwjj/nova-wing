@@ -54,28 +54,43 @@ test('same controller decision and unchanged facts stall early without exhaustin
 
 test('V2 runner owns execute/verify/fix/complete loop and preserves agent continuity', async () => {
   const calls: Array<{ action: string; agent: string }> = []
+  const verificationPhases: string[] = []
+  const eventLog = new TaskEventLogV2()
   let verificationAttempt = 0
   let executeAttempt = 0
   let changedFiles: readonly string[] = []
   const runner = new V2ControllerTaskRunner({
     sessionId: 's', branch: 'main', agents: [codex, deepseek],
+    progressObserver: (event) => {
+      if (event.phase === 'VERIFYING' && event.status !== 'active') verificationPhases.push(event.status)
+    },
     dispatcher: { inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: `w-${executeAttempt}` }), dispatch: async ({ action, agent }) => {
       calls.push({ action, agent: agent.id })
       if (action === 'VERIFY') {
         verificationAttempt++
         return verificationAttempt === 1
-          ? { status: 'FAILED', verificationResults: [{ name: 'test', status: 'failed', classification: 'CODE_FAILURE' }] }
+          // Production reports a successful verifier transport even when the
+          // deterministic command verdict is a code failure.
+          ? { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'failed', classification: 'CODE_FAILURE' }] }
           : { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
       }
       if (action === 'EXECUTE') { executeAttempt++; changedFiles = ['src/a.ts'] }
       return { status: 'SUCCESS', changedFiles: action === 'EXECUTE' ? changedFiles : [] }
     } },
   })
-  const result = await runner.run(task)
+  const result = await runner.run(task, undefined, undefined, { taskEventLog: eventLog })
   assert.equal(result.status, 'COMPLETED')
   assert.deepEqual(calls.map((call) => call.action), ['EXECUTE', 'VERIFY', 'EXECUTE', 'VERIFY'])
+  assert.equal(calls.filter((call) => call.action === 'EXECUTE').length, 2)
+  assert.equal(calls.filter((call) => call.action === 'VERIFY').length, 2)
   assert.deepEqual(new Set(calls.map((call) => call.agent)), new Set(['codex']))
   assert.equal(result.taskStateV2?.status, 'COMPLETED')
+  assert.equal(result.taskStateV2?.currentAction, 'COMPLETE')
+  assert.equal(result.taskStateV2?.verificationState.results.some((item) => item.status === 'failed' || item.classification === 'CODE_FAILURE'), false)
+  assert.deepEqual(result.taskStateV2?.blockers, [])
+  assert.deepEqual(verificationPhases, ['failed', 'completed'])
+  assert.equal(eventLog.count('NO_IMPLEMENTATION_PROGRESS'), 0)
+  assert.equal(eventLog.count('TASK_SUSPENDED'), 0)
 })
 
 test('quota fallback passes structured state to DeepSeek without changing task identity', async () => {

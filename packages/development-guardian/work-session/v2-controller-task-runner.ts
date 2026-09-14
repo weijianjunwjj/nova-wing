@@ -588,9 +588,9 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         reasonEvent('PROVIDER_SWITCHED', decision.action, switchCode, { previousProvider: fromProvider, selectedProvider: toProvider, ...(previousAgent === undefined ? {} : { previousAgent }) }, [`provider changed from ${fromProvider} to ${toProvider}`], state)
       }
       const verificationResults = result.verificationResults ?? state.verificationState.results
+      const verificationPassed = decision.action === 'VERIFY' && verificationResults.length > 0 && verificationResults.every((resultItem) => resultItem.status === 'passed')
       if (decision.action === 'VERIFY' && verificationResults !== undefined) {
-        const passed = verificationResults.length > 0 && verificationResults.every((resultItem) => resultItem.status === 'passed')
-        if (passed) note({ type: 'VERIFICATION_PASSED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
+        if (verificationPassed) note({ type: 'VERIFICATION_PASSED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
         else {
           note({ type: 'VERIFICATION_FAILED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
           for (const failure of verificationResults.filter((item) => item.status === 'failed')) note({ type: 'VERIFICATION_CLASSIFIED', action: 'VERIFY', reasonCode: canonicalVerificationFailure(failure.classification) === 'ENVIRONMENT_FAILURE' ? 'VERIFICATION_ENVIRONMENT_FAILURE' : canonicalVerificationFailure(failure.classification) === 'VERIFIER_CONFIGURATION_FAILURE' ? 'VERIFIER_CONFIGURATION_FAILURE' : canonicalVerificationFailure(failure.classification) === 'UNRELATED_TEST_FAILURE' ? 'UNRELATED_TEST_FAILURE' : canonicalVerificationFailure(failure.classification) === 'CODE_FAILURE' ? 'VERIFICATION_FAILED' : 'VERIFICATION_UNKNOWN', ...repositoryFacts(state), metadata: { classification: canonicalVerificationFailure(failure.classification), verifier: failure.name } })
@@ -609,7 +609,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         }
       }
       note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
-      emitProgress(decision.action === 'REVIEW' ? 'REVIEWING' : phase, result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
+      const actionSucceeded = decision.action === 'VERIFY' ? verificationPassed : result.status === 'SUCCESS'
+      emitProgress(decision.action === 'REVIEW' ? 'REVIEWING' : phase, actionSucceeded ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : actionSucceeded ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: decision.action === 'VERIFY' ? verificationPassed ? 'PASSED' : 'FAILED' : actionSucceeded ? 'COMPLETED' : 'FAILED' })
       if (repositoryChanged) emitProgress('EXECUTING', 'completed', { kind: 'REPOSITORY_CHANGED', changedFileCount: observed.changedFiles.length })
       const hadVerificationFailure = dispatchedState.verificationState.results.some((item) => item.status === 'failed')
       if (decision.action === 'EXECUTE' && result.status === 'SUCCESS' && hadVerificationFailure && !repositoryChanged && !implementationEvidenceAdded) {
