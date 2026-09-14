@@ -62,7 +62,7 @@ export interface TaskStateV2 {
     approval?: ApprovalEvidence | undefined
   }
   providerHistory: readonly string[]
-  execution?: { path: 'DIRECT' | 'CONTROLLER'; escalated: boolean; startCheckpoint?: TaskGitStateV2 }
+  execution?: { path: 'DIRECT' | 'GOLDEN' | 'CONTROLLER'; escalated: boolean; startCheckpoint?: TaskGitStateV2 }
   humanConstraints?: { verifyOnly: boolean }
   /** Provider transport details are not semantic recovery authority. */
   currentAgent?: string
@@ -137,7 +137,7 @@ const persistedTask = z.object({
     approval: z.object({ approved: z.boolean(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), workspaceIdentity: z.string(), reviewedCommit: z.string().optional(), risk: riskLevel, riskContext: z.string().optional(), timestamp: z.string() }).optional(),
   }),
   providerHistory: strings,
-  execution: z.object({ path: z.enum(['DIRECT', 'CONTROLLER']), escalated: z.boolean(), startCheckpoint: z.object({ repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), changedFiles: strings, worktreeFingerprint: z.string().optional() }).optional() }).optional(),
+  execution: z.object({ path: z.enum(['DIRECT', 'GOLDEN', 'CONTROLLER']), escalated: z.boolean(), startCheckpoint: z.object({ repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), changedFiles: strings, worktreeFingerprint: z.string().optional() }).optional() }).optional(),
   humanConstraints: z.object({ verifyOnly: z.boolean() }).optional(),
   currentAgent: z.string().optional(), implementer: actor.optional(), currentAction: z.string().optional(),
   risk: z.enum(['LOW', 'NORMAL', 'MEDIUM', 'HIGH', 'CRITICAL']), status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'COMPLETED', 'FAILED']), blockers: strings, updatedAt: z.string(),

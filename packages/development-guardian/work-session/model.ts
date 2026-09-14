@@ -69,6 +69,8 @@ export interface WorkSessionDefinition {
   controlPlane?: 'v1' | 'v2'
   /** V2.8 kill switch. Omission is resolved by the production default. */
   directPath?: { enabled: boolean }
+  /** v0.3.0 Golden Path default for ordinary LOW/MEDIUM tasks. Off unless enabled. */
+  goldenPath?: { enabled: boolean }
 }
 
 export interface HumanRequired {

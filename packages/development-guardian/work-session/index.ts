@@ -19,6 +19,7 @@ export * from './reconciliation.js'
 export * from './v2-controller-task-runner.js'
 export * from './verification-planner.js'
 export * from './direct-path.js'
+export * from './golden-path.js'
 // Completion gate stays internal to TaskController; expose evidence vocabulary only.
 export { assessRisk, evidenceIsStale } from './risk-evidence.js'
 export type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence, RiskAssessment, RiskLevel } from './risk-evidence.js'

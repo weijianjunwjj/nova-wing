@@ -24,6 +24,7 @@ import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'
+import { GoldenPathTaskRunner } from './golden-path.js'
 import { computeWorktreeFingerprint, parseGitStatus } from './worktree-fingerprint.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
@@ -88,6 +89,7 @@ const TrustedConfigSchema = z.object({
     createdAt: z.string().optional(),
     controlPlane: z.enum(['v1', 'v2']).optional(),
     directPath: z.object({ enabled: z.boolean() }).strict().optional(),
+    goldenPath: z.object({ enabled: z.boolean() }).strict().optional(),
     limits: z.object({
       softMinutes: z.number(),
       hardMinutes: z.number(),
@@ -593,6 +595,7 @@ export async function createProductionWorkSessionUi(
     ...(trusted.session.createdAt === undefined ? {} : { createdAt: trusted.session.createdAt }),
     ...(trusted.session.controlPlane === undefined ? {} : { controlPlane: trusted.session.controlPlane }),
     ...(trusted.session.directPath === undefined ? {} : { directPath: { ...trusted.session.directPath } }),
+    ...(trusted.session.goldenPath === undefined ? {} : { goldenPath: { ...trusted.session.goldenPath } }),
   }
   const storageUrl = trusted.storageUrl ?? defaultStorageUrl(trusted.session.id, env)
   const storagePath = storagePathFromUrl(storageUrl)
@@ -699,6 +702,7 @@ export async function createProductionWorkSessionUi(
             router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
               changedFiles: taskState.gitState.changedFiles, worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) })
             const requiredEvidence = taskState.completion.bindings.flatMap((binding) => binding.requiredEvidence)
+            const goldenImplementationOnly = action === 'EXECUTE' && taskState.execution?.path === 'GOLDEN'
             const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,
               maxIterations: trusted.executor.maxTurns, constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria,
               allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths,
@@ -709,7 +713,11 @@ export async function createProductionWorkSessionUi(
                 verificationResults: [...new Set(['git diff --check', ...requiredEvidence])].map((name) => ({ name, status: 'failed' as const })),
               } })
               : await router.execute({ task: transportTask,
-              packet: { verdict: 'proceed', goal: taskState.goal, instructions: [action, ...(retry === undefined ? [] : [retry.instruction])], constraints: taskState.constraints, verification: requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
+              packet: { verdict: 'proceed', goal: taskState.goal,
+                instructions: [action, ...(retry === undefined ? [] : [retry.instruction]), ...(goldenImplementationOnly
+                  ? ['Implement only: inspect the repository and edit the scoped files. Do not execute verification commands; NovaWing runs deterministic verification separately after implementation.']
+                  : [])],
+                constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : requiredEvidence, doNotDo: taskState.permissions.forbiddenPaths } })
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),
@@ -723,9 +731,13 @@ export async function createProductionWorkSessionUi(
         // single executor profile is retained only for pre-v0.2.4 configs.
         const declaredAgents = trustedAgents(trusted, definition.id)
         const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
-        const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
-          directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
-          ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
+        const runner = definition.goldenPath?.enabled === true
+          ? new GoldenPathTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, repositoryRoot: definition.targetRepo,
+              fallbackRunner: new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) }),
+              ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
+          : new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
+              directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
+              ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
         const runtimeRepair: WorkSessionRuntimeRepairConfig = {
           engine: createRuntimeRepairEngine(),
           agents: () => v2Agents,

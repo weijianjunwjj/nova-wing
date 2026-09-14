@@ -273,6 +273,7 @@ type RepairLaunchResult =
 
 interface ComposerRequest {
   directPathEnabled: boolean
+  goldenPathEnabled: boolean
   executorMode: ExecutorMode
   codexModel: string
   codexReasoningEffort: string
@@ -1202,7 +1203,7 @@ export class NovaWingLaunchpad {
       targetRepo,
       acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
       acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
-      verificationPlannerEnabled: input.directPathEnabled,
+        verificationPlannerEnabled: input.directPathEnabled || input.goldenPathEnabled,
     })
     if (contract.ok) return this.buildAndLaunchComposed(input, targetRepo, branch, contract)
 
@@ -1249,6 +1250,7 @@ export class NovaWingLaunchpad {
         // New Composer sessions opt into V2; persisted legacy configs keep their semantics.
         controlPlane: 'v2',
         directPath: { enabled: input.directPathEnabled },
+        goldenPath: { enabled: input.goldenPathEnabled },
         targetRepo,
         branch,
         scheduledStartAt: input.scheduledStartAt !== null && Date.parse(input.scheduledStartAt) > Date.now() ? input.scheduledStartAt : null,
@@ -1269,7 +1271,7 @@ export class NovaWingLaunchpad {
         acceptanceEvidenceBindings: composerEvidenceBindings(
           contract.acceptanceCriteria,
           contract.acceptanceEvidenceBindings,
-          input.directPathEnabled,
+          input.directPathEnabled || input.goldenPathEnabled,
         ),
       })),
       gitCheckpoint: {
@@ -1401,7 +1403,7 @@ export class NovaWingLaunchpad {
         targetRepo,
         acceptanceCriteria: outcome.proposal.acceptanceCriteria,
         acceptanceEvidenceBindings: outcome.proposal.acceptanceEvidenceBindings,
-        verificationPlannerEnabled: request.directPathEnabled,
+        verificationPlannerEnabled: request.directPathEnabled || request.goldenPathEnabled,
       })
       stage.reflightPassed = reflight.ok
       if (automatic) {
@@ -1512,7 +1514,7 @@ export class NovaWingLaunchpad {
       targetRepo,
       acceptanceCriteria: input.guardian.acceptanceCriteria ?? [],
       acceptanceEvidenceBindings: input.guardian.acceptanceEvidenceBindings ?? [],
-      verificationPlannerEnabled: input.directPathEnabled,
+      verificationPlannerEnabled: input.directPathEnabled || input.goldenPathEnabled,
     })
     if (preflight.ok) {
       const result = await this.buildAndLaunchComposed(input, targetRepo, branch, preflight)
@@ -1702,6 +1704,7 @@ function createSessionId(targetRepo: string): string {
 function canonicalComposerPayload(input: ComposerRequest): string {
   return JSON.stringify({
     directPathEnabled: input.directPathEnabled,
+    goldenPathEnabled: input.goldenPathEnabled,
     targetRepo: input.targetRepo,
     branch: input.branch,
     tasks: input.tasks,
@@ -1821,7 +1824,7 @@ function parseComposerBody(body: string): ComposerParseResult {
   const allowed = new Set([
     'requestId', 'targetRepo', 'tasks', 'executorModel', 'softMinutes', 'hardMinutes',
     'autoCommit', 'autoPush', 'pushRemote', 'emailEnabled', 'guardian',
-    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch', 'directPathEnabled',
+    'scheduled_start_at', 'schedule_source', 'executorMode', 'codexModel', 'codexReasoningEffort', 'branch', 'directPathEnabled', 'goldenPathEnabled',
   ])
   if (Object.keys(record).some((key) => !allowed.has(key))) return { ok: false, error: 'INVALID_REQUEST' }
   let scheduledStartAt: string | null
@@ -1871,7 +1874,8 @@ function parseComposerBody(body: string): ComposerParseResult {
   const autoPush = record.autoPush ?? false
   const emailEnabled = record.emailEnabled ?? false
   const directPathEnabled = record.directPathEnabled ?? false
-  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean' || typeof directPathEnabled !== 'boolean') {
+  const goldenPathEnabled = record.goldenPathEnabled ?? false
+  if (typeof autoCommit !== 'boolean' || typeof autoPush !== 'boolean' || typeof emailEnabled !== 'boolean' || typeof directPathEnabled !== 'boolean' || typeof goldenPathEnabled !== 'boolean') {
     return { ok: false, error: 'INVALID_REQUEST' }
   }
   if (autoPush && !autoCommit) return { ok: false, error: 'AUTO_PUSH_REQUIRES_AUTO_COMMIT' }
@@ -1886,6 +1890,7 @@ function parseComposerBody(body: string): ComposerParseResult {
     ok: true,
     value: {
       directPathEnabled,
+      goldenPathEnabled,
       requestId: record.requestId,
       scheduledStartAt,
       scheduleSource,

@@ -741,7 +741,7 @@ export const LAUNCHPAD_APP_JS = `
         : mode === 'custom' ? new Date(customTime.value) : null
       if (instant && !Number.isFinite(instant.getTime())) throw new Error('请选择有效的自定义开始时间。')
       lastComposerBody = {
-        requestId, targetRepo: targetRepo.value, tasks, directPathEnabled: true,
+        requestId, targetRepo: targetRepo.value, tasks, directPathEnabled: true, goldenPathEnabled: true,
         ...( /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/.test(branch.value) && !branch.value.includes('..') && !branch.value.endsWith('.lock') && !branch.value.includes('@{') ? { branch: branch.value } : {} ),
         scheduled_start_at: instant ? instant.toISOString() : null,
         schedule_source: mode,

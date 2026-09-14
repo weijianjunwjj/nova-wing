@@ -231,6 +231,13 @@ const expectedRuntimeExports = {
     'resumeTargetForRuntimeFailure',
     'validateVerificationPlanAfterExecution',
     'verificationPlanFingerprintValid',
+    // v0.3.0 Golden Path
+    'GoldenPathTaskRunner',
+    'assessGoldenPathEligibility',
+    'agentIdentity',
+    'completionEvidence',
+    'isConfirmedNoOp',
+    'NO_OP_AUTO_RETRY',
   ],
   'nova-wing/sqlite': [
     'NOVAWING_AUTHORITATIVE_TABLE_NAMES',

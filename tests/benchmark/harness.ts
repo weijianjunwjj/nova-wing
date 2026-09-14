@@ -352,7 +352,7 @@ export const architectureBenchmarkTasks: readonly ArchitectureBenchmarkSpec[] = 
 ]
 
 export interface ArchitectureBenchmarkMetrics {
-  executionPath: 'DIRECT' | 'CONTROLLER'
+  executionPath: 'DIRECT' | 'GOLDEN' | 'CONTROLLER'
   completed: boolean
   firstPass: boolean
   wallClockMs: number

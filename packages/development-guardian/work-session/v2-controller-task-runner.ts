@@ -38,7 +38,7 @@ export interface AgentCapabilityProfile {
   degraded: boolean
 }
 
-function agentIdentity(agent: AgentCapabilityProfile): TaskActorIdentity {
+export function agentIdentity(agent: AgentCapabilityProfile): TaskActorIdentity {
   return agent.identity ?? { agent: agent.id, provider: agent.id, runtimeIdentity: agent.id }
 }
 
@@ -79,12 +79,12 @@ export interface NoOpExecutionRetry {
   instruction: string
 }
 
-const NO_OP_AUTO_RETRY: NoOpExecutionRetry = {
+export const NO_OP_AUTO_RETRY: NoOpExecutionRetry = {
   reason: 'NO_OP_EXECUTION',
   instruction: 'Automatic no-op retry: before deciding whether work is needed, use the workspace tools to inspect git status and the relevant repository files. A verbal claim that the task is already satisfied is not evidence. If no edit is needed, still inspect repository reality; deterministic verification runs separately.',
 }
 
-function isConfirmedNoOp(result: TaskActionResult, repositoryChanged: boolean): boolean {
+export function isConfirmedNoOp(result: TaskActionResult, repositoryChanged: boolean): boolean {
   return !repositoryChanged && result.status !== 'SUCCESS' &&
     result.blockers?.some((blocker) => blocker.startsWith('NO_OP_EXECUTION:')) === true
 }
@@ -672,7 +672,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
   }
 }
 
-function completionEvidence(state: TaskStateV2, verificationResults: readonly VerificationResult[]) {
+export function completionEvidence(state: TaskStateV2, verificationResults: readonly VerificationResult[]) {
   return {
     repositoryReality: { repositoryIdentity: state.gitState.repositoryIdentity!, branch: state.gitState.branch!, headSha: state.gitState.headSha!,
       worktreeFingerprint: state.gitState.worktreeFingerprint!, changedFiles: state.gitState.changedFiles },
