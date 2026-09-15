@@ -6,6 +6,7 @@ import {
   type GuardianCommandRequest,
   type GuardianCommandResult,
 } from 'nova-wing/development-guardian'
+import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 class QueueRunner {
   public readonly requests: GuardianCommandRequest[] = []
@@ -41,7 +42,8 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
-test('CASE 1: max_turns without permission denial preserves bounded recovery', async () => {
+test('CASE 1: max_turns without permission denial preserves bounded recovery', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'max-turns-permission')
   const runner = new QueueRunner([
     result(''),  // git status --porcelain (clean start)
     result(
@@ -62,7 +64,7 @@ test('CASE 1: max_turns without permission denial preserves bounded recovery', a
   const recoveries: unknown[] = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)

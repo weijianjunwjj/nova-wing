@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import test, { type TestContext } from 'node:test'
 
 import {
   ClaudeCodeExecutor,
@@ -41,7 +44,15 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
-test('executor triggers onRecovery callback on max_turns bounded recovery', async () => {
+async function createExecutorWorkspace(t: TestContext): Promise<string> {
+  const created = await mkdtemp(join(tmpdir(), 'novawing-recovery-progress-'))
+  const workspace = await realpath(created)
+  t.after(async () => { await rm(created, { recursive: true, force: true }) })
+  return workspace
+}
+
+test('executor triggers onRecovery callback on max_turns bounded recovery', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -56,7 +67,7 @@ test('executor triggers onRecovery callback on max_turns bounded recovery', asyn
   const verifications: Array<{ command: string; status: string; iteration: number }> = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)
@@ -100,7 +111,8 @@ test('executor triggers onRecovery callback on max_turns bounded recovery', asyn
   assert.ok(claudeRequests[1]?.args.includes('--resume'), 'second call must use --resume')
 })
 
-test('executor verification callback preserves the current Executor iteration', async () => {
+test('executor verification callback preserves the current Executor iteration', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ result: '完成。' })),
@@ -110,7 +122,7 @@ test('executor verification callback preserves the current Executor iteration', 
   ])
   const verifications: Array<{ iteration: number }> = []
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onVerification: (verification) => verifications.push(verification),
   })
@@ -127,7 +139,8 @@ test('executor verification callback preserves the current Executor iteration', 
   assert.ok(verifications.every((verification) => verification.iteration === 2))
 })
 
-test('executor does not trigger onRecovery when recovery is not needed', async () => {
+test('executor does not trigger onRecovery when recovery is not needed', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ result: '一次完成。' })),
@@ -139,7 +152,7 @@ test('executor does not trigger onRecovery when recovery is not needed', async (
   const recoveries: unknown[] = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)

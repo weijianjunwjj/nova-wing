@@ -1941,7 +1941,13 @@ test('new Launchpad HTTP creation persists Golden default and production complet
             await writeFile(join(root, 'src', 'a.ts'), 'export const value = 2\n')
             return { status: 'SUCCESS', changedFiles: ['src/a.ts'], providerHistory: ['codex'] }
           }
-          if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: task.verificationPlan!.steps.map((step) => ({ name: step.command, status: 'passed' })) }
+          if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: task.verificationPlan!.steps.map((step) => ({
+            name: step.command,
+            stepId: step.id,
+            command: step.command,
+            cwd: step.cwd,
+            status: 'passed',
+          })) }
           return { status: 'BLOCKED', blockers: [`unexpected ${action}`] }
         },
       }),
@@ -1971,7 +1977,11 @@ test('new Launchpad HTTP creation persists Golden default and production complet
       taskEventLog: events,
     })
     assert.equal(codexCalls, 1)
-    assert.equal(result.status, 'COMPLETED')
+    assert.equal(result.status, 'COMPLETED', JSON.stringify({
+      humanRequired: result.humanRequired,
+      requiredSteps: result.taskStateV2?.verificationPlan?.steps,
+      verificationResults: result.taskStateV2?.verificationState.results,
+    }))
     assert.equal(events.count('CONTROLLER_DECIDED'), 0)
     assert.equal(result.taskStateV2?.identity.taskId, 'D01')
     assert.notEqual(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import test, { type TestContext } from 'node:test'
 
 import {
   ClaudeCodeExecutor,
@@ -80,6 +83,30 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
+async function createExecutorWorkspace(t: TestContext): Promise<string> {
+  const created = await mkdtemp(join(tmpdir(), 'novawing-executor-test-'))
+  const workspace = await realpath(created)
+  t.after(async () => { await rm(created, { recursive: true, force: true }) })
+  return workspace
+}
+
+function assertDefaultVerificationPassed(results: ReadonlyArray<{
+  name: string
+  status: string
+  exitCode?: number | null
+  signal?: NodeJS.Signals | null
+  durationMs?: number
+}>): void {
+  assert.deepEqual(
+    results.map(({ name, status, exitCode, signal }) => ({ name, status, exitCode, signal })),
+    [
+      { name: 'git diff --check', status: 'passed', exitCode: 0, signal: null },
+      { name: 'npm test', status: 'passed', exitCode: 0, signal: null },
+    ],
+  )
+  assert.ok(results.every((item) => typeof item.durationMs === 'number' && item.durationMs >= 0))
+}
+
 test('Windows shell contract resolves native Git Bash from deployment configuration', () => {
   const command = guardianShellCommand('git status --porcelain', {
     platform: 'win32',
@@ -127,10 +154,11 @@ test('non-Windows shell commands retain Bash compatibility without Windows execu
   assert.ok(!tenX.args.join(' ').includes('E:/Tools/Git/bin/bash.exe'))
 })
 
-test('Claude invocation forwards argv through the Git Bash -- delimiter', async () => {
+test('Claude invocation forwards argv through the Git Bash -- delimiter', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('tests passed')])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     platform: 'win32',
     gitBashPath: 'E:/Tools/Git/bin/bash.exe',
     commandRunner: runner.run,
@@ -145,11 +173,12 @@ test('Claude invocation forwards argv through the Git Bash -- delimiter', async 
   assert.equal(claude.nativeGitBash, true)
 })
 
-test('large Claude prompt is streamed over stdin instead of the Windows command line', async () => {
+test('large Claude prompt is streamed over stdin instead of the Windows command line', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('tests passed')])
   const handoff = `handoff:${'x'.repeat(12_000)}`
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo', platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe',
+    cwd, platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe',
     commandRunner: runner.run, additionalExecutionContext: handoff,
   })
 
@@ -162,11 +191,12 @@ test('large Claude prompt is streamed over stdin instead of the Windows command 
   assert.equal(claude.args.some(arg => arg.includes(handoff)), false)
 })
 
-test('large dynamic execution prompt without handoff context also stays out of argv', async () => {
+test('large dynamic execution prompt without handoff context also stays out of argv', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean')])
   const marker = `large-task:${'z'.repeat(70_000)}`
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo', platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe', commandRunner: runner.run,
+    cwd, platform: 'win32', gitBashPath: 'E:/Tools/Git/bin/bash.exe', commandRunner: runner.run,
   })
 
   await executor.execute({ task: task(0, { goal: marker }), packet: { ...packet([]), goal: marker } })
@@ -190,11 +220,12 @@ test('missing configured Git Bash fails closed through shell:false process launc
   )
 })
 
-test('native Git Bash executor pins nested npm scripts to Git Bash instead of cmd.exe', async () => {
+test('native Git Bash executor pins nested npm scripts to Git Bash instead of cmd.exe', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const executable = 'D:/Git/bin/bash.exe'
   const observed: NodeJS.ProcessEnv[] = []
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     platform: 'win32',
     gitBashPath: executable,
     commandRunner: async (request) => {
@@ -207,7 +238,8 @@ test('native Git Bash executor pins nested npm scripts to Git Bash instead of cm
   assert.ok(observed.every((env) => env.npm_config_script_shell === executable))
 })
 
-test('executor runs Claude Code then deterministic verification', async () => {
+test('executor runs Claude Code then deterministic verification', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -217,7 +249,7 @@ test('executor runs Claude Code then deterministic verification', async () => {
   ])
   const timings: ClaudeCodeTimingEvent[] = []
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onTiming: (event) => timings.push(event),
   })
@@ -225,10 +257,7 @@ test('executor runs Claude Code then deterministic verification', async () => {
   const report = await executor.execute({ task: task(), packet: packet() })
 
   assert.deepEqual(report.changedFiles, ['src/a.ts'])
-  assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
-    { name: 'npm test', status: 'passed' },
-  ])
+  assertDefaultVerificationPassed(report.verificationResults)
   assert.deepEqual(report.blockers, [])
   assert.equal(runner.requests[0]?.args.join(' '), '-lc git status --porcelain')
   assert.match(runner.requests[1]?.args.join(' ') ?? '', /claude/)
@@ -261,14 +290,15 @@ test('executor refuses autonomous start on dirty worktree', async () => {
   assert.equal(runner.requests.length, 1)
 })
 
-test('executor blocks verification command outside MVP allowlist', async () => {
+test('executor skips an unsupported verification command without starting it', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
     result(' M src/a.ts\n'),
     result('diff clean'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({
     task: task(),
@@ -276,23 +306,33 @@ test('executor blocks verification command outside MVP allowlist', async () => {
   })
 
   assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
+    {
+      name: 'git diff --check',
+      status: 'passed',
+      exitCode: 0,
+      signal: null,
+      durationMs: report.verificationResults[0]?.durationMs,
+    },
     {
       name: 'rm -rf dist',
       status: 'skipped',
-      details: 'verification command is not in the MVP allowlist',
+      details: 'command is outside the supported deterministic verifier forms',
+      classification: 'VERIFIER_CONFIGURATION_FAILURE',
     },
   ])
-  assert.match(report.blockers[0] ?? '', /human approval/)
+  assert.ok((report.verificationResults[0]?.durationMs ?? -1) >= 0)
+  assert.equal(report.blockers[0], 'verification step legacy-2 is unsupported and was not started: rm -rf dist')
   assert.equal(runner.requests.length, 4)
+  assert.equal(runner.requests.some((request) => request.args.includes('rm -rf dist')), false)
 })
 
-test('executor runs a strictly scoped Node test command but rejects path and shell escapes', async () => {
+test('executor runs a strictly scoped Node test command but rejects path and shell escapes', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const safe = 'node --test ticketFilters.test.mjs'
   const runner = new QueueRunner([
     result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('targeted tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
   const report = await executor.execute({ task: task(), packet: packet([safe]) })
   assert.deepEqual(report.blockers, [])
   assert.equal(report.verificationResults.find((item) => item.name === safe)?.status, 'passed')
@@ -300,21 +340,22 @@ test('executor runs a strictly scoped Node test command but rejects path and she
 
   for (const unsafe of ['node --test ../outside.test.mjs', 'node --test ticket.test.mjs && whoami']) {
     const unsafeRunner = new QueueRunner([result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean')])
-    const unsafeExecutor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: unsafeRunner.run })
+    const unsafeExecutor = new ClaudeCodeExecutor({ cwd, commandRunner: unsafeRunner.run })
     const unsafeReport = await unsafeExecutor.execute({ task: task(), packet: packet([unsafe]) })
     assert.match(unsafeReport.blockers[0] ?? '', /human approval/u)
     assert.equal(unsafeRunner.requests.some((request) => request.args.includes(unsafe)), false)
   }
 })
 
-test('runtime-approved exact verification command is executable only once', async () => {
+test('runtime-approved exact verification command is executable only once', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const command = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
   const runner = new QueueRunner([
     result(''), result(claudeJson()), result(' M src/a.ts\n'), result('diff clean'), result('migration passed'),
     result(claudeJson({ result: 'revised' })), result(' M src/a.ts\n'), result('diff clean'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     approvedVerificationCommand: command,
   })
@@ -331,7 +372,8 @@ test('runtime-approved exact verification command is executable only once', asyn
     {
       name: command,
       status: 'skipped',
-      details: 'verification command is not in the MVP allowlist',
+      details: 'command is outside the supported deterministic verifier forms',
+      classification: 'VERIFIER_CONFIGURATION_FAILURE',
     },
   )
   assert.equal(
@@ -384,7 +426,8 @@ test('executor stops when changed files enter forbidden scope', async () => {
   assert.equal(runner.requests.length, 3)
 })
 
-test('executor resumes same Claude Code session on revise round', async () => {
+test('executor resumes same Claude Code session on revise round', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -396,7 +439,7 @@ test('executor resumes same Claude Code session on revise round', async () => {
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   await executor.execute({ task: task(0), packet: packet() })
   await executor.execute({ task: task(1), packet: { ...packet(), verdict: 'revise' } })
@@ -409,7 +452,8 @@ test('executor resumes same Claude Code session on revise round', async () => {
   assert.ok(claudeRequests[1]?.args.includes('session-123'))
 })
 
-test('executor prompt includes hard boundaries and excludes internal fields', async () => {
+test('executor prompt includes hard boundaries and excludes internal fields', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -417,7 +461,7 @@ test('executor prompt includes hard boundaries and excludes internal fields', as
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   await executor.execute({
     task: task(3, {
@@ -457,7 +501,8 @@ test('executor prompt includes hard boundaries and excludes internal fields', as
   assert.doesNotMatch(prompt, /npm test/, 'prompt must not include verification command')
 })
 
-test('CASE A: executor auto-resumes once on max_turns with valid session', async () => {
+test('CASE A: executor auto-resumes once on max_turns with valid session', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -467,15 +512,12 @@ test('CASE A: executor auto-resumes once on max_turns with valid session', async
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({ task: task(), packet: packet() })
 
   assert.deepEqual(report.changedFiles, ['src/a.ts', 'src/a.test.ts'])
-  assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
-    { name: 'npm test', status: 'passed' },
-  ])
+  assertDefaultVerificationPassed(report.verificationResults)
   assert.deepEqual(report.blockers, [])
   assert.equal(report.summary, '已完成所有任务。')
 
@@ -590,7 +632,8 @@ test('CASE E: executor does not use recovery for non-max_turns errors', async ()
   assert.equal(claudeRequests.length, 1, 'should only call Claude once')
 })
 
-test('CASE F: recovery does not trigger clean-worktree gate on legitimate changes', async () => {
+test('CASE F: recovery does not trigger clean-worktree gate on legitimate changes', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -600,7 +643,7 @@ test('CASE F: recovery does not trigger clean-worktree gate on legitimate change
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({ task: task(), packet: packet() })
 
@@ -616,7 +659,8 @@ test('CASE F: recovery does not trigger clean-worktree gate on legitimate change
   assert.equal(statusRequests.length, 3, 'git status: once for clean gate, twice for inspect-changes')
 })
 
-test('CASE G: real Claude Code error_max_turns payload triggers auto-resume', async () => {
+test('CASE G: real Claude Code error_max_turns payload triggers auto-resume', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const realClaudePayload = JSON.stringify({
     type: 'result',
     subtype: 'error_max_turns',
@@ -638,15 +682,12 @@ test('CASE G: real Claude Code error_max_turns payload triggers auto-resume', as
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({ task: task(), packet: packet() })
 
   assert.deepEqual(report.changedFiles, ['src/a.ts', 'src/a.test.ts'])
-  assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
-    { name: 'npm test', status: 'passed' },
-  ])
+  assertDefaultVerificationPassed(report.verificationResults)
   assert.deepEqual(report.blockers, [], 'should have no blockers after successful recovery')
 
   const claudeRequests = runner.requests.filter((request) =>
@@ -664,7 +705,8 @@ test('CASE G: real Claude Code error_max_turns payload triggers auto-resume', as
   assert.equal(claudeRequests[1]?.args[secondMaxTurnsIndex + 1], '6', 'recovery should use 6 turns')
 })
 
-test('CASE H: reused executor can recover max_turns in subsequent execute() calls', async () => {
+test('CASE H: reused executor can recover max_turns in subsequent execute() calls', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', session_id: 'session-first' })),
@@ -680,7 +722,7 @@ test('CASE H: reused executor can recover max_turns in subsequent execute() call
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const firstReport = await executor.execute({ task: task(0), packet: packet() })
   assert.deepEqual(firstReport.blockers, [], 'first execution should succeed after recovery')
@@ -703,7 +745,8 @@ test('CASE H: reused executor can recover max_turns in subsequent execute() call
   assert.ok(claudeRequests[3]?.args.includes('session-second'), 'second recovery should use second session')
 })
 
-test('CASE UNTRACKED A: untracked files in allowed directory do not produce scope blocker', async () => {
+test('CASE UNTRACKED A: untracked files in allowed directory do not produce scope blocker', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -711,7 +754,7 @@ test('CASE UNTRACKED A: untracked files in allowed directory do not produce scop
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({
     task: task(0, { allowedPaths: ['apps/web/**', 'package.json'] }),
@@ -720,10 +763,7 @@ test('CASE UNTRACKED A: untracked files in allowed directory do not produce scop
 
   assert.deepEqual(report.changedFiles, ['apps/web/index.html', 'apps/web/src/App.vue', 'package.json'])
   assert.equal(report.blockers.length, 0, 'should have no scope blockers')
-  assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
-    { name: 'npm test', status: 'passed' },
-  ])
+  assertDefaultVerificationPassed(report.verificationResults)
 
   const statusRequests = runner.requests.filter(
     (request) =>
@@ -758,7 +798,8 @@ test('CASE UNTRACKED B: untracked files outside allowed scope still produce bloc
   assert.match(report.blockers[0] ?? '', /outside allowed scope: apps\/api\/main\.py/)
 })
 
-test('CASE UNTRACKED C: tracked modified files still work correctly', async () => {
+test('CASE UNTRACKED C: tracked modified files still work correctly', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -766,7 +807,7 @@ test('CASE UNTRACKED C: tracked modified files still work correctly', async () =
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({
     task: task(0, { allowedPaths: ['apps/web/**'] }),
@@ -775,10 +816,7 @@ test('CASE UNTRACKED C: tracked modified files still work correctly', async () =
 
   assert.deepEqual(report.changedFiles, ['apps/web/src/App.vue'])
   assert.equal(report.blockers.length, 0)
-  assert.deepEqual(report.verificationResults, [
-    { name: 'git diff --check', status: 'passed' },
-    { name: 'npm test', status: 'passed' },
-  ])
+  assertDefaultVerificationPassed(report.verificationResults)
 })
 
 // ============ CASE TRACKED ARTIFACT: tracked artifact path 必须进入 scope enforcement ============
@@ -830,7 +868,8 @@ test('CASE TRACKED ARTIFACT B: tracked .venv and dist changes enter scope enforc
   assert.match(report.blockers[1] ?? '', /outside allowed scope: dist\/out\.js/)
 })
 
-test('CASE TRACKED ARTIFACT C: untracked artifact files remain filtered from changedFiles', async () => {
+test('CASE TRACKED ARTIFACT C: untracked artifact files remain filtered from changedFiles', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -838,7 +877,7 @@ test('CASE TRACKED ARTIFACT C: untracked artifact files remain filtered from cha
     result('diff clean'),
     result('tests passed'),
   ])
-  const executor = new ClaudeCodeExecutor({ cwd: 'D:/repo', commandRunner: runner.run })
+  const executor = new ClaudeCodeExecutor({ cwd, commandRunner: runner.run })
 
   const report = await executor.execute({
     task: task(0, { allowedPaths: ['apps/api/**'] }),

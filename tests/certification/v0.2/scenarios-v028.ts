@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 
 import { architectureBenchmarkTasks, runArchitectureBenchmark } from '../../benchmark/harness.js'
 import { createTaskStateV2, TaskController } from '../../../packages/development-guardian/work-session/index.js'
@@ -143,7 +143,12 @@ export const s111: CertificationScenario = {
       ctx.h.check(!events.some((event) => event.type === 'CONTROLLER_DECIDED'), 'legacy Controller missing-binding validator was not reached')
       ctx.h.check(taskState?.completion.bindings.every((binding) => binding.requiredEvidence.length > 0), 'all natural-language ACs received Planner evidence')
       ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command === 'npm test' && step.cwd === '.'), 'Planner did not invent a root npm test fallback')
-      ctx.h.check(taskState?.verificationPlan?.steps.some((step) => step.command === 'node --test apps/web/ticketFilters.test.mjs'), 'Planner selected the closest filter test with a repository-relative execution path')
+      const scopedFilterStep = taskState?.verificationPlan?.steps.find((step) => step.command === 'node --test ticketFilters.test.mjs' && step.cwd === 'apps/web')
+      const testArgument = scopedFilterStep?.command.match(/^node --test ([^\s]+)$/u)?.[1]
+      const resolvedTestPath = testArgument === undefined || scopedFilterStep === undefined ? undefined : resolve(repo, scopedFilterStep.cwd, testArgument)
+      const expectedTestPath = resolve(repo, 'apps/web/ticketFilters.test.mjs')
+      const resolvedTestExists = resolvedTestPath === undefined ? false : await stat(resolvedTestPath).then((entry) => entry.isFile()).catch(() => false)
+      ctx.h.check(scopedFilterStep !== undefined && resolvedTestPath === expectedTestPath && resolvedTestExists, 'Planner selected the closest filter test with its package-scoped command and cwd')
       ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command.includes('overview.test.mjs')), 'Planner excluded the unrelated same-package test')
       const persisted = await discoverTrustedWorkSessionConfigs(configsDir)
       const serialized = JSON.parse(await readFile(persisted[0]!.configPath, 'utf8')) as TrustedWorkSessionConfig

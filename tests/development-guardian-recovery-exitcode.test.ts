@@ -6,6 +6,7 @@ import {
   type GuardianCommandRequest,
   type GuardianCommandResult,
 } from 'nova-wing/development-guardian'
+import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 class QueueRunner {
   public readonly requests: GuardianCommandRequest[] = []
@@ -88,7 +89,8 @@ test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic on 
   )
 })
 
-test('error_max_turns with exitCode=1 + valid session_id triggers recovery', async () => {
+test('error_max_turns with exitCode=1 + valid session_id triggers recovery', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'recovery-exitcode-one')
   const runner = new QueueRunner([
     result(''),
     result(
@@ -110,7 +112,7 @@ test('error_max_turns with exitCode=1 + valid session_id triggers recovery', asy
   const recoveries: unknown[] = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)
@@ -358,7 +360,8 @@ test('ordinary exitCode=1 without error_max_turns blocks execution', async () =>
   )
 })
 
-test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic', async () => {
+test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'recovery-exitcode-zero')
   const runner = new QueueRunner([
     result(''),
     result(
@@ -378,7 +381,7 @@ test('error_max_turns with exitCode=0 triggers recovery and shows diagnostic', a
   const recoveries: unknown[] = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)

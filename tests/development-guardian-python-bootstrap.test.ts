@@ -10,6 +10,7 @@ import {
   type GuardianCommandRunner,
   type GuardianTask,
 } from 'nova-wing/development-guardian'
+import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
   return {
@@ -73,7 +74,8 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
 }
 
 // CASE A: 默认未开启 Python bootstrap
-test('executor does not include Python bootstrap permission by default', async () => {
+test('executor does not include Python bootstrap permission by default', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-bootstrap-default')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -82,7 +84,7 @@ test('executor does not include Python bootstrap permission by default', async (
     result('test passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
   })
 
@@ -110,7 +112,8 @@ test('executor does not include Python bootstrap permission by default', async (
 })
 
 // CASE B: allowPythonBootstrap=true 时只新增指定的两个权限
-test('executor includes only specified Python bootstrap permissions when enabled', async () => {
+test('executor includes only specified Python bootstrap permissions when enabled', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-bootstrap-enabled')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -119,7 +122,7 @@ test('executor includes only specified Python bootstrap permissions when enabled
     result('test passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -152,7 +155,8 @@ test('executor includes only specified Python bootstrap permissions when enabled
 })
 
 // CASE C: max_turn recovery 后仍继承 Python bootstrap 权限
-test('executor preserves Python bootstrap permission through recovery', async () => {
+test('executor preserves Python bootstrap permission through recovery', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-bootstrap-recovery')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -163,7 +167,7 @@ test('executor preserves Python bootstrap permission through recovery', async ()
     result('test passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -192,7 +196,8 @@ test('executor preserves Python bootstrap permission through recovery', async ()
 })
 
 // CASE E: Python pytest verification 可以执行并记录结果
-test('executor can run Python pytest verification', async () => {
+test('executor can run Python pytest verification', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-pytest-pass')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -201,7 +206,7 @@ test('executor can run Python pytest verification', async () => {
     result('test passed', '', 0),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -223,7 +228,8 @@ test('executor can run Python pytest verification', async () => {
 })
 
 // CASE E (variant): pytest verification 失败时记录 failed
-test('executor records failed pytest verification', async () => {
+test('executor records failed pytest verification', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-pytest-fail')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -232,7 +238,7 @@ test('executor records failed pytest verification', async () => {
     result('test output', 'test failed: assertion error', 1),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -267,7 +273,8 @@ test('brain prompt includes Python pytest in allowed verification commands', () 
 })
 
 // CASE G: 确认没有 generic 权限
-test('executor never includes generic or disallowed Python commands', async () => {
+test('executor never includes generic or disallowed Python commands', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-disallowed')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -276,7 +283,7 @@ test('executor never includes generic or disallowed Python commands', async () =
     result('test passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -322,7 +329,8 @@ test('executor never includes generic or disallowed Python commands', async () =
 
 // W003 BOOTSTRAP CLOSURE: changedFiles 与 worktree fingerprint 对 runtime artifact 的语义一致
 // 只忽略 untracked 的 node_modules/.venv/dist 产物；tracked 修改始终纳入（不得 blanket-ignore）
-test('untracked venv artifacts are excluded from changedFiles; tracked files kept', async () => {
+test('untracked venv artifacts are excluded from changedFiles; tracked files kept', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-untracked-venv')
   const runner = new QueueRunner([
     result(''), // ensureCleanStart: git status --porcelain（clean）
     result(claudeJson()),
@@ -330,7 +338,7 @@ test('untracked venv artifacts are excluded from changedFiles; tracked files kep
     result('diff clean'), // git diff --check
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -347,7 +355,8 @@ test('untracked venv artifacts are excluded from changedFiles; tracked files kep
   )
 })
 
-test('tracked changes under artifact dirs are still captured (no blanket ignore)', async () => {
+test('tracked changes under artifact dirs are still captured (no blanket ignore)', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'python-tracked-artifacts')
   const runner = new QueueRunner([
     result(''), // ensureCleanStart: git status --porcelain（clean）
     result(claudeJson()),
@@ -355,7 +364,7 @@ test('tracked changes under artifact dirs are still captured (no blanket ignore)
     result('diff clean'), // git diff --check
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
