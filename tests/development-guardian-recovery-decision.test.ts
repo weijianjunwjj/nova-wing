@@ -6,6 +6,7 @@ import {
   type GuardianCommandRequest,
   type GuardianCommandResult,
 } from 'nova-wing/development-guardian'
+import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 class QueueRunner {
   public readonly requests: GuardianCommandRequest[] = []
@@ -131,7 +132,8 @@ test('recovery decision diagnostic captures scopeBlockers', async () => {
   assert.ok(diagnostic?.includes('otherBlockers=0'), 'must show no otherBlockers')
 })
 
-test('recovery decision shows eligible when all conditions met', async () => {
+test('recovery decision shows eligible when all conditions met', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'recovery-decision-eligible')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -145,7 +147,7 @@ test('recovery decision shows eligible when all conditions met', async () => {
   const recoveries: unknown[] = []
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     onRecovery: (recovery) => {
       recoveries.push(recovery)

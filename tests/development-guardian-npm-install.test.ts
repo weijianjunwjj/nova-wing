@@ -9,6 +9,7 @@ import {
   type GuardianCommandRunner,
   type GuardianTask,
 } from 'nova-wing/development-guardian'
+import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
   return {
@@ -71,7 +72,8 @@ function claudeJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
-test('executor does not include npm install permission by default', async () => {
+test('executor does not include npm install permission by default', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'npm-install-default')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -80,7 +82,7 @@ test('executor does not include npm install permission by default', async () => 
     result('tests passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
   })
 
@@ -100,7 +102,8 @@ test('executor does not include npm install permission by default', async () => 
   assert.ok(tools.includes('Write'), 'should include Write permission')
 })
 
-test('executor includes npm install permission when allowNpmInstall is true', async () => {
+test('executor includes npm install permission when allowNpmInstall is true', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'npm-install-enabled')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson()),
@@ -109,7 +112,7 @@ test('executor includes npm install permission when allowNpmInstall is true', as
     result('tests passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowNpmInstall: true,
   })
@@ -131,7 +134,8 @@ test('executor includes npm install permission when allowNpmInstall is true', as
   assert.ok(!tools.includes('Bash'), 'should not include generic Bash permission')
 })
 
-test('executor preserves npm install permission through recovery', async () => {
+test('executor preserves npm install permission through recovery', async (t) => {
+  const cwd = await createExecutorTestWorkspace(t, 'npm-install-recovery')
   const runner = new QueueRunner([
     result(''),
     result(claudeJson({ subtype: 'error_max_turns', result: '部分完成。' })),
@@ -142,7 +146,7 @@ test('executor preserves npm install permission through recovery', async () => {
     result('tests passed'),
   ])
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd,
     commandRunner: runner.run,
     allowNpmInstall: true,
   })

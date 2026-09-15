@@ -186,6 +186,9 @@ export function buildVerificationResult(input: VerificationEvidenceInput): Verif
     return {
       name: input.command,
       status: 'passed',
+      exitCode: input.result.exitCode,
+      signal: input.result.signal,
+      durationMs: input.durationMs,
     }
   }
 
@@ -205,6 +208,7 @@ export function buildVerificationResult(input: VerificationEvidenceInput): Verif
     name: input.command,
     status: 'failed',
     exitCode: input.result.exitCode,
+    signal: input.result.signal,
     durationMs: input.durationMs,
     details: boundedDetails(firstFailure, summary),
     firstFailure,

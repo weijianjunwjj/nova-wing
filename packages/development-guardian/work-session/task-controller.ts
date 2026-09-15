@@ -102,7 +102,7 @@ export class TaskController {
             : task.completion)
         : {
         ...task.completion,
-        evidence: verified.map((item) => ({ type: item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
+        evidence: verified.map((item) => ({ type: item.stepId ?? item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
         // Bindings come only from the trusted task definition; a passed verifier
         // must never be projected as evidence for every acceptance criterion.
         bindings: task.completion.bindings,

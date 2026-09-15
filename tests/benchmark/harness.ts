@@ -341,18 +341,18 @@ export interface ArchitectureBenchmarkSpec {
 }
 
 export const architectureBenchmarkTasks: readonly ArchitectureBenchmarkSpec[] = [
-  { id: 'AB-A', category: 'A', description: 'single-file UI copy', risk: 'LOW', changedFiles: ['apps/web/src/copy.ts'], evidence: ['npm run test:ui', 'git diff --check'] },
-  { id: 'AB-B', category: 'B', description: 'frontend interaction and targeted test', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
-  { id: 'AB-C', category: 'C', description: 'logic change and targeted test', risk: 'LOW', changedFiles: ['packages/core/src/counter.ts'], evidence: ['npm run test:logic', 'git diff --check'] },
-  { id: 'AB-D', category: 'D', description: 'code failure then repair', risk: 'LOW', changedFiles: ['packages/core/src/repair.ts'], evidence: ['npm run test:logic'], firstVerificationFails: true },
-  { id: 'AB-E', category: 'E', description: 'medium multi-file change', risk: 'MEDIUM', changedFiles: ['apps/web/src/a.ts', 'apps/web/src/b.ts', 'apps/web/tests/a.test.ts'], evidence: ['npm run test:ui', 'npm run typecheck'] },
-  { id: 'AB-F', category: 'F', description: 'public API contract high risk', risk: 'HIGH', changedFiles: ['packages/core/src/public-contract.ts'], evidence: ['npm run test:logic', 'npm run typecheck'] },
-  { id: 'AB-G', category: 'G', description: 'REAL-002 PostgreSQL root-suite trap', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
-  { id: 'AB-H', category: 'H', description: 'REAL-003 X/Y counter', risk: 'LOW', changedFiles: ['apps/web/src/ticket-count.ts'], evidence: ['npm run test:ticket', 'npm run typecheck', 'git diff --check'] },
+  { id: 'AB-A', category: 'A', description: 'single-file UI copy', risk: 'LOW', changedFiles: ['apps/web/src/copy.ts'], evidence: ['node --test tests/ui.test.js', 'git diff --check'] },
+  { id: 'AB-B', category: 'B', description: 'frontend interaction and targeted test', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['node --test tests/ticket.test.js', 'npm run typecheck', 'git diff --check'] },
+  { id: 'AB-C', category: 'C', description: 'logic change and targeted test', risk: 'LOW', changedFiles: ['packages/core/src/counter.ts'], evidence: ['node --test tests/logic.test.js', 'git diff --check'] },
+  { id: 'AB-D', category: 'D', description: 'code failure then repair', risk: 'LOW', changedFiles: ['packages/core/src/repair.ts'], evidence: ['node --test tests/logic.test.js'], firstVerificationFails: true },
+  { id: 'AB-E', category: 'E', description: 'medium multi-file change', risk: 'MEDIUM', changedFiles: ['apps/web/src/a.ts', 'apps/web/src/b.ts', 'apps/web/tests/a.test.ts'], evidence: ['node --test tests/ui.test.js', 'npm run typecheck'] },
+  { id: 'AB-F', category: 'F', description: 'public API contract high risk', risk: 'HIGH', changedFiles: ['packages/core/src/public-contract.ts'], evidence: ['node --test tests/logic.test.js', 'npm run typecheck'] },
+  { id: 'AB-G', category: 'G', description: 'REAL-002 PostgreSQL root-suite trap', risk: 'LOW', changedFiles: ['apps/web/src/ticket-filter.ts'], evidence: ['node --test tests/ticket.test.js', 'npm run typecheck', 'git diff --check'] },
+  { id: 'AB-H', category: 'H', description: 'REAL-003 X/Y counter', risk: 'LOW', changedFiles: ['apps/web/src/ticket-count.ts'], evidence: ['node --test tests/ticket.test.js', 'npm run typecheck', 'git diff --check'] },
 ]
 
 export interface ArchitectureBenchmarkMetrics {
-  executionPath: 'DIRECT' | 'CONTROLLER'
+  executionPath: 'DIRECT' | 'GOLDEN' | 'CONTROLLER'
   completed: boolean
   firstPass: boolean
   wallClockMs: number

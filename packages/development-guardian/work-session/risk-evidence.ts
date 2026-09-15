@@ -37,8 +37,9 @@ export function assessRisk(task: TaskStateV2): RiskAssessment {
   if (files.length >= 10) factors.push(`${files.length} changed files signal`)
   if (task.verificationState.results.filter((r) => r.status === 'failed').length >= 2) factors.push('repeated verification failures')
   // Controller-only sessions retain the v0.2.7 conservative heuristic. The
-  // Direct fast gate uses contract/export facts and treats a path as one signal.
-  const legacyController = task.execution?.path !== 'DIRECT'
+  // Direct and Golden fast gates use contract/export facts and treat a path as
+  // one signal rather than evidence of a security/data/public boundary.
+  const legacyController = task.execution?.path !== 'DIRECT' && task.execution?.path !== 'GOLDEN'
   const legacySecurityPath = legacyController && files.some((path) => /(?:auth|permission|security|secret)/iu.test(path))
   const legacyDataPath = legacyController && files.some((path) => /(?:migration|schema|database|sqlite)/iu.test(path))
   const legacyPublicPath = legacyController && files.some((path) => /(?:index|public|api)/iu.test(path))

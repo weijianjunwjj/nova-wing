@@ -37,7 +37,8 @@ test('v0.2.8 planner: REAL-002/003 package-local evidence beats root PostgreSQL 
   try {
     const plan = await planVerification({ repositoryRoot: root, task: task() })
     assert.equal(plan.confidence, 'HIGH')
-    assert.equal(plan.steps[0]?.command, 'npm run test:ticket')
+  assert.equal(plan.steps[0]?.command, 'node --test tests/ticket-filter.test.js')
+  assert.equal(plan.steps[0]?.originalCommand, 'npm run test:ticket')
     assert.equal(plan.steps[0]?.cwd, 'apps/web')
     assert.ok(plan.steps.some((step) => step.command === 'npm run typecheck' && step.cwd === 'apps/web'))
     assert.ok(plan.steps.some((step) => step.command === 'git diff --check'))
@@ -65,8 +66,8 @@ test('v0.2.8 planner: partial explicit bindings do not shadow inferred mappings 
     }) })
     assert.equal(plan.confidence, 'HIGH')
     assert.deepEqual(plan.mappings.find((mapping) => mapping.criterion === criteria[0])?.evidence, ['git diff --check'])
-    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[1])?.evidence.includes('npm run test:ticket'))
-    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[2])?.evidence.includes('npm run test:ticket'))
+    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[1])?.evidence.includes('node --test tests/ticket-filter.test.js'))
+    assert.ok(plan.mappings.find((mapping) => mapping.criterion === criteria[2])?.evidence.includes('node --test tests/ticket-filter.test.js'))
     assert.equal(plan.mappings.some((mapping) => mapping.evidence.length === 0), false)
     assert.equal(plan.steps.some((step) => step.command === 'npm test' && step.cwd === '.'), false)
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -86,7 +87,8 @@ test('v0.2.8 planner: filter intent ranks the filter test above an unrelated pac
       allowedPaths: ['apps/web/**'],
     }) })
     assert.equal(plan.confidence, 'HIGH')
-    assert.equal(plan.steps[0]?.command, 'node --test apps/web/ticketFilters.test.mjs')
+  assert.equal(plan.steps[0]?.command, 'node --test ticketFilters.test.mjs')
+  assert.equal(plan.steps[0]?.cwd, 'apps/web')
     assert.equal(plan.steps[0]?.cwd, 'apps/web')
   } finally { await rm(root, { recursive: true, force: true }) }
 })

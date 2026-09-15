@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -22,9 +23,11 @@ import {
 } from 'nova-wing/development-guardian'
 
 import { createProductionWorkSessionUi } from '../packages/development-guardian/work-session/production.js'
+import { GoldenPathTaskRunner } from '../packages/development-guardian/work-session/golden-path.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
 import type { TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { TaskEventLogV2 } from '../packages/development-guardian/work-session/task-observability.js'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
 import { codexTestRepo } from './codex-test-fixture.js'
 
@@ -649,6 +652,7 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.match(html, /name="allowedPaths"[^>]*required/u)
     assert.doesNotMatch(html, /expectedUrl|SMTP_|credential/u)
     const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    assert.match(appJs, /goldenPathEnabled:\s*true/u)
     assert.match(appJs, /确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。/u)
     assert.match(appJs, /Work Session 正在运行，请先结束后再删除。/u)
     assert.match(appJs, /Task Brief 超过 .*字符，未进行解析或截断。/u)
@@ -797,6 +801,7 @@ await test('Composer creates a fresh validated session from structured input and
     } })
     assert.equal((await convergingRunner.run(convergingTask)).status, 'COMPLETED')
     assert.equal(state.receivedConfigs[0]!.session.limits.maxTasks, 1)
+    assert.deepEqual(state.receivedConfigs[0]!.session.goldenPath, { enabled: false })
     assert.deepEqual(state.receivedConfigs[0]!.notification, { email: { enabled: false } })
     assert.deepEqual(gitCalls, [
       { executable: 'git', args: ['branch', '--show-current'], cwd: process.cwd() },
@@ -1900,8 +1905,13 @@ function requestWithHost(port: number, hostHeader: string): Promise<{ status: nu
   })
 }
 
-test('default Launchpad HTTP creation persists V2 and production dispatches Codex without Brain transport', async () => {
+test('new Launchpad HTTP creation persists Golden default and production completes without Controller decisions', async () => {
   const root = await codexTestRepo()
+  await mkdir(join(root, 'tests'), { recursive: true })
+  await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, type: 'module', scripts: { 'test:source': 'node --test tests/source.test.js' } }, null, 2))
+  await writeFile(join(root, 'tests', 'source.test.js'), 'import test from "node:test"\nimport assert from "node:assert/strict"\ntest("source", () => assert.ok(true))\n')
+  execFileSync('git', ['add', '.'], { cwd: root, windowsHide: true })
+  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture: add source verifier'], { cwd: root, windowsHide: true })
   const directory = await mkdtemp(join(tmpdir(), 'novawing-launchpad-v2-'))
   let runtime: WorkSessionRuntimeConfig | undefined
   let codexCalls = 0
@@ -1923,20 +1933,32 @@ test('default Launchpad HTTP creation persists V2 and production dispatches Code
       ...input,
       createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
       createBrain() { throw new Error('AskBridge transport unavailable') },
-      createCodexExecutor: () => ({ async execute({ packet }) {
-        codexCalls++
-        assert.deepEqual(packet.instructions, ['EXECUTE'])
-        assert.equal(states[0]?.currentAction, 'EXECUTE')
-        assert.ok(states[0]?.gitState.headSha, 'real repository inspection precedes controller dispatch')
-        return { summary: 'D01-like scoped execution dispatched', changedFiles: [], commandsRun: [], verificationResults: [], blockers: [] }
-      } }),
+      createV2Dispatcher: ({ defaultDispatcher }) => ({
+        inspectRepository: defaultDispatcher.inspectRepository,
+        async dispatch({ action, task }) {
+          if (action === 'EXECUTE') {
+            codexCalls++
+            await writeFile(join(root, 'src', 'a.ts'), 'export const value = 2\n')
+            return { status: 'SUCCESS', changedFiles: ['src/a.ts'], providerHistory: ['codex'] }
+          }
+          if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: task.verificationPlan!.steps.map((step) => ({
+            name: step.command,
+            stepId: step.id,
+            command: step.command,
+            cwd: step.cwd,
+            status: 'passed',
+          })) }
+          return { status: 'BLOCKED', blockers: [`unexpected ${action}`] }
+        },
+      }),
     }),
   } })
   try {
     const address = await launchpad.start()
     const response = await postCreate(launchpad, composerRequest('launchpad-production-v2-default', {
       targetRepo: root, tasks: [{ id: 'D01', goal: 'Fix a focused source helper' }],
-      guardian: { allowedPaths: ['src/**'] }, autoCommit: false,
+      guardian: { allowedPaths: ['src/**'], acceptanceCriteria: ['source helper behavior passes its focused test'] },
+      directPathEnabled: true, goldenPathEnabled: true, autoCommit: false,
     }), { token: launchpad.getTokenForTest(), origin: address.url })
     assert.equal(response.status, 202, await response.text())
     const discovered = await discoverTrustedWorkSessionConfigs(directory)
@@ -1944,15 +1966,23 @@ test('default Launchpad HTTP creation persists V2 and production dispatches Code
     assert.equal(discovered[0]!.config.session.controlPlane, 'v2')
     const serialized = JSON.parse(await readFile(discovered[0]!.configPath, 'utf8'))
     assert.equal(serialized.session.controlPlane, 'v2')
+    assert.deepEqual(serialized.session.goldenPath, { enabled: true })
     assert.equal(runtime!.definition.controlPlane, 'v2')
-    assert.ok(runtime!.taskRunner instanceof V2ControllerTaskRunner)
+    assert.equal(runtime!.definition.goldenPath?.enabled, true)
+    assert.ok(runtime!.taskRunner instanceof GoldenPathTaskRunner)
+    const events = new TaskEventLogV2()
     const result = await runtime!.taskRunner.run(runtime!.definition.tasks[0]!, undefined, undefined, {
-      // This entry-path regression stops at the first executor boundary.
-      shouldPauseAutonomousWork: () => codexCalls > 0,
       persistTaskStateV2: async (state) => { states.push(structuredClone(state)) },
       onProgress: (event) => { phases.push(event.phase) },
+      taskEventLog: events,
     })
     assert.equal(codexCalls, 1)
+    assert.equal(result.status, 'COMPLETED', JSON.stringify({
+      humanRequired: result.humanRequired,
+      requiredSteps: result.taskStateV2?.verificationPlan?.steps,
+      verificationResults: result.taskStateV2?.verificationState.results,
+    }))
+    assert.equal(events.count('CONTROLLER_DECIDED'), 0)
     assert.equal(result.taskStateV2?.identity.taskId, 'D01')
     assert.notEqual(result.status, 'BRAIN_INFRASTRUCTURE_FAILED')
     assert.doesNotMatch(phases.join(' '), /REVIEW|BRAIN/i)

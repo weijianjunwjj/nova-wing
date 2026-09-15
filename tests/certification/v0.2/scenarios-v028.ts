@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 
 import { architectureBenchmarkTasks, runArchitectureBenchmark } from '../../benchmark/harness.js'
 import { createTaskStateV2, TaskController } from '../../../packages/development-guardian/work-session/index.js'
@@ -29,7 +29,7 @@ function benchmark(category: string, mode: 'CONTROLLER' | 'DIRECT') {
   return runArchitectureBenchmark(architectureBenchmarkTasks.find((item) => item.category === category)!, mode)
 }
 
-export const s86: CertificationScenario = { id: 'S86', title: 'Planner selects the closest named task test', group: 'control', async run(ctx) { const plan = await planned(ctx); ctx.h.check(plan.steps[0]?.command === 'npm run test:ticket', 'targeted test selected first') } }
+export const s86: CertificationScenario = { id: 'S86', title: 'Planner selects the closest named task test', group: 'control', async run(ctx) { const plan = await planned(ctx); ctx.h.check(plan.steps[0]?.command === 'node --test tests/ticket.test.js' && plan.steps[0]?.originalCommand === 'npm run test:ticket', 'targeted test selected first') } }
 export const s87: CertificationScenario = { id: 'S87', title: 'Planner prefers package-local evidence over root suite', group: 'control', async run(ctx) { const plan = await planned(ctx); ctx.h.check(plan.steps.some((s) => s.command === 'npm run typecheck') && !plan.steps.some((s) => s.command === 'npm test' && s.cwd === '.'), 'package evidence wins over root') } }
 export const s88: CertificationScenario = { id: 'S88', title: 'Planner fails safely before EXECUTE when evidence is insufficient', group: 'risk', async run(ctx) { const root = join(ctx.dirs.repo, 'empty'); await mkdir(root, { recursive: true }); await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node postgres-required.js' } })); const plan = await planVerification({ repositoryRoot: root, task: { ...task, allowedPaths: ['src'] } }); ctx.h.check(plan.confidence === 'INSUFFICIENT' && !plan.steps.some((s) => s.command === 'npm test'), 'insufficient plan does not guess root test') } }
 export const s89: CertificationScenario = { id: 'S89', title: 'Explicit evidence has precedence over inferred evidence', group: 'control', async run(ctx) { await planned(ctx); const plan = await planVerification({ repositoryRoot: ctx.dirs.repo, task: { ...task, acceptanceEvidenceBindings: [{ criterion: task.acceptanceCriteria[0]!, requiredEvidence: ['git diff --check'] }] } }); ctx.h.check(plan.explicitBindings && plan.mappings[0]?.evidence[0] === 'git diff --check', 'explicit binding preserved') } }
@@ -47,7 +47,7 @@ export const s100: CertificationScenario = { id: 'S100', title: 'Provider UI pro
 export const s101: CertificationScenario = { id: 'S101', title: 'Route profile is not projected as provider', group: 'risk', run({ h }) { h.check(concreteRuntimeProvider('codex-or-deepseek') === undefined && concreteRuntimeProvider('executor-router') === undefined, 'route stays debug-only') } }
 export const s102: CertificationScenario = { id: 'S102', title: 'REVIEWING appears only after reviewer start', group: 'control', run({ h }) { h.check(phaseForAction('REVIEW', false) === 'WAITING' && phaseForAction('REVIEW', true) === 'REVIEWING', 'review timing is truthful') } }
 export const s103: CertificationScenario = { id: 'S103', title: 'Complete, suspend, and approval never fall back to REVIEWING', group: 'risk', run({ h }) { h.check(phaseForAction('COMPLETE') === 'FINALIZING' && phaseForAction('SUSPEND') === 'WAITING' && phaseForAction('REQUEST_APPROVAL') === 'WAITING_FOR_APPROVAL', 'explicit phase map') } }
-export const s104: CertificationScenario = { id: 'S104', title: 'REAL-002 planner avoids root PostgreSQL suite', group: 'risk', async run(ctx) { const plan = await planned(ctx); ctx.h.check(plan.steps[0]?.command === 'npm run test:ticket' && !plan.steps.some((s) => s.command === 'npm test' && s.cwd === '.'), 'task-local plan avoids root') } }
+export const s104: CertificationScenario = { id: 'S104', title: 'REAL-002 planner avoids root PostgreSQL suite', group: 'risk', async run(ctx) { const plan = await planned(ctx); ctx.h.check(plan.steps[0]?.command === 'node --test tests/ticket.test.js' && plan.steps[0]?.originalCommand === 'npm run test:ticket' && !plan.steps.some((s) => s.command === 'npm test' && s.cwd === '.'), 'task-local plan avoids root') } }
 export const s105: CertificationScenario = { id: 'S105', title: 'REAL-003-style simple task completes Direct', group: 'control', async run({ h }) { const run = await benchmark('H', 'DIRECT'); h.check(run.metrics.completed && run.metrics.executionPath === 'DIRECT' && run.metrics.controllerDecisionCount === 0, 'REAL-003 converges Direct') } }
 export const s106: CertificationScenario = { id: 'S106', title: 'Controller-only legacy mode continues to work', group: 'compatibility', async run({ h }) { const run = await benchmark('A', 'CONTROLLER'); h.check(run.metrics.completed && run.metrics.executionPath === 'CONTROLLER', 'legacy path completes') } }
 export const s107: CertificationScenario = { id: 'S107', title: 'Feature flag OFF returns to v0.2.7-style loop', group: 'compatibility', async run({ h }) { const run = await benchmark('B', 'CONTROLLER'); h.check(run.metrics.controllerDecisionCount === 3 && !run.metrics.escalated, 'kill switch selects Controller baseline') } }
@@ -143,7 +143,12 @@ export const s111: CertificationScenario = {
       ctx.h.check(!events.some((event) => event.type === 'CONTROLLER_DECIDED'), 'legacy Controller missing-binding validator was not reached')
       ctx.h.check(taskState?.completion.bindings.every((binding) => binding.requiredEvidence.length > 0), 'all natural-language ACs received Planner evidence')
       ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command === 'npm test' && step.cwd === '.'), 'Planner did not invent a root npm test fallback')
-      ctx.h.check(taskState?.verificationPlan?.steps.some((step) => step.command === 'node --test apps/web/ticketFilters.test.mjs'), 'Planner selected the closest filter test with a repository-relative execution path')
+      const scopedFilterStep = taskState?.verificationPlan?.steps.find((step) => step.command === 'node --test ticketFilters.test.mjs' && step.cwd === 'apps/web')
+      const testArgument = scopedFilterStep?.command.match(/^node --test ([^\s]+)$/u)?.[1]
+      const resolvedTestPath = testArgument === undefined || scopedFilterStep === undefined ? undefined : resolve(repo, scopedFilterStep.cwd, testArgument)
+      const expectedTestPath = resolve(repo, 'apps/web/ticketFilters.test.mjs')
+      const resolvedTestExists = resolvedTestPath === undefined ? false : await stat(resolvedTestPath).then((entry) => entry.isFile()).catch(() => false)
+      ctx.h.check(scopedFilterStep !== undefined && resolvedTestPath === expectedTestPath && resolvedTestExists, 'Planner selected the closest filter test with its package-scoped command and cwd')
       ctx.h.check(!taskState?.verificationPlan?.steps.some((step) => step.command.includes('overview.test.mjs')), 'Planner excluded the unrelated same-package test')
       const persisted = await discoverTrustedWorkSessionConfigs(configsDir)
       const serialized = JSON.parse(await readFile(persisted[0]!.configPath, 'utf8')) as TrustedWorkSessionConfig

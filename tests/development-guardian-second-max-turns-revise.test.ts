@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import test from 'node:test'
 
 import {
@@ -55,7 +58,10 @@ function packet(verdict: DelegationPacket['verdict']): DelegationPacket {
   }
 }
 
-test('second max_turns with safe boundaries allows Brain to revise', async () => {
+test('second max_turns with safe boundaries allows Brain to revise', async (t) => {
+  const createdWorkspace = await mkdtemp(join(tmpdir(), 'novawing-second-max-turns-'))
+  const workspace = await realpath(createdWorkspace)
+  t.after(async () => { await rm(createdWorkspace, { recursive: true, force: true }) })
   // Scenario: 第一次 12 turns 达到 max_turns → recovery +6 turns → 第二次仍达到 max_turns
   // 但安全边界正常（无 scope violation、permission denial）
   // Guardian 应该重新请求 Brain review，Brain 可以返回 revise
@@ -106,7 +112,7 @@ test('second max_turns with safe boundaries allows Brain to revise', async () =>
   }
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd: workspace,
     commandRunner: runner.run,
   })
 

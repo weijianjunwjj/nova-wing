@@ -18,6 +18,9 @@
  */
 
 import assert from 'node:assert/strict'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import test from 'node:test'
 
 import {
@@ -101,7 +104,10 @@ function task(): GuardianTask {
   }
 }
 
-test('full Guardian loop converges via Reviewer-delegated venv bootstrap (NOT ENVIRONMENT_REQUIRED)', async () => {
+test('full Guardian loop converges via Reviewer-delegated venv bootstrap (NOT ENVIRONMENT_REQUIRED)', async (t) => {
+  const createdWorkspace = await mkdtemp(join(tmpdir(), 'novawing-w003-bootstrap-'))
+  const workspace = await realpath(createdWorkspace)
+  t.after(async () => { await rm(createdWorkspace, { recursive: true, force: true }) })
   const packets: DelegationPacket[] = [
     {
       verdict: 'proceed',
@@ -150,7 +156,7 @@ test('full Guardian loop converges via Reviewer-delegated venv bootstrap (NOT EN
   ])
 
   const executor = new ClaudeCodeExecutor({
-    cwd: 'D:/repo',
+    cwd: workspace,
     commandRunner: runner.run,
     allowPythonBootstrap: true,
   })
@@ -158,7 +164,15 @@ test('full Guardian loop converges via Reviewer-delegated venv bootstrap (NOT EN
 
   const resultRun = await runGuardianTask({ task: task(), brain, executor })
 
-  assert.strictEqual(resultRun.task.state, 'COMPLETED', 'Guardian task must complete')
+  assert.strictEqual(resultRun.task.state, 'COMPLETED', `Guardian task must complete: ${JSON.stringify({
+    stopReason: resultRun.task.stopReason,
+    failureStage: resultRun.failureStage,
+    reports: resultRun.reports.map((report) => ({
+      blockers: report.blockers,
+      incompleteReason: report.incompleteReason,
+      verificationResults: report.verificationResults,
+    })),
+  })}`)
   assert.strictEqual(resultRun.reports.length, 2, 'exactly two execution rounds')
   assert.strictEqual(brain.reviews, 3, 'proceed + revise + done')
 
