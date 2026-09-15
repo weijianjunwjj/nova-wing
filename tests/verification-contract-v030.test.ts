@@ -47,6 +47,59 @@ await test('R1 planner safely normalizes a task-local named node --test script',
   })
 })
 
+await test('R1 planner excludes Python bytecode and generated caches from npm targeted verification', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-polyglot-'))
+  try {
+    await mkdir(join(repositoryRoot, 'apps', 'api', 'tests', '__pycache__'), { recursive: true })
+    await mkdir(join(repositoryRoot, '.cache', 'tests'), { recursive: true })
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'node scripts/test.mjs', typecheck: 'tsc --noEmit' } }))
+    await writeFile(join(repositoryRoot, 'apps', 'api', 'tests', 'test_check_inventory.py'), 'def test_inventory(): pass\n')
+    await writeFile(join(repositoryRoot, 'apps', 'api', 'tests', '__pycache__', 'test_check_inventory.cpython-312-pytest-8.3.3.pyc'), 'bytecode')
+    await writeFile(join(repositoryRoot, '.cache', 'tests', 'check-inventory.test.js'), 'export {}\n')
+
+    const plan = await planVerification({ repositoryRoot, task: { id: 'polyglot', goal: 'check inventory',
+      acceptanceCriteria: ['Run relevant deterministic tests.'], allowedPaths: ['**'], forbiddenPaths: [] } })
+
+    assert.equal(plan.steps.some((step) => step.id === 'targeted-test'), false)
+    assert.equal(plan.steps.some((step) => /(?:__pycache__|\.py[co](?:\s|$)|\.cache)/iu.test(step.command)), false)
+    assert.equal(plan.confidence, 'INSUFFICIENT')
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
+await test('R1 planner does not use generic smoke/test wording to select an unrelated test file', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-generic-test-'))
+  try {
+    await mkdir(join(repositoryRoot, 'tests'), { recursive: true })
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }))
+    await writeFile(join(repositoryRoot, 'tests', 'unrelated-overview.test.mjs'), 'export {}\n')
+
+    const plan = await planVerification({ repositoryRoot, task: { id: 'generic', goal: 'Human Smoke Test',
+      acceptanceCriteria: ['Run relevant deterministic tests.'], allowedPaths: ['**'], forbiddenPaths: [] } })
+
+    assert.equal(plan.steps.some((step) => step.id === 'targeted-test'), false)
+    assert.equal(plan.confidence, 'INSUFFICIENT')
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
+await test('R1 planner still selects a relevant legal JavaScript targeted test', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-node-target-'))
+  try {
+    await mkdir(join(repositoryRoot, 'tests'), { recursive: true })
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }))
+    await writeFile(join(repositoryRoot, 'tests', 'ticketFilters.test.mjs'), 'export {}\n')
+    await writeFile(join(repositoryRoot, 'tests', 'overview.test.mjs'), 'export {}\n')
+
+    const plan = await planVerification({ repositoryRoot, task: { id: 'node-target', goal: 'fix ticket filter count',
+      acceptanceCriteria: ['ticket filter count is correct'], allowedPaths: ['src/**'], forbiddenPaths: [] } })
+
+    const targeted = plan.steps.find((step) => step.id === 'targeted-test')
+    assert.equal(targeted?.command, 'node --test tests/ticketFilters.test.mjs')
+    assert.equal(targeted?.cwd, '.')
+    assert.equal(targeted?.admission, 'ALLOWED')
+    assert.equal(plan.confidence, 'HIGH')
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 const TASK: GuardianTask = { id: 'verification-contract', goal: 'verify contract', state: 'EXECUTING', iteration: 0, maxIterations: 2 }
 
 function pendingReport(steps: readonly VerificationExecutionStep[]): ExecutionReport {
