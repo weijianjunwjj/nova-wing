@@ -7,6 +7,7 @@ import test from 'node:test'
 import { assessVerificationCommand } from '../packages/development-guardian/verification-command-policy.js'
 import { preflightTaskContract } from '../packages/development-guardian/work-session/launchpad/contract-preflight.js'
 import { analyzeTaskBrief } from '../packages/development-guardian/work-session/launchpad/task-brief.js'
+import { classifyAcceptanceCriterion } from '../packages/development-guardian/work-session/launchpad/acceptance-criterion.js'
 import { extractAcceptanceVerifier } from '../packages/development-guardian/work-session/launchpad/verifier-command-extraction.js'
 import type { AcceptanceEvidenceBinding } from '../packages/development-guardian/work-session/risk-evidence.js'
 import { createTaskStateV2, loadTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
@@ -14,13 +15,27 @@ import { bindingsFromVerificationPlan, planVerification } from '../packages/deve
 
 const COMMAND_CASES = [
   ['git diff --check 通过。', 'git diff --check'],
-  ['npm run typecheck 必须通过', 'npm run typecheck'],
+  ['npm run typecheck 必须通过。', 'npm run typecheck'],
   ['运行 npm run build 并确保成功', 'npm run build'],
   ['node --test tests/ticket-status.test.js 应通过。', 'node --test tests/ticket-status.test.js'],
   ['npm test -- tests/foo.test.js must pass', 'npm test -- tests/foo.test.js'],
   ['git diff --check', 'git diff --check'],
   ['npm  run typecheck 必须通过', 'npm run typecheck'],
   ['git  diff --check 通过。', 'git diff --check'],
+] as const
+
+const NON_COMMAND_CRITERIA = [
+  '成功生成 Git checkpoint。',
+  '不存在 unresolved blocker。',
+  '代码实际完成。',
+  '功能满足验收标准。',
+  '不得修改 tests/**。',
+  '保持现有行为不变。',
+  '运行适合当前项目的测试并确保通过',
+  'Run the appropriate tests and ensure they pass',
+  '保留 Git 历史和 npm 配置。',
+  'Git checkpoint 已保存。',
+  '使用 pytest 的测试保持通过。',
 ] as const
 
 async function verifierRepository(): Promise<string> {
@@ -35,10 +50,67 @@ async function verifierRepository(): Promise<string> {
   return root
 }
 
+for (const criterion of NON_COMMAND_CRITERIA) {
+  test(`non-command criterion never produces an extracted verifier or extraction issue: ${criterion}`, async () => {
+    assert.equal(classifyAcceptanceCriterion(criterion), 'NON_COMMAND')
+    assert.equal(extractAcceptanceVerifier(criterion), undefined)
+    const analysis = analyzeTaskBrief(`【验收标准】\n${criterion}`)
+    assert.deepEqual(analysis.fields.acceptanceCriteria, [criterion])
+    assert.deepEqual(analysis.fields.acceptanceEvidenceBindings ?? [], [])
+    assert.deepEqual(analysis.warnings, [])
+    const root = await verifierRepository()
+    try {
+      for (const verificationPlannerEnabled of [false, true]) {
+        const result = await preflightTaskContract({
+          targetRepo: root, acceptanceCriteria: [criterion], acceptanceEvidenceBindings: [], verificationPlannerEnabled,
+        })
+        assert.deepEqual(result.verifiers, [])
+        if (!result.ok) assert.ok(result.issues.every((issue) => issue.issueCode !== 'UNSAFE_VERIFIER_EXTRACTION'), JSON.stringify(result))
+        if (verificationPlannerEnabled || criterion === NON_COMMAND_CRITERIA[0]) {
+          assert.equal(result.ok, true, JSON.stringify(result))
+          if (result.ok) {
+            assert.deepEqual(result.acceptanceCriteria, [criterion])
+            assert.deepEqual(result.acceptanceEvidenceBindings, [])
+          }
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('mixed acceptance criteria extract only executable command syntax and preserve semantic requirements', async () => {
+  const criteria = [...NON_COMMAND_CRITERIA, 'git diff --check 通过。', 'npm run typecheck 必须通过。']
+  const analysis = analyzeTaskBrief(`【验收标准】\n${criteria.map((criterion) => `- ${criterion}`).join('\n')}`)
+  const expected = [
+    { criterion: criteria.at(-2), requiredEvidence: ['git diff --check'] },
+    { criterion: criteria.at(-1), requiredEvidence: ['npm run typecheck'] },
+  ]
+  assert.deepEqual(analysis.fields.acceptanceCriteria, criteria)
+  assert.deepEqual(analysis.warnings, [])
+  assert.deepEqual(analysis.fields.acceptanceEvidenceBindings?.map(({ criterion, requiredEvidence }) => ({ criterion, requiredEvidence })), expected)
+  const root = await verifierRepository()
+  try {
+    for (const bindings of [[], analysis.fields.acceptanceEvidenceBindings ?? []]) {
+      const result = await preflightTaskContract({ targetRepo: root, acceptanceCriteria: criteria, acceptanceEvidenceBindings: bindings, verificationPlannerEnabled: true })
+      assert.equal(result.ok, true, JSON.stringify(result))
+      assert.deepEqual(result.verifiers.map(({ command }) => command), ['git diff --check', 'npm run typecheck'])
+      if (result.ok) {
+        assert.deepEqual(result.acceptanceCriteria, criteria)
+        assert.deepEqual(result.acceptanceEvidenceBindings.map(({ criterion, requiredEvidence }) => ({ criterion, requiredEvidence })), expected)
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('Quick Fill and repository preflight canonicalize acceptance command cases A-E and preserve pure command I', async () => {
   const root = await verifierRepository()
   try {
     for (const [criterion, command] of COMMAND_CASES) {
+      assert.equal(classifyAcceptanceCriterion(criterion), 'COMMAND_BEARING')
       const analysis = analyzeTaskBrief(`【验收标准】\n1. ${criterion}`)
       assert.deepEqual(analysis.fields.acceptanceCriteria, [criterion])
       assert.deepEqual(analysis.fields.acceptanceEvidenceBindings?.map((binding) => ({
@@ -132,17 +204,19 @@ test('ambiguous or merely mentioned commands G-H cannot become executable bindin
   const root = await verifierRepository()
   try {
     for (const criterion of [
-      '运行适合当前项目的测试并确保通过',
       '如果需要可以考虑运行 npm test，但不要执行全量测试',
       'npm test and inspect the logs',
       'npm test 必须通过然后部署',
       'If needed, consider running "npm test", but do not execute the full suite',
       '如果需要可以考虑运行“npm test”，但不要执行全量测试',
-      'Run the appropriate tests and ensure they pass',
       'node.exe --test tests/foo.test.js must pass then report',
       'npm test -- --grep must pass',
       'npm test -- "tests/a.js""tests/b.js" must pass',
       'npm test; node -e "process.exit(0)"',
+      'npm test&&echo done',
+      'npm test|tee results.log',
+      'npm test>output.txt',
+      'npm run',
     ]) {
       const analysis = analyzeTaskBrief(`【验收标准】\n${criterion}`)
       assert.deepEqual(analysis.fields.acceptanceCriteria, [criterion])
@@ -172,6 +246,9 @@ test('result words inside legal command arguments are never treated as prose bou
     'npm test -- tests/pass.test.js',
     'node --test tests/pass.test.js',
     'node --test "tests/should pass.test.js"',
+    'pytest "tests/should pass.py"',
+    'npm run "typecheck"',
+    "npm run 'typecheck'",
   ]) {
     assert.equal(extractAcceptanceVerifier(command)?.command, command, command)
     assert.equal(extractAcceptanceVerifier(`${command} must pass`)?.command, command, command)

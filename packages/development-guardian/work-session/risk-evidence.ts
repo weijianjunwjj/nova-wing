@@ -1,4 +1,5 @@
 import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
+import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type EvidenceStatus = 'PASSED' | 'FAILED' | 'MISSING' | 'STALE'
@@ -95,7 +96,10 @@ export function completionGate(input: { task: TaskStateV2; evidence: readonly Ev
   if (new Set(bindings.map((b) => b.criterion)).size !== bindings.length ||
       !task.acceptanceCriteria.every((criterion) => bindings.some((b) => b.criterion === criterion))) return false
   if (evidence.some((item) => item.source !== 'deterministic' || item.status !== 'PASSED' || evidenceIsStale(item, task))) return false
-  if (!bindings.every((binding) => binding.requiredEvidence.length > 0 && binding.requiredEvidence.every((type) => evidence.some((item) => item.type === type && item.status === 'PASSED')))) return false
+  // COMPLETE authorizes runtime finalization. Its checkpoint assertion is only
+  // discharged by the runtime's own committed SHA before durable Task completion.
+  if (!bindings.every((binding) => isRuntimeAcceptanceBinding(binding) ||
+      (binding.requiredEvidence.length > 0 && binding.requiredEvidence.every((type) => evidence.some((item) => item.type === type && item.status === 'PASSED'))))) return false
   if ((risk.level === 'CRITICAL' || bindings.some((b) => b.requiresApproval)) && !approvalSatisfied(task)) return false
   if (risk.level === 'HIGH' && !reviewSatisfied(task)) return false
   return true

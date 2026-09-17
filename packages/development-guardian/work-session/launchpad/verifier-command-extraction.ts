@@ -1,5 +1,6 @@
 import { assessVerificationCommand } from '../../verification-command-policy.js'
 import type { VerifierCommandCanonicalization } from '../risk-evidence.js'
+import { classifyAcceptanceCriterion } from './acceptance-criterion.js'
 export type { VerifierCommandCanonicalization } from '../risk-evidence.js'
 
 const RESULT = /^(?:(?:并)?(?:应当|应该|应|必须|需要|需|确保)?(?:通过|成功)|(?:and\s+)?(?:(?:should|must)\s+|ensure\s+)?(?:pass|passes|succeed|succeeds))$/iu
@@ -81,6 +82,7 @@ function normalizeSpacing(command: string): string {
 }
 
 export function extractAcceptanceVerifier(sourceText: string): { command: string; canonicalization: VerifierCommandCanonicalization } | undefined {
+  if (classifyAcceptanceCriterion(sourceText) !== 'COMMAND_BEARING') return undefined
   const text = sourceText.trim()
   if (text.length === 0 || text.length > 500 || /[\r\n\u0000-\u001f]/u.test(text)) return undefined
   // An imperative must be at the start; never search inside conditional prose.
@@ -97,12 +99,6 @@ export function extractAcceptanceVerifier(sourceText: string): { command: string
   const assessment = assessVerificationCommand(command).status
   if (assessment === 'UNSUPPORTED') return undefined
   return { command, canonicalization: { sourceText, command, grammar: 'acceptance-command-v1', assessment } }
-}
-
-/** Ambiguous command requests must not fall through to automatic binding repair. */
-export function needsVerifierConfirmation(text: string): boolean {
-  return COMMAND_WORD.test(text) || /(?:运行|执行).*(?:测试|验证)|(?:测试|验证).*(?:通过|成功)/u.test(text) ||
-    /^(?:run|execute)\b.*\b(?:tests?|verification)\b/iu.test(text)
 }
 
 /** Reject prose in dedicated command fields before approval classification. */

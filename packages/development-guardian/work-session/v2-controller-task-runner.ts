@@ -1,5 +1,6 @@
 import type { VerificationResult } from '../model.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
+import { verifierEvidenceFromBindings } from './completion-criteria.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
 import { approvalContext, assessRisk, completionGate, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
@@ -681,6 +682,6 @@ export function completionEvidence(state: TaskStateV2, verificationResults: read
     verificationResults,
     blockers: state.blockers,
     finalReviewerVerdict: 'done' as const,
-    requiredVerification: [...new Set(state.completion.bindings.flatMap((binding) => binding.requiredEvidence))],
+    requiredVerification: [...new Set(verifierEvidenceFromBindings(state.completion.bindings))],
   }
 }

@@ -4,6 +4,7 @@ import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence } from './risk-evidence.js'
 import type { VerificationPlan } from './verification-planner.js'
 import { autonomousDiagnosisDecisionSchema, RECOVERY_ACTION_BUDGET, type AutonomousDiagnosisDecision } from './autonomous-diagnosis.js'
+import { runtimeAcceptanceEvidence } from './completion-criteria.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
 
@@ -103,6 +104,13 @@ export function createTaskStateV2(
   session: Pick<WorkSessionDefinition, 'id' | 'branch'>,
   task: WorkSessionTask,
 ): TaskStateV2 {
+  const bindings = [...(task.acceptanceEvidenceBindings ?? [])]
+  for (const criterion of task.acceptanceCriteria ?? []) {
+    const evidence = runtimeAcceptanceEvidence(criterion)
+    if (evidence !== undefined && !bindings.some((binding) => binding.criterion === criterion)) {
+      bindings.push({ criterion, requiredEvidence: [evidence] })
+    }
+  }
   return {
     version: TASK_STATE_V2_VERSION,
     identity: { taskId: task.id, sessionId: session.id }, goal: task.goal,
@@ -118,7 +126,7 @@ export function createTaskStateV2(
       branch: session.branch, changedFiles: [],
     },
     verificationState: { results: [] },
-    completion: { evidence: [], bindings: task.acceptanceEvidenceBindings ?? [] },
+    completion: { evidence: [], bindings },
     providerHistory: [], risk: task.risk ?? 'NORMAL', status: 'PENDING', blockers: [], updatedAt: new Date().toISOString(),
     humanConstraints: { verifyOnly: false },
     controllerConvergence: { recentDecisions: [] },

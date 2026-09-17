@@ -2,6 +2,7 @@ import type { TaskStateV2 } from './task-state-v2.js'
 import type { VerificationFailureClassification, VerificationResult } from '../model.js'
 import type { DecisionReasonCode } from './task-observability.js'
 import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale, unmappedAcceptanceCriteria } from './risk-evidence.js'
+import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
 
 export type TaskAction = 'ANALYZE' | 'EXECUTE' | 'VERIFY' | 'REVIEW' | 'REQUEST_APPROVAL' | 'RECONCILE' | 'SUSPEND' | 'COMPLETE'
 export interface ControllerRuntimeState { reconciliationRequired?: boolean }
@@ -61,7 +62,8 @@ export class TaskController {
       return { action: 'SUSPEND', reasonCode: 'VERIFICATION_UNKNOWN', reason: 'verification failure cannot be safely attributed to the Task implementation' }
     }
     if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'task requires a human decision or approval' }
-    if (results.length === 0 || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
+    const runtimeOnly = task.completion.bindings.every(isRuntimeAcceptanceBinding)
+    if ((results.length === 0 && !runtimeOnly) || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
     // A failed independent review is a verdict on the implementation, so the
     // Controller sends the work back for revision. The reviewer never edits code.

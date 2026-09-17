@@ -6,6 +6,7 @@ import type { VerificationExecutionStep } from '../model.js'
 import { assessVerificationCommand, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
 import type { WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, RiskLevel, VerifierCommandCanonicalization } from './risk-evidence.js'
+import { isRuntimeAcceptanceBinding, runtimeAcceptanceEvidence } from './completion-criteria.js'
 
 export type VerificationScope = 'FILE' | 'PACKAGE' | 'WORKSPACE' | 'REPOSITORY'
 export type VerificationPlanConfidence = 'HIGH' | 'MEDIUM' | 'INSUFFICIENT'
@@ -208,6 +209,32 @@ function explicitPlan(input: VerificationPlannerInput, packages: readonly Packag
 
 /** Deterministic-first, repository-local verification planning. It never invents a script or path. */
 export async function planVerification(input: VerificationPlannerInput): Promise<VerificationPlan> {
+  const runtimeCriteria = (input.task.acceptanceCriteria ?? []).filter((criterion) => {
+    const binding = input.task.acceptanceEvidenceBindings?.find((item) => item.criterion === criterion)
+    return runtimeAcceptanceEvidence(criterion) !== undefined && (binding === undefined || isRuntimeAcceptanceBinding(binding))
+  })
+  if (runtimeCriteria.length > 0) {
+    const runtimeSet = new Set(runtimeCriteria)
+    const remainingCriteria = (input.task.acceptanceCriteria ?? []).filter((criterion) => !runtimeSet.has(criterion))
+    const verification = remainingCriteria.length === 0
+      ? finish({ mappings: [], steps: [], escalationSequence: ['PLAN_INVALIDATED', 'CONTROLLER'], estimatedScope: 'REPOSITORY',
+        estimatedCost: 'LOW', confidence: 'HIGH', approvalRequired: false, invalidationConditions: ['completion assertions change'],
+        packageRoots: [], explicitBindings: false, rationale: [] })
+      : await planVerification({ ...input, task: { ...input.task, acceptanceCriteria: remainingCriteria,
+        acceptanceEvidenceBindings: input.task.acceptanceEvidenceBindings?.filter((binding) => !runtimeSet.has(binding.criterion)) } })
+    const { planId: _planId, fingerprint: _fingerprint, ...content } = verification
+    return finish({ ...content,
+      approvalRequired: verification.approvalRequired || input.task.acceptanceEvidenceBindings?.some((binding) => runtimeSet.has(binding.criterion) && binding.requiresApproval === true) === true,
+      mappings: (input.task.acceptanceCriteria ?? []).map((criterion) => {
+        if (!runtimeSet.has(criterion)) return verification.mappings.find((mapping) => mapping.criterion === criterion)!
+        const binding = input.task.acceptanceEvidenceBindings?.find((candidate) => candidate.criterion === criterion)
+        return { criterion, evidence: [runtimeAcceptanceEvidence(criterion)!], scope: 'REPOSITORY' as const,
+          ...(binding?.requiresApproval === undefined ? {} : { requiresApproval: binding.requiresApproval }),
+          reason: 'Runtime-owned checkpoint evidence is required during FINALIZING; no shell verifier proves this assertion.' }
+      }),
+      rationale: [...verification.rationale, 'Runtime completion assertions are checked by finalization, never converted into verifier commands.'],
+    })
+  }
   const repositoryRoot = resolve(input.repositoryRoot)
   const files = await inventory(repositoryRoot)
   const packages = await packageFacts(repositoryRoot, files)

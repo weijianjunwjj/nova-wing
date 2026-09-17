@@ -70,6 +70,7 @@ import {
 import {
   finalizeCompletedTask,
   readCurrentHeadSha,
+  GitCheckpointError,
   GitPushError,
   RemoteVerificationUnavailableError,
   recoverCheckpointPush,
@@ -78,6 +79,7 @@ import {
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
 import { isTerminalWorkSessionState } from './recoverability.js'
+import { runtimeAcceptanceEvidence } from './completion-criteria.js'
 import { ScheduledStartStore } from './scheduled-start-store.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import {
@@ -1842,15 +1844,17 @@ export class WorkSessionRuntime {
           }
           if (result.status === 'COMPLETED') {
             const completionEvidence = result.completionEvidence
+            const checkpointRequired = task.acceptanceCriteria?.some((criterion) => runtimeAcceptanceEvidence(criterion) === 'CHECKPOINT_COMMITTED') === true
 
             // W004-A REVIEW REVISE: autoCommit 开启时，真 COMPLETED 必须携带结构化 evidence。
             // 不允许"跳过 finalizer 直接把 Task 标 COMPLETED 并进入下一 Task"。
             if (
-              gitCheckpoint !== undefined &&
-              gitCheckpoint.policy.autoCommit === true &&
-              completionEvidence === undefined
+              (gitCheckpoint !== undefined && gitCheckpoint.policy.autoCommit === true && completionEvidence === undefined) ||
+              (checkpointRequired && gitCheckpoint?.policy.autoCommit !== true)
             ) {
-              const failureReason = `completed task ${task.id} missing completion evidence`
+              const failureReason = checkpointRequired && gitCheckpoint?.policy.autoCommit !== true
+                ? `completed task ${task.id} requires runtime checkpoint finalization`
+                : `completed task ${task.id} missing completion evidence`
               const failure = classifyWorkSessionFailure(failureReason, {
                 failureStage: 'RUNTIME',
                 failureCategory: 'PROTOCOL',
@@ -1896,6 +1900,9 @@ export class WorkSessionRuntime {
                     ? { expectedBaseHeadSha: currentState.currentTaskBaseHeadSha }
                     : {}),
                 })
+                if (checkpointRequired && (commitResult.disposition === 'ALREADY_SATISFIED' || commitResult.commitSha.trim().length === 0)) {
+                  throw new GitCheckpointError('required CHECKPOINT_COMMITTED evidence was not produced by finalization')
+                }
                 if (commitResult.disposition === 'ALREADY_SATISFIED') {
                   self.recordGitCommitSkipped(task.id, currentState)
                 } else {

@@ -6,7 +6,8 @@ import {
 } from '../../coding-executor-config.js'
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 import { parseTaskContractBindingDsl } from './contract-preflight.js'
-import { extractAcceptanceVerifier, needsVerifierConfirmation } from './verifier-command-extraction.js'
+import { classifyAcceptanceCriterion } from './acceptance-criterion.js'
+import { extractAcceptanceVerifier } from './verifier-command-extraction.js'
 
 /**
  * The Launchpad brief is deliberately treated as an untrusted convenience
@@ -198,11 +199,12 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   ]
   for (const criterion of normalizedAcceptanceCriteria) {
     if (acceptanceEvidenceBindings.some((binding) => binding.criterion === criterion)) continue
+    if (classifyAcceptanceCriterion(criterion) !== 'COMMAND_BEARING') continue
     const extracted = extractAcceptanceVerifier(criterion)
     if (extracted !== undefined) {
       acceptanceEvidenceBindings.push({ criterion, requiredEvidence: [extracted.command],
         ...(extracted.command === criterion ? {} : { commandCanonicalizations: [extracted.canonicalization] }) })
-    } else if (needsVerifierConfirmation(criterion)) {
+    } else {
       warnings.push(`未能安全识别验证命令，需要确认：${criterion}`)
     }
   }

@@ -147,3 +147,28 @@ criterion 与 command 重新计算证明；客户端提供的 metadata 也必须
 原有 Task ID / allowedPaths Quick Fill 回归继续 PASS。
 本轮未运行 v0.3.0 certification，
 未启动真实 UAT 或 Work Session，未修改 UAT repo，未移动 v0.3.0 tag，v0.3.1 未发布。
+
+## 2026-09-18 Acceptance Criterion 与 Verifier Command 分离
+
+新增入口 invariant：**A criterion with no executable-command syntax must never enter
+verifier command extraction.** Quick Fill、preflight、canonicalization proof 重建与
+extractor 自身均先做 command-bearing classification。识别依据是 executable 配合
+子命令、选项、程序路径等调用语法，而不是出现 Git/npm 等名称或“测试通过”这样的结果描述。
+纯系统状态、业务语义和约束保留原文，交给对应证据流程；不产生自动 shell binding 或
+`UNSAFE_VERIFIER_EXTRACTION`。包含明确命令但边界含糊的条件句、复合句仍拒绝提取。
+
+`成功生成 Git checkpoint。` 通过完整状态断言语法识别为 runtime-owned completion
+requirement。它的 `CHECKPOINT_COMMITTED` 是 FINALIZING 的类型化证据，不是 shell command；
+Planner 不为它选择测试命令，执行器、VERIFY 与 finalizer 的前置 verifier 列表不接收该证据标识。
+完成门仅允许进入 finalization，最终完成仍要求 NovaWing 自身 finalizer 产生 checkpoint SHA；
+关闭 autoCommit、缺少 completion evidence 或没有实际 checkpoint 的情况不能伪装为完成。
+显式用户 verifier RHS 保留原有权威性，不替代最终 checkpoint 证据。
+
+回归覆盖纯语义、约束、checkpoint、混合 criteria、两个自然语言命令示例、引号参数与 shell
+边界，以及使用 fake session/controller 的 Composer 创建并启动路径。真实 UAT 与发布仍未执行。
+
+本轮最终验证：targeted **157/157 PASS**（8 个测试文件）；`npm test` **945/945 PASS**，
+0 失败、0 跳过。`npm run typecheck`、`npm run check:unused`、`npm run check:boundaries`
+与 `git diff --check` 全部 PASS。全量日志仍有既有 Windows SQLite 临时文件 EBUSY 清理提示。
+新增 24 个回归测试；checkpoint-only 完成、显式 shell binding 和 approval 保留也已覆盖。
+测试只使用 fake dependency 或隔离临时仓库，未启动真实 UAT，未发布 v0.3.1。

@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { verifierEvidenceFromBindings } from './completion-criteria.js'
 
 import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
@@ -717,7 +718,7 @@ export async function createProductionWorkSessionUi(
             const entries = parseGitStatus((await gitRunner('git status --porcelain --untracked-files=all')).stdout)
             router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
               changedFiles: taskState.gitState.changedFiles, worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) })
-            const requiredEvidence = taskState.completion.bindings.flatMap((binding) => binding.requiredEvidence)
+            const requiredEvidence = verifierEvidenceFromBindings(taskState.completion.bindings)
             const goldenImplementationOnly = action === 'EXECUTE' &&
               (taskState.execution?.path === 'GOLDEN' || taskState.autonomousRecovery?.phase === 'ADVANCED')
             const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,

@@ -533,6 +533,72 @@ await test('successful Git finalization records real commit and push facts', asy
   })
 })
 
+await test('checkpoint acceptance is proved by runtime finalization before durable Task completion', async () => {
+  await withTemp('ledger-checkpoint-criterion-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    const contract = definition('ledger-checkpoint-criterion', repoPath)
+    contract.tasks = [{ ...contract.tasks[0]!, acceptanceCriteria: ['成功生成 Git checkpoint。'] }]
+    const runtime = new WorkSessionRuntime({
+      definition: contract, storageUrl,
+      taskRunner: {
+        async run() {
+          assert.equal(runtime.getDurableState()?.completedTaskIds.includes('T009'), false)
+          await writeFile(join(repoPath, 'src/t009.ts'), 'export const implemented = true\n')
+          return { status: 'COMPLETED' as const, completionEvidence: completionEvidence({ verificationResults: [], requiredVerification: [] }) }
+        },
+      },
+      gitCheckpoint: { policy: { autoCommit: true, autoPush: false } },
+    })
+    try {
+      const state = await runtime.start()
+      assert.equal(state.state, 'COMPLETED')
+      assert.match(state.checkpointCommits?.T009 ?? '', /^[a-f0-9]{40}$/u)
+      const events = runtime.readExecutionLedger()
+      const committed = events.findIndex((event) => event.eventType === 'GIT_COMMIT_COMPLETED')
+      const completed = events.findIndex((event) => event.eventType === 'TASK_COMPLETED')
+      assert.ok(committed >= 0 && completed > committed)
+    } finally { await runtime.close() }
+  })
+})
+
+await test('checkpoint acceptance cannot complete when finalization produced no commit', async () => {
+  await withTemp('ledger-checkpoint-required-', async ({ root, storageUrl }) => {
+    const repoPath = await setupRepo(root)
+    const contract = definition('ledger-checkpoint-required', repoPath)
+    contract.tasks = [{ ...contract.tasks[0]!, acceptanceCriteria: ['成功生成 Git checkpoint。'] }]
+    const runtime = new WorkSessionRuntime({
+      definition: contract, storageUrl,
+      taskRunner: { async run() { return { status: 'COMPLETED' as const, completionEvidence: completionEvidence({ changedFiles: [] }) } } },
+      gitCheckpoint: { policy: { autoCommit: true, autoPush: false }, async finalizer() {
+        return { disposition: 'ALREADY_SATISFIED' as const, commitSha: 'existing-head', committedFiles: [] }
+      } },
+    })
+    try {
+      await assert.rejects(runtime.start(), /CHECKPOINT_COMMITTED/u)
+      assert.equal(runtime.getDurableState()?.state, 'FAILED')
+      assert.equal(runtime.getDurableState()?.checkpointCommits?.T009, undefined)
+      assert.deepEqual(runtime.getDurableState()?.completedTaskIds, [])
+      assert.equal(runtime.readExecutionLedger().some((event) => event.eventType === 'GIT_COMMIT_COMPLETED'), false)
+    } finally { await runtime.close() }
+  })
+})
+
+await test('checkpoint acceptance cannot silently bypass disabled runtime finalization', async () => {
+  await withTemp('ledger-checkpoint-disabled-', async ({ storageUrl }) => {
+    const contract = definition('ledger-checkpoint-disabled')
+    contract.tasks = [{ ...contract.tasks[0]!, acceptanceCriteria: ['成功生成 Git checkpoint。'] }]
+    const runtime = new WorkSessionRuntime({ definition: contract, storageUrl,
+      taskRunner: { async run() { return { status: 'COMPLETED' as const, completionEvidence: completionEvidence() } } },
+      gitCheckpoint: { policy: { autoCommit: false, autoPush: false } },
+    })
+    try {
+      await assert.rejects(runtime.start(), /requires runtime checkpoint finalization/u)
+      assert.equal(runtime.getDurableState()?.state, 'FAILED')
+      assert.deepEqual(runtime.getDurableState()?.completedTaskIds, [])
+    } finally { await runtime.close() }
+  })
+})
+
 await test('verified no-change finalization completes without GIT_COMMIT_FAILED', async () => {
   await withTemp('ledger-git-no-changes-', async ({ root, storageUrl }) => {
     const repoPath = await setupRepo(root)
