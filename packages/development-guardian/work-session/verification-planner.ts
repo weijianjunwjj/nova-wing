@@ -64,10 +64,17 @@ interface PackageFacts {
   files: readonly string[]
 }
 
-const IGNORED = new Set(['.git', '.venv', 'node_modules', 'dist', 'dist-tests', 'coverage', '.tmp'])
+const IGNORED = new Set([
+  '.cache', '.git', '.mypy_cache', '.next', '.parcel-cache', '.pytest_cache', '.ruff_cache', '.tmp', '.turbo', '.venv', '.vite',
+  '__pycache__', 'coverage', 'dist', 'dist-tests', 'node_modules',
+])
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|(?:^|[._-])(?:test|spec)\.[^/]+$/iu
+const NODE_TEST_SOURCE = /\.(?:[cm]?[jt]s|jsx|tsx)$/iu
 const ROOT_SUITE = /^(?:npm|pnpm|yarn)(?:\s+run)?\s+test(?:\s|$)/iu
 const TOKEN = /[a-z0-9]{2,}/giu
+const GENERIC_VERIFICATION_WORDS = new Set([
+  'deterministic', 'human', 'pass', 'passed', 'relevant', 'run', 'smoke', 'test', 'testing', 'tests', 'verification', 'verify',
+])
 
 function normalizePath(value: string): string {
   return value.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '')
@@ -77,7 +84,7 @@ async function inventory(root: string): Promise<string[]> {
   const files: string[] = []
   const visit = async (directory: string): Promise<void> => {
     for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
-      if (entry.isDirectory() && IGNORED.has(entry.name)) continue
+      if (entry.isDirectory() && IGNORED.has(entry.name.toLocaleLowerCase('en-US'))) continue
       const absolute = join(directory, entry.name)
       if (entry.isDirectory()) await visit(absolute)
       else if (entry.isFile()) files.push(normalizePath(relative(root, absolute)))
@@ -122,7 +129,7 @@ function keywords(input: VerificationPlannerInput): Set<string> {
     if (normalized.length > 6 && normalized.endsWith('ing')) return normalized.slice(0, -3)
     if (normalized.length > 5 && normalized.endsWith('s')) return normalized.slice(0, -1)
     return normalized
-  }).filter((token) => !['with', 'from', 'that', 'this', '显示', '修改', '功能'].includes(token)))
+  }).filter((token) => !GENERIC_VERIFICATION_WORDS.has(token) && !['with', 'from', 'that', 'this', '显示', '修改', '功能'].includes(token)))
 }
 
 function relevance(value: string, words: ReadonlySet<string>): number {
@@ -130,6 +137,11 @@ function relevance(value: string, words: ReadonlySet<string>): number {
   let score = 0
   for (const word of words) if (normalized.includes(word)) score += Math.min(word.length, 8)
   return score
+}
+
+/** npm/node targeted verification accepts source tests owned by that package, never cache artifacts or foreign runtimes. */
+function trustedNodeTestSource(file: string, owner: PackageFacts, packages: readonly PackageFacts[]): boolean {
+  return TEST_FILE.test(file) && NODE_TEST_SOURCE.test(file) && ownerOf(file, packages)?.root === owner.root
 }
 
 function scopeRank(scope: VerificationScope): number {
@@ -230,7 +242,7 @@ export async function planVerification(input: VerificationPlannerInput): Promise
     const namedTests = Object.keys(owner.scripts).filter((name) => /(?:^|:)test(?::|$)/iu.test(name) && name !== 'test')
       .map((name) => ({ name, score: relevance(name, words) })).sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
     const bestNamed = namedTests.find((item) => item.score > 0)
-    const nearbyTests = owner.files.filter((file) => TEST_FILE.test(file)).map((file) => ({ file, score: relevance(file, words) }))
+    const nearbyTests = owner.files.filter((file) => trustedNodeTestSource(file, owner, packages)).map((file) => ({ file, score: relevance(file, words) }))
       .sort((left, right) => right.score - left.score || left.file.localeCompare(right.file))
     if (bestNamed !== undefined) {
       const packageFiles = owner.files.map((file) => owner.root.length === 0 ? file : file.slice(owner.root.length + 1))
