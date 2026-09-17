@@ -5,7 +5,18 @@ export type EvidenceStatus = 'PASSED' | 'FAILED' | 'MISSING' | 'STALE'
 export interface EvidenceV2 { type: string; status: EvidenceStatus; source: string; repositoryIdentity?: string; branch?: string; headSha?: string; workspaceIdentity?: string; timestamp: string; details?: string }
 export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string }
 export interface ApprovalEvidence { approved: boolean; repositoryIdentity?: string; branch?: string; workspaceIdentity: string; reviewedCommit?: string; risk: RiskLevel; riskContext?: string; timestamp: string }
-export interface AcceptanceEvidenceBinding { criterion: string; requiredEvidence: readonly string[]; requiresApproval?: boolean | undefined }
+export interface VerifierCommandCanonicalization {
+  sourceText: string
+  command: string
+  grammar: 'acceptance-command-v1'
+  assessment: 'ALLOWED' | 'APPROVAL_REQUIRED'
+}
+export interface AcceptanceEvidenceBinding {
+  criterion: string
+  requiredEvidence: readonly string[]
+  requiresApproval?: boolean | undefined
+  commandCanonicalizations?: readonly VerifierCommandCanonicalization[] | undefined
+}
 export interface RiskAssessment { level: RiskLevel; factors: readonly string[] }
 
 /** Criteria without one exact, non-empty trusted evidence contract. */

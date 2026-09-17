@@ -341,6 +341,72 @@ test('the manual repair endpoint remains available as an operator fallback', asy
   }
 })
 
+test('manual repair cannot guess an unsafe acceptance verifier when mixed with a repairable missing binding', async () => {
+  const repo = await repoFixture({ 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
+  const directory = await mkdtemp(join(tmpdir(), 'novawing-ai-repair-configs-'))
+  const recorded = { configs: [] as TrustedWorkSessionConfig[] }
+  const deps: RecordingDeps = { notifications: [], audit: [], llmCalls: 0 }
+  const acceptanceCriteria = [
+    '如果需要可以考虑运行 npm test，但不要执行全量测试',
+    'AC1 label formatting matches every specified example',
+  ]
+  const guessedOutcome: RepairAgentOutcome = {
+    classification: 'REPAIRED',
+    proposal: {
+      acceptanceCriteria,
+      acceptanceEvidenceBindings: acceptanceCriteria.map((criterion) => ({ criterion, requiredEvidence: ['npm test'] })),
+      repairs: ['Guessed npm test for every criterion.'],
+    },
+  }
+  let deterministicCalls = 0
+  const launchpad = await createNovaWingLaunchpad({
+    configDirectory: directory,
+    dependencies: {
+      createWorkSession: fakeApp(recorded),
+      gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+      repairAgent: { id: 'unsafe-guessing-deterministic-agent', async repair() { deterministicCalls += 1; return guessedOutcome } },
+      repairLlmAgent: recordingLlmAgent(deps, guessedOutcome),
+      repairNotifier: recordingNotifier(deps),
+      repairAudit: recordingAudit(deps),
+    },
+  })
+  try {
+    const preflight = await preflightTaskContract({ targetRepo: repo, acceptanceCriteria, acceptanceEvidenceBindings: [] })
+    assert.equal(preflight.ok, false)
+    if (!preflight.ok) assert.deepEqual(preflight.issues.map((entry) => entry.issueCode), ['UNSAFE_VERIFIER_EXTRACTION', 'MISSING_EVIDENCE_BINDING'])
+    await launchpad.start()
+    const response = await postJson(launchpad, '/api/session/repair', composerRequest('unsafe-verifier-manual-repair', repo, { acceptanceCriteria }))
+    assert.equal(response.status, 400)
+    const result = await response.json() as { error?: string; issues?: Array<{ issueCode: string }> }
+    assert.equal(result.error, 'TASK_CONTRACT_INVALID')
+    assert.ok(result.issues?.some((entry) => entry.issueCode === 'UNSAFE_VERIFIER_EXTRACTION'), JSON.stringify(result))
+    assert.ok(result.issues?.every((entry) => entry.issueCode !== 'VERIFIER_APPROVAL_REQUIRED'), JSON.stringify(result))
+    assert.equal(deterministicCalls, 0, 'A repairable issue must not bypass an unsafe command boundary.')
+    assert.equal(deps.llmCalls, 0, 'The model must not choose a verifier for the ambiguous acceptance text.')
+    assert.equal(recorded.configs.length, 0)
+  } finally {
+    await launchpad.close().catch(() => undefined)
+    await rm(repo, { recursive: true, force: true })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the LLM repair agent rejects mixed unsafe verifier issues before invoking its model', async () => {
+  const acceptanceCriteria = ['如果需要可以考虑运行 npm test，但不要执行全量测试', 'AC1 label formatting matches every specified example']
+  let modelCalls = 0
+  const agent = scriptedLlmAgent(async () => {
+    modelCalls += 1
+    return { text: JSON.stringify({ acceptanceEvidenceBindings: acceptanceCriteria.map((criterion) => ({ criterion, requiredEvidence: ['npm test'] })) }) }
+  })
+  const result = await agent.repair(repairContext({
+    targetRepo: process.cwd(), acceptanceCriteria,
+    issues: [issue('UNSAFE_VERIFIER_EXTRACTION', acceptanceCriteria[0]), issue('MISSING_EVIDENCE_BINDING', acceptanceCriteria[1])],
+  }))
+  assert.equal(result.classification, 'REPAIR_REJECTED')
+  assert.equal(result.proposal, undefined)
+  assert.equal(modelCalls, 0)
+})
+
 test('failed repair preserves the original Task, records the attempt, and notifies failure', async () => {
   const repo = await repoFixture({ 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) })
   const directory = await mkdtemp(join(tmpdir(), 'novawing-ai-repair-configs-'))

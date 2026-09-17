@@ -23,6 +23,7 @@ import {
 } from 'nova-wing/development-guardian'
 
 import { createProductionWorkSessionUi } from '../packages/development-guardian/work-session/production.js'
+import { assessVerificationCommand } from '../packages/development-guardian/verification-command-policy.js'
 import { GoldenPathTaskRunner } from '../packages/development-guardian/work-session/golden-path.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
@@ -585,6 +586,95 @@ function composerRequest(requestId: string, overrides: Record<string, unknown> =
     ...overrides,
   }
 }
+
+await test('natural-language acceptance text must never leak into executable verifier command in the final structured Task', async () => {
+  const directory = await createConfigDirectory()
+  const targetRepo = join(directory, 'repository')
+  await mkdir(join(targetRepo, 'tests'), { recursive: true })
+  await writeFile(join(targetRepo, 'package.json'), JSON.stringify({ scripts: {
+    test: 'node --test', typecheck: 'tsc --noEmit', build: 'tsc',
+  } }), 'utf8')
+  await writeFile(join(targetRepo, 'tests', 'ticket-status.test.js'), '', 'utf8')
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const expectedCommands = new Map([
+      ['git diff --check 通过。', 'git diff --check'],
+      ['npm run typecheck 必须通过', 'npm run typecheck'],
+      ['运行 npm run build 并确保成功', 'npm run build'],
+      ['node --test tests/ticket-status.test.js 应通过。', 'node --test tests/ticket-status.test.js'],
+    ])
+    const briefResponse = await postBrief(launchpad, { brief: [
+      '【Task ID】 UAT-V031-001', '【目标】修复 verifier command parsing',
+      '【允许修改路径】', 'packages/development-guardian/**', 'tests/**',
+      '【验收标准】', ...expectedCommands.keys(),
+    ].join('\n') }, auth)
+    assert.equal(briefResponse.status, 200)
+    const analysis = await briefResponse.json() as ReturnType<typeof analyzeTaskBrief>
+    assert.equal(analysis.fields.taskId, 'UAT-V031-001')
+    assert.deepEqual(analysis.fields.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+
+    // Round-trip through the actual Composer text DSL, which does not carry hidden metadata.
+    const response = await postCreate(launchpad, composerRequest('natural-language-verifier-invariant', {
+      targetRepo, tasks: [{ id: analysis.fields.taskId, goal: analysis.fields.taskInstructions }],
+      guardian: {
+        allowedPaths: analysis.fields.allowedPaths,
+        acceptanceCriteria: analysis.fields.acceptanceCriteria,
+        acceptanceEvidenceBindings: analysis.fields.acceptanceEvidenceBindings?.map((binding) => ({
+          criterion: binding.criterion, requiredEvidence: binding.requiredEvidence,
+        })),
+      },
+    }), auth)
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
+    assert.equal(state.createCalls, 1, 'Only the injected fake session factory is called.')
+    const task = state.receivedConfigs[0]!.tasks[0]!
+    assert.equal(task.id, 'UAT-V031-001')
+    assert.deepEqual(task.guardian.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+    assert.ok(task.acceptanceEvidenceBindings)
+    for (const binding of task.acceptanceEvidenceBindings) {
+      for (const command of binding.requiredEvidence) {
+        assert.doesNotMatch(command, /通过|成功|应通过|必须通过|确保通过|确保成功|\s(?:passes?|should pass|must pass|succeeds)[。，.,;：:]*$/iu)
+        assert.equal(assessVerificationCommand(command).status, 'ALLOWED', command)
+        const expected = expectedCommands.get(binding.criterion)
+        if (expected === undefined) continue
+        assert.equal(command, expected)
+        const proof = binding.commandCanonicalizations?.find((entry) => entry.command === command)
+        assert.ok(proof, `Natural-language-derived command must retain canonicalization evidence: ${binding.criterion}`)
+        assert.equal(proof.sourceText, binding.criterion)
+        assert.equal(proof.grammar, 'acceptance-command-v1')
+        assert.equal(proof.assessment, 'ALLOWED')
+      }
+    }
+    for (const [criterion, command] of expectedCommands) {
+      assert.deepEqual(task.acceptanceEvidenceBindings.find((binding) => binding.criterion === criterion)?.requiredEvidence, [command])
+    }
+    const persisted = await loadTrustedWorkSessionConfig(join(directory, `${state.receivedConfigs[0]!.session.id}.json`))
+    assert.deepEqual(persisted.tasks[0]?.acceptanceEvidenceBindings, task.acceptanceEvidenceBindings,
+      'The trusted config validator and persistence must retain canonicalization evidence.')
+
+    for (const [index, criterion] of [
+      '运行适合当前项目的测试并确保通过',
+      '如果需要可以考虑运行 npm test，但不要执行全量测试',
+    ].entries()) {
+      const invalid = await postCreate(launchpad, composerRequest(`ambiguous-verifier-invariant-${index}`, {
+        targetRepo, guardian: { allowedPaths: ['tests/**'], acceptanceCriteria: [criterion] },
+      }), auth)
+      assert.equal(invalid.status, 400)
+      const body = await invalid.json() as { issues: Array<{ issueCode: string }> }
+      assert.ok(body.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION'), JSON.stringify(body))
+      assert.ok(body.issues.every((issue) => issue.issueCode !== 'VERIFIER_APPROVAL_REQUIRED'))
+      assert.equal(state.createCalls, 1, 'Unresolved natural-language commands never start a session or auto-repair into a verifier.')
+    }
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 await test('Launchpad discovery uses the trusted validator and ignores invalid JSON configs', async () => {
   const directory = await createConfigDirectory()

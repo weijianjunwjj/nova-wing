@@ -108,3 +108,42 @@ Git 核验的交付文件共 29 个（不包含临时编译输出与测试日志
 - `tests/v031-recovery-evidence.test.ts`
 - `tests/work-session-launchpad.test.ts`
 - `tests/work-session-w005-a-guardian-progress.test.ts`
+
+## 2026-09-18 Quick Fill / verifier command parsing 收敛
+
+本轮继续同一 v0.3.1 分支，修复验收标准 `git diff --check 通过。` 被误当作完整
+verifier、随后产生假 `VERIFIER_APPROVAL_REQUIRED` 的问题。根因有三个入口：
+preflight 用命令名称前缀将整条 criterion 绑定为 command；Composer 再次从 criterion
+推断 custom evidence；默认测试 evidence 又混入命令形状的 criterion，导致即使显式 RHS
+正确，左侧自然语言仍可能重新进入可执行命令。
+
+新增永久 invariant：**natural-language acceptance text must never leak into executable
+verifier command**。Quick Fill 与 preflight 共用封闭的提取语法，只接受能证明完整边界的
+命令和中英文结果描述；识别引号外的结果短语、标点与有限的开头执行提示，保留合法路径和
+引号参数。未知参数、条件性提及、复合自然语言或不明确的命令边界不生成 binding，而是返回
+“未能安全识别验证命令，需要确认”。自然语言提取后的命令仍经过既有 command assessment；
+语法识别不授予执行权限，原本需要授权的 scoped command 继续需要授权。
+
+显式 `criterion => verifier command` 保持 RHS 权威：保留左侧 criterion 原文，不拼接两侧，
+不再用 criterion 为 Composer 或默认测试补出另一条命令。Composer 只消费 preflight 已确认的
+bindings。纯命令输入保持原值；仅自然语言提取产生的命令记录原文、规范命令、语法版本与
+assessment 作为 canonicalization evidence。
+
+canonicalization evidence 随 structured binding、trusted config、Verification Plan 与 Task
+state 持久化。Quick Fill 的可编辑字符串表单可能丢弃 metadata，服务端因此从实际
+criterion 与 command 重新计算证明；客户端提供的 metadata 也必须逐项验证，不能作为信任
+来源。默认测试复用自然语言提取出的 verifier 时同步保留相应证明。
+
+明显 prose 或错误证明在 approval classification 前按 `UNSAFE_VERIFIER_EXTRACTION`
+拒绝。该问题不进入自动修复；手动 AI Repair 与混合 issue 的修复请求同样不能为这类 criterion
+猜测 binding。Repair Agent 仍不能代替用户批准 verifier。现有 verifier allowlist、Golden
+执行预算、Autonomy First 与其他既有权限行为保持不变。
+
+本轮验证记录：parser / Quick Fill / Launchpad targeted **89/89 PASS**；
+`npm run typecheck`、`npm run check:unused`、`npm run check:boundaries` 均 PASS。
+全量 `npm test` **921/921 PASS**，0 失败、0 跳过；`git diff --check` PASS。
+新增 12 个回归测试，覆盖最终 structured Task invariant、A–I、结果词与标点、合法路径和参数、
+规范化证明篡改、config/state/plan 持久化、混合 issue 的手动与 LLM 修复阻断。
+原有 Task ID / allowedPaths Quick Fill 回归继续 PASS。
+本轮未运行 v0.3.0 certification，
+未启动真实 UAT 或 Work Session，未修改 UAT repo，未移动 v0.3.0 tag，v0.3.1 未发布。

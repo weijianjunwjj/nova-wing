@@ -132,7 +132,8 @@ const riskLevel = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
 const verificationResult = z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()
 const verificationPlan = z.object({
   planId: z.string(), fingerprint: z.string(),
-  mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), requiresApproval: z.boolean().optional() })),
+  mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), requiresApproval: z.boolean().optional(),
+    commandCanonicalizations: z.array(z.object({ sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'), assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']) })).optional() })),
   steps: z.array(z.object({ id: z.string(), command: z.string(), cwd: z.string(), originalCommand: z.string().optional(),
     admission: z.enum(['ALLOWED', 'APPROVAL_REQUIRED', 'UNSUPPORTED']).optional(), admissionReason: z.string().optional(),
     sourceManifest: z.string().optional(), sourceScript: z.string().optional(), sourceFingerprint: z.string().optional(),
@@ -149,7 +150,8 @@ const persistedTask = z.object({
   verificationState: z.object({ results: z.array(verificationResult), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
   verificationPlan: verificationPlan.optional(),
   completion: z.object({
-    bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional() })),
+    bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional(),
+      commandCanonicalizations: z.array(z.object({ sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'), assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']) })).optional() })),
     evidence: z.array(z.object({ type: z.string(), status: z.enum(['PASSED', 'FAILED', 'MISSING', 'STALE']), source: z.string(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), workspaceIdentity: z.string().optional(), timestamp: z.string() }).passthrough()),
     review: z.object({ passed: z.boolean(), findings: strings, severity: riskLevel, blockingFindings: strings, reviewer: actor, implementer: actor, reviewedRepository: z.string().optional(), reviewedBranch: z.string().optional(), reviewedCommit: z.string().optional(), reviewedWorkspace: z.string().optional(), reviewedFiles: strings, timestamp: z.string() }).optional(),
     approval: z.object({ approved: z.boolean(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), workspaceIdentity: z.string(), reviewedCommit: z.string().optional(), risk: riskLevel, riskContext: z.string().optional(), timestamp: z.string() }).optional(),

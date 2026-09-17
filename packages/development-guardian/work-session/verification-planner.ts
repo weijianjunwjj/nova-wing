@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import type { VerificationExecutionStep } from '../model.js'
 import { assessVerificationCommand, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
 import type { WorkSessionTask } from './model.js'
-import type { AcceptanceEvidenceBinding, RiskLevel } from './risk-evidence.js'
+import type { AcceptanceEvidenceBinding, RiskLevel, VerifierCommandCanonicalization } from './risk-evidence.js'
 
 export type VerificationScope = 'FILE' | 'PACKAGE' | 'WORKSPACE' | 'REPOSITORY'
 export type VerificationPlanConfidence = 'HIGH' | 'MEDIUM' | 'INSUFFICIENT'
@@ -32,6 +32,7 @@ export interface VerificationAcceptanceMapping {
   scope: VerificationScope
   reason: string
   requiresApproval?: boolean
+  commandCanonicalizations?: readonly VerifierCommandCanonicalization[] | undefined
 }
 
 export interface VerificationPlan {
@@ -193,7 +194,7 @@ function explicitPlan(input: VerificationPlannerInput, packages: readonly Packag
   const invalid = bindings.length !== (input.task.acceptanceCriteria ?? []).length || commands.length === 0 || invalidCommand || unavailablePrerequisites.length > 0
   const maxScope = steps.reduce<VerificationScope>((scope, step) => scopeRank(step.scope) > scopeRank(scope) ? step.scope : scope, 'FILE')
   return finish({
-    mappings: (input.task.acceptanceCriteria ?? []).map((criterion) => { const binding = bindings.find((item) => item.criterion === criterion); return { criterion, evidence: binding?.requiredEvidence ?? [], scope: maxScope, reason: 'Explicit user binding.', ...(binding?.requiresApproval === undefined ? {} : { requiresApproval: binding.requiresApproval }) } }),
+    mappings: (input.task.acceptanceCriteria ?? []).map((criterion) => { const binding = bindings.find((item) => item.criterion === criterion); return { criterion, evidence: binding?.requiredEvidence ?? [], scope: maxScope, reason: 'Explicit user binding.', ...(binding?.requiresApproval === undefined ? {} : { requiresApproval: binding.requiresApproval }), ...(binding?.commandCanonicalizations === undefined ? {} : { commandCanonicalizations: binding.commandCanonicalizations }) } }),
     steps, escalationSequence: ['PLAN_INVALIDATED', 'CONTROLLER'], estimatedScope: maxScope,
     estimatedCost: maxScope === 'REPOSITORY' ? 'HIGH' : 'LOW', confidence: invalid ? 'INSUFFICIENT' : 'HIGH',
     approvalRequired: bindings.some((binding) => binding.requiresApproval === true) || steps.some((step) => step.admission !== 'ALLOWED'),
@@ -319,6 +320,7 @@ export function bindingsFromVerificationPlan(
         }))]
       : [...new Set(mapping.evidence)],
     ...(mapping.requiresApproval === undefined ? {} : { requiresApproval: mapping.requiresApproval }),
+    ...(mapping.commandCanonicalizations === undefined ? {} : { commandCanonicalizations: mapping.commandCanonicalizations }),
   }))
 }
 

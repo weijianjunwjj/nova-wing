@@ -40,7 +40,7 @@ import {
   type TaskContractIssue,
   type TaskContractPreflightResult,
 } from './contract-preflight.js'
-import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
+import type { AcceptanceEvidenceBinding, VerifierCommandCanonicalization } from '../risk-evidence.js'
 import {
   AUTO_REPAIR_EXHAUSTED,
   classifyRepairErrorCode,
@@ -864,7 +864,7 @@ export class NovaWingLaunchpad {
         this.respondJson(response, 400, {
           error: 'TASK_CONTRACT_INVALID',
           issues: error.issues,
-          repairable: repairErrorCode !== undefined,
+          repairable: repairErrorCode !== undefined && !error.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION'),
           ...(repairErrorCode === undefined ? {} : { repairErrorCode }),
         })
         return
@@ -897,6 +897,10 @@ export class NovaWingLaunchpad {
       this.respondJson(response, result.accepted ? 202 : 400, result)
     } catch (error) {
       if (this.respondPreflightError(response, error)) return
+      if (error instanceof TaskContractPreflightError) {
+        this.respondJson(response, 400, { error: 'TASK_CONTRACT_INVALID', issues: error.issues, repairable: false })
+        return
+      }
       const code = error instanceof ComposerLaunchError ? error.code : 'SESSION_START_FAILED'
       const status = code === 'SESSION_START_FAILED' ? 500 : 400
       this.respondComposerError(response, status, code)
@@ -1316,6 +1320,9 @@ export class NovaWingLaunchpad {
     preflight: TaskContractFailure
     automatic: boolean
   }): Promise<ContractRepairOutcome> {
+    if (input.preflight.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION')) {
+      throw new TaskContractPreflightError(input.preflight.issues)
+    }
     const { request, targetRepo, branch, automatic } = input
     const errorCode = classifyRepairErrorCode(input.preflight.issues) ?? 'TASK_CONTRACT_INVALID'
     // The Repair Agent operates on the parsed criterion/binding shape so inline
@@ -2019,11 +2026,15 @@ function parseAcceptanceEvidenceBindings(value: unknown): AcceptanceEvidenceBind
   for (const item of value) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'invalid'
     const record = item as Record<string, unknown>
-    if (Object.keys(record).some((key) => key !== 'criterion' && key !== 'requiredEvidence' && key !== 'requiresApproval')) return 'invalid'
+    if (Object.keys(record).some((key) => key !== 'criterion' && key !== 'requiredEvidence' && key !== 'requiresApproval' && key !== 'commandCanonicalizations')) return 'invalid'
     if (typeof record.criterion !== 'string' || record.criterion.length > 500) return 'invalid'
     const requiredEvidence = verifierStringArray(record.requiredEvidence)
-    if (requiredEvidence === undefined || (record.requiresApproval !== undefined && typeof record.requiresApproval !== 'boolean')) return 'invalid'
-    bindings.push({ criterion: record.criterion.trim(), requiredEvidence, ...(record.requiresApproval === undefined ? {} : { requiresApproval: record.requiresApproval }) })
+    const commandCanonicalizations = parseCommandCanonicalizations(record.commandCanonicalizations)
+    if (requiredEvidence === undefined || commandCanonicalizations === 'invalid' || (record.requiresApproval !== undefined && typeof record.requiresApproval !== 'boolean')) return 'invalid'
+    // These records remain untrusted request input. Preflight recomputes proof
+    // against the actual criterion and command before approval classification.
+    bindings.push({ criterion: record.criterion.trim(), requiredEvidence, ...(record.requiresApproval === undefined ? {} : { requiresApproval: record.requiresApproval }),
+      ...(commandCanonicalizations === undefined ? {} : { commandCanonicalizations }) })
   }
   return bindings
 }
@@ -2033,8 +2044,20 @@ function verifierStringArray(value: unknown): string[] | undefined {
   return value.map((entry) => entry.trim())
 }
 
-function looksLikeVerifierCommand(criterion: string): boolean {
-  return /^(?:npm|pnpm|yarn|node|npx|git|tsc|vitest|jest)\b/iu.test(criterion.trim())
+function parseCommandCanonicalizations(value: unknown): VerifierCommandCanonicalization[] | 'invalid' | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 100) return 'invalid'
+  const records: VerifierCommandCanonicalization[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return 'invalid'
+    const record = item as Record<string, unknown>
+    if (Object.keys(record).some((key) => key !== 'sourceText' && key !== 'command' && key !== 'grammar' && key !== 'assessment')) return 'invalid'
+    if (typeof record.sourceText !== 'string' || record.sourceText.length === 0 || record.sourceText.length > 500 ||
+      typeof record.command !== 'string' || record.command.length === 0 || record.command.length > 500 ||
+      record.grammar !== 'acceptance-command-v1' || (record.assessment !== 'ALLOWED' && record.assessment !== 'APPROVAL_REQUIRED')) return 'invalid'
+    records.push({ sourceText: record.sourceText, command: record.command, grammar: record.grammar, assessment: record.assessment })
+  }
+  return records
 }
 
 function looksLikeTestVerifierCommand(command: string): boolean {
@@ -2053,12 +2076,16 @@ function composerEvidenceBindings(
     byCriterion.set(binding.criterion, binding)
   }
   const explicitEvidence = [...new Set(explicit.flatMap((binding) => binding.requiredEvidence))]
-  const custom = criteria.map((criterion) => byCriterion.get(criterion) ?? (looksLikeVerifierCommand(criterion) ? { criterion, requiredEvidence: [criterion] } : undefined)).filter((binding): binding is AcceptanceEvidenceBinding => binding !== undefined)
-  const relevantTests = [...new Set([...explicitEvidence, ...criteria.filter(looksLikeVerifierCommand)].filter(looksLikeTestVerifierCommand))]
+  // Only preflight bindings can supply executable commands. Re-reading the
+  // criterion here would override explicit RHS authority and leak prose again.
+  const custom = criteria.map((criterion) => byCriterion.get(criterion)).filter((binding): binding is AcceptanceEvidenceBinding => binding !== undefined)
+  const relevantTests = explicitEvidence.filter(looksLikeTestVerifierCommand)
+  const testCanonicalizations = explicit.flatMap((binding) => binding.commandCanonicalizations ?? []).filter((proof) => relevantTests.includes(proof.command))
   return [
     { criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[0], requiredEvidence: ['git diff --check'] },
     ...(relevantTests.length > 0
-      ? [{ criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: relevantTests }]
+      ? [{ criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: relevantTests,
+        ...(testCanonicalizations.length === 0 ? {} : { commandCanonicalizations: testCanonicalizations }) }]
       : verificationPlannerEnabled ? [] : [{ criterion: DEFAULT_GUARDIAN_POLICY.acceptanceCriteria[1], requiredEvidence: ['npm test'] }]),
     ...custom,
   ]

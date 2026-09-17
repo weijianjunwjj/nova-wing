@@ -6,6 +6,7 @@ import {
 } from '../../coding-executor-config.js'
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
 import { parseTaskContractBindingDsl } from './contract-preflight.js'
+import { extractAcceptanceVerifier, needsVerifierConfirmation } from './verifier-command-extraction.js'
 
 /**
  * The Launchpad brief is deliberately treated as an untrusted convenience
@@ -195,6 +196,16 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
       ? []
       : [{ criterion: binding.criterionText, requiredEvidence: [binding.verifierCommand] }]),
   ]
+  for (const criterion of normalizedAcceptanceCriteria) {
+    if (acceptanceEvidenceBindings.some((binding) => binding.criterion === criterion)) continue
+    const extracted = extractAcceptanceVerifier(criterion)
+    if (extracted !== undefined) {
+      acceptanceEvidenceBindings.push({ criterion, requiredEvidence: [extracted.command],
+        ...(extracted.command === criterion ? {} : { commandCanonicalizations: [extracted.canonicalization] }) })
+    } else if (needsVerifierConfirmation(criterion)) {
+      warnings.push(`未能安全识别验证命令，需要确认：${criterion}`)
+    }
+  }
   if (acceptanceEvidenceBindings.length > 0) { fields.acceptanceEvidenceBindings = acceptanceEvidenceBindings; mark('Required Evidence') }
   const doNotDo = extractTextSection(lines, /^(?:do\s*not\s*do|不要做|禁止事项)\s*[:：]?\s*(.*)$/iu)
   if (doNotDo.length > 0) { fields.doNotDo = doNotDo; mark('Do Not Do') }

@@ -81,6 +81,10 @@ const AcceptanceEvidenceBindingSchema = z.object({
   criterion: z.string(),
   requiredEvidence: z.array(z.string()),
   requiresApproval: z.boolean().optional(),
+  commandCanonicalizations: z.array(z.object({
+    sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'),
+    assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']),
+  }).strict()).optional(),
 }).strict()
 
 const TrustedConfigSchema = z.object({
