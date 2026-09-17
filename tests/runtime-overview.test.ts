@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { GuardianProgressObserver } from '../packages/development-guardian/progress.js'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
+import { deriveRuntimeOverview } from '../packages/development-guardian/work-session/control-ui/runtime-overview.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import type { TaskEventV2 } from '../packages/development-guardian/work-session/task-observability.js'
 import type { ExecutionLedgerEvent } from '../packages/development-guardian/work-session/execution-ledger.js'
@@ -177,4 +178,39 @@ test('Debug keeps complete ledger and technical event structure without raw prov
     assert.doesNotMatch(JSON.stringify(snapshot), /secret-content/u)
     assert.equal(JSON.stringify(fixture.runtime.state), before)
   } finally { fixture.controller.close() }
+})
+
+test('suspended Human Required outranks a stale executing phase while retaining the last Executor result', () => {
+  const fixture = setup()
+  try {
+    fixture.append('AGENT_DISPATCHED', 'EXECUTE')
+    fixture.progress('EXECUTING', 'active')
+    fixture.setTime(20_000)
+    fixture.append('AGENT_COMPLETED', 'EXECUTE')
+    fixture.append('AGENT_DISPATCHED', 'EXECUTE')
+    fixture.setTime(40_000)
+    fixture.append('AGENT_COMPLETED', 'EXECUTE')
+    fixture.runtime.state = { ...fixture.runtime.state!, state: 'SUSPENDED',
+      humanRequired: { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'no progress' } }
+    fixture.runtime.activeExecution = false
+    const overview = fixture.controller.getSnapshot().runtimeOverview!
+    assert.equal(overview.status, 'SUSPENDED')
+    assert.equal(overview.currentPhase, 'HUMAN_REQUIRED')
+    assert.equal(overview.executor.status, 'COMPLETED')
+    assert.equal(overview.executor.provider, 'codex')
+    assert.deepEqual(overview.iteration, { current: 2, maximum: 2 })
+  } finally { fixture.controller.close() }
+})
+
+test('terminal, paused and recoverable overview phases cannot inherit historical execution or verification', () => {
+  const definition = makeDefinition({ controlPlane: 'v2' })
+  for (const status of ['FAILED', 'COMPLETED', 'CANCELLED', 'SUSPENDED', 'PAUSED', 'RECOVERABLE', 'READY', 'SCHEDULED'] as const) {
+    for (const phase of ['EXECUTING', 'VERIFYING']) {
+      const state = makeState({ state: status === 'PAUSED' || status === 'RECOVERABLE' ? 'RUNNING' : status, currentTaskId: 'T1' })
+      const overview = deriveRuntimeOverview({ definition, state, ledger: [], recentEvents: [], executionActivities: [],
+        currentPhase: phase, currentPhaseTaskId: 'T1', hasActiveExecution: false, displayState: status, now: base })
+      assert.equal(overview.currentPhase, status, `${status} must outrank historical ${phase}`)
+      assert.notEqual(overview.executor.status, 'RUNNING')
+    }
+  }
 })

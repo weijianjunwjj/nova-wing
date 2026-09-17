@@ -76,6 +76,8 @@ export interface WorkSessionTaskResult {
  * Runtime 不把 Mastra 直接耦合进 Guardian；这里只传最小 deadline 事实。
  */
 export interface WorkSessionTaskRunContext {
+  /** Durable supplemental instructions for this exact Session and Task only. */
+  recoveryInstructions?: readonly string[]
   /** hard deadline 绝对时间（clock 帧内毫秒）；超过后不得启动新的 Reviewer/Executor iteration */
   hardDeadlineAtMs?: number
   /** W005-B: checked only at Guardian safe autonomous boundaries. */

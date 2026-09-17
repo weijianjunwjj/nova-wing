@@ -1,4 +1,5 @@
 import type { ExecutionActivityFact, GuardianPhase, GuardianProgressObserver } from '../progress.js'
+import { scopeBlockers } from '../claude-code-executor.js'
 import { canonicalVerificationFailure } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskGitStateV2, type TaskStateV2 } from './task-state-v2.js'
 import { assessRisk, completionGate } from './risk-evidence.js'
@@ -8,6 +9,7 @@ import {
   planVerification,
   validateVerificationPlanAfterExecution,
   verificationPlanApprovalSatisfied,
+  verificationPlanFingerprintValid,
   type VerificationPlan,
 } from './verification-planner.js'
 import { assessDirectPathEligibility, concreteRuntimeProvider } from './direct-path.js'
@@ -24,6 +26,7 @@ import {
   type V2ActionDispatcher,
 } from './v2-controller-task-runner.js'
 import { providerOf, repositoryFacts, type TaskEventV2 } from './task-observability.js'
+import { isAutonomousRecoveryCategory, RECOVERY_ACTION_BUDGET, validateAutonomousDiagnosis, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
 
 /**
  * v0.3.0 Golden Path.
@@ -32,18 +35,20 @@ import { providerOf, repositoryFacts, type TaskEventV2 } from './task-observabil
  * reuses the Verification Planner, provider runtime (the V2ActionDispatcher),
  * repository inspection, deterministic verifier, evidence model and Git
  * finalizer — but it never calls the TaskController decision loop, never
- * escalates a recoverable failure, and caps every task at EXECUTE ≤ 2 and
- * VERIFY ≤ 2.
+ * enters a Controller loop, and caps Golden at EXECUTE ≤ 2 and VERIFY ≤ 2.
+ * After those bounds, v0.3.1 may diagnose once and explicitly enter Advanced
+ * recovery using the existing durable Controller recovery action budget.
  *
- * The only two automatic recoveries are:
+ * The only two recoveries within Golden are:
  *   1. EXECUTOR NO-OP — replace the stale thread once, retry EXECUTE once.
  *      A second NO-OP stops with EXECUTOR_NO_PROGRESS_AFTER_RETRY.
  *   2. CODE_FAILURE   — run one EXECUTE fix, then VERIFY once more.
  *      A second CODE_FAILURE stops with CODE_FAILURE_AFTER_SINGLE_FIX.
  *
- * Every other failure stops immediately with an explicit, human-readable
- * terminal reason. HIGH / CRITICAL risk and any other ineligible task go to the
- * legacy advanced (Controller) path via `fallbackRunner`.
+ * Unsafe and human-owned failures still stop. Other ordinary failures can use
+ * structured diagnosis and the same bounded Advanced recovery grant.
+ * HIGH / CRITICAL risk and other ineligible tasks use the existing advanced
+ * (Controller) path via `fallbackRunner`.
  */
 
 export interface GoldenPathEligibility {
@@ -271,12 +276,178 @@ export interface GoldenPathTaskRunnerOptions {
   progressObserver?: GuardianProgressObserver
   /** Legacy advanced (Controller) path used for ineligible or resumed tasks. */
   fallbackRunner: WorkSessionTaskRunner
+  autonomousRecovery?: AutonomousRecoveryOptions
 }
 
 export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
   constructor(private readonly options: GoldenPathTaskRunnerOptions) {}
 
   async run(
+    task: WorkSessionTask, resumeData?: unknown, checkpoint?: GuardianTaskRecoveryCheckpoint, context?: WorkSessionTaskRunContext,
+  ): Promise<WorkSessionTaskResult> {
+    const persisted = context?.taskStateV2
+    const approvedResume = typeof resumeData === 'object' && resumeData !== null && (resumeData as { approval?: unknown }).approval === true
+    const exactVerificationApproval = context?.approvedVerificationCommand !== undefined && persisted?.verificationPlan?.steps.some((step) =>
+      step.admission === 'APPROVAL_REQUIRED' && (step.originalCommand ?? step.command) === context.approvedVerificationCommand) === true &&
+      verificationPlanApprovalSatisfied(persisted.verificationPlan, context.approvedVerificationCommand)
+    if (this.options.autonomousRecovery !== undefined && persisted?.execution?.path === 'GOLDEN' && persisted.status !== 'PENDING' && exactVerificationApproval) {
+      if (persisted.autonomousRecovery?.goldenExecuteCount === 0 && persisted.autonomousRecovery.executorHistory.length === 0) {
+        // Approval was requested before EXECUTE: continue that exact Golden boundary.
+        return this.run(task, resumeData, checkpoint, { ...context, taskStateV2: { ...persisted, status: 'PENDING', blockers: [] } })
+      }
+      const budget = persisted.actionBudget ?? createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task).actionBudget!
+      const advanced: TaskStateV2 = { ...persisted, status: 'ACTIVE', currentAction: 'VERIFY', blockers: [],
+        verificationState: { ...persisted.verificationState, results: [] }, execution: { ...persisted.execution, path: 'CONTROLLER', escalated: true },
+        autonomousRecovery: { ...(persisted.autonomousRecovery ?? { goldenExecuteCount: 2, goldenVerifyCount: 2, executorHistory: [], verificationHistory: [persisted.verificationState.results] }), phase: 'ADVANCED' },
+        actionBudget: { ...budget, originalExhausted: true, recoveryGranted: true, recoveryLimit: Math.min(budget.recoveryLimit, RECOVERY_ACTION_BUDGET) } }
+      context?.taskEventLog?.append({ type: 'ADVANCED_RECOVERY', taskId: task.id, sessionId: this.options.sessionId, ...repositoryFacts(advanced), metadata: { reason: 'exact verifier approval', phase: 'ADVANCED' } })
+      await context?.persistTaskStateV2?.(advanced)
+      return this.finishRecovery(await this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: advanced }), context)
+    }
+    if (this.options.autonomousRecovery !== undefined && persisted?.autonomousRecovery?.phase === 'HUMAN_REQUIRED' &&
+        (context?.chosenReviewer !== undefined || context?.approvedVerificationCommand !== undefined || approvedResume)) {
+      // Preserve existing Runtime Repair / exact-command / risk approval control paths.
+      const advanced = { ...persisted, autonomousRecovery: { ...persisted.autonomousRecovery, phase: 'ADVANCED' as const } }
+      return this.finishRecovery(await this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: advanced }), context)
+    }
+    if (this.options.autonomousRecovery !== undefined && persisted?.execution?.path === 'GOLDEN' &&
+        (persisted.autonomousRecovery === undefined || persisted.status !== 'PENDING' || persisted.autonomousRecovery.goldenExecuteCount > 0)) {
+      // An interrupted Golden run must never reset its counters on restart.
+      return this.recover(task, { status: 'HUMAN_REQUIRED', taskStateV2: persisted, humanRequired: {
+        category: persisted.autonomousRecovery?.triggerCategory ?? 'EVIDENCE_MISSING',
+        reason: persisted.autonomousRecovery?.triggerReason ?? 'Golden execution was interrupted; inspect durable evidence before continuing.',
+      } }, resumeData, checkpoint, context)
+    }
+    if (this.options.autonomousRecovery !== undefined && (persisted?.autonomousRecovery?.phase === 'HUMAN_REQUIRED' || persisted?.autonomousRecovery?.phase === 'DIAGNOSING')) {
+      return this.recover(task, { status: 'HUMAN_REQUIRED', taskStateV2: persisted, humanRequired: {
+        category: persisted.autonomousRecovery.triggerCategory ?? 'EVIDENCE_MISSING', reason: persisted.autonomousRecovery.triggerReason ?? '补充指令后重新诊断。',
+      } }, resumeData, checkpoint, context)
+    }
+    const result = await this.runGolden(task, resumeData, checkpoint, context)
+    if (result.taskStateV2?.autonomousRecovery?.phase === 'ADVANCED') return this.finishRecovery(result, context)
+    return this.recover(task, result, resumeData, checkpoint, context)
+  }
+
+  private async finishRecovery(result: WorkSessionTaskResult, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
+    const state = result.taskStateV2
+    if (state?.autonomousRecovery === undefined) return result
+    if (result.status === 'COMPLETED' && state.verificationPlan !== undefined) {
+      const verified = assessGoldenVerification(state.verificationPlan, { status: 'SUCCESS', verificationResults: state.verificationState.results, blockers: state.blockers })
+      if (!verified.passed) result = { status: 'HUMAN_REQUIRED', taskStateV2: state, humanRequired: {
+        category: verified.category ?? 'EVIDENCE_MISSING', reason: verified.reason ?? 'Advanced Recovery 没有取得完整的确定性验证证据。',
+      } }
+    }
+    const next: TaskStateV2 = { ...state,
+      ...(result.status === 'HUMAN_REQUIRED' ? { status: 'SUSPENDED' } : {}),
+      autonomousRecovery: { ...state.autonomousRecovery, phase: result.status === 'COMPLETED' ? 'COMPLETED' : result.status === 'HUMAN_REQUIRED' ? 'HUMAN_REQUIRED' : 'ADVANCED',
+        ...(result.humanRequired === undefined ? {} : { triggerCategory: result.humanRequired.category, triggerReason: result.humanRequired.reason }) } }
+    const failure = next.verificationState.results.find((item) => item.status !== 'passed') ??
+      next.autonomousRecovery!.verificationHistory.flat().findLast((item) => item.status !== 'passed')
+    await context?.persistTaskStateV2?.(next)
+    return { ...result, taskStateV2: next, ...(failure === undefined ? {} : { verificationFailure: failure }),
+      ...(result.humanRequired === undefined ? {} : { humanRequired: { ...result.humanRequired,
+        reason: `已完成 ${next.autonomousRecovery!.goldenExecuteCount} 轮 Golden 执行，并使用 ${next.actionBudget?.recoveryConsumed ?? 0}/${next.actionBudget?.recoveryLimit ?? RECOVERY_ACTION_BUDGET} 个恢复动作。${result.humanRequired.reason}` +
+          (failure === undefined ? '' : ` 最后验证：${failure.command ?? failure.name}；${failure.details ?? failure.classification ?? failure.status}。`) +
+          ` 当前修改：${next.gitState.changedFiles.join(', ') || '无'}。请查看失败证据并补充更具体的修复指令；涉及权限时需要明确授权。` } }) }
+  }
+
+  private async recover(
+    task: WorkSessionTask, result: WorkSessionTaskResult, resumeData?: unknown,
+    checkpoint?: GuardianTaskRecoveryCheckpoint, context?: WorkSessionTaskRunContext,
+  ): Promise<WorkSessionTaskResult> {
+    const recovery = this.options.autonomousRecovery
+    if (recovery === undefined || result.status !== 'HUMAN_REQUIRED' || result.humanRequired === undefined || result.taskStateV2 === undefined ||
+        !isAutonomousRecoveryCategory(result.humanRequired.category) || result.pendingVerificationCommand !== undefined) return result
+    let state: TaskStateV2
+    try {
+      state = loadTaskStateV2(result.taskStateV2)
+      const configured = createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task)
+      if (JSON.stringify([state.identity, state.goal, state.constraints, state.acceptanceCriteria, state.permissions]) !==
+          JSON.stringify([configured.identity, configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions])) throw new Error('policy mismatch')
+      if (state.verificationPlan !== undefined && !verificationPlanFingerprintValid(state.verificationPlan)) throw new Error('invalid verification plan')
+    } catch {
+      return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: '持久化任务或验证计划与当前授权不一致，不能自动恢复。' } }
+    }
+    state = { ...state, autonomousRecovery: { ...(state.autonomousRecovery ?? {
+      phase: 'GOLDEN', goldenExecuteCount: 2, goldenVerifyCount: 2, executorHistory: [], verificationHistory: [state.verificationState.results],
+    }), triggerCategory: result.humanRequired.category, triggerReason: result.humanRequired.reason } }
+    const stop = async (category: string, reason: string): Promise<WorkSessionTaskResult> => this.finishRecovery({
+      status: 'HUMAN_REQUIRED', humanRequired: { category, reason }, taskStateV2: state,
+    }, context)
+    const existingBudget = state.actionBudget ?? createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task).actionBudget!
+    if (existingBudget.recoveryExhausted || existingBudget.recoveryConsumed >= Math.min(existingBudget.recoveryLimit, RECOVERY_ACTION_BUDGET)) {
+      state = { ...state, actionBudget: { ...existingBudget, recoveryExhausted: true } }
+      return stop('ACTION_BUDGET_EXHAUSTED', '自动恢复额度已用完；继续消耗额外额度需要你的决定。')
+    }
+    if (context?.shouldPauseAutonomousWork?.() || (context?.hardDeadlineAtMs !== undefined && Date.now() >= context.hardDeadlineAtMs)) return { status: 'PAUSED', taskStateV2: state }
+    const reality = await this.options.dispatcher.inspectRepository()
+    const reconciled = reconcileTaskState(state, reality)
+    if (!reconciled.reconciled) return stop('REPO_DRIFT', `自动恢复前仓库发生变化：${reconciled.reasons.join('; ')}`)
+    const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1,
+      allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, reality.changedFiles)
+    if (violations.length > 0) return stop('SAFETY_BLOCKED', violations.join('; '))
+    const note = (type: 'GOLDEN_EXHAUSTED' | 'AUTONOMOUS_DIAGNOSIS' | 'ADVANCED_RECOVERY'): void => {
+      context?.taskEventLog?.append({ type, taskId: task.id, sessionId: this.options.sessionId, ...repositoryFacts(state),
+        metadata: { phase: state.autonomousRecovery!.phase, executeCount: state.autonomousRecovery!.goldenExecuteCount,
+          verifyCount: state.autonomousRecovery!.goldenVerifyCount, recoveryConsumed: state.actionBudget?.recoveryConsumed } })
+    }
+    if (state.autonomousRecovery!.phase === 'GOLDEN') note('GOLDEN_EXHAUSTED')
+    state = { ...state, status: 'ACTIVE', currentAction: 'ANALYZE',
+      autonomousRecovery: { ...state.autonomousRecovery!, phase: 'DIAGNOSING' },
+      actionBudget: { ...existingBudget, originalExhausted: true, recoveryGranted: true,
+        recoveryLimit: Math.min(existingBudget.recoveryLimit, RECOVERY_ACTION_BUDGET), recoveryConsumed: existingBudget.recoveryConsumed + 1 } }
+    // Charge before the model call: interruption/restart cannot refund a diagnosis.
+    note('AUTONOMOUS_DIAGNOSIS')
+    await context?.persistTaskStateV2?.(state)
+    const progress = { phase: 'RECOVERING' as const, status: 'active' as const, iteration: 0, elapsedMs: 0,
+      activity: { kind: 'CONTROLLER_PHASE_CHANGED' as const } }
+    context?.onProgress?.(progress)
+    this.options.progressObserver?.(progress)
+    let decision: Awaited<ReturnType<AutonomousRecoveryOptions['diagnose']>>
+    try {
+      const results = [...state.autonomousRecovery!.verificationHistory.flat(), ...state.verificationState.results]
+      const verifierOutputs = await Promise.all(results.map(async (item) => ({
+        ...(item.stepId === undefined ? {} : { stepId: item.stepId }), command: item.command ?? item.name,
+        ...(item.cwd === undefined ? {} : { cwd: item.cwd }),
+        output: await recovery.readVerificationOutput?.(item) ?? item.details ?? item.firstFailure?.tracebackSnippet ?? '',
+      })))
+      decision = await recovery.diagnose({ task: structuredClone(state), category: result.humanRequired.category,
+        reason: result.humanRequired.reason, currentPath: state.execution?.path === 'GOLDEN' ? 'GOLDEN' : 'CONTROLLER',
+        diff: await recovery.inspectDiff(), verifierOutputs, recoveryInstructions: context?.recoveryInstructions ?? [] })
+    } catch {
+      return stop(result.humanRequired.category, '自动诊断未取得有效的结构化结果，请检查模型连接或补充失败信息后重试。')
+    }
+    const validation = validateAutonomousDiagnosis(decision, state, context?.approvedVerificationCommand)
+    if (!validation.ok) return stop(validation.category ?? result.humanRequired.category, validation.reason)
+    state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, diagnosis: validation.decision } }
+    // Diagnosis is read-only. Never treat a changed repository as its own checkpoint.
+    if (!reconcileTaskState(state, await this.options.dispatcher.inspectRepository()).reconciled) return stop('REPO_DRIFT', '诊断期间仓库发生变化，请先核对修改。')
+    if (decision.strategy === 'REPLAN_VERIFICATION') {
+      if (state.actionBudget!.recoveryConsumed >= state.actionBudget!.recoveryLimit) return stop('ACTION_BUDGET_EXHAUSTED', '恢复额度不足以重新规划并验证。')
+      state = { ...state, actionBudget: { ...state.actionBudget!, recoveryConsumed: state.actionBudget!.recoveryConsumed + 1 } }
+      await context?.persistTaskStateV2?.(state)
+      const plan = await planVerification({ repositoryRoot: this.options.repositoryRoot, task, risk: assessRisk(state).level,
+        changedAreaHint: decision.paths.length > 0 ? decision.paths : state.gitState.changedFiles.length > 0 ? state.gitState.changedFiles : task.allowedPaths ?? [] })
+      if (plan.confidence === 'INSUFFICIENT' || plan.approvalRequired) return stop('PLANNING_REQUIRED', '确定性规划仍无法建立无需新增授权的验证计划，请明确验收方式。')
+      state = { ...state, verificationPlan: plan, autonomousRecovery: { ...state.autonomousRecovery!,
+        ...(state.autonomousRecovery!.originalVerificationPlan !== undefined || state.verificationPlan === undefined ? {} : { originalVerificationPlan: state.verificationPlan }) } }
+    }
+    if (state.verificationPlan === undefined || state.verificationPlan.confidence === 'INSUFFICIENT' ||
+        !verificationPlanApprovalSatisfied(state.verificationPlan, context?.approvedVerificationCommand)) {
+      return stop('PLANNING_REQUIRED', '恢复仍缺少可安全执行的确定性验证计划。')
+    }
+    if (context?.shouldPauseAutonomousWork?.() || (context?.hardDeadlineAtMs !== undefined && Date.now() >= context.hardDeadlineAtMs)) return { status: 'PAUSED', taskStateV2: state }
+    const needsImplementation = decision.strategy === 'FIX_IMPLEMENTATION' || (decision.strategy === 'REPLAN_VERIFICATION' && state.autonomousRecovery!.goldenExecuteCount === 0)
+    state = { ...state, status: needsImplementation ? 'PENDING' : 'ACTIVE', currentAction: needsImplementation ? 'EXECUTE' : 'VERIFY', blockers: [],
+      verificationState: needsImplementation ? state.verificationState : { ...state.verificationState, results: [] },
+      completion: { ...state.completion, bindings: bindingsFromVerificationPlan(state.verificationPlan, { identity: 'step' }) },
+      execution: { ...state.execution!, path: 'CONTROLLER', escalated: true }, autonomousRecovery: { ...state.autonomousRecovery!, phase: 'ADVANCED' } }
+    note('ADVANCED_RECOVERY')
+    await context?.persistTaskStateV2?.(state)
+    return this.finishRecovery(await this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: state }), context)
+  }
+
+  private async runGolden(
     task: WorkSessionTask,
     resumeData?: unknown,
     checkpoint?: GuardianTaskRecoveryCheckpoint,
@@ -326,6 +497,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       verificationPlan: plan,
       completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
       execution: { path: 'GOLDEN', escalated: false, startCheckpoint: { ...state.gitState } },
+      autonomousRecovery: { phase: 'GOLDEN', goldenExecuteCount: 0, goldenVerifyCount: 0, executorHistory: [], verificationHistory: [] },
       updatedAt: new Date().toISOString(),
     }
     note({ type: 'VERIFICATION_PLANNED', ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command), metadata: { planId: plan.planId, fingerprint: plan.fingerprint, confidence: plan.confidence, scope: plan.estimatedScope } })
@@ -348,7 +520,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       await context?.persistTaskStateV2?.(state)
       return { ...goldenTerminal({ category, reason, state, executeCount: 0, verifyCount: 0, provider: undefined,
         verifier: blockedStep?.id ?? plan.planId, changedFiles: state.gitState.changedFiles })
-      , ...(blockedStep === undefined ? {} : { pendingVerificationCommand: blockedStep.originalCommand ?? blockedStep.command }) }
+      , ...(blockedStep === undefined || blockedStep.admission === 'UNSUPPORTED' ? {} : { pendingVerificationCommand: blockedStep.originalCommand ?? blockedStep.command }) }
     }
 
     const eligibility = assessGoldenPathEligibility({
@@ -381,15 +553,22 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     const routeProvider = concreteRuntimeProvider(providerOf(agent))
 
     const dispatchExecute = async (retry?: { reason: 'NO_OP_EXECUTION'; instruction: string }): Promise<{ result: GoldenDispatchResult; end: RepositoryReality }> => {
+      if (executeCount >= 2) throw new Error('Golden EXECUTE budget exhausted')
       executeCount += 1
+      state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, goldenExecuteCount: executeCount },
+        actionBudget: { ...state.actionBudget!, originalConsumed: state.actionBudget!.originalConsumed + 1 } }
+      await context?.persistTaskStateV2?.(state)
       note({
         type: 'AGENT_DISPATCHED', action: 'EXECUTE', agent: agent.id,
         ...(routeProvider === undefined ? {} : { provider: routeProvider }), ...repositoryFacts(state),
         ...(retry === undefined ? {} : { metadata: { reason: retry.reason, autoRetry: true, attempt: executeCount } }),
       })
       emit('EXECUTING', 'active', { kind: 'PROVIDER_DISPATCHED', ...(routeProvider === undefined ? {} : { provider: routeProvider }) })
-      const result = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state), ...(retry === undefined ? {} : { retry }) })
+      const result = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state), ...(retry === undefined ? {} : { retry }), recoveryInstructions: context?.recoveryInstructions ?? [] })
       const end = await this.options.dispatcher.inspectRepository()
+      state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, executorHistory: [...state.autonomousRecovery!.executorHistory,
+        { status: result.status, ...(result.summary === undefined ? {} : { summary: result.summary }), blockers: result.blockers ?? [], changedFiles: end.changedFiles }] } }
+      await context?.persistTaskStateV2?.(state)
       return { result, end }
     }
 
@@ -432,12 +611,17 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     }
 
     const verifyOnce = async (): Promise<GoldenDispatchResult> => {
+      if (verifyCount >= 2) throw new Error('Golden VERIFY budget exhausted')
       verifyCount += 1
+      state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, goldenVerifyCount: verifyCount },
+        actionBudget: { ...state.actionBudget!, originalConsumed: state.actionBudget!.originalConsumed + 1 } }
+      await context?.persistTaskStateV2?.(state)
       note({ type: 'VERIFICATION_STARTED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command) })
       emit('VERIFYING', 'active', { kind: 'VERIFIER_STARTED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId })
       const result = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state),
         ...(context?.approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand: context.approvedVerificationCommand }) })
       state = applyGoldenVerify(state, result)
+      state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, verificationHistory: [...state.autonomousRecovery!.verificationHistory, result.verificationResults ?? []] } }
       return result
     }
 

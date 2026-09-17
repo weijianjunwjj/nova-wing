@@ -13,6 +13,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { WorkSessionControlController } from './controller.js'
+import type { ControlResumeInput } from './controller.js'
 import { renderHtml, APP_JS, STYLES_CSS } from './view.js'
 import type { ControlEvent } from './events.js'
 
@@ -150,6 +151,14 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/approve-verification') {
       return this.serveApproveVerification(req, res)
     }
+    if (method === 'POST' && path === '/api/session/reject-verification') {
+      if (!this.authorizeMutation(req, res)) return
+      return this.readBodyWithLimit(req, res, () => {
+        const result = this.controller.rejectPendingVerification()
+        this.respondJson(res, result.accepted ? 202 : 409,
+          result.accepted ? { accepted: true } : { error: result.reason })
+      })
+    }
     if (method === 'POST' && path === '/api/session/runtime-repair') {
       return this.serveRuntimeRepair(req, res)
     }
@@ -169,6 +178,7 @@ export class WorkSessionControlServer {
       '/api/session/resume',
       '/api/session/resume-recoverable',
       '/api/session/approve-verification',
+      '/api/session/reject-verification',
       '/api/session/runtime-repair',
       '/api/session/recover-checkpoint',
     ])
@@ -512,7 +522,7 @@ function envelopeFromEvent(event: ControlEvent, id: number): SseEnvelope {
 }
 
 function parseResumeBody(body: string):
-  | { ok: true; input: { decision?: string; approval?: boolean } }
+  | { ok: true; input: ControlResumeInput }
   | { ok: false; error: string } {
   let parsed: unknown
   try {
@@ -525,11 +535,28 @@ function parseResumeBody(body: string):
   }
   const record = parsed as Record<string, unknown>
   const keys = Object.keys(record)
-  if (keys.some((key) => key !== 'decision' && key !== 'approval')) {
+  if (keys.some((key) => !['decision', 'approval', 'recovery', 'taskId', 'generation'].includes(key))) {
     return { ok: false, error: 'resume body contains unknown fields' }
   }
-  if (record.decision !== undefined && record.approval !== undefined) {
+  if (['decision', 'approval', 'recovery'].filter((key) => record[key] !== undefined).length > 1) {
     return { ok: false, error: 'resume body must contain decision or approval, not both' }
+  }
+  const scope: Pick<ControlResumeInput, 'taskId' | 'generation'> = {}
+  if (record.taskId !== undefined) {
+    if (typeof record.taskId !== 'string' || !record.taskId.trim()) return { ok: false, error: 'taskId must be a nonempty string' }
+    scope.taskId = record.taskId
+  }
+  if (record.generation !== undefined) {
+    if (typeof record.generation !== 'number' || !Number.isSafeInteger(record.generation) || record.generation < 0) {
+      return { ok: false, error: 'generation must be a nonnegative integer' }
+    }
+    scope.generation = record.generation
+  }
+  if (record.recovery !== undefined) {
+    if (record.recovery !== 'diagnose' || scope.taskId === undefined || scope.generation === undefined) {
+      return { ok: false, error: 'diagnosis requires the current taskId and generation' }
+    }
+    return { ok: true, input: { ...scope, recovery: 'diagnose' } }
   }
   if (record.decision !== undefined) {
     if (typeof record.decision !== 'string') {
@@ -539,13 +566,13 @@ function parseResumeBody(body: string):
     if (decision.length < 1 || decision.length > 2_000) {
       return { ok: false, error: 'decision must be 1..2000 characters' }
     }
-    return { ok: true, input: { decision } }
+    return { ok: true, input: { ...scope, decision } }
   }
   if (record.approval !== undefined) {
     if (typeof record.approval !== 'boolean') {
       return { ok: false, error: 'approval must be a boolean' }
     }
-    return { ok: true, input: { approval: record.approval } }
+    return { ok: true, input: { ...scope, approval: record.approval } }
   }
-  return { ok: true, input: {} }
+  return { ok: true, input: scope }
 }

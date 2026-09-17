@@ -126,6 +126,9 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    humanRequiredGeneration?: number
+    recoveryInProgress?: boolean
+    autonomousRecovery?: { available: boolean; exhausted: boolean }
     actionBudgetRecovery?: {
       available: boolean
       originalLimit: number
@@ -161,6 +164,7 @@ export interface WorkSessionControlSnapshot {
       taskId: string
       command: string
       generation: number
+      status?: 'REQUESTED' | 'REJECTED'
     }
     /** A stale decision blocker is satisfied by an exact durable scoped approval. */
     durableVerificationRecovery?: {
@@ -234,12 +238,13 @@ export interface CodingExecutionView {
 export interface WorkSessionControlRuntime {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
-  resume(input: { decision?: string; approval?: boolean }): Promise<WorkSessionDurableState>
+  resume(input: import('../runtime.js').ResumeInput): Promise<WorkSessionDurableState>
   /** Domain-owned query; the control layer must not reproduce approval validation. */
   canResumeWithDurableVerificationApproval?(): boolean
   /** Reconcile an exact durable approval and resume without user decision data. */
   resumeWithDurableVerificationApproval?(): Promise<WorkSessionDurableState>
   approvePendingVerificationAndContinue?(): Promise<WorkSessionDurableState>
+  rejectPendingVerification?(): Promise<WorkSessionDurableState>
   recoverFailedGitCheckpoint?(): Promise<WorkSessionDurableState>
   /** v0.2.4: diagnose → repair → resume the same Session; never re-runs Executor. */
   repairRuntimeAndResume?(): Promise<WorkSessionDurableState>

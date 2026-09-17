@@ -261,3 +261,169 @@ test('existing control buttons retain authenticated endpoint handlers', async ()
   }
   assert.equal(h.requests.at(-2)?.init?.body, JSON.stringify({ decision: 'Use the approved migration plan' }))
 })
+
+test('engineering Human Required exposes scoped recovery and instructions with usable failure evidence', async () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.humanRequired = { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'Internal English reason enum' }
+  s.runtime.humanRequiredGeneration = 4
+  s.runtime.autonomousRecovery = { available: true, exhausted: false }
+  s.runtime.verificationFailure = { command: 'npm test', classification: 'CODE_FAILURE', exitCode: 1 }
+  s.runtimeOverview.executor.status = 'COMPLETED'
+  s.runtimeOverview.iteration.current = 2
+  s.debug = { taskEvents: { T1: [
+    { type: 'AGENT_DISPATCHED', action: 'EXECUTE' }, { type: 'VERIFICATION_FAILED' },
+    { type: 'AGENT_DISPATCHED', action: 'EXECUTE' }, { type: 'NO_IMPLEMENTATION_PROGRESS' },
+  ] }, taskStates: { T1: { gitState: { changedFiles: ['src/app.ts'], headSha: 'abcdef0123' } } } }
+  h.render(s)
+  assert.equal(h.node('decision-title').textContent, '需要你的决定')
+  assert.equal(h.node('diagnose-continue-btn').hidden, false)
+  assert.equal(h.node('diagnose-continue-btn').disabled, false)
+  assert.equal(h.node('decision-input').hidden, false)
+  assert.equal(h.node('resume-decision-btn').hidden, false)
+  assert.match(h.html, /提交指令并继续/u)
+  assert.match(h.html, /AI 诊断并继续/u)
+  assert.doesNotMatch(h.node('decision-category').textContent, /CODE_FAILURE/u)
+  assert.doesNotMatch(h.node('decision-reason').textContent, /Internal English/u)
+  assert.match(h.node('decision-attempts').textContent, /第 1 轮 Executor.*验证未通过.*第 2 轮 Executor.*没有产生新的有效修改/u)
+  assert.match(h.node('decision-verification').textContent, /npm test.*退出码 1/u)
+  assert.match(h.node('decision-changes').textContent, /src\/app.ts.*abcdef01/u)
+  assert.equal(h.node('overview-phase').textContent, '等待人工处理')
+  assert.equal(h.node('overview-status').textContent, '等待人工处理 · 已暂停')
+  assert.equal(h.node('overview-executor').textContent, 'Codex · 已完成')
+  assert.equal(h.node('overview-iteration').textContent, '2 / 2')
+  await h.node('diagnose-continue-btn').listeners.get('click')!()
+  let request = h.requests.filter(entry => entry.init !== undefined).at(-1)!
+  assert.equal(request.path, '/api/session/resume')
+  assert.deepEqual(JSON.parse(request.init!.body as string), { recovery: 'diagnose', taskId: 'T1', generation: 4 })
+  h.node('decision-input').value = '只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。'
+  await h.node('resume-decision-btn').listeners.get('click')!()
+  request = h.requests.filter(entry => entry.init !== undefined).at(-1)!
+  assert.deepEqual(JSON.parse(request.init!.body as string), {
+    decision: '只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。', taskId: 'T1', generation: 4,
+  })
+  assert.equal((request.init!.headers as Record<string, string>)['X-NovaWing-Control-Token'], 'private-test-token')
+  assert.equal(h.node('decision-input').value, '', 'accepted instructions are not left for accidental repeat submission')
+})
+
+test('recovery progress and exhausted recovery remain actionable without claiming a new Task or new quota', () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.humanRequired = { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'repair failed' }
+  s.runtime.autonomousRecovery = { available: false, exhausted: true }
+  h.render(s)
+  assert.equal(h.node('diagnose-continue-btn').hidden, false)
+  assert.equal(h.node('diagnose-continue-btn').disabled, true)
+  assert.equal(h.node('decision-input').hidden, false)
+  assert.equal(h.node('resume-decision-btn').disabled, false)
+  assert.match(h.node('decision-guidance').textContent, /额度已用完.*不会重置恢复额度/u)
+  s.runtime.recoveryInProgress = true
+  h.render(s)
+  assert.equal(h.node('decision-title').textContent, '正在恢复当前任务')
+  assert.equal(h.node('overview-phase').textContent, '正在恢复')
+  assert.equal(h.node('resume-decision-btn').disabled, true)
+  assert.equal(h.node('decision-input').disabled, true)
+  assert.match(h.node('decision-guidance').textContent, /保留验证计划、失败证据与执行历史/u)
+})
+
+test('permission requests only expose dedicated approval and durable rejection controls', async () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.humanRequired = { category: 'PERMISSION_REQUIRED', reason: 'Exact verifier authorization required' }
+  s.runtime.pendingVerificationApproval = { taskId: 'T1', command: 'npm test', generation: 3 }
+  h.render(s)
+  assert.equal(h.node('approve-verification-btn').hidden, false)
+  assert.equal(h.node('reject-verification-btn').hidden, false)
+  assert.equal(h.node('decision-input').hidden, true)
+  assert.equal(h.node('resume-decision-btn').hidden, true)
+  assert.equal(h.node('diagnose-continue-btn').hidden, true)
+  await h.node('reject-verification-btn').listeners.get('click')!()
+  const request = h.requests.filter(entry => entry.init !== undefined).at(-1)!
+  assert.equal(request.path, '/api/session/reject-verification')
+  assert.equal((request.init!.headers as Record<string, string>)['X-NovaWing-Control-Token'], 'private-test-token')
+  assert.match(h.node('resume-note').textContent, /已拒绝授权.*保持暂停/u)
+  s.runtime.pendingVerificationApproval = { taskId: 'T1', command: 'npm test', generation: 3, status: 'REJECTED' }
+  h.render(s)
+  assert.equal(h.node('approve-verification-btn').disabled, true)
+  assert.equal(h.node('reject-verification-btn').disabled, true)
+  assert.match(h.node('decision-guidance').textContent, /已拒绝.*证据已保留/u)
+  delete s.runtime.pendingVerificationApproval
+  h.render(s)
+  assert.equal(h.node('decision-title').textContent, '需要授权')
+  assert.equal(h.node('approve-verification-btn').hidden, true, 'an unspecified permission cannot receive a generic grant')
+  assert.equal(h.node('decision-input').hidden, true)
+})
+
+test('polling preserves a draft within its exact Task and clears it when Task or decision generation changes', () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.humanRequired = { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'failed' }
+  s.runtime.humanRequiredGeneration = 1
+  h.render(s)
+  h.node('decision-input').value = 'T1-only instruction'
+  h.render(s)
+  assert.equal(h.node('decision-input').value, 'T1-only instruction')
+  s.runtime.currentTaskId = 'T2'
+  h.render(s)
+  assert.equal(h.node('decision-input').value, '')
+  h.node('decision-input').value = 'old generation'
+  s.runtime.humanRequiredGeneration = 2
+  h.render(s)
+  assert.equal(h.node('decision-input').value, '')
+})
+
+test('current terminal and paused runtime states override stale historical UI phases', () => {
+  const h = harness()
+  const s = snapshot()
+  for (const [state, label] of [['FAILED', '运行失败'], ['COMPLETED', '已完成'], ['RECOVERABLE', '等待恢复'], ['PAUSED', '已暂停']]) {
+    s.runtime.state = state
+    h.render(s)
+    assert.equal(h.node('overview-phase').textContent, label)
+  }
+  s.runtime.state = 'COMPLETED'
+  s.runtime.recoveryInProgress = true
+  h.render(s)
+  assert.equal(h.node('overview-phase').textContent, '已完成', 'completion wins even before the resume promise has settled')
+  assert.equal(h.node('decision-card').hidden, true)
+})
+
+test('unresolved Human Required after restart has one actionable decision card rather than a competing generic resume', () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.displayState = 'RECOVERABLE'
+  s.runtime.humanRequired = { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'failed' }
+  s.runtime.autonomousRecovery = { available: true, exhausted: false }
+  s.runtime.recoverableSummary = { currentTaskId: 'T1', currentPhase: 'EXECUTING' }
+  h.render(s)
+  assert.equal(h.node('decision-card').hidden, false)
+  assert.equal(h.node('recoverable-card').hidden, true)
+  assert.equal(h.node('overview-phase').textContent, '等待人工处理')
+})
+
+test('domain recovery projection is the single eligibility source and authority failures never receive generic approval', () => {
+  const h = harness()
+  const s = snapshot()
+  s.runtime.state = 'SUSPENDED'
+  s.runtime.humanRequired = { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'failed' }
+  s.runtime.autonomousRecovery = { available: false, exhausted: false }
+  h.render(s)
+  assert.equal(h.node('diagnose-continue-btn').hidden, false)
+  assert.equal(h.node('diagnose-continue-btn').disabled, true)
+  s.runtime.humanRequired = { category: 'ACTION_BUDGET_EXHAUSTED', reason: 'bounded recovery exhausted' }
+  s.runtime.autonomousRecovery = { available: false, exhausted: true }
+  h.render(s)
+  assert.equal(h.node('decision-input').hidden, false, 'exhaustion still permits durable instructions')
+  delete s.runtime.autonomousRecovery
+  s.runtime.humanRequired = { category: 'RECOVERY_REQUIRES_AUTHORIZATION', reason: 'EXPAND_ALLOWED_PATHS' }
+  h.render(s)
+  assert.equal(h.node('diagnose-continue-btn').hidden, true)
+  assert.equal(h.node('decision-input').hidden, true)
+  assert.equal(h.node('approve-verification-btn').hidden, true)
+  assert.doesNotMatch(h.node('decision-category').textContent + h.node('decision-reason').textContent, /RECOVERY_REQUIRES_AUTHORIZATION|EXPAND_ALLOWED_PATHS/u)
+  assert.match(h.node('decision-guidance').textContent, /受信任的项目配置.*不会替你批准/u)
+})

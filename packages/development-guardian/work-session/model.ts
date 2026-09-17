@@ -86,7 +86,7 @@ export interface PendingVerificationApproval {
   command: string
   commandFingerprint: string
   generation: number
-  status: 'REQUESTED' | 'APPROVED'
+  status: 'REQUESTED' | 'APPROVED' | 'REJECTED'
 }
 
 /** Durable proof that a Runtime Repair selected an independent reviewer and resumed. */
@@ -99,6 +99,14 @@ export interface RuntimeRepairRecord {
 }
 
 export interface WorkSessionDurableState {
+  /** User instructions are durable task-scoped input, never an authorization grant. */
+  taskRecoveryInstructions?: Record<string, readonly {
+    sessionId: string
+    taskId: string
+    generation: number
+    instruction: string
+    recordedAt: string
+  }[]>
   sessionId: string
   state: WorkSessionState
   currentTaskIndex: number

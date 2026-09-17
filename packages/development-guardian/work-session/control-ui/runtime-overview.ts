@@ -88,9 +88,16 @@ export function deriveRuntimeOverview(input: RuntimePresentationInput): RuntimeO
   const totalElapsedMs = startedAt !== undefined && Number.isFinite(end)
     ? Math.max(0, end - Date.parse(startedAt))
     : state?.activeElapsedMs ?? 0
-  const currentPhase = state?.state === 'COMPLETED' ? 'COMPLETED'
-    : input.currentPhaseTaskId === taskId && input.currentPhase !== undefined ? input.currentPhase
-      : phases.at(-1)?.phase ?? ({ EXECUTE: 'EXECUTING', VERIFY: 'VERIFYING', REVIEW: 'REVIEWING', ANALYZE: 'PLANNING', COMPLETE: 'FINALIZING' }[task?.currentAction ?? ''] ?? 'PLANNING')
+  const historicalPhase = input.currentPhaseTaskId === taskId && input.currentPhase !== undefined ? input.currentPhase
+    : phases.at(-1)?.phase ?? ({ EXECUTE: 'EXECUTING', VERIFY: 'VERIFYING', REVIEW: 'REVIEWING', ANALYZE: 'PLANNING', COMPLETE: 'FINALIZING' }[task?.currentAction ?? ''] ?? 'PLANNING')
+  // Runtime/liveness is authoritative for the current system phase. A retained
+  // Executor/Verifier callback describes history, not work happening while paused.
+  const waitingForHuman = state?.state === 'SUSPENDED' && state.humanRequired !== undefined
+  const status = terminal ? state.state : waitingForHuman ? 'SUSPENDED' : input.displayState
+  const currentPhase = terminal ? state.state
+    : waitingForHuman ? 'HUMAN_REQUIRED'
+      : ['RECOVERABLE', 'PAUSED', 'SUSPENDED', 'READY', 'SCHEDULED'].includes(status) ? status
+        : state?.state === 'SUSPENDED' ? 'SUSPENDED' : historicalPhase
   const lastLiveExecutor = ephemeral.filter(event => event.phase === 'EXECUTING' &&
     ['PROVIDER_DISPATCHED', 'PROVIDER_COMPLETED', 'PROVIDER_FAILED'].includes(event.kind)).at(-1)
   const outcomes = [
@@ -104,11 +111,11 @@ export function deriveRuntimeOverview(input: RuntimePresentationInput): RuntimeO
     : state?.state === 'COMPLETED' || task?.status === 'COMPLETED' ? 'COMPLETED'
       : currentPhase === 'EXECUTING' && input.hasActiveExecution && state?.state === 'RUNNING' && !executorCompleted && !executorFailed ? 'RUNNING'
         : executorFailed ? 'FAILED'
-          : executorCompleted || ['VERIFYING', 'REVIEWING', 'FINALIZING'].includes(currentPhase) ? 'COMPLETED' : 'WAITING'
+          : executorCompleted || ['VERIFYING', 'REVIEWING', 'FINALIZING'].includes(historicalPhase) ? 'COMPLETED' : 'WAITING'
   const createdAt = iso(state?.createdAt ?? definition.createdAt)
   const lastActivityAt = terminal ? undefined : ephemeral.at(-1)?.timestamp ?? input.ledger.at(-1)?.timestamp
   return {
-    ...(taskId === undefined ? {} : { taskId }), status: input.displayState, currentPhase,
+    ...(taskId === undefined ? {} : { taskId }), status, currentPhase,
     ...(createdAt === undefined ? {} : { createdAt }),
     startMode: state?.scheduleSource ?? definition.scheduleSource ?? 'immediate',
     ...((state?.scheduledStartAt ?? definition.scheduledStartAt) == null ? {} : { scheduledStartAt: (state?.scheduledStartAt ?? definition.scheduledStartAt)! }),
@@ -126,6 +133,11 @@ export function projectTaskDiagnostics(state: WorkSessionDurableState | undefine
     taskStates: Object.fromEntries(Object.entries(state?.taskStatesV2 ?? {}).map(([id, task]) => [id, {
       status: task.status, currentAction: task.currentAction, risk: task.risk,
       execution: task.execution, actionBudget: task.actionBudget, humanConstraints: task.humanConstraints,
+      gitState: { headSha: task.gitState?.headSha, changedFiles: task.gitState?.changedFiles ?? [] },
+      autonomousRecovery: task.autonomousRecovery === undefined ? undefined : {
+        phase: task.autonomousRecovery.phase, goldenExecuteCount: task.autonomousRecovery.goldenExecuteCount,
+        goldenVerifyCount: task.autonomousRecovery.goldenVerifyCount, triggerCategory: task.autonomousRecovery.triggerCategory,
+      },
       verificationPlan: task.verificationPlan,
       verificationResults: task.verificationState?.results.map(result => ({
         name: result.name, status: result.status, classification: result.classification,

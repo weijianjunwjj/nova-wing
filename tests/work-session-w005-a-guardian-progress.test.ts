@@ -139,7 +139,7 @@ test('V2 progress uses neutral TASK_PHASE telemetry while V1 retains GUARDIAN_PH
 await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and reason', async () => {
   // 1. HTML 静态包含 decision card 标题与占位元素。
   const html = renderHtml({ controlToken: 'tok', serverOrigin: 'http://127.0.0.1:4317' })
-  assert.ok(html.includes('需要人工决策'))
+  assert.ok(html.includes('需要你的决定'))
   assert.ok(html.includes('decision-category'))
   assert.ok(html.includes('decision-reason'))
 

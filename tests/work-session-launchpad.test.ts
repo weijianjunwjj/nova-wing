@@ -2006,7 +2006,7 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     const targetRepo = { value: 'old-repo' }
     const branch = { value: 'old-branch' }
     const taskId = { value: 'OLD' }
-    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old' }]))
+    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old', removeAttribute() {} }]))
     const briefResult = { textContent: '' }
     const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
       taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},

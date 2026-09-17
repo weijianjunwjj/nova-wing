@@ -18,6 +18,7 @@ export interface TaskBriefAnalysis {
     branch?: string
     taskId?: string
     taskInstructions: string
+    tasks?: Array<{ taskId?: string; taskInstructions: string }>
     allowedPaths?: string[]
     forbiddenPaths?: string[]
     constraints?: string[]
@@ -44,19 +45,83 @@ export interface TaskBriefAnalysis {
   }
   recognized: string[]
   warnings: string[]
+  unresolvedFields?: Array<'taskId' | 'allowedPaths'>
 }
 
 /** Kept below the 96 KiB JSON request body limit even for multibyte text. */
 export const MAX_TASK_BRIEF_CHARS = 20_000
 const MAX_TASK_INSTRUCTIONS_CHARS = 8_000
 const PATH_SECTION_END = /^(?:目标|task\s*(?:goal|instructions?)|验证|验收|required\s*evidence|所需证据|证据绑定|分支|branch|workspace|项目(?:目录|路径)?|task\s*id|(?:soft|hard)\s*limit|开始(?:时间)?|立即执行|立即开始|模型|model|reasoning|executor|执行器|自动(?:提交|推送)|auto\s*(?:commit|push)|禁止(?:修改)?|forbidden\s*paths?|constraints?|acceptance\s*criteria|do\s*not\s*do)/iu
-const PATH_ENTRY_PREFIX = /^(?:[-*•]|\d+[.)、])\s*/u
+const PATH_ENTRY_PREFIX = /^(?:[-*•]|\d+[.)、])\s+/u
+
+type BriefField = 'taskId' | 'allowedPaths' | 'forbiddenPaths' | 'taskBlock' | 'other'
+interface BriefHeading { field: BriefField; label: string; value: string }
+interface BriefSection extends BriefHeading { index: number; lines: string[] }
+
+// One heading grammar is shared by scalar values, path lists and block boundaries.
+// Only a complete, labelled field can supply an ID; prose is never searched for tokens.
+const BRIEF_LABELS: ReadonlyArray<{ label: string; pattern: RegExp; field?: BriefField }> = [
+  { label: 'Task ID', pattern: /^(?:task\s*id|任务\s*id|任务编号)$/iu, field: 'taskId' },
+  { label: 'Allowed Paths', pattern: /^(?:只允许(?:修改)?(?:路径)?|允许修改(?:路径)?|allowed\s*paths?)$/iu, field: 'allowedPaths' },
+  { label: 'Forbidden Paths', pattern: /^(?:禁止(?:修改)?(?:路径)?|forbidden\s*paths?)$/iu, field: 'forbiddenPaths' },
+  { label: '目标', pattern: /^(?:目标|任务目标|task\s*(?:goal|instructions?))$/iu },
+  { label: 'Workspace', pattern: /^(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)$/iu },
+  { label: 'Branch', pattern: /^(?:branch|分支)$/iu },
+  { label: 'Constraints', pattern: /^(?:constraints?|约束)$/iu },
+  { label: 'Acceptance Criteria', pattern: /^(?:acceptance\s*criteria|验收(?:标准|条件)?|验证)$/iu },
+  { label: 'Required Evidence', pattern: /^(?:required\s*evidence(?:\s*bindings?)?|所需证据|证据绑定)$/iu },
+  { label: 'Do Not Do', pattern: /^(?:do\s*not\s*do|不要做|禁止事项)$/iu },
+  ...['Soft Limit', 'Hard Limit', 'Start', 'Start Time', '开始时间', 'Auto Commit', 'Auto Push', '自动提交', '自动推送', 'Model', '模型', 'Reasoning', '推理强度', 'Executor', '执行器', 'Notification', '通知'].map((label) => ({ label, pattern: new RegExp(`^${label.replaceAll(' ', '\\s*')}$`, 'iu') })),
+]
+
+function briefHeading(rawLine: string): BriefHeading | undefined {
+  const raw = rawLine.trim()
+  const markdownHeading = /^#{1,6}\s+/u.test(raw)
+  const line = raw.replace(/^#{1,6}\s+/u, '')
+  const bracket = /^【([^】]+)】\s*[:：]?\s*(.*)$/u.exec(line)
+  const label = bracket?.[1]?.trim() ?? line
+  if (/^(?:task|任务)\s*\d+(?:\s*[:：].*)?$/iu.test(label)) return { field: 'taskBlock', label, value: '' }
+  const assigned = /^([^:：=]+?)\s*[:：=]\s*(.*)$/u.exec(label)
+  for (const entry of BRIEF_LABELS) {
+    if (bracket !== null && entry.pattern.test(label)) return { field: entry.field ?? 'other', label: entry.label, value: bracket[2]!.trim() }
+    if (entry.pattern.test(assigned?.[1]?.trim() ?? label)) return { field: entry.field ?? 'other', label: entry.label, value: assigned?.[2]?.trim() ?? '' }
+  }
+  // Preserve legacy space-separated fields, e.g. "Soft Limit 10" and "分支 main".
+  if (bracket === null) {
+    for (let index = 0; index < line.length; index += 1) {
+      if (!/\s/u.test(line[index]!)) continue
+      const entry = BRIEF_LABELS.find((candidate) => candidate.field !== 'forbiddenPaths' && candidate.pattern.test(line.slice(0, index).trim()))
+      if (entry !== undefined) return { field: entry.field ?? 'other', label: entry.label, value: line.slice(index).trim() }
+    }
+  }
+  if (bracket !== null || markdownHeading) return { field: 'other', label, value: bracket?.[2]?.trim() ?? '' }
+  return undefined
+}
+
+function structuredBrief(lines: readonly string[]): { sections: BriefSection[]; lines: string[] } {
+  const sections: BriefSection[] = []
+  const normalized = lines.map((line, index) => {
+    const heading = briefHeading(line)
+    if (heading === undefined) { sections.at(-1)?.lines.push(line); return line }
+    sections.push({ ...heading, index, lines: [] })
+    return `${heading.label}: ${heading.value}`
+  })
+  return { sections, lines: normalized }
+}
+
+function sectionTaskId(sections: readonly BriefSection[]): string | undefined {
+  const section = sections.find((candidate) => candidate.field === 'taskId')
+  const value = section?.value || section?.lines.find((line) => line.trim().length > 0)?.trim()
+  return value !== undefined && /^[A-Za-z0-9._-]{1,64}$/u.test(value) ? value : undefined
+}
 
 export function analyzeTaskBrief(brief: string, now = new Date(), currentExecutorMode?: ExecutorMode): TaskBriefAnalysis {
   const text = brief.trim()
-  const lines = text.split(/\r?\n/u)
+  const sourceLines = text.split(/\r?\n/u)
+  const { sections, lines } = structuredBrief(sourceLines)
   const recognized: string[] = []
   const warnings: string[] = []
+  const unresolvedFields: NonNullable<TaskBriefAnalysis['unresolvedFields']> = []
   const fields: TaskBriefAnalysis['fields'] = { taskInstructions: '' }
   const mark = (name: string): void => { if (!recognized.includes(name)) recognized.push(name) }
 
@@ -68,7 +133,8 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
       : `Task 内容超过 ${MAX_TASK_INSTRUCTIONS_CHARS} 字符；Quick Fill 仅填入已识别的核心目标，原始 Brief 会保留。`)
   }
 
-  const workspace = firstCapture(text, [
+  const normalizedText = lines.join('\n')
+  const workspace = firstCapture(normalizedText, [
     /(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)\s*[:：]\s*([^\r\n]+)/iu,
     /(^|\s)((?:[A-Za-z]:[\\/][^\r\n]+|\/[A-Za-z0-9._~/-]+))(?:\s|$)/u,
   ])
@@ -77,17 +143,44 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
     mark('Workspace')
   }
 
-  const branch = firstCapture(text, [/(?:branch|分支)\s*[:：]\s*([^\s，。,；;]+)/iu, /(?:分支)\s+([^\s，。,；;]+)/u])
+  const branch = firstCapture(normalizedText, [/(?:branch|分支)\s*[:：]\s*([^\s，。,；;]+)/iu, /(?:分支)\s+([^\s，。,；;]+)/u])
   if (branch !== undefined && isSafeBranch(branch)) { fields.branch = branch; mark('Branch') }
 
-  const taskId = firstCapture(text, [/(?:task\s*id|任务\s*id|任务编号)\s*[:：]?\s*([A-Za-z0-9._-]{1,64})/iu])
+  const taskId = sectionTaskId(sections)
   if (taskId !== undefined) { fields.taskId = taskId; mark('Task ID') }
+  else if (sections.some((section) => section.field === 'taskId')) {
+    unresolvedFields.push('taskId')
+    warnings.push('Task ID 未识别，请确认；仅允许 1–64 个字母、数字、点、下划线和连字符。')
+  }
 
-  const allowedPaths = extractPathSection(lines, /^(?:只允许(?:修改)?|允许修改|allowed\s*paths?)\s*[:：]?\s*(.*)$/iu)
+  const explicitBlocks = sections.filter((section) => section.field === 'taskBlock')
+  const idBlocks = sections.filter((section) => section.field === 'taskId')
+  const blocks = explicitBlocks.length > 0 ? explicitBlocks : idBlocks.length > 1 ? idBlocks : []
+  if (blocks.length > 0) {
+    fields.tasks = blocks.map((block, index) => {
+      const blockLines = sourceLines.slice(block.index + (block.field === 'taskBlock' ? 1 : 0), blocks[index + 1]?.index)
+      const parsed = structuredBrief(blockLines)
+      const id = sectionTaskId(parsed.sections)
+      if (id === undefined && parsed.sections.some((section) => section.field === 'taskId') && !unresolvedFields.includes('taskId')) {
+        unresolvedFields.push('taskId')
+        warnings.push('部分 Task ID 未识别，请分别确认各 Task 的有效编号。')
+      }
+      return { ...(id === undefined ? {} : { taskId: id }), taskInstructions: taskInstructionsFromBrief('', parsed.lines) ?? '' }
+    })
+    // A global ID must never be copied into every task block.
+    delete fields.taskId
+    mark('Tasks')
+  }
+
+  const allowed = extractPathSections(sections, 'allowedPaths')
+  const allowedPaths = allowed.valid ? allowed.values : []
   if (allowedPaths.length > 0) { fields.allowedPaths = allowedPaths; mark('Allowed Paths') }
-  else if (/(?:只允许(?:修改)?|允许修改|allowed\s*paths?)/iu.test(text)) warnings.push('Allowed Paths 未从 Task Brief 中明确识别。')
+  else if (allowed.found) {
+    unresolvedFields.push('allowedPaths')
+    warnings.push('允许修改路径：未识别，请确认。请逐行填写有效的仓库相对路径；多个 Task 必须确认共用的修改范围。')
+  }
 
-  const forbiddenPaths = extractPathSection(lines, /^(?:禁止(?:修改)?|forbidden\s*paths?)\s*[:：]\s*(.*)$/iu)
+  const forbiddenPaths = extractPathSections(sections, 'forbiddenPaths').values
   if (forbiddenPaths.length > 0) { fields.forbiddenPaths = forbiddenPaths; mark('Forbidden Paths') }
 
   const constraints = extractTextSection(lines, /^(?:constraints?|约束)\s*[:：]?\s*(.*)$/iu)
@@ -146,10 +239,10 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
     fields.executorMode ??= currentExecutorMode ?? 'codex'
     if (explicitModel !== undefined) mark('Model')
     if (explicitReasoning !== undefined) mark('Reasoning')
-    return { fields, modelRecommendation: recommendation, recognized, warnings }
+    return { fields, modelRecommendation: recommendation, recognized, warnings, ...(unresolvedFields.length > 0 ? { unresolvedFields } : {}) }
   }
 
-  return { fields, recognized, warnings }
+  return { fields, recognized, warnings, ...(unresolvedFields.length > 0 ? { unresolvedFields } : {}) }
 }
 
 /**
@@ -215,32 +308,31 @@ function isSafeGuardianPath(value: string): boolean {
     /^[\w.@+*?{}[\],!()$=\\/-]+$/u.test(value)
 }
 
-function extractPathSection(lines: readonly string[], header: RegExp): string[] {
-  const values: string[] = []
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = header.exec(lines[index]!.trim())
-    if (match === null) continue
-    const add = (value: string): boolean => {
-      const path = value.replace(PATH_ENTRY_PREFIX, '').trim()
-      if (!isSafeGuardianPath(path)) return false
-      if (!values.includes(path)) values.push(path)
-      return true
-    }
-    if (match[1]?.trim()) add(match[1])
-    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      const line = lines[cursor]!.trim()
-      // A blank line begins a new natural-language paragraph.  Do not scan
-      // across it: this field controls Guardian's write boundary.
-      if (line.length === 0) {
-        if (values.length > 0) break
-        continue
+function extractPathSections(sections: readonly BriefSection[], field: 'allowedPaths' | 'forbiddenPaths'): { values: string[]; found: boolean; valid: boolean } {
+  const matching = sections.filter((section) => section.field === field)
+  const groups: string[][] = []
+  let valid = true
+  for (const section of matching) {
+    const values: string[] = []
+    let blank = false
+    for (const raw of [section.value, ...section.lines]) {
+      const line = raw.trim()
+      if (line.length === 0) { blank = true; continue }
+      const path = line.replace(PATH_ENTRY_PREFIX, '').trim()
+      if (!isSafeGuardianPath(path)) {
+        // An unlabelled prose paragraph after a complete list ends that list.
+        if (!(blank && values.length > 0 && /\s|\p{Script=Han}/u.test(path))) valid = false
+        break
       }
-      if (PATH_SECTION_END.test(line)) break
-      if (!add(line)) break
+      blank = false
+      if (!values.includes(path)) values.push(path)
     }
-    break
+    if (values.length === 0) valid = false
+    groups.push(values)
   }
-  return values
+  // Composer has one shared Guardian. Do not union differing task permissions.
+  if (field === 'allowedPaths' && groups.some((group) => JSON.stringify([...group].sort()) !== JSON.stringify([...(groups[0] ?? [])].sort()))) valid = false
+  return { values: [...new Set(groups.flat())], found: matching.length > 0, valid }
 }
 
 function extractTextSection(lines: readonly string[], header: RegExp): string[] {

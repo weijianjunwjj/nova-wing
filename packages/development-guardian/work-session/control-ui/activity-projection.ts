@@ -348,6 +348,7 @@ export function deriveUserActivities(input: ActivityProjectionInput): UserActivi
       CHECKPOINT_RECOVERY_REQUESTED: '正在恢复 checkpoint', CHECKPOINT_RECOVERY_COMPLETED: 'checkpoint 恢复完成', CHECKPOINT_RECOVERY_FAILED: 'checkpoint 恢复失败',
       VERIFICATION_APPROVAL_REQUESTED: '需要验证授权', VERIFICATION_APPROVED: '验证已获授权',
       BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用', PROVIDER_SWITCHED: 'Executor 已切换 Provider',
+      GOLDEN_EXHAUSTED: 'Golden 执行额度已用完', AUTONOMOUS_DIAGNOSIS: '开始 AI 自主诊断', ADVANCED_RECOVERY: '进入受限 Advanced Recovery',
     }
     activities.set(id, { id, timestamp, kind, status: kind === 'HUMAN_REQUIRED' || kind === 'VERIFICATION_APPROVAL_REQUESTED' ? 'human_required' : kind.endsWith('_FAILED') ? 'failed' : 'completed',
       label: labels[kind] ?? kind, ...(taskId === undefined ? {} : { taskId }), ...extra })
@@ -376,6 +377,9 @@ export function deriveUserActivities(input: ActivityProjectionInput): UserActivi
       const category = safeIdentity(event.metadata?.category)
       repeatableFacts.push({ source: 'task', eventId: event.eventId, kind: event.type, timestamp: event.timestamp, taskId: event.taskId, ...(category === undefined ? {} : { category }) })
     } else if (event.type === 'TASK_COMPLETED' || event.type === 'TASK_FAILED') put(event.type, event.timestamp, event.taskId)
+    else if (event.type === 'GOLDEN_EXHAUSTED' || event.type === 'AUTONOMOUS_DIAGNOSIS' || event.type === 'ADVANCED_RECOVERY') {
+      put(event.type, event.timestamp, event.taskId, event.eventId)
+    }
     if (event.type === 'PROVIDER_SWITCHED') put(event.type, event.timestamp, event.taskId, event.eventId,
       safeProvider(event.provider) === undefined ? {} : { provider: safeProvider(event.provider)! })
   }
@@ -403,9 +407,10 @@ export function deriveUserActivities(input: ActivityProjectionInput): UserActivi
       }
     }
   }
-  // Durable identities anchor repeated human/recovery actions. A bounded control
-  // ring is never counted from zero: its surviving event IDs are unchanged after
-  // eviction. Cross-source copies match only the same action interval and facts.
+  // Human-required identity is Session + Task + category + recovery interval.
+  // Delivery latency and source-specific reason wording never create a second
+  // user decision. Durable resume boundaries distinguish a genuinely new request.
+  // Checkpoint recovery retains its separate action-occurrence matching contract.
   const repeats: Array<(typeof repeatableFacts)[number] & { sources: Set<Source> }> = []
   const priority: Record<Source, number> = { task: 0, ledger: 1, control: 2, activity: 3 }
   const boundaryBetween = (kind: string, taskId: string | undefined, left: string, right: string): boolean => {
@@ -413,16 +418,19 @@ export function deriveUserActivities(input: ActivityProjectionInput): UserActivi
     const inRange = (timestamp: string): boolean => Date.parse(timestamp) >= lower && Date.parse(timestamp) <= upper
     if (kind === 'HUMAN_REQUIRED') return taskEvents.some((event) => event.taskId === taskId &&
       ['TASK_RESUMED', 'HUMAN_ACTION_RECORDED', 'HUMAN_DECISION_RECORDED'].includes(event.type) && inRange(event.timestamp)) ||
-      input.recentEvents.some((event) => ['SESSION_RESUME_REQUESTED', 'SESSION_RESUMED'].includes(event.type) && inRange(event.timestamp))
+      input.recentEvents.some((event) => ['SESSION_RESUME_REQUESTED', 'SESSION_RESUMED'].includes(event.type) &&
+        (event.data.taskId === undefined || event.data.taskId === taskId) && inRange(event.timestamp))
     return [...ledger.map((event) => ({ kind: event.eventType, taskId: event.taskId, timestamp: event.timestamp })),
       ...input.recentEvents.map((event) => ({ kind: event.type, taskId: event.data.taskId, timestamp: event.timestamp }))].some((event) =>
       event.taskId === taskId && event.kind.startsWith('CHECKPOINT_RECOVERY_') && event.kind !== kind && inRange(event.timestamp))
   }
   for (const fact of repeatableFacts.sort((a, b) => priority[a.source] - priority[b.source] || Date.parse(a.timestamp) - Date.parse(b.timestamp))) {
-    const match = repeats.filter((entry) => entry.kind === fact.kind && entry.taskId === fact.taskId && !entry.sources.has(fact.source) &&
+    const humanRequired = fact.kind === 'HUMAN_REQUIRED'
+    const match = repeats.filter((entry) => entry.kind === fact.kind && entry.taskId === fact.taskId && (humanRequired || !entry.sources.has(fact.source)) &&
       (entry.category === undefined || fact.category === undefined || entry.category === fact.category) &&
-      (entry.reason === undefined || fact.reason === undefined || entry.reason === fact.reason) &&
-      Math.abs(Date.parse(entry.timestamp) - Date.parse(fact.timestamp)) <= 2_000 && !boundaryBetween(fact.kind, fact.taskId, entry.timestamp, fact.timestamp))
+      (humanRequired || (entry.reason === undefined || fact.reason === undefined || entry.reason === fact.reason) &&
+        Math.abs(Date.parse(entry.timestamp) - Date.parse(fact.timestamp)) <= 2_000) &&
+      !boundaryBetween(fact.kind, fact.taskId, entry.timestamp, fact.timestamp))
       .sort((a, b) => Math.abs(Date.parse(a.timestamp) - Date.parse(fact.timestamp)) - Math.abs(Date.parse(b.timestamp) - Date.parse(fact.timestamp)))[0]
     if (match === undefined) repeats.push({ ...fact, sources: new Set([fact.source]) })
     else {
@@ -431,7 +439,8 @@ export function deriveUserActivities(input: ActivityProjectionInput): UserActivi
       if (match.reason === undefined && fact.reason !== undefined) match.reason = fact.reason
     }
   }
-  for (const fact of repeats) put(fact.kind, fact.timestamp, fact.taskId, `${fact.source}:${fact.eventId}`)
+  for (const fact of repeats) put(fact.kind, fact.timestamp, fact.taskId,
+    `${fact.kind === 'HUMAN_REQUIRED' ? `${fact.category ?? 'UNKNOWN'}:` : ''}${fact.source}:${fact.eventId}`)
   put('SESSION_STARTED', dateString(input.state?.startedAt))
   for (const [taskId, shaValue] of Object.entries(input.state?.checkpointCommits ?? {})) {
     const sha = safeSha(shaValue)

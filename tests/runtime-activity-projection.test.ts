@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { deriveUserActivities } from '../packages/development-guardian/work-session/control-ui/activity-projection.js'
+import { projectTaskDiagnostics } from '../packages/development-guardian/work-session/control-ui/runtime-overview.js'
 import type { ControlEvent } from '../packages/development-guardian/work-session/control-ui/events.js'
 import type { ExecutionLedgerEvent, ExecutionLedgerEventInput } from '../packages/development-guardian/work-session/execution-ledger.js'
 import type { TaskEventV2 } from '../packages/development-guardian/work-session/task-observability.js'
@@ -292,4 +293,43 @@ test('a new live dispatch after two durable cycles marks the third execution bef
   assert.ok(executions[2]?.id.endsWith(':3'))
   const saved = deriveUserActivities({ definition, state: makeState({ ...state, taskEventLogs: { T1: [...events, { ...taskEvent('5', 'AGENT_DISPATCHED', 20, 'EXECUTE'), provider: 'codex' }] } }), ledger: [], recentEvents, executionActivities })
   assert.deepEqual(saved, result)
+})
+
+test('Human Required dedupes by Task and category regardless of delivery delay or source reason wording', () => {
+  const taskEvents = [{ ...taskEvent('human-1', 'HUMAN_REQUIRED', 1), metadata: { category: 'CODE_FAILURE_AFTER_SINGLE_FIX' } },
+    { ...taskEvent('human-duplicate', 'HUMAN_REQUIRED', 2), metadata: { category: 'CODE_FAILURE_AFTER_SINGLE_FIX' } }]
+  const state = makeState({ currentTaskId: 'T1', taskEventLogs: { T1: taskEvents } })
+  const recentEvents: ControlEvent[] = [{ id: 21, type: 'HUMAN_REQUIRED', timestamp: time(120),
+    data: { taskId: 'T1', category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'Product-facing explanation differs' } }]
+  const entries = [ledger(11, { eventType: 'HUMAN_REQUIRED', taskId: 'T1', timestamp: time(90), status: 'SUSPENDED', safeMessage: 'Original runtime explanation' })]
+  const before = JSON.stringify({ state, recentEvents, entries })
+  const result = deriveUserActivities({ definition, state, ledger: entries, recentEvents, executionActivities: [] })
+  assert.equal(result.filter(item => item.kind === 'HUMAN_REQUIRED').length, 1)
+  assert.match(result[0]!.id, /CODE_FAILURE_AFTER_SINGLE_FIX:task:human-1$/u)
+  assert.equal(projectTaskDiagnostics(state).taskEvents.T1?.length, 2, 'Debug keeps both original task events')
+  assert.equal(recentEvents.length, 1, 'the raw control event remains available in Debug')
+  assert.equal(JSON.stringify({ state, recentEvents, entries }), before, 'presentation must not rewrite raw evidence')
+})
+
+test('Human Required semantic identities distinguish Task and category and ignore unrelated Task resumes', () => {
+  const state = makeState({ currentTaskId: 'T1', taskEventLogs: { T1: [
+    { ...taskEvent('a', 'HUMAN_REQUIRED', 1), metadata: { category: 'CODE_FAILURE' } },
+    { ...taskEvent('b', 'HUMAN_REQUIRED', 2), metadata: { category: 'PERMISSION_REQUIRED' } },
+  ], T2: [{ ...taskEvent('c', 'HUMAN_REQUIRED', 1), taskId: 'T2', metadata: { category: 'CODE_FAILURE' } }] } })
+  const recentEvents: ControlEvent[] = [
+    { id: 1, type: 'SESSION_RESUMED', timestamp: time(10), data: { taskId: 'T2' } },
+    { id: 2, type: 'HUMAN_REQUIRED', timestamp: time(20), data: { taskId: 'T1', category: 'CODE_FAILURE' } },
+  ]
+  const result = deriveUserActivities({ definition, state, ledger: [], recentEvents, executionActivities: [] })
+  const human = result.filter(item => item.kind === 'HUMAN_REQUIRED')
+  assert.equal(human.length, 3)
+  assert.equal(new Set(human.map(item => item.id)).size, 3)
+})
+
+test('the user timeline records explicit Golden exhaustion, diagnosis and Advanced Recovery transitions', () => {
+  const state = makeState({ taskEventLogs: { T1: [taskEvent('a', 'GOLDEN_EXHAUSTED', 1),
+    taskEvent('b', 'AUTONOMOUS_DIAGNOSIS', 2), taskEvent('c', 'ADVANCED_RECOVERY', 3)] } })
+  const result = deriveUserActivities({ definition, state, ledger: [], recentEvents: [], executionActivities: [] })
+  assert.deepEqual(result.map(item => item.kind), ['GOLDEN_EXHAUSTED', 'AUTONOMOUS_DIAGNOSIS', 'ADVANCED_RECOVERY'])
+  assert.deepEqual(result.map(item => item.label), ['Golden 执行额度已用完', '开始 AI 自主诊断', '进入受限 Advanced Recovery'])
 })

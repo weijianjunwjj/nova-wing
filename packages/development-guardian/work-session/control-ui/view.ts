@@ -57,7 +57,7 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
   </section>
 
   <section id="decision-card" class="card decision" hidden>
-    <h2 id="decision-title">需要人工决策</h2>
+    <h2 id="decision-title">需要你的决定</h2>
     <div class="row">
       <span class="label">类别</span>
       <span id="decision-category" class="value">—</span>
@@ -66,10 +66,19 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span class="label">原因</span>
       <span id="decision-reason" class="value">—</span>
     </div>
+    <div id="decision-evidence" hidden>
+      <p class="label">已尝试</p>
+      <ul id="decision-attempts"></ul>
+      <p id="decision-verification" class="note" hidden></p>
+      <p id="decision-changes" class="note" hidden></p>
+    </div>
     <p id="decision-guidance" class="note"></p>
-    <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
-    <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
+    <button id="diagnose-continue-btn" type="button" class="primary" hidden>✨ AI 诊断并继续</button>
+    <label id="decision-input-label" for="decision-input" hidden>补充指令</label>
+    <textarea id="decision-input" aria-label="补充指令" placeholder="例如：只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。" maxlength="2000" rows="4" hidden></textarea>
+    <button id="resume-decision-btn" type="button" class="primary" hidden>提交指令并继续</button>
     <button id="approve-verification-btn" type="button" class="primary" hidden>批准此验证并继续</button>
+    <button id="reject-verification-btn" type="button" hidden>拒绝</button>
     <button id="runtime-repair-btn" type="button" class="primary" hidden>✨ AI 修复并继续</button>
     <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
@@ -192,6 +201,7 @@ var BADGE_CLASS = {
   SCHEDULED: 'badge-ready',
   RUNNING: 'badge-running',
   SUSPENDED: 'badge-suspended',
+  PAUSED: 'badge-suspended',
   RECOVERABLE: 'badge-recoverable',
   COMPLETED: 'badge-completed',
   FAILED: 'badge-failed',
@@ -203,6 +213,7 @@ var STATE_LABELS = {
   SCHEDULED: 'Scheduled · 等待开始',
   RUNNING: '运行中',
   SUSPENDED: '已暂停',
+  PAUSED: '已暂停',
   RECOVERABLE: '可恢复',
   COMPLETED: '已完成',
   FAILED: '失败',
@@ -213,16 +224,31 @@ var HUMAN_REQUIRED_LABELS = {
   DECISION_REQUIRED: '需要人工决策',
   REPO_DRIFT: 'Repository 状态漂移',
   PERMISSION_REQUIRED: '需要授权',
+  APPROVAL_REQUIRED: '需要授权',
   CREDENTIAL_REQUIRED: '需要完成凭据或登录设置',
   ENVIRONMENT_REQUIRED: '需要处理运行环境',
   EXECUTOR_RETRY_REQUIRED: 'Executor 需要重新执行',
   SAFETY_BLOCKED: '被安全策略阻止',
   BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
-  ACTION_BUDGET_EXHAUSTED: 'Controller action budget 已耗尽',
+  ACTION_BUDGET_EXHAUSTED: '任务恢复动作额度已用完',
   STALLED_NO_PROGRESS: 'Executor 未产生实现进展',
   CYCLIC_NO_PROGRESS: 'Controller 检测到无进展循环',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
   PLANNING_REQUIRED: '需要补充验证计划',
+  CODE_FAILURE_AFTER_SINGLE_FIX: '自动修复后验证仍未通过',
+  EXECUTOR_NO_PROGRESS_AFTER_RETRY: '重试后仍未产生有效修改',
+  NO_IMPLEMENTATION_PROGRESS: '未产生有效修改',
+  CODE_FAILURE: '代码验证未通过',
+  CODE_VERIFICATION_FAILED: '代码验证未通过',
+  VERIFIER_CONFIGURATION_REQUIRED: '验证配置需要修复',
+  VERIFIER_CONFIGURATION_FAILURE: '验证配置需要修复',
+  CONFIGURATION_REQUIRED: '验证配置需要修复',
+  EVIDENCE_MISSING: '验证证据不足',
+  INSUFFICIENT: '验证证据不足',
+  AUTONOMOUS_RECOVERY_EXHAUSTED: '自动恢复额度已用完',
+  RECOVERY_BUDGET_EXHAUSTED: '自动恢复额度已用完',
+  RECOVERY_REQUIRES_AUTHORIZATION: '恢复需要额外授权或你的决定',
+  RECOVERY_BLOCKED: '恢复条件尚未满足',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 基础设施故障',
   STALLED: '执行停滞',
   USER_PAUSED: '用户已暂停'
@@ -243,7 +269,16 @@ var GUARDIAN_PHASE_LABELS = {
   RECONCILING: '正在核对 Repository',
   UNKNOWN: '状态未知',
   COMPLETED: '已完成',
-  HUMAN_REQUIRED: '需要人工处理',
+  HUMAN_REQUIRED: '等待人工处理',
+  SUSPENDED: '已暂停',
+  PAUSED: '已暂停',
+  RECOVERABLE: '等待恢复',
+  FAILED: '运行失败',
+  CANCELLED: '已取消',
+  READY: '等待开始',
+  SCHEDULED: '等待计划开始',
+  AUTONOMOUS_DIAGNOSIS: 'AI 正在诊断',
+  ADVANCED_RECOVERY: '正在受限恢复',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用'
 }
 
@@ -267,6 +302,11 @@ function displayValue(value, labels) {
   return (labels && labels[value]) || String(value)
 }
 
+var renderedRuntime
+var renderedSnapshot
+var decisionScope = ''
+var decisionRequestPending = false
+
 function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
@@ -277,6 +317,8 @@ function render(snapshot) {
     ' 分钟 · 最多 ' + cfg.limits.maxTasks + ' 个 Task')
 
   var displayState = rt.displayState || rt.state || 'READY'
+  if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state)) displayState = rt.state
+  if (rt.state === 'SUSPENDED' && rt.humanRequired) displayState = 'SUSPENDED'
   var badge = el('state-badge')
   if (badge) {
     badge.textContent = displayValue(displayState, STATE_LABELS)
@@ -289,7 +331,9 @@ function render(snapshot) {
   // /api/status is already sanitized by the controller. Bootstrap credentials
   // remain separate and never enter this diagnostic snapshot.
   setText('debug-output', JSON.stringify(snapshot, null, 2))
-  renderDecision(rt)
+  renderedRuntime = rt
+  renderedSnapshot = snapshot
+  renderDecision(rt, snapshot)
   renderRecoverable(rt)
   renderControls(rt, snapshot.controls || {})
 }
@@ -335,9 +379,16 @@ function formatEta(eta) {
 function renderOverview(snapshot) {
   var rt = snapshot.runtime
   var overview = snapshot.runtimeOverview || {}
-  var status = overview.status || rt.displayState || rt.state || 'READY'
-  setText('overview-status', displayValue(status, STATE_LABELS))
-  setText('overview-phase', overview.currentPhase ? displayValue(overview.currentPhase, GUARDIAN_PHASE_LABELS) : '等待开始')
+  var status = rt.displayState || rt.state || overview.status || 'READY'
+  if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state)) status = rt.state
+  if (rt.state === 'SUSPENDED' && rt.humanRequired) status = 'SUSPENDED'
+  var recovering = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state) &&
+    (rt.recoveryInProgress === true || decisionRequestPending)
+  var phase = ['COMPLETED', 'FAILED', 'CANCELLED', 'SUSPENDED', 'PAUSED', 'RECOVERABLE', 'READY', 'SCHEDULED'].includes(status)
+    ? status : overview.currentPhase
+  if (status === 'SUSPENDED' && rt.humanRequired) phase = 'HUMAN_REQUIRED'
+  setText('overview-status', recovering ? '正在恢复当前任务' : status === 'SUSPENDED' && rt.humanRequired ? '等待人工处理 · 已暂停' : displayValue(status, STATE_LABELS))
+  setText('overview-phase', recovering ? '正在恢复' : phase ? displayValue(phase, GUARDIAN_PHASE_LABELS) : '等待开始')
   setText('created-at', localDateTime(overview.createdAt))
   var mode = overview.startMode === 'deepseek_off_peak' ? 'DeepSeek Off-Peak'
     : overview.startMode === 'custom' ? '定时开始' : '立即开始'
@@ -460,7 +511,8 @@ function renderRecoverable(rt) {
   var card = el('recoverable-card')
   if (!card) return
   var summary = rt.recoverableSummary
-  if (rt.displayState !== 'RECOVERABLE' || !summary) {
+  if (rt.displayState !== 'RECOVERABLE' || !summary ||
+    rt.state === 'SUSPENDED' && rt.humanRequired && !rt.durableVerificationRecovery) {
     card.hidden = true
     return
   }
@@ -513,7 +565,47 @@ function formatElapsed(ms) {
   return (hours ? hours + '小时' : '') + (minutes ? minutes + '分' : '') + (rest ? rest + '秒' : '')
 }
 
-function renderDecision(rt) {
+function renderDecisionEvidence(snapshot, engineering) {
+  var rt = snapshot.runtime
+  var debug = snapshot.debug || {}
+  var taskId = rt.currentTaskId
+  var events = (debug.taskEvents || {})[taskId] || []
+  var task = (debug.taskStates || {})[taskId] || {}
+  var attempts = []
+  var round = 0
+  for (var event of events) {
+    if (event.type === 'AGENT_DISPATCHED' && event.action === 'EXECUTE') {
+      round++
+      attempts.push('第 ' + round + ' 轮 Executor')
+    } else if (event.type === 'VERIFICATION_FAILED') attempts.push('验证未通过')
+    else if (event.type === 'NO_IMPLEMENTATION_PROGRESS' || event.type === 'NO_PROGRESS_DETECTED') attempts.push('没有产生新的有效修改')
+    else if (event.type === 'AUTONOMOUS_DIAGNOSIS' || event.type === 'AUTONOMOUS_DIAGNOSIS_STARTED') attempts.push('AI 自主诊断')
+    else if (event.type === 'ADVANCED_RECOVERY' || event.type === 'ADVANCED_RECOVERY_STARTED') attempts.push('进入受限 Advanced Recovery')
+  }
+  var list = el('decision-attempts')
+  if (list) {
+    list.textContent = ''
+    for (var attempt of attempts.slice(-8)) {
+      var li = document.createElement('li')
+      li.textContent = attempt
+      list.appendChild(li)
+    }
+  }
+  var failure = rt.verificationFailure
+  var failedResult = (task.verificationResults || []).filter((result) => result.status === 'failed').slice(-1)[0]
+  var verification = failure ? failure.command : failedResult ? failedResult.name : ''
+  var exitCode = failure ? failure.exitCode : failedResult ? failedResult.exitCode : undefined
+  setNote('decision-verification', engineering && verification ? '最后验证未通过：' + verification +
+    (typeof exitCode === 'number' ? ' · 退出码 ' + exitCode : '') : '')
+  var git = task.gitState || {}
+  var changedFiles = git.changedFiles || []
+  setNote('decision-changes', engineering ? '当前修改：' + (changedFiles.length ? changedFiles.join('、') : '暂无已记录的文件改动') +
+    (git.headSha ? ' · HEAD ' + git.headSha.slice(0, 8) : '') + '。完整验证证据见 Debug。' : '')
+  var evidence = el('decision-evidence')
+  if (evidence) evidence.hidden = !engineering
+}
+
+function renderDecision(rt, snapshot) {
   var card = el('decision-card')
   if (!card) return
   var hr = rt.humanRequired
@@ -524,73 +616,113 @@ function renderDecision(rt) {
     rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
   var checkpointRecovery = rt.recovery && rt.recovery.available === true
   var verificationApproval = rt.pendingVerificationApproval
+  var approvalRejected = verificationApproval && verificationApproval.status === 'REJECTED'
+  // The domain projection owns eligibility, including an exhausted grant. Do
+  // not maintain a second browser-side failure policy or infer it from prose.
+  var engineering = !!rt.autonomousRecovery
+  var authorizationRequired = category === 'RECOVERY_REQUIRES_AUTHORIZATION'
+  var recovering = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state) &&
+    (rt.recoveryInProgress === true || decisionRequestPending)
+  var scope = (snapshot.configuredSession.id || '') + ':' + (rt.currentTaskId || '') + ':' + (rt.humanRequiredGeneration || 0)
+  if (scope !== decisionScope) {
+    var scopedInput = el('decision-input')
+    if (scopedInput) scopedInput.value = ''
+    setText('resume-note', '')
+    decisionScope = scope
+  }
   var durableVerificationRecovery = rt.durableVerificationRecovery &&
     rt.durableVerificationRecovery.available === true
   if (durableVerificationRecovery) {
     card.hidden = true
     return
   }
-  if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery) {
+  if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery || recovering) {
     card.hidden = false
-    setText('decision-title', verificationApproval ? '需要验证授权' : checkpointRecovery
+    setText('decision-title', recovering ? '正在恢复当前任务' : verificationApproval ? '需要验证授权' : (category === 'PERMISSION_REQUIRED' || category === 'APPROVAL_REQUIRED') ? '需要授权' : checkpointRecovery
       ? 'Git checkpoint 推送未确认'
       : brainUnavailable
       ? 'Brain 暂时不可用'
-      : (userPaused ? '已由你暂停' : '需要人工处理'))
+      : (userPaused ? '已由你暂停' : '需要你的决定'))
     setText('decision-category', verificationApproval ? '验证授权' : checkpointRecovery
       ? 'Git Push'
       : brainUnavailable
       ? 'Brain Review · ' + displayValue(brainFailure.category)
-      : displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
+      : HUMAN_REQUIRED_LABELS[userPaused ? 'USER_PAUSED' : category] || '需要确认下一步')
     setText('decision-reason', verificationApproval
       ? 'Task: ' + verificationApproval.taskId + '；验证命令：' + verificationApproval.command
       : checkpointRecovery
       ? '当前 Task 已产生本地 checkpoint commit，但远端推送未确认。'
       : brainUnavailable
       ? brainFailure.safeMessage
-      : (userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—')))
+      : userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。'
+      : engineering ? '自动处理后仍未完成当前任务。NovaWing 无法在现有修改权限和恢复额度内确定安全的下一步。'
+      : authorizationRequired ? '恢复方案涉及额外权限、凭据、产品选择或费用，需要你明确处理后才能继续。'
+      : hr ? hr.reason || '请确认下一步操作。' : '正在使用已有执行记录恢复此任务。')
+    renderDecisionEvidence(snapshot, engineering)
 
     var input = el('decision-input')
+    var inputLabel = el('decision-input-label')
     var decisionBtn = el('resume-decision-btn')
     var approvalBtn = el('approve-verification-btn')
+    var rejectBtn = el('reject-verification-btn')
+    var diagnoseBtn = el('diagnose-continue-btn')
     var repairBtn = el('runtime-repair-btn')
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
     var budgetRecovery = rt.actionBudgetRecovery
-    var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED' ||
+    var needsDecision = !verificationApproval && (engineering || category === 'DECISION_REQUIRED' || category === 'STALLED' ||
       (category === 'ACTION_BUDGET_EXHAUSTED' && budgetRecovery && budgetRecovery.available === true))
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
     var repair = rt.runtimeRepair
-    if (input) input.hidden = !needsDecision
-    if (decisionBtn) decisionBtn.hidden = !needsDecision
-    if (approvalBtn) approvalBtn.hidden = !verificationApproval
+    var autonomous = rt.autonomousRecovery
+    if (input) { input.hidden = !needsDecision; input.disabled = recovering }
+    if (inputLabel) inputLabel.hidden = !needsDecision
+    if (decisionBtn) { decisionBtn.hidden = !needsDecision; decisionBtn.disabled = recovering }
+    if (approvalBtn) { approvalBtn.hidden = !verificationApproval; approvalBtn.disabled = !!approvalRejected || recovering }
+    if (rejectBtn) { rejectBtn.hidden = !verificationApproval; rejectBtn.disabled = !!approvalRejected || recovering }
+    if (diagnoseBtn) {
+      diagnoseBtn.hidden = !engineering || !!verificationApproval
+      diagnoseBtn.disabled = recovering || !(autonomous && autonomous.available === true) || autonomous.exhausted === true
+      diagnoseBtn.textContent = recovering ? '正在诊断并恢复…' : '✨ AI 诊断并继续'
+    }
     if (repairBtn) {
       repairBtn.hidden = !(repair && repair.available === true)
-      repairBtn.disabled = !!(repair && repair.inProgress === true)
+      repairBtn.disabled = recovering || !!(repair && repair.inProgress === true)
       repairBtn.textContent = (repair && repair.inProgress === true) ? '正在诊断运行环境…' : '✨ AI 修复并继续'
     }
     if (resolvedBtn) {
       resolvedBtn.hidden = !resolvedAck
+      resolvedBtn.disabled = recovering
       resolvedBtn.textContent = category === 'EXECUTOR_RETRY_REQUIRED' ? '重新执行 Executor' : '已处理，恢复'
     }
     if (pausedBtn) {
       pausedBtn.hidden = !userPaused && !brainUnavailable
+      pausedBtn.disabled = recovering
       pausedBtn.textContent = brainUnavailable ? '修复后恢复' : '恢复'
     }
-    if (recoveryBtn) recoveryBtn.hidden = !checkpointRecovery
+    if (recoveryBtn) { recoveryBtn.hidden = !checkpointRecovery; recoveryBtn.disabled = recovering }
 
     var repairFailure = repair && repair.available === true && repair.lastOutcome && repair.lastOutcome.classification !== 'REPAIRED'
-    if (repair && repair.inProgress === true) {
+    if (recovering) {
+      setText('decision-guidance', '正在恢复当前 Session 的此 Task；将保留验证计划、失败证据与执行历史。')
+    } else if (repair && repair.inProgress === true) {
       setText('decision-guidance', '正在诊断 → 检查 Provider → 寻找独立 Reviewer → 修复成功 → 恢复 Session')
     } else if (repairFailure) {
       setText('decision-guidance', 'AI 修复失败：' + (repair.lastOutcome.reason || repair.lastOutcome.classification) + '。可修复后重试，或手动处理。')
     } else if (verificationApproval) {
-      setText('decision-guidance', '此命令由 Reviewer 要求，用于完成当前 Task 的 deterministic verification。授权仅对当前 Task 的这一条命令生效。')
+      setText('decision-guidance', approvalRejected ? '已拒绝此验证授权。任务保持暂停，原验证证据已保留。'
+        : '授权仅对当前 Task 的这一条验证命令生效；拒绝后保留执行证据并保持暂停。')
     } else if (checkpointRecovery) {
       setText('decision-guidance', 'NovaWing 将先重新验证远端状态；不会重新执行当前 Task。')
     } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
+    } else if (engineering) {
+      setText('decision-guidance', autonomous && autonomous.exhausted === true
+        ? '自动恢复额度已用完。请补充处理指令或说明已手动完成的修复；提交会保存指令，但不会重置恢复额度或扩大修改权限。'
+        : autonomous && autonomous.available === true
+        ? '可以让 AI 结合已有失败证据再诊断，或补充明确的修复指令后继续。恢复仍遵守原修改范围和命令授权。'
+        : '当前没有可用的自动恢复额度。请补充处理指令或先修复上方验证问题，再从原任务继续。')
     } else if (resolvedAck) {
       setText('decision-guidance', category === 'EXECUTOR_RETRY_REQUIRED'
         ? '此前执行没有 workspace inspection、文件改动或可信工具证据。将保留原 Task ID、任务范围和 recovery lineage，重新执行 Executor。'
@@ -599,7 +731,9 @@ function renderDecision(rt) {
           ? 'Executor 尚未启动。请按上方原因修复标明的 preflight 项后，从原 Task 重新尝试。'
           : '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。')
         : '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
-    } else if (category === 'PERMISSION_REQUIRED') {
+    } else if (authorizationRequired) {
+      setText('decision-guidance', '当前任务保持暂停。请在受信任的项目配置中处理修改范围或命令授权，在外部完成登录，或明确验收与费用决定；自动恢复不会替你批准这些操作。详细原因见 Debug。')
+    } else if (category === 'PERMISSION_REQUIRED' || category === 'APPROVAL_REQUIRED') {
       setText('decision-guidance', '请先更新受信任的项目权限。')
     } else if (category === 'BUDGET_EXHAUSTED') {
       setText('decision-guidance', '请以新批准的限制启动新的 Work Session。')
@@ -654,7 +788,7 @@ async function start() {
 
 async function requestControl(path) {
   try {
-    await fetch(path, {
+    return await fetch(path, {
       method: 'POST',
       headers: { 'X-NovaWing-Control-Token': controlToken }
     })
@@ -665,6 +799,13 @@ async function requestControl(path) {
 
 async function resumeSession(payload) {
   var note = el('resume-note')
+  if (decisionRequestPending) return
+  decisionRequestPending = true
+  if (renderedSnapshot) {
+    renderDecision(renderedRuntime, renderedSnapshot)
+    renderOverview(renderedSnapshot)
+  }
+  if (note) note.textContent = '正在恢复当前任务…'
   try {
     var res = await fetch('/api/session/resume', {
       method: 'POST',
@@ -674,10 +815,29 @@ async function resumeSession(payload) {
       },
       body: JSON.stringify(payload)
     })
-    if (note) note.textContent = res.status === 202 ? '已请求恢复' : '恢复被拒绝'
+    if (note) note.textContent = res.status === 202 ? '已提交，正在恢复当前任务' : '恢复请求未被接受，请确认当前任务状态后重试。'
+    if (res.status === 202 && payload.decision) {
+      var input = el('decision-input')
+      if (input) input.value = ''
+    }
+  } catch (error) {
+    if (note) note.textContent = '暂时无法提交，请检查连接后重试。'
   } finally {
+    decisionRequestPending = false
+    if (renderedSnapshot) {
+      renderDecision(renderedRuntime, renderedSnapshot)
+      renderOverview(renderedSnapshot)
+    }
     refresh()
   }
+}
+
+function scopedRecoveryPayload(payload) {
+  if (renderedRuntime && renderedRuntime.currentTaskId) {
+    payload.taskId = renderedRuntime.currentTaskId
+    payload.generation = renderedRuntime.humanRequiredGeneration || 0
+  }
+  return payload
 }
 
 async function resumeRecoverableSession(payload) {
@@ -708,19 +868,32 @@ if (stopBtn) stopBtn.addEventListener('click', function () {
   requestControl('/api/session/stop-after-task')
 })
 var resumeDecisionBtn = el('resume-decision-btn')
-if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', function () {
+if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', async function () {
   var input = el('decision-input')
   var decision = input ? input.value.trim() : ''
-  if (decision.length > 0) resumeSession({ decision: decision })
+  if (decision.length > 0) await resumeSession(scopedRecoveryPayload({ decision: decision }))
+  else setText('resume-note', '请先填写补充指令。')
+})
+var diagnoseContinueBtn = el('diagnose-continue-btn')
+if (diagnoseContinueBtn) diagnoseContinueBtn.addEventListener('click', async function () {
+  if (!diagnoseContinueBtn.disabled) await resumeSession(scopedRecoveryPayload({ recovery: 'diagnose' }))
 })
 var approveVerificationBtn = el('approve-verification-btn')
 if (approveVerificationBtn) approveVerificationBtn.addEventListener('click', async function () {
   approveVerificationBtn.disabled = true
   try { await requestControl('/api/session/approve-verification') } finally { approveVerificationBtn.disabled = false }
 })
+var rejectVerificationBtn = el('reject-verification-btn')
+if (rejectVerificationBtn) rejectVerificationBtn.addEventListener('click', async function () {
+  rejectVerificationBtn.disabled = true
+  try {
+    var res = await requestControl('/api/session/reject-verification')
+    setText('resume-note', res.status === 202 ? '已拒绝授权，当前任务保持暂停。' : '拒绝请求未被接受，请刷新后重试。')
+  } finally { rejectVerificationBtn.disabled = false }
+})
 var resumeResolvedBtn = el('resume-resolved-btn')
 if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
-  resumeSession({ approval: true })
+  return resumeSession({ approval: true })
 })
 var runtimeRepairBtn = el('runtime-repair-btn')
 if (runtimeRepairBtn) runtimeRepairBtn.addEventListener('click', async function () {
@@ -729,7 +902,7 @@ if (runtimeRepairBtn) runtimeRepairBtn.addEventListener('click', async function 
 })
 var resumePausedBtn = el('resume-paused-btn')
 if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {
-  resumeSession({})
+  return resumeSession({})
 })
 var resumeRecoverableBtn = el('resume-recoverable-btn')
 if (resumeRecoverableBtn) resumeRecoverableBtn.addEventListener('click', async function () {
@@ -961,6 +1134,11 @@ main {
 }
 
 .decision h2 { color: var(--warn); }
+.decision [hidden] { display: none; }
+.decision button { margin: 4px 6px 4px 0; }
+.decision label { display: block; margin-top: 12px; color: var(--muted); }
+.decision ul { margin: 6px 0; padding-left: 20px; }
+.decision .note { overflow-wrap: anywhere; }
 
 .decision textarea {
   width: 100%;

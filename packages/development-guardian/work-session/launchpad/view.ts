@@ -146,7 +146,7 @@ export function renderLaunchpadHtml(input: {
           <div><p class="eyebrow">TASK BRIEF / QUICK FILL</p><h3 id="task-brief-title">一次性描述任务</h3></div>
           <textarea data-task-brief data-task-brief-max="${MAX_TASK_BRIEF_CHARS}" rows="7" placeholder="粘贴完整任务描述、项目路径、限制、验证要求等；原始 Brief 会保留在此处，识别结果只会填入下方表单，仍需由你确认并创建。"></textarea>
           <div class="task-brief-actions"><button class="task-add" type="button" data-task-brief-fill>识别并填充</button><button class="task-add" type="button" data-smart-model>智能推荐模型</button></div>
-          <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务。</p>
+          <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务；重新填充会替换已填写字段，请核对后创建。</p>
         </section>
         <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
         <label>分支<input name="branch" type="text" autocomplete="off" value="填写项目目录后自动检测"><span class="field-hint">默认自动检测；Task Brief 指定的分支必须与项目当前 checkout 一致。</span></label>
@@ -614,14 +614,30 @@ export const LAUNCHPAD_APP_JS = `
     if (fillFields) {
       targetRepo.value = fields.targetRepo || ''
       branch.value = fields.branch || ''
-      const firstTask = taskRows()[0]
-      if (fields.taskInstructions) {
-        const goal = firstTask.querySelector('[data-task-goal]')
-        goal.value = fields.taskInstructions
-        goal.dispatchEvent(new Event('input'))
+      if (Array.isArray(fields.tasks) && fields.tasks.length > 10) throw new Error('最多可填充 10 个 Task，请拆分 Brief。')
+      const briefTasks = Array.isArray(fields.tasks) && fields.tasks.length ? fields.tasks : [fields]
+      if (Array.isArray(fields.tasks)) {
+        while (taskRows().length < briefTasks.length) {
+          const row = taskRows()[0].cloneNode(true)
+          taskContainer.appendChild(row)
+          attachTaskRow(row)
+        }
+        taskRows().slice(briefTasks.length).forEach((row) => row.remove())
+        updateTaskRows()
       }
-      firstTask.querySelector('[data-task-id]').value = fields.taskId || ''
+      briefTasks.forEach((task, index) => {
+        const row = taskRows()[index]
+        if (task.taskInstructions || Array.isArray(fields.tasks)) {
+          const goal = row.querySelector('[data-task-goal]')
+          goal.value = task.taskInstructions || ''
+          goal.dispatchEvent(new Event('input'))
+        }
+        row.querySelector('[data-task-id]').value = task.taskId || ''
+      })
       form.elements.allowedPaths.value = (Array.isArray(fields.allowedPaths) ? fields.allowedPaths : []).join('\\n')
+      if (Array.isArray(result.unresolvedFields) && result.unresolvedFields.includes('allowedPaths')) {
+        form.elements.allowedPaths.setAttribute('aria-invalid', 'true')
+      } else form.elements.allowedPaths.removeAttribute('aria-invalid')
       form.elements.forbiddenPaths.value = (Array.isArray(fields.forbiddenPaths) ? fields.forbiddenPaths : []).join('\\n')
       form.elements.constraints.value = (Array.isArray(fields.constraints) ? fields.constraints : []).join('\\n')
       form.elements.acceptanceCriteria.value = (Array.isArray(fields.acceptanceCriteria) ? fields.acceptanceCriteria : []).join('\\n')
