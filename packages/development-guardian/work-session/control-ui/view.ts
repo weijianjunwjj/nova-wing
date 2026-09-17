@@ -51,19 +51,9 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span id="branch" class="value">—</span>
     </div>
     <div class="meta">
-      <span class="label">已运行时间</span>
-      <span id="active-time" class="value">00:00</span>
-    </div>
-    <div class="meta">
       <span class="label">限制</span>
       <span id="limits" class="value">—</span>
     </div>
-  </section>
-
-  <section class="card" aria-label="Execution">
-    <h2>Execution</h2>
-    <p id="coding-execution" class="note">尚未选择 Executor</p>
-    <p id="coding-failover" class="note"></p>
   </section>
 
   <section id="decision-card" class="card decision" hidden>
@@ -85,16 +75,6 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
     <button id="recover-checkpoint-btn" type="button" class="primary" hidden>重新验证并继续</button>
     <span id="resume-note" class="note"></span>
-  </section>
-
-  <section class="card" aria-label="开始时间">
-    <h2>开始时间</h2>
-    <div class="row"><span class="label">创建 / Created</span><span id="created-at" class="value">—</span></div>
-    <div class="row"><span class="label">计划 / Scheduled Start</span><span id="scheduled-at" class="value">—</span></div>
-    <div class="row"><span class="label">来源 / Reason</span><span id="schedule-source" class="value">—</span></div>
-    <div class="row"><span class="label">实际 / Actual Start</span><span id="started-at" class="value">—</span></div>
-    <div class="row"><span class="label">完成 / Completed</span><span id="completed-at" class="value">—</span></div>
-    <p id="schedule-note" class="note"></p>
   </section>
 
   <section id="recoverable-card" class="card decision" hidden>
@@ -131,41 +111,34 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <ol id="task-list" class="task-list"></ol>
   </section>
 
-  <section class="card">
-    <h2>当前活动</h2>
-    <div class="row">
-      <span id="activity-orchestration-label" class="label">Guardian</span>
-      <span id="guardian-phase" class="value">—</span>
-    </div>
-    <div class="row">
-      <span class="label">轮次</span>
-      <span id="guardian-iteration" class="value">—</span>
-    </div>
-    <p id="guardian-detail" class="detail">—</p>
-    <div class="row"><span class="label">Executor</span><span id="executor-running" class="value">—</span></div>
-    <div class="row"><span class="label">Provider</span><span id="execution-provider" class="value">—</span></div>
-    <div class="row"><span class="label">活动已运行</span><span id="execution-elapsed" class="value">—</span></div>
-    <div class="row"><span class="label">最后活动</span><span id="execution-last-activity" class="value">—</span></div>
-    <p id="execution-idle-status" class="note"></p>
+  <section class="card runtime-overview" aria-label="运行概览">
+    <h2>运行概览</h2>
+    <dl class="overview-grid">
+      <div><dt>状态</dt><dd id="overview-status">就绪</dd></div>
+      <div><dt>当前阶段</dt><dd id="overview-phase">等待开始</dd></div>
+      <div><dt>创建时间</dt><dd id="created-at">—</dd></div>
+      <div><dt>开始方式</dt><dd id="start-mode">立即开始</dd></div>
+      <div><dt>实际开始</dt><dd id="started-at">尚未开始</dd></div>
+      <div><dt>预计完成</dt><dd id="estimated-completion">正在估算…</dd></div>
+      <div><dt>实际完成</dt><dd id="completed-at">尚未完成</dd></div>
+      <div><dt>总耗时</dt><dd id="total-elapsed">0 秒</dd></div>
+      <div><dt>Executor</dt><dd id="overview-executor">尚未执行</dd></div>
+      <div><dt>轮次</dt><dd id="overview-iteration">尚未执行</dd></div>
+    </dl>
+    <p id="schedule-note" class="note" hidden></p>
+    <p id="coding-failover" class="note" hidden></p>
+    <p id="execution-last-activity" class="note" hidden></p>
   </section>
 
-  <section class="card">
-    <h2>Execution Activity Feed</h2>
-    <ul id="execution-activity-list" class="recent-list"></ul>
+  <section class="card" aria-label="活动日志">
+    <h2>活动日志</h2>
+    <p id="activity-empty" class="note">开始后将在这里显示执行、验证和 checkpoint 进展。</p>
+    <ol id="activity-list" class="activity-list" aria-label="运行时间线"></ol>
   </section>
 
-  <section class="card">
-    <h2>最近活动</h2>
-    <ul id="recent-list" class="recent-list"></ul>
-  </section>
-
-  <details class="card">
-    <summary>Raw Runtime Log</summary>
-    <ul id="ledger-list" class="recent-list"></ul>
-  </details>
-
-  <details class="card debug">
+  <details id="debug-panel" class="card debug">
     <summary>Debug</summary>
+    <p class="note">完整安全状态与排障证据：runtime、event、provider、verification、checkpoint、humanRequired 和 error。</p>
     <pre id="debug-output"></pre>
   </details>
 </main>
@@ -202,17 +175,6 @@ function el(id) {
 function setText(id, text) {
   var node = el(id)
   if (node) node.textContent = text
-}
-
-function formatDuration(ms) {
-  if (typeof ms !== 'number' || !isFinite(ms)) return '00:00'
-  var totalSeconds = Math.floor(ms / 1000)
-  var h = Math.floor(totalSeconds / 3600)
-  var m = Math.floor((totalSeconds % 3600) / 60)
-  var s = totalSeconds % 60
-  var mm = String(m).padStart(2, '0')
-  var ss = String(s).padStart(2, '0')
-  return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss
 }
 
 function formatTime(iso) {
@@ -300,13 +262,6 @@ var NOTIFICATION_OVERALL_LABELS = {
   ALL_SUCCEEDED: '全部成功', PARTIAL_SUCCESS: '部分成功', ALL_FAILED: '全部失败'
 }
 
-var GUARDIAN_STATUS_LABELS = {
-  active: '进行中',
-  completed: '已完成',
-  failed: '失败',
-  suspended: '已暂停'
-}
-
 function displayValue(value, labels) {
   if (value === undefined || value === null || value === '') return '—'
   return (labels && labels[value]) || String(value)
@@ -315,27 +270,8 @@ function displayValue(value, labels) {
 function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
-  var guardian = snapshot.guardian || {}
-  setText('activity-orchestration-label', cfg.controlPlane === 'v2' ? 'TASK' : 'Guardian')
-  var executions = snapshot.codingExecutions || []
-  var execution = executions.find((entry) => entry.taskId === rt.currentTaskId) || executions[executions.length - 1]
-  setText('coding-execution', execution ? execution.taskId + ' · ' + execution.mode.toUpperCase() + ' · '
-    + (execution.activeExecutor || '等待开始') + (execution.model ? ' · ' + execution.model : '')
-    + (execution.reasoningEffort ? ' · ' + execution.reasoningEffort : '') : '尚未选择 Executor')
-  setText('coding-failover', execution && execution.failoverReason
-    ? 'Codex quota exhausted → DeepSeek 接力（本 Task 保持 DeepSeek）'
-    : execution && execution.lastError || '')
-  var localTime = (value) => value ? new Date(value).toLocaleString() : '—'
-  setText('created-at', localTime(rt.createdAt))
-  setText('scheduled-at', localTime(rt.scheduledStartAt))
-  setText('started-at', localTime(rt.startedAt))
-  setText('completed-at', localTime(rt.completedAt))
-  setText('schedule-source', rt.scheduleSource === 'deepseek_off_peak' ? 'DeepSeek 闲时 · Off-Peak' : rt.scheduleSource === 'custom' ? '自定义时间' : '立即开始')
-  setText('schedule-note', rt.state === 'SCHEDULED' ? '到点自动开始；等待不计执行时长。请保持 NovaWing 运行；关闭后将在重新打开时补启动。' : '')
-
   setText('project', cfg.targetRepo)
   setText('branch', cfg.branch)
-  setText('active-time', formatDuration(rt.activeElapsedMs))
   setText('limits',
     '软限制 ' + cfg.limits.softMinutes + ' 分钟 · 硬限制 ' + cfg.limits.hardMinutes +
     ' 分钟 · 最多 ' + cfg.limits.maxTasks + ' 个 Task')
@@ -348,49 +284,150 @@ function render(snapshot) {
   }
 
   renderTasks(cfg, rt)
-  renderGuardian(guardian)
-  renderExecutionActivity(snapshot.executionActivity || {})
-  renderRecent(snapshot.recentEvents || [])
-  renderLedger(snapshot.executionLedger || [])
+  renderOverview(snapshot)
+  renderActivities(snapshot.activities || [])
+  // /api/status is already sanitized by the controller. Bootstrap credentials
+  // remain separate and never enter this diagnostic snapshot.
+  setText('debug-output', JSON.stringify(snapshot, null, 2))
   renderDecision(rt)
   renderRecoverable(rt)
   renderControls(rt, snapshot.controls || {})
 }
 
-var ACTIVITY_KIND_LABELS = {
-  CONTROLLER_PHASE_CHANGED: 'Controller 阶段切换',
-  PROVIDER_DISPATCHED: '已派发 Provider', PROVIDER_COMPLETED: 'Provider 已完成', PROVIDER_FAILED: 'Provider 执行失败',
-  VERIFIER_STARTED: '开始运行 verifier', VERIFIER_COMPLETED: 'verifier 已完成',
-  REPOSITORY_CHANGED: 'Repository revision/diff 已变化', RUNTIME_REPAIR: '正在恢复运行环境'
+var EXECUTOR_STATUS_LABELS = {
+  NOT_STARTED: '尚未执行', RUNNING: '执行中', COMPLETED: '已完成', FAILED: '执行失败', WAITING: '等待继续'
 }
 
-function renderExecutionActivity(activity) {
-  setText('executor-running', activity.running ? '运行中' : '未运行')
-  setText('execution-provider', activity.provider || '—')
-  setText('execution-elapsed', formatDuration(activity.elapsedMs))
-  setText('execution-last-activity', activity.lastActivityAt
-    ? formatTime(activity.lastActivityAt) + (Number.isFinite(activity.idleMs) ? ' · ' + Math.floor(activity.idleMs / 1000) + ' 秒前' : '') : '—')
-  setText('execution-idle-status', activity.idleStatus === 'QUIET' ? '暂无新活动，Executor 仍在运行'
-    : activity.idleStatus === 'LONG_QUIET' ? '较长时间无新活动，正在等待 Executor' : '')
-  var list = el('execution-activity-list')
+function providerName(value) {
+  return ({ codex: 'Codex', deepseek: 'DeepSeek' })[value] || value || ''
+}
+
+function localDateTime(value, fallback) {
+  if (!value) return fallback || '—'
+  var date = new Date(value)
+  return isNaN(date.getTime()) ? fallback || '—' : date.toLocaleString()
+}
+
+function setNote(id, text) {
+  var node = el(id)
+  if (node) {
+    node.textContent = text
+    node.hidden = !text
+  }
+}
+
+function displayIteration(iteration) {
+  var current = iteration && iteration.current
+  if (!Number.isInteger(current) || current < 1) return '尚未执行'
+  return Number.isInteger(iteration.maximum) && iteration.maximum >= current
+    ? current + ' / ' + iteration.maximum : '第 ' + current + ' 轮'
+}
+
+function formatEta(eta) {
+  if (!eta || !eta.estimatedCompletionAt || isNaN(new Date(eta.estimatedCompletionAt).getTime())) return '正在估算…'
+  var text = formatTime(eta.estimatedCompletionAt).slice(0, 5)
+  if (eta.adjusted) text += ' · 已调整'
+  if (eta.confidence === 'low') return text + ' · 粗略估计'
+  return text + (Number.isFinite(eta.uncertaintyMs)
+    ? ' · 约 ±' + Math.max(1, Math.ceil(eta.uncertaintyMs / 60000)) + ' 分钟' : ' · 预计')
+}
+
+function renderOverview(snapshot) {
+  var rt = snapshot.runtime
+  var overview = snapshot.runtimeOverview || {}
+  var status = overview.status || rt.displayState || rt.state || 'READY'
+  setText('overview-status', displayValue(status, STATE_LABELS))
+  setText('overview-phase', overview.currentPhase ? displayValue(overview.currentPhase, GUARDIAN_PHASE_LABELS) : '等待开始')
+  setText('created-at', localDateTime(overview.createdAt))
+  var mode = overview.startMode === 'deepseek_off_peak' ? 'DeepSeek Off-Peak'
+    : overview.startMode === 'custom' ? '定时开始' : '立即开始'
+  if (overview.scheduledStartAt) mode += ' · ' + localDateTime(overview.scheduledStartAt)
+  setText('start-mode', mode)
+  setText('started-at', localDateTime(overview.startedAt, '尚未开始'))
+  setText('estimated-completion', formatEta(snapshot.eta))
+  setText('completed-at', localDateTime(overview.completedAt, '尚未完成'))
+  setText('total-elapsed', formatElapsed(overview.totalElapsedMs || 0))
+  var executor = overview.executor || {}
+  var executorText = [providerName(executor.provider), displayValue(executor.status || 'NOT_STARTED', EXECUTOR_STATUS_LABELS)]
+    .filter(Boolean).join(' · ')
+  if (executor.model) executorText += ' · ' + executor.model
+  setText('overview-executor', executorText)
+  setText('overview-iteration', displayIteration(overview.iteration))
+  setNote('schedule-note', status === 'SCHEDULED' ? '到点自动开始；等待不计执行时长。请保持 NovaWing 运行；关闭后将在重新打开时补启动。' : '')
+  var executions = snapshot.codingExecutions || []
+  var execution = executions.find((entry) => entry.taskId === overview.taskId)
+  setNote('coding-failover', execution && execution.failoverReason ? 'Codex 配额已耗尽，DeepSeek 接力（本 Task 保持 DeepSeek）。' : '')
+  var activity = snapshot.executionActivity || {}
+  var lastActivity = overview.lastActivityAt
+  var lastText = status === 'RUNNING' && lastActivity ? '最后活动 ' + formatTime(lastActivity)
+    + (Number.isFinite(activity.idleMs) ? ' · ' + Math.floor(activity.idleMs / 1000) + ' 秒前' : '') : ''
+  if (lastText && activity.idleStatus === 'QUIET') lastText += ' · Executor 仍在运行'
+  if (lastText && activity.idleStatus === 'LONG_QUIET') lastText += ' · 正在等待 Executor'
+  setNote('execution-last-activity', lastText)
+}
+
+var activityRows = new Map()
+
+function renderActivities(activities) {
+  var list = el('activity-list')
   if (!list) return
-  list.textContent = ''
-  var items = activity.items || []
-  for (var i = Math.max(0, items.length - 30); i < items.length; i++) {
+  var activeIds = new Set()
+  var items = activities.slice(-80)
+  setNote('activity-empty', items.length ? '' : '开始后将在这里显示执行、验证和 checkpoint 进展。')
+  for (var i = 0; i < items.length; i++) {
     var item = items[i]
-    var li = document.createElement('li')
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(item.timestamp)
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    var parts = [ACTIVITY_KIND_LABELS[item.kind] || item.kind, displayValue(item.phase, GUARDIAN_PHASE_LABELS)]
-    if (item.provider) parts.push(item.provider)
-    if (item.verifier) parts.push(item.verifier)
-    if (item.outcome) parts.push(item.outcome)
-    if (Number.isFinite(item.changedFileCount)) parts.push(String(item.changedFileCount) + ' 个文件')
-    data.textContent = parts.join(' · ')
-    li.appendChild(time); li.appendChild(data); list.appendChild(li)
+    if (activeIds.has(item.id)) continue
+    activeIds.add(item.id)
+    var row = activityRows.get(item.id)
+    if (!row) {
+      row = document.createElement('li')
+      row.setAttribute('data-activity-id', item.id)
+      var time = document.createElement('time')
+      time.className = 'time'
+      var mark = document.createElement('span')
+      mark.className = 'activity-mark'
+      var content = document.createElement('div')
+      var label = document.createElement('span')
+      label.className = 'activity-label'
+      var detail = document.createElement('span')
+      detail.className = 'activity-detail'
+      content.appendChild(label)
+      content.appendChild(detail)
+      row.appendChild(time)
+      row.appendChild(mark)
+      row.appendChild(content)
+      activityRows.set(item.id, row)
+    }
+    var state = item.status || 'completed'
+    row.className = 'activity-' + state
+    var stateText = state === 'running' ? '进行中' : state === 'completed' ? '已完成' : state === 'human_required' ? '需要人工处理' : '失败'
+    row.children[0].textContent = formatTime(item.timestamp)
+    row.children[0].setAttribute('datetime', item.timestamp)
+    row.children[1].textContent = state === 'running' ? '●' : state === 'completed' ? '✓' : '!'
+    row.children[1].setAttribute('aria-label', stateText)
+    var parts = [item.label]
+    if (Number.isFinite(item.durationMs) && item.durationMs > 0) parts.push(formatElapsed(item.durationMs))
+    if (item.checkpointSha) parts.push(item.checkpointSha.slice(0, 7))
+    row.children[2].children[0].textContent = parts.join(' · ')
+    var details = []
+    if (item.provider) details.push(providerName(item.provider))
+    if (item.model) details.push(item.model)
+    if (Number.isFinite(item.changedFileCount)) details.push(item.changedFileCount + ' 个文件')
+    for (var verifier of item.verifiers || []) {
+      details.push(verifier.name + ' ' + ({ RUNNING: '执行中', PASSED: '通过', FAILED: '失败' })[verifier.outcome])
+    }
+    row.children[2].children[1].textContent = details.join(' · ')
+    row.children[2].children[1].hidden = details.length === 0
+    // Reuse each semantic identity across SSE/poll updates, including the
+    // transition from started to completed. Unchanged rows keep their DOM node.
+    var position = activeIds.size - 1
+    if (list.children[position] !== row) list.insertBefore(row, list.children[position] || null)
+  }
+  for (var entry of activityRows) {
+    if (!activeIds.has(entry[0])) {
+      list.removeChild(entry[1])
+      activityRows.delete(entry[0])
+    }
   }
 }
 
@@ -464,172 +501,16 @@ function renderTasks(cfg, rt) {
   }
 }
 
-function renderGuardian(guardian) {
-  setText('guardian-phase', displayValue(guardian.phase, GUARDIAN_PHASE_LABELS))
-  setText('guardian-iteration',
-    displayIteration(guardian.phase, guardian.iteration))
-  setText('guardian-detail', displayValue(guardian.status, GUARDIAN_STATUS_LABELS))
-}
-
-function displayIteration(phase, iteration) {
-  if (typeof iteration !== 'number' || phase === 'PREPARING') return '—'
-  if (phase === 'REVIEWING') return '第 ' + (iteration + 1) + ' 轮'
-  return iteration > 0 ? '第 ' + iteration + ' 轮' : '—'
-}
-
 function formatElapsed(ms) {
-  if (typeof ms !== 'number' || !isFinite(ms)) return ''
-  var value = ms < 1000 ? ms : (ms < 60000 ? ms / 1000 : ms / 60000)
-  var unit = ms < 1000 ? '毫秒' : (ms < 60000 ? '秒' : '分钟')
-  return String(Number((Math.round(value * 100) / 100).toFixed(2))) + ' ' + unit
-}
-
-function notificationChannelText(data) {
-  if (!Array.isArray(data.channels) || data.channels.length === 0) return ''
-  var parts = []
-  for (var i = 0; i < data.channels.length; i++) {
-    var entry = data.channels[i]
-    if (!entry || typeof entry !== 'object') continue
-    var name = NOTIFICATION_CHANNEL_LABELS[entry.channel] || String(entry.channel || '未知渠道')
-    var state = NOTIFICATION_CHANNEL_STATUS_LABELS[entry.status] || String(entry.status || '')
-    parts.push(name + '：' + state)
-  }
-  return parts.join(' · ')
-}
-
-function notificationOverallText(data, fallback) {
-  var mapped = NOTIFICATION_OVERALL_LABELS[data.overallStatus]
-  return '总体：' + (mapped || fallback)
-}
-
-function summarizeEvent(ev) {
-  var data = ev.data && typeof ev.data === 'object' ? ev.data : {}
-  if (ev.type === 'GUARDIAN_PHASE' || ev.type === 'TASK_PHASE') {
-    var parts = [displayValue(data.phase, GUARDIAN_PHASE_LABELS)]
-    if (data.status !== undefined) parts.push(displayValue(data.status, GUARDIAN_STATUS_LABELS))
-    var iteration = displayIteration(data.phase, data.iteration)
-    if (iteration !== '—') parts.push(iteration)
-    var elapsed = formatElapsed(data.elapsedMs)
-    if (elapsed) parts.push(elapsed)
-    return parts.join(' · ')
-  }
-  if (ev.type === 'NOTIFICATION_SENT' || ev.type === 'NOTIFICATION_FAILED') {
-    // Per-channel truth wins over the collapsed event type: a delivered email
-    // plus a failed desktop toast must read as 部分成功, not 发送失败.
-    var channelText = notificationChannelText(data)
-    var kind = data.kind === undefined ? '' : displayValue(data.kind, NOTIFICATION_KIND_LABELS) + '通知'
-    var sections = []
-    if (kind) sections.push(kind)
-    if (channelText) sections.push(channelText)
-    sections.push(notificationOverallText(data, ev.type === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
-    return sections.join(' · ')
-  }
-  var eventLabels = {
-    SESSION_STARTED: 'Work Session 已开始', SESSION_STATE_CHANGED: 'Work Session 状态已更新',
-    SCHEDULE_CANCELLED: '计划已取消',
-    TASK_STARTED: 'Task 已开始', TASK_COMPLETED: 'Task 已完成',
-    CHECKPOINT_COMMITTED: 'Git checkpoint 已提交', CHECKPOINT_PUSHED: 'Git checkpoint 已推送',
-    HUMAN_REQUIRED: '需要人工处理', SESSION_COMPLETED: 'Work Session 已完成',
-    BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用',
-    SESSION_FAILED: 'Work Session 失败', PAUSE_REQUESTED: '已请求暂停',
-    SESSION_PAUSED: 'Work Session 已暂停', STOP_AFTER_TASK_REQUESTED: '当前 Task 完成后停止已请求',
-    SESSION_RESUME_REQUESTED: '已请求恢复', SESSION_RESUMED: 'Work Session 已恢复',
-    NOTIFICATION_SENT: '通知已发送', NOTIFICATION_FAILED: '通知发送失败'
-  }
-  var summary = eventLabels[ev.type] || String(ev.type || '')
-  var details = []
-  if (data.taskId !== undefined && data.taskId !== null) details.push('Task：' + data.taskId)
-  if (data.category !== undefined) details.push('类别：' + displayValue(data.category, HUMAN_REQUIRED_LABELS))
-  if (data.state !== undefined) details.push('状态：' + displayValue(data.state, STATE_LABELS))
-  if (data.message !== undefined) details.push(String(data.message))
-  return details.length === 0 ? summary : summary + ' · ' + details.join(' · ')
-}
-
-function renderRecent(events) {
-  var list = el('recent-list')
-  if (!list) return
-  list.textContent = ''
-  var tail = events.slice(-40)
-  for (var i = 0; i < tail.length; i++) {
-    var ev = tail[i]
-    var li = document.createElement('li')
-
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(ev.timestamp)
-
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    data.textContent = summarizeEvent(ev)
-
-    li.appendChild(time)
-    li.appendChild(data)
-    list.appendChild(li)
-  }
-
-  var debug = el('debug-output')
-  if (debug) debug.textContent = JSON.stringify(events, null, 2)
-}
-
-var FAILURE_STAGE_LABELS = {
-  REVIEWER: 'Reviewer', EXECUTOR: 'Executor', VERIFICATION: 'Verification',
-  FINAL_REVIEW: 'Final Review', GIT_COMMIT: 'Git Commit', GIT_PUSH: 'Git Push',
-  RUNTIME: 'Runtime', NOTIFICATION: 'Notification', UNKNOWN: 'Unknown'
-}
-
-function summarizeLedgerEvent(ev) {
-  if (ev.eventType === 'SESSION_FAILED') {
-    return [
-      displayValue(ev.failureStage, FAILURE_STAGE_LABELS),
-      '失败',
-      displayValue(ev.failureCategory),
-      displayValue(ev.safeMessage)
-    ].join(' · ')
-  }
-  if (ev.eventType === 'GIT_COMMIT_COMPLETED') {
-    return 'Git Commit 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.commitSha)
-  }
-  if (ev.eventType === 'GIT_PUSH_COMPLETED') {
-    return 'Git Push 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.pushSha)
-  }
-  if (ev.eventType === 'CHECKPOINT_RECOVERY_REQUESTED' ||
-      ev.eventType === 'CHECKPOINT_RECOVERY_COMPLETED' ||
-      ev.eventType === 'CHECKPOINT_RECOVERY_FAILED') {
-    return 'Git checkpoint 恢复 · Task：' + displayValue(ev.taskId) +
-      ' · ' + displayValue(ev.recoveryAction) + ' · ' + displayValue(ev.status)
-  }
-  if (ev.eventType === 'NOTIFICATION_SENT' || ev.eventType === 'NOTIFICATION_FAILED') {
-    var ledgerSections = [displayValue(ev.notificationKind, NOTIFICATION_KIND_LABELS) + '通知']
-    var ledgerChannels = notificationChannelText({ channels: ev.notificationChannels })
-    if (ledgerChannels) ledgerSections.push(ledgerChannels)
-    ledgerSections.push(notificationOverallText({ overallStatus: ev.notificationOverall }, ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
-    return ledgerSections.join(' · ')
-  }
-  var parts = [displayValue(ev.eventType)]
-  if (ev.taskId) parts.push('Task：' + ev.taskId)
-  if (ev.phase) parts.push(displayValue(ev.phase, GUARDIAN_PHASE_LABELS))
-  if (ev.status) parts.push(displayValue(ev.status, GUARDIAN_STATUS_LABELS))
-  return parts.join(' · ')
-}
-
-function renderLedger(events) {
-  var list = el('ledger-list')
-  if (!list) return
-  list.textContent = ''
-  var tail = events.slice(-30)
-  for (var i = 0; i < tail.length; i++) {
-    var ev = tail[i]
-    var li = document.createElement('li')
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(ev.timestamp)
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    data.textContent = summarizeLedgerEvent(ev)
-    li.appendChild(time)
-    li.appendChild(data)
-    list.appendChild(li)
-  }
+  if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '0 秒'
+  if (ms === 0) return '0 秒'
+  if (ms < 1000) return String(Number(ms.toFixed(2))) + ' 毫秒'
+  if (ms < 60000) return String(Number((ms / 1000).toFixed(1))) + ' 秒'
+  var seconds = Math.floor(ms / 1000)
+  var hours = Math.floor(seconds / 3600)
+  var minutes = Math.floor(seconds % 3600 / 60)
+  var rest = seconds % 60
+  return (hours ? hours + '小时' : '') + (minutes ? minutes + '分' : '') + (rest ? rest + '秒' : '')
 }
 
 function renderDecision(rt) {
@@ -957,7 +838,7 @@ main {
 
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr 1fr 2fr;
   gap: 12px;
 }
 
@@ -1007,13 +888,47 @@ main {
   padding: 6px 0;
 }
 
-.detail {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  margin: 4px 0 0;
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 28px;
+  margin: 0;
 }
+
+.overview-grid > div { min-width: 0; }
+.overview-grid dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.overview-grid dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.overview-grid > div:nth-child(-n+2) dd { font-size: 15px; font-weight: 600; }
+.runtime-overview .note { margin-bottom: 0; }
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.activity-list li {
+  display: grid;
+  grid-template-columns: 62px 14px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.activity-list li:last-child { border-bottom: 0; }
+.activity-list .time { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.activity-mark { color: var(--ok); }
+.activity-running .activity-mark { color: var(--accent); }
+.activity-failed .activity-mark { color: var(--danger); }
+.activity-human_required .activity-mark { color: var(--warn); }
+.activity-label, .activity-detail { display: block; overflow-wrap: anywhere; }
+.activity-detail { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.activity-detail[hidden] { display: none; }
 
 .task-list {
   list-style: none;
@@ -1039,29 +954,6 @@ main {
 .task-list li.done .mark { color: var(--ok); }
 .task-list li.pending .mark { color: var(--muted); }
 .task-list li .task-label { font-family: var(--mono); font-size: 13px; }
-
-.recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 2px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.recent-list li {
-  display: flex;
-  gap: 12px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.recent-list .time { color: var(--muted); flex: none; }
-.recent-list .event-type { color: var(--accent); flex: none; width: 190px; }
-.recent-list .event-data { color: var(--text); word-break: break-all; }
 
 .decision {
   border-color: var(--warn);
@@ -1092,6 +984,8 @@ main {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.debug summary { cursor: pointer; color: var(--muted); }
 
 .footer {
   max-width: 920px;
@@ -1139,6 +1033,15 @@ button.primary:disabled {
 }
 
 @media (max-width: 760px) {
-  .meta-grid { grid-template-columns: repeat(2, 1fr); }
+  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .meta-grid > :last-child { grid-column: 1 / -1; }
+  .overview-grid { gap: 14px 18px; }
+  .footer { flex-wrap: wrap; }
+}
+
+@media (max-width: 420px) {
+  main { padding: 16px 12px; }
+  .overview-grid { grid-template-columns: 1fr; }
+  .activity-list li { gap: 8px; }
 }
 `

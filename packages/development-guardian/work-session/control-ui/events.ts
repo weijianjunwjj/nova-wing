@@ -63,6 +63,7 @@ export interface ControlEventInput {
 
 export interface ExecutionActivityView {
   id: number
+  taskId?: string
   timestamp: string
   kind: import('../../progress.js').ExecutionActivityKind
   phase: string
@@ -82,6 +83,10 @@ export interface ExecutionActivityView {
  * - 任何 secret / control token / env。
  */
 export interface WorkSessionControlSnapshot {
+  runtimeOverview?: import('./runtime-overview.js').RuntimeOverview
+  activities?: readonly import('./activity-projection.js').UserActivityView[]
+  eta?: import('./task-eta.js').TaskEtaEstimate
+  debug?: ReturnType<typeof import('./runtime-overview.js').projectTaskDiagnostics>
   codingExecutions?: readonly CodingExecutionView[]
   server: {
     host: string

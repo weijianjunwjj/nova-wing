@@ -43,6 +43,7 @@ import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type R
 import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 import type { RuntimeRepairRefresh } from './runtime-repair.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalyticsStore } from './task-run-analytics.js'
+import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/task-eta.js'
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
 import {
@@ -450,6 +451,8 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  /** Optional presentation-only estimator; injected runtimes otherwise use deterministic ETA. */
+  taskEta?: Pick<TaskEtaService, 'project' | 'close'>
   createCodexExecutor?: (options: CodexExecutorOptions) => RouterCodexExecutor
   createBrain?: (options: AskBridgeBrainOptions) => GuardianBrain
   createExecutor?: (options: ClaudeCodeExecutorOptions) => GuardianRecoverableExecutor
@@ -623,6 +626,10 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    ...(dependencies.taskEta !== undefined ? { taskEta: dependencies.taskEta }
+      : dependencies.createExecutor === undefined && dependencies.createCodexExecutor === undefined &&
+        dependencies.createRuntime === undefined && dependencies.createV2Dispatcher === undefined
+        ? { taskEta: createRuntimeTaskEtaService({ env }) } : {}),
     readCodingExecutions: () => trusted.tasks.map((task) => {
       const state = codingStore.read(taskKey(task.id))
       return { taskId: task.id, mode: taskModes.get(task.id)!,

@@ -49,6 +49,18 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
         el.children.push(child)
         return child
       },
+      insertBefore(child: unknown, reference: unknown): unknown {
+        const oldIndex = el.children.indexOf(child)
+        if (oldIndex !== -1) el.children.splice(oldIndex, 1)
+        const index = reference === null ? el.children.length : el.children.indexOf(reference)
+        el.children.splice(index, 0, child)
+        return child
+      },
+      removeChild(child: unknown): unknown {
+        el.children.splice(el.children.indexOf(child), 1)
+        return child
+      },
+      setAttribute(): void {},
       addEventListener(): void {},
     }
     // 记录任何 innerHTML / outerHTML 赋值（render path 不应触发）
@@ -119,6 +131,11 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
       humanRequired: { category: 'DECISION_REQUIRED', reason: MALICIOUS_REASON },
     },
     guardian: { phase: 'REVIEWING', status: 'active', iteration: 0, elapsedMs: 0 },
+    runtimeOverview: { status: 'SUSPENDED', iteration: { current: 1 }, totalElapsedMs: 0 },
+    activities: [{
+      id: 'task:T1', timestamp: '2026-01-01T00:00:00.000Z',
+      label: `Task 已开始 · ${MALICIOUS_MESSAGE}`, status: 'running',
+    }],
     recentEvents: [
       {
         id: 1,
@@ -142,23 +159,23 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   const firstLi = taskList.children[0]!
   const label = firstLi.children[1]!
   assert.equal(label.textContent, `T1 ${MALICIOUS_GOAL}`)
-  assert.equal(elements.get('guardian-iteration')?.textContent, '第 1 轮')
-  assert.equal(elements.get('activity-orchestration-label')?.textContent, 'TASK')
+  assert.equal(elements.get('overview-iteration')?.textContent, '第 1 轮')
 
   // Presentation mapping and formatting never rewrite the trusted goal or raw elapsed value.
   assert.equal((context.formatElapsed as (ms: number) => string)(0.0465), '0.05 毫秒')
   assert.equal((context.formatElapsed as (ms: number) => string)(279.0166), '279.02 毫秒')
   assert.equal((context.formatElapsed as (ms: number) => string)(2700), '2.7 秒')
-  assert.equal((context.formatElapsed as (ms: number) => string)(60000), '1 分钟')
-  assert.equal((context.formatElapsed as (ms: number) => string)(472200), '7.87 分钟')
-  assert.equal((context.displayIteration as (phase: string, iteration: number) => string)('PREPARING', 0), '—')
-  assert.equal((context.displayIteration as (phase: string, iteration: number) => string)('EXECUTING', 1), '第 1 轮')
+  assert.equal((context.formatElapsed as (ms: number) => string)(60000), '1分')
+  assert.equal((context.formatElapsed as (ms: number) => string)(472200), '7分52秒')
+  const displayIteration = context.displayIteration as (iteration: { current: number; maximum?: number }) => string
+  assert.equal(displayIteration({ current: 0 }), '尚未执行')
+  assert.equal(displayIteration({ current: 1 }), '第 1 轮')
 
   // 3. recent event message 原样文本落地
-  const recentList = elements.get('recent-list') as unknown as {
-    children: Array<{ children: Array<{ textContent: string }> }>
+  const recentList = elements.get('activity-list') as unknown as {
+    children: Array<{ children: Array<{ children: Array<{ textContent: string }> }> }>
   }
-  const recentData = recentList.children[0]!.children[1]!
+  const recentData = recentList.children[0]!.children[2]!.children[0]!
   assert.equal(recentData.textContent, `Task 已开始 · ${MALICIOUS_MESSAGE}`)
 
   // 4. 未创建任何可执行节点
@@ -172,7 +189,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   // 6. __PWNED__ 未被执行
   assert.notEqual(context.__PWNED__, true)
 
-  // Explicit V1 sessions retain the historical label.
+  // Both control planes use the same user-facing overview.
   render({
     configuredSession: {
       id: 's1', targetRepo: '/repo/example', branch: 'feat/x', controlPlane: 'v1',
@@ -181,7 +198,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
     runtime: { started: false, running: false, state: 'READY', completedTaskIds: [] },
     guardian: {}, recentEvents: [],
   })
-  assert.equal(elements.get('activity-orchestration-label')?.textContent, 'Guardian')
+  assert.equal(elements.get('overview-iteration')?.textContent, '尚未执行')
 
   // A durable scoped-verification request uses only the dedicated approval
   // control. The generic decision textarea cannot be used as a capability grant.
