@@ -1,6 +1,6 @@
+import { defaultCodingExecutionStorePath } from './coding-execution-store.js'
+import { workspacePathKey } from '../platform/paths.js'
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { realpath } from 'node:fs/promises'
 
 import { readWorkspaceGit } from '../codex-workspace-tools.js'
@@ -44,9 +44,7 @@ export async function requestControlledCodexQuotaExhaustion(
       !report.commandsRun.some((command) => /(?:git status|list_files|read_file)/u.test(command))) {
     throw new Error('controlled quota injection requires Codex workspace inspection and changed files evidence')
   }
-  const store = request.store ?? new CodingExecutionStore(join(
-    env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing'), 'NovaWing', 'coding-executors.sqlite',
-  ))
+  const store = request.store ?? new CodingExecutionStore(defaultCodingExecutionStorePath(env))
   const key = JSON.stringify([request.definition.id, request.taskId])
   const metadata = store.read(key)
   if (metadata?.mode !== 'auto' || metadata.activeExecutor !== 'codex' ||
@@ -54,7 +52,7 @@ export async function requestControlledCodexQuotaExhaustion(
     throw new Error('controlled quota injection requires activeExecutor=codex and history=[codex]')
   }
   const workspace = await realpath(request.definition.targetRepo)
-  const workspaceKey = process.platform === 'win32' ? workspace.toLowerCase() : workspace
+  const workspaceKey = workspacePathKey(workspace)
   if (store.hasWorkspaceLease(workspaceKey)) {
     throw new Error('controlled quota injection rejected while an active writer lease exists')
   }

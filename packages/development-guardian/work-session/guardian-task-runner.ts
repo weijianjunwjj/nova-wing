@@ -1,3 +1,4 @@
+import { VENV_PYTEST_COMMANDS, isVenvMissingDetail } from '../platform/executables.js'
 /**
  * Guardian Work Session Adapter
  * W002 - 桥接 Guardian 和 Work Session
@@ -88,8 +89,8 @@ export function createGuardianTask(
 /**
  * 已知需要外部运行时/解释器的验证命令（覆盖真实 Python unavailable canary）
  */
-const EXTERNAL_RUNTIME_VERIFICATION_COMMANDS = new Set([
-  '.venv/Scripts/python.exe -m pytest',
+const EXTERNAL_RUNTIME_VERIFICATION_COMMANDS = new Set<string>([
+  ...VENV_PYTEST_COMMANDS,
 ])
 
 /**
@@ -114,15 +115,12 @@ function isRuntimeUnavailableDetail(detail: string): boolean {
 /**
  * W003 BOOTSTRAP CLOSURE：venv target 缺失的信号。
  *
- * 窄范围：只匹配失败详情明确指向 .venv/Scripts/python.exe 本身不存在
+ * 窄范围：只匹配失败详情明确指向 repo venv python 本身不存在
  * （No such file or directory / ENOENT）。这是"bootstrap 尚未完成"的信号，
  * 而不是宿主 python 解释器不可用。
  */
 function isVenvTargetMissingDetail(detail: string): boolean {
-  return (
-    /\.venv[/\\]Scripts[/\\]python\.exe/i.test(detail) &&
-    (/no such file or directory/i.test(detail) || /\bENOENT\b/i.test(detail))
-  )
+  return isVenvMissingDetail(detail)
 }
 
 /**
@@ -132,7 +130,7 @@ function isVenvTargetMissingDetail(detail: string): boolean {
  * venv module / executable / interpreter 自身不可用）才是 ENVIRONMENT_REQUIRED。
  * 避免把"尚未 bootstrap"误判为宿主环境故障。
  *
- * 注意精确性：`.venv/Scripts/python.exe: No such file or directory` 是 venv target
+ * 注意精确性：`repo venv python: No such file or directory` 是 venv target
  * 缺失（bootstrap 尚未完成），不是宿主 python 不可用；因此这里只匹配独立 python
  * 命令名 / venv module / executable / interpreter 的明确不可用信号。
  */
@@ -157,7 +155,7 @@ function isHostRuntimeFailureText(text: string): boolean {
  * 并且不存在 scope violation / permission expansion / repo drift / safety blocker 时命中。
  * 这是 ENVIRONMENT_REQUIRED 的 evidence，必须先于纯 timeout → STALLED 判断。
  *
- * W003 BOOTSTRAP CLOSURE：".venv/Scripts/python.exe 不存在"本身不能推出 ENVIRONMENT_REQUIRED。
+ * W003 BOOTSTRAP CLOSURE："repo venv python 不存在"本身不能推出 ENVIRONMENT_REQUIRED。
  * - venv target missing 且无宿主 runtime 失败证据 → recoverable bootstrap prerequisite，
  *   由 Reviewer revise 触发 bootstrap（不是 human-required environment failure）；
  * - venv target missing 且 bootstrap capability 不在 approved capabilities → 不伪装成

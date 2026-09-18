@@ -31,7 +31,7 @@ test('production repository truth binds binary bytes, staged content, literal fi
     executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
   })
   let runtime: WorkSessionRuntimeConfig | undefined
-  const app = await createProductionWorkSessionUi(config, { env: { ...process.env, LOCALAPPDATA: data },
+  const app = await createProductionWorkSessionUi(config, { env: { ...process.env, NOVAWING_DATA_DIR: data },
     createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
   })
   try {

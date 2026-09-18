@@ -276,7 +276,7 @@ try {
     releaseExecutor()
     await sleep(2_000)
 
-    const store = new TaskRunAnalyticsStore(defaultTaskRunAnalyticsPath({ ...process.env, LOCALAPPDATA: dataDir }))
+    const store = new TaskRunAnalyticsStore(defaultTaskRunAnalyticsPath({ ...process.env, NOVAWING_DATA_DIR: dataDir }))
     try {
       report.analytics = store.findBySession(report.session.sessionId ?? '').map((row) => ({
         taskId: row.taskId,

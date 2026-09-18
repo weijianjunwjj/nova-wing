@@ -130,7 +130,7 @@ npm run check:unused
 npm run check:boundaries
 ```
 
-## Work Session SMTP 本机配置（Windows）
+## Launchpad 与跨平台本机状态
 
 Development Guardian Work Session 已实现串行 Task、独立确定性验证、Git checkpoint、
 持久化暂停/恢复、Codex/DeepSeek 执行器路由及本地 Launchpad。它是受控的本地
@@ -142,7 +142,32 @@ development control surface，不改变 NovaWing 领域内核的权威数据边�
 npm run guardian:notification:setup -- --from-env
 ```
 
-本机文件位置为 `%LOCALAPPDATA%\NovaWing\secrets\smtp.json`。setup 使用 Windows `icacls` 收紧文件 ACL；该文件是本机 ACL 保护的 secret persistence，不是 Git tracked config，也不等同于 DPAPI 或 Credential Manager 的静态加密。之后 `guardian:work-session:ui` 和 `guardian:work-session:adopt` 会在没有 SMTP 环境变量时自动读取它。完整的 7 个显式 SMTP 环境变量始终优先；部分环境变量会安全失败，绝不与本机文件混用。
+Node.js 24+ 下，Windows、macOS、Linux 均使用 `npm run guardian:launchpad`。
+macOS/Linux 需要 PATH 上可执行的 Bash 与 Git；Windows 使用原生 Git for Windows Bash，
+可通过 `NOVAWING_GIT_BASH_PATH` 指定安装位置，拒绝 WSL/System32/WindowsApps shim。
+Windows 的 `NovaWing.vbs` 是可选启动器。V2 普通任务不依赖 AskBridge；V1 的安装与登录
+使用 `guardian:chatgpt:install` / `guardian:chatgpt:login`，安装脚本从固定版本和补丁源码构建，
+需要 Git、Rust/Cargo 以及第三方 Bridge 所需浏览器。安装目录统一为 `~/.local/bin`，
+Windows 文件名带 `.exe`，其他平台不带；`NOVAWING_ASK_BRIDGE_PATH` 可覆盖。
+
+| OS | Config / secrets | Data（SQLite、analytics、execution、ETA、audit） |
+| --- | --- | --- |
+| Windows | `%LOCALAPPDATA%/NovaWing` | 同左 |
+| macOS | `~/Library/Application Support/NovaWing` | 同左 |
+| Linux | `$XDG_CONFIG_HOME/NovaWing`，默认 `~/.config/NovaWing` | `$XDG_DATA_HOME/NovaWing`，默认 `~/.local/share/NovaWing` |
+
+`NOVAWING_CONFIG_DIR` 覆盖可信 task config 目录；`NOVAWING_DATA_DIR` 覆盖数据根目录。
+SMTP 位于 config 根下的 `secrets/smtp.json`；Windows 使用经验证、禁止继承的当前用户
+ACL，macOS/Linux 使用 `0700` 目录和 `0600` 文件。保护失败不会写入 secret，替换失败
+保留旧文件。此保护不是静态加密。完整 7 个 SMTP 环境变量优先，部分配置 fail closed。
+桌面通知是可选能力：Windows Toast；macOS/Linux 无此 adapter 时返回 SKIPPED，不阻断任务或邮件。
+
+旧版本错误写入 POSIX `~/AppData` 或 `~/.novawing/NovaWing` 的数据不会自动合并或删除。
+需要保留旧 session 时，先关闭旧 runtime，备份后迁移对应配置/数据，或显式配置旧路径；
+SQLite session URL 已写入可信 config 的继续沿用原位置。
+平台实现仅允许出现在明确 allowlist 的 adapter；`npm run check:platform`（已接入 `check`）
+阻止 common runtime 再引入 OS 路径、工具、环境变量和 locale 硬编码。
+
 
 ## 当前切片假设
 

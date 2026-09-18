@@ -133,7 +133,7 @@ export async function createCertProductionApp(options: ProductionAppOptions): Pr
     ...(options.dispatcherExtras ?? {}),
   })
   const app = await createProductionWorkSessionUi(options.config, {
-    env: { ...process.env, LOCALAPPDATA: options.dataDir },
+    env: { ...process.env, NOVAWING_DATA_DIR: options.dataDir },
     createV2Dispatcher: options.productionReview === true
       ? ({ defaultDispatcher }) => ({
           inspectRepository: defaultDispatcher.inspectRepository,

@@ -51,7 +51,7 @@ export const s01: CertificationScenario = {
     const phases: string[] = []
     const observedPreflights: Array<'v1' | 'v2'> = []
     const launchpad = await createNovaWingLaunchpad({ configDirectory: configsDir, dependencies: {
-      resolveEnvironment: async () => ({ LOCALAPPDATA: ctx.dirs.data }),
+      resolveEnvironment: async () => ({ NOVAWING_DATA_DIR: ctx.dirs.data }),
       preflight: (_targetRepo, controlPlane) => {
         if (controlPlane !== undefined) observedPreflights.push(controlPlane)
         return Promise.resolve(healthyReport())
@@ -129,7 +129,7 @@ export const s16: CertificationScenario = {
       tasks: [{ id: 'T1', goal: 'legacy path', acceptanceCriteria: ['completed'], allowedPaths: ['src/**'] }],
     })
     const app = await createProductionWorkSessionUi(config, {
-      env: { ...process.env, LOCALAPPDATA: ctx.dirs.data },
+      env: { ...process.env, NOVAWING_DATA_DIR: ctx.dirs.data },
       createRuntime(value) { capture.runtimeConfig = value; return new FakeRuntime(value.definition) },
       createBrain: () => { brainConstruction++; return {} as unknown as GuardianBrain },
     })

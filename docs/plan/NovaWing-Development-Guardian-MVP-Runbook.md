@@ -2,7 +2,7 @@
 
 > 日期：2026-08-18  
 > 适用分支：`feat/development-guardian-mvp`  
-> 环境：Windows Native + Git Bash-only
+> 历史验证环境：Windows Native + Git Bash。当前跨平台入口和目录策略以 README 为准。
 
 本手册只用于验证 Development Guardian MVP，不改变长期架构与 Scope Lock。
 
@@ -16,7 +16,7 @@ npm ci
 npm run check
 ```
 
-要求：Node.js >= 24、Claude Code 可从 Git Bash 调用，并且正式自动执行任务前目标 worktree 必须干净。
+要求：Node.js >= 24、Claude Code 可从当前平台 shell 调用（Windows 原生 Git Bash，macOS/Linux Bash），并且正式自动执行任务前目标 worktree 必须干净。
 
 ## 2. ChatGPT Web Bridge
 
@@ -28,15 +28,15 @@ npm run check
 
 ask-bridge 使用系统已安装的真实 Google Chrome，通过 Chrome DevTools Protocol / chrome-devtools-mcp 操作网页；Windows 会检查 Program Files、Program Files (x86) 与 LOCALAPPDATA 的标准 Chrome 路径，因此不需要再下载一份 Playwright Chromium。
 
-### Git Bash 安装 / 升级
+### AskBridge 安装 / 升级
 
-NovaWing 提供 Git Bash-only 安装脚本，直接下载固定版本的 ask-bridge 官方 Windows Release：
+当前安装器使用 Git 与 Cargo，从固定的 v0.2.13 源码及仓库补丁构建当前宿主二进制；支持 Windows/macOS/Linux 的路径与调用契约。第三方浏览器运行能力仍需各宿主实测：
 
 ```bash
 npm run guardian:chatgpt:install
 ```
 
-安装位置：
+安装位置（Windows 带 `.exe`，macOS/Linux 使用 `ask-bridge`）：
 
 ```text
 ~/.local/bin/ask-bridge.exe

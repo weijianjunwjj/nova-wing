@@ -1,3 +1,4 @@
+import { pythonRuntime } from '../packages/development-guardian/platform/executables.js'
 /**
  * W003 FINAL BOOTSTRAP CLOSURE — 完整 Guardian 收敛
  *
@@ -40,8 +41,8 @@ const EXPECTED_ALLOWED_TOOLS = new Set([
   'Grep',
   'Bash(git status:*)',
   'Bash(git diff:*)',
-  'Bash(python -m venv .venv)',
-  'Bash(.venv/Scripts/python.exe -m pip install:*)',
+  `Bash(${pythonRuntime().bootstrap})`,
+  `Bash(${pythonRuntime().venv} -m pip install:*)`,
 ])
 
 class QueueRunner {

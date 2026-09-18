@@ -93,7 +93,7 @@ export const s10: CertificationScenario = {
       return { summary: 'continued', changedFiles: ['src/a.ts'], commandsRun: [], verificationResults: [{ name: 'test', status: 'passed' as const }], blockers: [] }
     }
     const app = await createProductionWorkSessionUi(config, {
-      env: { ...process.env, LOCALAPPDATA: ctx.dirs.data },
+      env: { ...process.env, NOVAWING_DATA_DIR: ctx.dirs.data },
       createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
       createCodexExecutor: () => ({ async execute() { return codex() }, lastError: classifyCodexError({ code: 'quota_exhausted' }) }),
       createExecutor: () => ({

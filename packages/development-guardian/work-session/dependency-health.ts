@@ -1,18 +1,15 @@
+import { commandEnvironment } from '../platform/environment.js'
 import { access } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { shellProbeContract, shellRemediation, type GuardianShellContractOptions } from '../platform/shell.js'
+import { resolveAskBridgeExecutable } from '../platform/executables.js'
+export { resolveAskBridgeExecutable } from '../platform/executables.js'
+export { EXPECTED_GIT_BASH_EXECUTABLE } from '../platform/shell.js'
 import { inspectCodexLocal } from '../codex-executor.js'
 import { classifyCodexError } from '../codex-error.js'
 import type { ExecutorMode } from '../coding-executor-config.js'
 
-export const EXPECTED_GIT_BASH_EXECUTABLE = 'D:\\Git\\bin\\bash.exe'
 export const SHELL_ENVIRONMENT_INVALID = 'SHELL_ENVIRONMENT_INVALID'
-
-export function resolveAskBridgeExecutable(env: NodeJS.ProcessEnv): string {
-  return env.NOVAWING_ASK_BRIDGE_PATH?.trim() ||
-    join(homedir(), '.local', 'bin', 'ask-bridge.exe')
-}
 
 /**
  * Availability, not activity. A bounded static preflight can establish READY
@@ -55,7 +52,7 @@ export interface DependencyCommandRequest {
 
 export type DependencyCommandRunner = (request: DependencyCommandRequest) => Promise<DependencyCommandResult>
 
-export interface ProductionDependencyPreflightOptions {
+export interface ProductionDependencyPreflightOptions extends GuardianShellContractOptions {
   /** Omitted preserves V1 compatibility; V2 actions own their capability requirements. */
   controlPlane?: 'v1' | 'v2'
   env?: NodeJS.ProcessEnv
@@ -69,30 +66,11 @@ export interface ProductionDependencyPreflightOptions {
   inspectCodex?: () => Promise<unknown>
 }
 
-const SAFE_SHELL_REMEDIATION =
-  '将 Codex/task shell executable 固定为 D:\\Git\\bin\\bash.exe，更新环境后重启当前 runtime，再从现有 checkpoint Resume。'
-
-function normalizeWindowsPath(value: string): string {
-  return value.replaceAll('/', '\\').replace(/\\+/gu, '\\').toLowerCase()
-}
-
-function shellFailure(actualExecutable: string, safeMessage: string): DependencyHealth {
-  return {
-    id: 'SHELL',
-    state: 'UNAVAILABLE',
-    failureType: SHELL_ENVIRONMENT_INVALID,
-    safeMessage,
-    expectedExecutable: EXPECTED_GIT_BASH_EXECUTABLE,
-    actualExecutable,
-    safeRemediation: SAFE_SHELL_REMEDIATION,
-  }
-}
-
-async function defaultCommandRunner(request: DependencyCommandRequest): Promise<DependencyCommandResult> {
+async function defaultCommandRunner(request: DependencyCommandRequest, env: NodeJS.ProcessEnv): Promise<DependencyCommandResult> {
   return new Promise((resolveRun) => {
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
-      env: process.env,
+      env: commandEnvironment(env),
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,7 +89,7 @@ async function defaultCommandRunner(request: DependencyCommandRequest): Promise<
     child.stdout.on('data', (chunk: string) => { stdout += chunk })
     child.stderr.on('data', (chunk: string) => { stderr += chunk })
     child.once('error', (error) => finish({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` }))
-    child.once('exit', (code) => finish({ exitCode: code ?? 1, stdout, stderr }))
+    child.once('close', (code) => finish({ exitCode: code ?? 1, stdout, stderr }))
     const timer = setTimeout(() => {
       child.kill()
       finish({ exitCode: 1, stdout, stderr, timedOut: true })
@@ -120,37 +98,20 @@ async function defaultCommandRunner(request: DependencyCommandRequest): Promise<
   })
 }
 
-async function probeShell(options: Required<Pick<ProductionDependencyPreflightOptions, 'commandRunner' | 'accessFile' | 'timeoutMs'>> & {
-  actualExecutable: string
+async function probeShell(options: ProductionDependencyPreflightOptions & {
+  commandRunner: DependencyCommandRunner; accessFile: (path: string) => Promise<void>; timeoutMs: number
 }): Promise<DependencyHealth> {
-  const actual = options.actualExecutable
-  if (normalizeWindowsPath(actual) !== normalizeWindowsPath(EXPECTED_GIT_BASH_EXECUTABLE)) {
-    return shellFailure(actual, '实际 shell executable 不是 NovaWing 要求的 Git Bash。')
-  }
+  let actual = ''
   try {
-    await options.accessFile(actual)
+    const contract = shellProbeContract(options)
+    actual = contract.executable
+    if (contract.requiresAbsoluteAccess) await options.accessFile(actual)
+    const result = await options.commandRunner({ executable: actual, args: contract.args, timeoutMs: options.timeoutMs })
+    if (result.exitCode !== 0 || result.timedOut || !contract.valid(result.stdout, result.stderr)) throw new Error('probe failed')
+    return { id: 'SHELL', state: 'READY', expectedExecutable: actual, actualExecutable: actual }
   } catch {
-    return shellFailure(actual, '要求的 Git Bash executable 不存在或不可执行。')
-  }
-  const result = await options.commandRunner({
-    executable: actual,
-    args: ['--noprofile', '--norc', '-c', 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"'],
-    timeoutMs: options.timeoutMs,
-  })
-  const fingerprint = result.stdout.trim()
-  if (
-    result.timedOut === true ||
-    result.exitCode !== 0 ||
-    /wsl|relay|\/bin\/bash/iu.test(`${result.stdout}\n${result.stderr}`) ||
-    !/^[^|]+\|MINGW64\|msys$/u.test(fingerprint)
-  ) {
-    return shellFailure(actual, 'shell fingerprint 不是原生 Git Bash，或命中了 System32/WSL relay。')
-  }
-  return {
-    id: 'SHELL',
-    state: 'READY',
-    expectedExecutable: EXPECTED_GIT_BASH_EXECUTABLE,
-    actualExecutable: actual,
+    return { id: 'SHELL', state: 'UNAVAILABLE', failureType: SHELL_ENVIRONMENT_INVALID,
+      actualExecutable: actual, safeMessage: 'Shell executable or fingerprint probe failed.', safeRemediation: shellRemediation(options) }
   }
 }
 
@@ -179,14 +140,11 @@ export async function runProductionDependencyPreflight(
   options: ProductionDependencyPreflightOptions = {},
 ): Promise<DependencyHealthReport> {
   const env = options.env ?? process.env
-  const commandRunner = options.commandRunner ?? defaultCommandRunner
+  const commandRunner = options.commandRunner ?? ((request) => defaultCommandRunner(request, env))
   const accessFile = options.accessFile ?? (async (path: string) => access(path))
   const timeoutMs = options.timeoutMs ?? 3_000
-  // This is the executable NovaWing itself will invoke with shell:false. Parent
-  // shell variables such as Git Bash's /usr/bin/bash are POSIX-internal paths
-  // and are not Windows process executable identities.
-  const actualExecutable = env.NOVAWING_GIT_BASH_PATH?.trim() || EXPECTED_GIT_BASH_EXECUTABLE
-  const shell = await probeShell({ actualExecutable, commandRunner, accessFile, timeoutMs })
+  const shell = await probeShell({ ...options, env, commandRunner, accessFile, timeoutMs })
+  const actualExecutable = shell.actualExecutable ?? ''
   const runtime: DependencyHealth = process.execPath.length > 0
     ? { id: 'RUNTIME', state: 'READY' }
     : { id: 'RUNTIME', state: 'UNAVAILABLE', failureType: 'RUNTIME_UNAVAILABLE', safeMessage: 'Node runtime 不可用。' }
@@ -204,7 +162,7 @@ export async function runProductionDependencyPreflight(
     ]
   } else {
     const cwd = options.targetRepo
-    const askBridgeExecutable = resolveAskBridgeExecutable(env)
+    const askBridgeExecutable = resolveAskBridgeExecutable(env, options)
     const [bridge, executor, git] = await Promise.all([
       options.controlPlane === 'v2'
         ? Promise.resolve<DependencyHealth>({ id: 'BRIDGE', state: 'UNKNOWN', safeMessage: 'V1 Bridge is not required for ordinary V2 execution.' })
@@ -244,6 +202,7 @@ export async function runProductionDependencyPreflight(
         timeoutMs,
       }, commandRunner),
     ])
+    if (bridge.state === 'UNAVAILABLE') bridge.safeRemediation = 'Run npm run guardian:chatgpt:install, then npm run guardian:chatgpt:login on this host; NOVAWING_ASK_BRIDGE_PATH can select an existing installation.'
     const brain: DependencyHealth = options.controlPlane === 'v2'
       ? { id: 'BRAIN', state: 'UNKNOWN', safeMessage: 'V1 Brain is not required for ordinary V2 execution.' }
       : bridge.state === 'READY'

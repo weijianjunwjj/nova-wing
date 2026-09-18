@@ -61,7 +61,7 @@
 
 ## SDK、认证与有效配置
 
-- 固定 `@openai/codex-sdk@0.151.0`，使用其随包提供的 Windows CLI；当前主机 Node 24.14.1、npm 11.11.0。实际 SDK 类型支持 `startThread`、`resumeThread`、`runStreamed`、per-thread model/reasoning/sandbox/approval。
+- 固定 `@openai/codex-sdk@0.151.0`，使用其随包提供的当前 OS/架构原生 CLI；历史验证主机 Node 24.14.1、npm 11.11.0。实际 SDK 类型支持 `startThread`、`resumeThread`、`runStreamed`、per-thread model/reasoning/sandbox/approval。
 - 冷启静态检查只解析 SDK 内置 CLI，不依赖 PATH 中的系统 `codex`。真实 ChatGPT 认证、SDK session 和 workspace MCP 连接在 Task 执行前的受限 preflight 中统一验证。
 - 子进程环境使用白名单，移除 `OPENAI_API_KEY`、`CODEX_API_KEY`、Anthropic/DeepSeek keys 以及桌面内部权限标志；不设置 SDK `apiKey`。执行范围内强制 `forced_login_method=chatgpt`、`model_provider=openai`。不修改用户全局 config，不提供付费 OpenAI API fallback。
 - 新 Task 最终传入 SDK thread 的默认值为 `model=gpt-5.6-terra`、`modelReasoningEffort=high`。用户显式选择的受支持组合原样保留；不支持的模型/强度组合在配置边界拒绝，不自动降级。
@@ -69,7 +69,7 @@
 
 ### Windows 原生 SDK 与 workspace gate
 
-Codex CLI 使用官方 Windows bundled binary 和 ChatGPT 登录；repo I/O 只通过下述 scoped MCP bridge，不依赖 WSL 或它的 Git 配置。Guardian 在写入 `EXECUTING`、增加 iteration 或启动真实 Executor 前，先运行一次真实只读模型 preflight，要求 Codex 实际完成 `git_status`、根目录 `list_files` 和 `package.json` 的 `read_file`。缺少任一工具证据时停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`，不会制造一次假执行记录。
+Codex CLI 使用官方当前宿主 bundled binary 和 ChatGPT 登录；repo I/O 只通过下述 scoped MCP bridge，不依赖 WSL 或它的 Git 配置。Guardian 在写入 `EXECUTING`、增加 iteration 或启动真实 Executor 前，先运行一次真实只读模型 preflight，要求 Codex 实际完成 `git_status`、根目录 `list_files` 和 `package.json` 的 `read_file`。缺少任一工具证据时停为 `EXECUTOR_ENVIRONMENT_UNAVAILABLE`，不会制造一次假执行记录。
 
 ### 为什么不是直接 workspace-write
 
@@ -95,7 +95,7 @@ SDK 0.151 的 `ThreadError` 类型只有 message，没有稳定的结构化 quot
 
 一个 Task 首次 startThread，收到 `thread.started` 即同步持久化 ID。之后每轮重新绑定当前 scoped tools，但调用同一 ID 的 resumeThread。ID 同时进入 provider checkpoint；重启时优先使用较新的本地 durable metadata，防止旧 checkpoint 把已接力 Task 切回 Codex。
 
-默认本地协调库：`%LOCALAPPDATA%/NovaWing/coding-executors.sqlite`。metadata、events、handoff、workspace lease 与 global quota availability 独立于 Task 生命周期；不同 session storage URL 仍共用 workspace guard。Task key 为 session ID + Task ID，workspace key 使用 realpath（Windows 大小写归一化）。这些本地数据应与其他 NovaWing 状态一起保护和备份。
+默认本地协调库由 `platform/paths.ts` 统一解析（完整 OS 目录表见 README），文件名 `coding-executors.sqlite`。metadata、events、handoff、workspace lease 与 global quota availability 独立于 Task 生命周期；不同 session storage URL 仍共用 workspace guard。Task key 为 session ID + Task ID，workspace key 使用 realpath（Windows 大小写归一化）。这些本地数据应与其他 NovaWing 状态一起保护和备份。
 
 handoff 与 sticky failover event/metadata 在同一个 SQLite transaction 中写入，包含：Task goal、constraints、acceptance、do-not-do、allowed/forbidden paths、当前 decision/state、真实 git status、diff stat、changed files、HEAD/branch/worktree fingerprint、可信历史测试与已执行命令、最后工程总结、未解决失败、Reviewer feedback、verification requirements、已批准 scoped verifier。历史测试明确标记需在部分修改后重新验证，不冒充当前通过。
 

@@ -91,7 +91,7 @@ function scriptedLlmAgent(bindings: readonly { criterion: string; requiredEviden
     runner: async () => ({ text: JSON.stringify({ acceptanceEvidenceBindings: bindings }) }),
     describeRepository: async () => ({
       packageScripts: { test: 'node --test' }, testFileCandidates: [], topLevelEntries: [],
-      hasPytestConfig: false, hasWindowsVenvPython: false,
+      hasPytestConfig: false, hasVenvPython: false,
     }),
     isRuntimeAvailable: () => true,
   })

@@ -1,3 +1,4 @@
+import { workspacePathKey } from './platform/paths.js'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { lstat, readFile, readdir, mkdir, writeFile, unlink, realpath } from 'node:fs/promises'
@@ -68,10 +69,10 @@ export class CodexWorkspaceTools {
         PROTECTED.has(part.toLowerCase()) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(part))) {
       throw new Error('Path is outside the permitted workspace')
     }
-    const scopedTask = process.platform === 'win32' ? { ...this.task,
+    const scopedTask = workspacePathKey('A') === 'a' ? { ...this.task,
       ...(this.task.allowedPaths ? { allowedPaths: this.task.allowedPaths.map(p => p.toLowerCase()) } : {}),
       ...(this.task.forbiddenPaths ? { forbiddenPaths: this.task.forbiddenPaths.map(p => p.toLowerCase()) } : {}) } : this.task
-    const scopedPath = process.platform === 'win32' ? path.toLowerCase() : path
+    const scopedPath = workspacePathKey(path)
     if (write && scopeBlockers(scopedTask, [scopedPath]).length > 0) throw new Error('Write violates Task scope')
     // For reads, forbidden paths are hard denials too. No symlink/junction/hardlink escapes.
     if (scopeBlockers({ ...scopedTask, allowedPaths: [] }, [scopedPath]).length > 0) throw new Error('Read violates Task scope')
@@ -87,7 +88,7 @@ export class CodexWorkspaceTools {
     }
     const canonical = relative(this.root, resolve(current)).replaceAll('\\', '/')
     if (canonical.startsWith('..') || canonical.split('/').some(part => PROTECTED.has(part.toLowerCase()))) throw new Error('Path escapes workspace')
-    const canonicalScope = process.platform === 'win32' ? canonical.toLowerCase() : canonical
+    const canonicalScope = workspacePathKey(canonical)
     if (scopeBlockers(write ? scopedTask : { ...scopedTask, allowedPaths: [] }, [canonicalScope]).length > 0) {
       throw new Error('Canonical path violates Task scope')
     }

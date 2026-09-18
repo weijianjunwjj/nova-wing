@@ -41,7 +41,7 @@ test('production Controller start/resume complete independently while ETA provid
     throw new Error('provider unavailable')
   } })
   const app = await createProductionWorkSessionUi(config, {
-    env: { LOCALAPPDATA: data }, taskEta: eta,
+    env: { NOVAWING_DATA_DIR: data }, taskEta: eta,
     createRuntime(input) { runtime = new FakeRuntime(input.definition); return runtime },
     preflight: async () => ({ overall: 'READY', canStart: true, checkedAt: new Date().toISOString(), dependencies: [] }),
   })
@@ -89,7 +89,7 @@ test('real Golden runtime exposes first ETA before EXECUTE and one adjusted ETA 
   let app: Awaited<ReturnType<typeof createProductionWorkSessionUi>> | undefined
   try {
     app = await createProductionWorkSessionUi(config, {
-      env: { LOCALAPPDATA: data }, taskEta: eta,
+      env: { NOVAWING_DATA_DIR: data }, taskEta: eta,
       createV2Dispatcher: () => ({
         inspectRepository: async () => ({ repositoryIdentity: repo, branch: 'main', headSha: 'head', worktreeFingerprint: changed ? 'changed' : 'clean', changedFiles: changed ? ['src/ui.js'] : [] }),
         dispatch: async ({ action, task }) => {

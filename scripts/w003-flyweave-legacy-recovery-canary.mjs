@@ -1,3 +1,4 @@
+import { resolveAskBridgeExecutable, guardianShellCommand } from 'nova-wing/development-guardian'
 /* global console, process */
 /**
  * W003 最终 Fly-Weave T002 Legacy Recovery Canary — 第二次验收
@@ -35,8 +36,9 @@ import { adoptLegacyRecoveryCheckpoint } from '../dist/packages/development-guar
 
 // ============ Constants ============
 
-const FLY_WEAVE = resolve('D:/VSCode/fly-weave')
-const ASK_BRIDGE_EXE = join(process.env.USERPROFILE ?? '', '.local', 'bin', 'ask-bridge.exe')
+if (!process.env.NOVAWING_TARGET_REPO) throw new Error('NOVAWING_TARGET_REPO is required for the legacy recovery canary')
+const FLY_WEAVE = resolve(process.env.NOVAWING_TARGET_REPO)
+const ASK_BRIDGE_EXE = resolveAskBridgeExecutable(process.env)
 const DRY_RUN = process.env.W003_DRY_RUN?.trim() === '1'
 
 const T002_FACTS = {
@@ -277,8 +279,8 @@ async function collectEnvironment() {
   ).catch(() => ({ exitCode: null, stdout: '', stderr: '' }))
   PROOF.ENVIRONMENT.pythonVersion = (pythonVersion.stdout || pythonVersion.stderr || '').trim()
   const whereResult = await spawnCapture(
-    'where.exe',
-    ['python'],
+    guardianShellCommand('command -v python3 || command -v python').executable,
+    guardianShellCommand('command -v python3 || command -v python').args,
     process.cwd(),
     10_000,
     null,

@@ -805,8 +805,8 @@ await test('Launchpad config directory supports NOVAWING_CONFIG_DIR and the LOCA
     resolve(override),
   )
   assert.equal(
-    defaultTrustedConfigDirectory({ LOCALAPPDATA: 'C:/Users/test/AppData/Local' }, 'C:/ignored'),
-    join('C:/Users/test/AppData/Local', 'NovaWing', 'canary-configs'),
+    defaultTrustedConfigDirectory({ LOCALAPPDATA: 'C:/Users/test/AppData/Local' }, 'C:/ignored', 'win32'),
+    'C:\\Users\\test\\AppData\\Local\\NovaWing\\canary-configs',
   )
 })
 
@@ -2014,11 +2014,11 @@ await test('Browser detection prefers Edge and falls back to Chrome', async () =
     PROGRAMFILES: 'C:/Program Files',
     'PROGRAMFILES(X86)': 'C:/Program Files (x86)',
   }
-  const edge = await findBrowserExecutable(env, async () => true)
+  const edge = await findBrowserExecutable(env, async () => true, 'win32')
   assert.equal(edge?.kind, 'edge')
   assert.match(edge?.executable ?? '', /Program Files \(x86\).*Microsoft.*Edge.*msedge\.exe/u)
 
-  const chrome = await findBrowserExecutable(env, async (path) => path.includes('Google'))
+  const chrome = await findBrowserExecutable(env, async (path) => path.includes('Google'), 'win32')
   assert.equal(chrome?.kind, 'chrome')
   assert.match(chrome?.executable ?? '', /Program Files.*Google.*Chrome.*chrome\.exe/u)
 })
@@ -2040,6 +2040,7 @@ await test('App Mode uses spawn argv without a shell and browser absence does no
   }
   const env = { 'PROGRAMFILES(X86)': 'C:/Program Files (x86)' }
   const opened = await openLaunchpadInAppMode('http://127.0.0.1:43199', {
+    platform: 'win32',
     env,
     pathExists: async () => true,
     spawnBrowser,
@@ -2056,6 +2057,7 @@ await test('App Mode uses spawn argv without a shell and browser absence does no
 
   let spawnCalled = false
   const unavailable = await openLaunchpadInAppMode('http://127.0.0.1:43199', {
+    platform: 'win32',
     env,
     pathExists: async () => false,
     spawnBrowser() {
@@ -2113,12 +2115,12 @@ test('new Launchpad HTTP creation persists Golden default and production complet
   const states: TaskStateV2[] = []
   const phases: string[] = []
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
-    resolveEnvironment: async () => ({ LOCALAPPDATA: directory }),
+    resolveEnvironment: async () => ({ NOVAWING_DATA_DIR: directory }),
     preflight: (targetRepo, controlPlane) => {
       assert.equal(controlPlane, 'v2')
-      return runProductionDependencyPreflight({ ...(targetRepo === undefined ? {} : { targetRepo }), controlPlane, executorModes: ['codex'],
+      return runProductionDependencyPreflight({ platform: 'win32', ...(targetRepo === undefined ? {} : { targetRepo }), controlPlane, executorModes: ['codex'],
         inspectCodex: async () => undefined, accessFile: async () => undefined,
-        env: { NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
+        env: { NOVAWING_GIT_BASH_PATH: 'C:/Program Files/Git/bin/bash.exe', NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
         commandRunner: async (request) => ({ exitCode: request.executable === 'missing-ask-bridge.exe' ? 1 : 0,
           stdout: request.args.at(-1)?.includes('BASH_VERSION') ? '5.2.37|MINGW64|msys' : 'ok', stderr: '' }),
       })

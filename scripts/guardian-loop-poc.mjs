@@ -1,3 +1,4 @@
+import { resolveHostArgumentPath } from 'nova-wing/development-guardian'
 /* global console, process */
 import { resolve } from 'node:path'
 
@@ -181,15 +182,7 @@ function optionalList(name) {
   return values.length > 0 ? values : undefined
 }
 
-function resolveGitBashPath(value) {
-  if (process.platform === 'win32') {
-    const match = value.match(/^\/([a-zA-Z])\/(.*)$/u)
-    if (match !== null) {
-      return resolve(`${match[1]}:/${match[2]}`)
-    }
-  }
-  return resolve(value)
-}
+const resolveGitBashPath = resolveHostArgumentPath
 
 const targetRepo = resolveGitBashPath(requiredEnv('NOVAWING_TARGET_REPO'))
 const goalFromArgs = process.argv.slice(2).join(' ').trim()

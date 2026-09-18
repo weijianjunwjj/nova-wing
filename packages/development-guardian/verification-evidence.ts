@@ -1,3 +1,4 @@
+import { isVenvMissingDetail } from './platform/executables.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -144,17 +145,15 @@ export function classifyVerificationFailure(
   if (/docker daemon/iu.test(text) && /not running|unavailable|cannot connect|failed to connect/iu.test(text)) {
     return 'ENVIRONMENT_FAILURE'
   }
-  const venvTargetMissing =
-    /\.venv[/\\]Scripts[/\\]python\.exe/iu.test(text) &&
-    /no such file or directory|\bENOENT\b|the system cannot find the file specified/iu.test(text)
+  const venvTargetMissing = isVenvMissingDetail(text)
   const hostPythonUnavailable =
-    /['"]?python['"]?(?:\.exe)? is not recognized|python(?:\.exe)?: command not found|no module named ['"]?venv['"]?|ensurepip[^\n]*(?:not available|unavailable|error)/iu.test(text)
+    /['"]?python3?['"]?(?:\.exe)? is not recognized|python3?(?:\.exe)?: command not found|no module named ['"]?venv['"]?|ensurepip[^\n]*(?:not available|unavailable|error)/iu.test(text)
   // A missing repository-local venv is a recoverable bootstrap prerequisite
   // when the host Python runtime itself remains available.
   if (venvTargetMissing && !hostPythonUnavailable) return 'VERIFIER_CONFIGURATION_FAILURE'
   if (
     /(?:command not found|is not recognized|no such file or directory|\bENOENT\b|the system cannot find the file specified)/iu.test(text) &&
-    /(?:executable|interpreter|python(?:\.exe)?|node(?:\.exe)?|docker(?:\.exe)?|runtime)/iu.test(text)
+    /(?:executable|interpreter|python3?(?:\.exe)?|node(?:\.exe)?|docker(?:\.exe)?|runtime)/iu.test(text)
   ) {
     return 'ENVIRONMENT_FAILURE'
   }

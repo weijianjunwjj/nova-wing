@@ -148,7 +148,7 @@ export function renderLaunchpadHtml(input: {
           <div class="task-brief-actions"><button class="task-add" type="button" data-task-brief-fill>识别并填充</button><button class="task-add" type="button" data-smart-model>智能推荐模型</button></div>
           <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务；重新填充会替换已填写字段，请核对后创建。</p>
         </section>
-        <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="D:\\VSCode\\fly-weave" required></label>
+        <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="项目的绝对路径" required></label>
         <label>分支<input name="branch" type="text" autocomplete="off" value="填写项目目录后自动检测"><span class="field-hint">默认自动检测；Task Brief 指定的分支必须与项目当前 checkout 一致。</span></label>
         <div class="composer-tasks" data-composer-tasks>
           <fieldset class="composer-task" data-composer-task>

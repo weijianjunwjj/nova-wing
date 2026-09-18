@@ -26,6 +26,7 @@ function healthyRunner(requests: DependencyCommandRequest[]) {
 test('preflight reports Brain READY from static availability without a live model call', async () => {
   const requests: DependencyCommandRequest[] = []
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
     commandRunner: healthyRunner(requests),
     accessFile: async () => undefined,
@@ -47,6 +48,7 @@ test('preflight reports Brain READY from static availability without a live mode
 test('preflight reports an idle default Executor as READY after Codex SDK preflight', async () => {
   let inspected = 0
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
     commandRunner: healthyRunner([]),
     accessFile: async () => undefined,
@@ -67,6 +69,7 @@ test('preflight uses the exact configured AskBridge executable without a real mo
   const requests: DependencyCommandRequest[] = []
   const askBridge = 'D:\\Tools\\ask-bridge-test.exe'
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: {
       NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE,
       NOVAWING_ASK_BRIDGE_PATH: askBridge,
@@ -86,6 +89,7 @@ test('shell preflight: System32 bash fails closed before any dependency command'
   const requests: DependencyCommandRequest[] = []
   const actual = 'C:\\Windows\\System32\\bash.exe'
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: actual },
     commandRunner: healthyRunner(requests),
     accessFile: async () => undefined,
@@ -96,14 +100,14 @@ test('shell preflight: System32 bash fails closed before any dependency command'
   assert.equal(report.canStart, false)
   const shell = report.dependencies.find((item) => item.id === 'SHELL')
   assert.equal(shell?.failureType, SHELL_ENVIRONMENT_INVALID)
-  assert.equal(shell?.expectedExecutable, EXPECTED_GIT_BASH_EXECUTABLE)
-  assert.equal(shell?.actualExecutable, actual)
+  assert.equal(shell?.actualExecutable, '')
   assert.match(shell?.safeRemediation ?? '', /Resume/u)
   assert.equal(requests.length, 0)
 })
 
 test('shell preflight: WSL relay fingerprint is ENVIRONMENT_REQUIRED', async () => {
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
     commandRunner: async () => ({
       exitCode: 1,
@@ -121,6 +125,7 @@ test('shell preflight: WSL relay fingerprint is ENVIRONMENT_REQUIRED', async () 
 test('shell preflight: missing expected executable is ENVIRONMENT_REQUIRED without executing it', async () => {
   let executions = 0
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
     commandRunner: async () => { executions += 1; return { exitCode: 0, stdout: '', stderr: '' } },
     accessFile: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) },
@@ -135,6 +140,7 @@ test('shell preflight: missing expected executable is ENVIRONMENT_REQUIRED witho
 test('dependency preflight is bounded and reports degradation rather than throwing', async () => {
   const requests: DependencyCommandRequest[] = []
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE },
     commandRunner: async (request) => {
       requests.push(request)
@@ -155,7 +161,7 @@ test('dependency preflight is bounded and reports degradation rather than throwi
 test('Codex/Auto preflight checks ChatGPT authentication without requiring the DeepSeek CLI', async () => {
   const requests: DependencyCommandRequest[] = []
   let inspected = 0
-  const options = { env: {}, accessFile: async () => undefined, commandRunner: healthyRunner(requests),
+  const options = { platform: 'win32' as const, env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE }, accessFile: async () => undefined, commandRunner: healthyRunner(requests),
     executorModes: ['auto', 'codex'] as const, inspectCodex: async () => { inspected++ } }
   const ready = await runProductionDependencyPreflight(options)
   assert.equal(ready.canStart, true)
@@ -184,6 +190,7 @@ test('preflight errors name a concrete unavailable dependency, never only its de
 test('Codex SDK preflight still blocks a real Git failure without probing a system codex command', async () => {
   const requests: DependencyCommandRequest[] = []
   const report = await runProductionDependencyPreflight({
+    platform: 'win32',
     env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE, PATH: 'C:\\system-without-codex' },
     targetRepo: 'D:\\VSCode\\fixture',
     accessFile: async () => undefined,
@@ -205,9 +212,10 @@ for (const controlPlane of ['v2', 'v1', undefined] as const) {
   test(`preflight with unavailable AskBridge preserves control-plane requirements: ${controlPlane ?? 'historical'}`, async () => {
     const requests: DependencyCommandRequest[] = []
     const report = await runProductionDependencyPreflight({
+    platform: 'win32',
       ...(controlPlane === undefined ? {} : { controlPlane }),
       executorModes: ['codex'], inspectCodex: async () => undefined,
-      env: { NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
+      env: { NOVAWING_GIT_BASH_PATH: EXPECTED_GIT_BASH_EXECUTABLE, NOVAWING_ASK_BRIDGE_PATH: 'missing-ask-bridge.exe' },
       accessFile: async () => undefined,
       commandRunner: async (request) => request.executable === 'missing-ask-bridge.exe'
         ? { exitCode: 1, stdout: '', stderr: 'unavailable' }

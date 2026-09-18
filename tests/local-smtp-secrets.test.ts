@@ -43,7 +43,7 @@ await test('SECRET-A/B/C/D/E/F: local SMTP source resolution is strict and fail-
     assert.equal((await resolveProductionSmtpEnvironment(config(false), {}, path)).NOVAWING_SMTP_HOST, undefined)
     assert.equal((await resolveProductionSmtpEnvironment(config(true), secrets, path)).NOVAWING_SMTP_HOST, secrets.NOVAWING_SMTP_HOST)
 
-    await writeFile(path, JSON.stringify(secrets))
+    await writeFile(path, JSON.stringify(secrets), { mode: 0o600 })
     assert.equal((await resolveProductionSmtpEnvironment(config(true), {}, path)).NOVAWING_SMTP_PASS, secrets.NOVAWING_SMTP_PASS)
     await assert.rejects(
       resolveProductionSmtpEnvironment(config(true), { NOVAWING_SMTP_HOST: secrets.NOVAWING_SMTP_HOST }, path),

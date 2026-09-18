@@ -143,7 +143,7 @@ function renderRepository(facts: RepairRepositoryFacts, allowed: readonly string
     `Test file candidates:\n${facts.testFileCandidates.length === 0 ? '  (none)' : facts.testFileCandidates.map((path) => `  ${path}`).join('\n')}`,
     `Top-level entries: ${facts.topLevelEntries.join(', ') || '(none)'}`,
     `pytest config present: ${String(facts.hasPytestConfig)}`,
-    `Windows .venv python present: ${String(facts.hasWindowsVenvPython)}`,
+    `Host .venv python present: ${String(facts.hasVenvPython)}`,
   ].join('\n\n')
 }
 

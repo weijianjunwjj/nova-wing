@@ -1,8 +1,9 @@
-import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
+import { platformPaths, type PlatformPathOptions } from '../platform/paths.js'
+import { prepareSecretDirectory, protectSecretPath, assertPrivateSecretPath } from '../platform/secret-protection.js'
+export { restrictWindowsSecretFileAcl } from '../platform/secret-protection.js'
 
 import type { TrustedWorkSessionConfig } from './production.js'
 
@@ -19,18 +20,8 @@ export const SMTP_SECRET_KEYS = [
 export type SmtpSecretKey = (typeof SMTP_SECRET_KEYS)[number]
 export type SmtpSecretEnvironment = Record<SmtpSecretKey, string>
 
-const execFileAsync = promisify(execFile)
-
-export function defaultLocalSmtpSecretPath(
-  localAppData = process.env.LOCALAPPDATA,
-): string {
-  if (process.platform !== 'win32') {
-    throw new Error('local SMTP secret persistence is supported only on Windows')
-  }
-  if (localAppData === undefined || localAppData.trim().length === 0) {
-    throw new Error('LOCALAPPDATA is required for local SMTP secret persistence')
-  }
-  return join(localAppData, 'NovaWing', 'secrets', 'smtp.json')
+export function defaultLocalSmtpSecretPath(options: PlatformPathOptions = {}): string {
+  return platformPaths(options).smtpSecret
 }
 
 export function smtpEnvironmentFrom(source: NodeJS.ProcessEnv): SmtpSecretEnvironment | undefined {
@@ -78,6 +69,7 @@ export function validateSmtpSecrets(value: unknown): SmtpSecretEnvironment {
 export async function loadLocalSmtpSecrets(path = defaultLocalSmtpSecretPath()): Promise<SmtpSecretEnvironment> {
   let parsed: unknown
   try {
+    await assertPrivateSecretPath(path)
     parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -86,21 +78,6 @@ export async function loadLocalSmtpSecrets(path = defaultLocalSmtpSecretPath()):
     throw new Error('local SMTP secrets could not be read safely')
   }
   return validateSmtpSecrets(parsed)
-}
-
-export async function restrictWindowsSecretFileAcl(path: string, username = process.env.USERNAME): Promise<void> {
-  if (process.platform !== 'win32') throw new Error('local SMTP secret persistence is supported only on Windows')
-  if (username === undefined || username.trim().length === 0) throw new Error('USERNAME is required to secure local SMTP secrets')
-  try {
-    await execFileAsync('icacls', [
-      path,
-      '/inheritance:r',
-      '/grant:r', `${username}:(R,W)`,
-      '/grant:r', 'SYSTEM:(F)',
-    ], { shell: false, windowsHide: true })
-  } catch {
-    throw new Error('failed to secure local SMTP secrets with Windows ACL')
-  }
 }
 
 export async function saveLocalSmtpSecrets(
@@ -113,10 +90,14 @@ export async function saveLocalSmtpSecrets(
   const secrets = validateSmtpSecrets(input)
   const path = options.path ?? defaultLocalSmtpSecretPath()
   const temporaryPath = join(dirname(path), `.smtp-${randomUUID()}.tmp`)
-  await mkdir(dirname(path), { recursive: true })
+  await prepareSecretDirectory(dirname(path))
   try {
-    await writeFile(temporaryPath, `${JSON.stringify(secrets)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-    await (options.restrictAcl ?? restrictWindowsSecretFileAcl)(temporaryPath)
+    const file = await open(temporaryPath, 'wx', 0o600)
+    try {
+      await (options.restrictAcl ?? protectSecretPath)(temporaryPath)
+      await file.writeFile(`${JSON.stringify(secrets)}\n`, { encoding: 'utf8' })
+      await file.sync()
+    } finally { await file.close() }
     await rename(temporaryPath, path)
     return path
   } catch (error) {
@@ -133,5 +114,5 @@ export async function resolveProductionSmtpEnvironment(
   if (config.notification?.email.enabled !== true) return { ...env }
   const explicit = smtpEnvironmentFrom(env)
   if (explicit !== undefined) return { ...env, ...explicit }
-  return { ...env, ...(await loadLocalSmtpSecrets(path ?? defaultLocalSmtpSecretPath())) }
+  return { ...env, ...(await loadLocalSmtpSecrets(path ?? defaultLocalSmtpSecretPath({ env }))) }
 }

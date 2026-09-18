@@ -1,3 +1,4 @@
+import { commandEnvironment } from '../platform/environment.js'
 /**
  * NovaWing v0.2.4 — Reviewer Runtime adapters.
  *
@@ -202,7 +203,7 @@ function spawnReviewCommand(request: GuardianCommandRequest): Promise<GuardianCo
   return new Promise((resolveRun) => {
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
-      env: request.env ?? process.env,
+      env: commandEnvironment(request.env),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,

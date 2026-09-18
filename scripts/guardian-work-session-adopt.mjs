@@ -1,5 +1,5 @@
 /* global console, process */
-import { resolve } from 'node:path'
+import { resolveHostArgumentPath } from 'nova-wing/development-guardian'
 
 import {
   adoptProductionLegacyWorkSession,
@@ -13,13 +13,7 @@ function configPathFromArgs(args) {
     throw new Error('Usage: npm run guardian:work-session:adopt -- --config <path>')
   }
   const value = args[1]
-  if (process.platform === 'win32') {
-    const gitBashPath = value.match(/^\/([a-zA-Z])\/(.*)$/u)
-    if (gitBashPath !== null) {
-      return resolve(`${gitBashPath[1]}:/${gitBashPath[2]}`)
-    }
-  }
-  return resolve(value)
+  return resolveHostArgumentPath(value)
 }
 
 let app

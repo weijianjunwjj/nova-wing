@@ -1,3 +1,4 @@
+import { VENV_PYTEST_COMMANDS, pythonRuntime } from '../../platform/executables.js'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -79,7 +80,7 @@ const TRUSTED_COMMANDS = new Set([
   'npm run lint',
   'npm run check',
   'git diff --check',
-  '.venv/Scripts/python.exe -m pytest',
+  ...VENV_PYTEST_COMMANDS,
 ])
 
 /** Deterministic verifier allowlist, shared with the Repair Agent's safe-command gate. */
@@ -91,7 +92,7 @@ interface RepositoryContractFacts {
   packageScripts: Readonly<Record<string, string>>
   files: ReadonlySet<string>
   hasPytestConfig: boolean
-  hasWindowsVenvPython: boolean
+  hasVenvPython: boolean
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -129,7 +130,7 @@ async function inspectRepository(root: string): Promise<RepositoryContractFacts>
     packageScripts,
     files,
     hasPytestConfig: files.has('pytest.ini') || files.has('pyproject.toml') || files.has('setup.cfg'),
-    hasWindowsVenvPython: await fileExists(join(root, '.venv', 'Scripts', 'python.exe')),
+    hasVenvPython: await fileExists(join(root, pythonRuntime().venv)),
   }
 }
 
@@ -137,7 +138,7 @@ function resolveRepositoryTestCommand(facts: RepositoryContractFacts): string | 
   if (facts.packageScripts.test?.trim()) return 'npm test'
   const namedTestScripts = Object.keys(facts.packageScripts).filter((name) => facts.packageScripts[name]?.trim() && /(?:^|:)test(?:$|:)/iu.test(name))
   if (namedTestScripts.length === 1) return `npm run ${namedTestScripts[0]}`
-  if (facts.hasPytestConfig && facts.hasWindowsVenvPython) return '.venv/Scripts/python.exe -m pytest'
+  if (facts.hasPytestConfig && facts.hasVenvPython) return pythonRuntime().pytest
   return undefined
 }
 
@@ -172,7 +173,7 @@ export interface RepairRepositoryFacts {
   testFileCandidates: readonly string[]
   topLevelEntries: readonly string[]
   hasPytestConfig: boolean
-  hasWindowsVenvPython: boolean
+  hasVenvPython: boolean
 }
 
 /**
@@ -196,7 +197,7 @@ export async function describeRepairRepository(root: string): Promise<RepairRepo
     testFileCandidates,
     topLevelEntries,
     hasPytestConfig: facts.hasPytestConfig,
-    hasWindowsVenvPython: facts.hasWindowsVenvPython,
+    hasVenvPython: facts.hasVenvPython,
   }
 }
 
@@ -221,8 +222,8 @@ function classifyVerifier(
   if (script !== undefined && !facts.packageScripts[script]?.trim()) {
     return { criterion, command, classification: 'INVALID', reason: `package.json does not define script ${script}.` }
   }
-  if (command === '.venv/Scripts/python.exe -m pytest' && !facts.hasWindowsVenvPython) {
-    return { criterion, command, classification: 'INVALID', reason: 'Test path does not exist: .venv/Scripts/python.exe.' }
+  if (command === pythonRuntime().pytest && !facts.hasVenvPython) {
+    return { criterion, command, classification: 'INVALID', reason: `Test path does not exist: ${pythonRuntime().venv}.` }
   }
   const missingPath = obviousTestPaths(command).find((path) => {
     if (isAbsolute(path)) return true

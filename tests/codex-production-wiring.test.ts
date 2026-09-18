@@ -35,7 +35,7 @@ for (const [mode, quota, active] of [
       storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     app = await createProductionWorkSessionUi(config, {
-      env: { LOCALAPPDATA: data },
+      env: { NOVAWING_DATA_DIR: data },
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
       createBrain: () => ({ review: async ({ task }) => { brainCalls++; return { goal: task.goal,
         verdict: task.lastReport ? 'done' : 'proceed', instructions: ['Implement scoped change'], constraints: [], doNotDo: [], verification: [] } } }),

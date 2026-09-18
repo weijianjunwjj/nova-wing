@@ -1,3 +1,4 @@
+import { npmCommand } from './platform/npm-command.mjs'
 /* global console, process */
 import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -22,10 +23,8 @@ function run(command, args, cwd) {
 }
 
 function runNpm(args, cwd) {
-  const npmCli = process.env.npm_execpath
-  return npmCli === undefined
-    ? run(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, cwd)
-    : run(process.execPath, [npmCli, ...args], cwd)
+  const spec = npmCommand(args)
+  return run(spec.executable, spec.args, cwd)
 }
 
 try {

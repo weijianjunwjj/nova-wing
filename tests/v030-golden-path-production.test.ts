@@ -110,7 +110,7 @@ async function createProductionCase(input: {
   let runtime: WorkSessionRuntimeConfig | undefined
   const app = await createProductionWorkSessionUi(config, {
     serverPort: 0,
-    env: { LOCALAPPDATA: input.outside },
+    env: { NOVAWING_DATA_DIR: input.outside },
     v2Agents: [AGENT],
     createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
     createV2Dispatcher: ({ defaultDispatcher }) => ({
@@ -140,7 +140,7 @@ async function createGoldenBoundaryCase(input: {
   let runtime: WorkSessionRuntimeConfig | undefined
   const app = await createProductionWorkSessionUi(config, {
     serverPort: 0,
-    env: { LOCALAPPDATA: input.outside },
+    env: { NOVAWING_DATA_DIR: input.outside },
     v2Agents: [AGENT],
     createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
     createCodexExecutor(options) {
@@ -182,7 +182,7 @@ await test('v0.3.1 production Golden exhausted uses diagnosis then implementatio
     const evidence: AutonomousDiagnosisEvidence[] = []
     const commands: string[] = []
     app = await createProductionWorkSessionUi(config, {
-      serverPort: 0, env: { LOCALAPPDATA: fixture.outside }, v2Agents: [AGENT],
+      serverPort: 0, env: { NOVAWING_DATA_DIR: fixture.outside }, v2Agents: [AGENT],
       createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
       autonomousRecovery: {
         inspectDiff: async () => execFileSync('git', ['diff', '--no-ext-diff', 'HEAD'], { cwd: fixture.repo, encoding: 'utf8', windowsHide: true }),

@@ -2,7 +2,6 @@
 import { createInterface } from 'node:readline/promises'
 
 import {
-  defaultLocalSmtpSecretPath,
   saveLocalSmtpSecrets,
   smtpEnvironmentFrom,
 } from 'nova-wing/development-guardian'
@@ -16,35 +15,40 @@ async function interactiveSecrets() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('interactive SMTP setup requires a TTY; use --from-env instead')
   }
-  const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
-  try {
-    const result = {}
-    for (const key of keys) {
-      if (key === 'NOVAWING_SMTP_PASS') {
-        process.stdout.write(`${key}: `)
-        process.stdin.setRawMode(true)
-        const password = await new Promise((resolvePassword) => {
-          let value = ''
-          function read(chunk) {
-            const text = String(chunk)
-            const newline = text.search(/[\r\n]/u)
-            if (newline !== -1) return resolvePassword(value + text.slice(0, newline))
-            value += text
-            process.stdin.once('data', read)
-          }
-          process.stdin.once('data', read)
-        })
-        process.stdin.setRawMode(false)
-        process.stdout.write('\n')
-        result[key] = password
-      } else {
-        result[key] = await readline.question(`${key}: `)
-      }
+  const result = {}
+  for (const key of keys) {
+    if (key !== 'NOVAWING_SMTP_PASS') {
+      const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
+      try { result[key] = await readline.question(`${key}: `) }
+      finally { readline.close() }
+      continue
     }
-    return result
-  } finally {
-    readline.close()
+    // No readline listener is attached while the secret is typed: no echo.
+    process.stdout.write(`${key}: `)
+    const wasRaw = process.stdin.isRaw
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    try {
+      result[key] = await new Promise((resolvePassword, rejectPassword) => {
+        let value = ''
+        const cleanup = () => process.stdin.off('data', read)
+        function read(chunk) {
+          for (const character of String(chunk)) {
+            if (character === '\u0003' || character === '\u0004') { cleanup(); rejectPassword(new Error('SMTP setup cancelled')); return }
+            if (character === '\r' || character === '\n') { cleanup(); resolvePassword(value); return }
+            if (character === '\u007f' || character === '\b') value = value.slice(0, -1)
+            else value += character
+          }
+        }
+        process.stdin.on('data', read)
+      })
+    } finally {
+      process.stdin.setRawMode(wasRaw)
+      process.stdin.pause()
+      process.stdout.write('\n')
+    }
   }
+  return result
 }
 
 try {

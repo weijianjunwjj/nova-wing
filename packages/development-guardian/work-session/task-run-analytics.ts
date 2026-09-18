@@ -1,6 +1,6 @@
+import { platformPaths } from '../platform/paths.js'
 import { mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import type { WorkSessionDefinition, WorkSessionDurableState } from './model.js'
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS task_run_analytics_diagnostic(
 type Row = Record<string, string | number | null>
 
 export function defaultTaskRunAnalyticsPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local'), 'NovaWing', 'work-sessions', 'task-run-analytics.db')
+  return platformPaths({ env }).analytics
 }
 
 function duration(start: string, end: string): number | null {

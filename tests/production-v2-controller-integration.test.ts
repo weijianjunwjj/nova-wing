@@ -25,7 +25,7 @@ test('production V2 composition root dispatches controller actions without Guard
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {
-      env: { ...process.env, LOCALAPPDATA: data },
+      env: { ...process.env, NOVAWING_DATA_DIR: data },
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
       createV2Dispatcher: () => ({
         inspectRepository: async () => ({ repositoryIdentity: root, branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
@@ -55,7 +55,7 @@ test('production V2 routes a quota-exhausted Codex task to DeepSeek with one Tas
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {
-      env: { ...process.env, LOCALAPPDATA: data },
+      env: { ...process.env, NOVAWING_DATA_DIR: data },
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
       createCodexExecutor: () => ({ async execute() {
         await writeFile(join(root, 'src', 'a.ts'), 'export const partial = true\n')
@@ -194,7 +194,7 @@ test('production VERIFY uses router deterministic retry without starting a codin
     executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
   })
   const app = await createProductionWorkSessionUi(config, {
-    env: { ...process.env, LOCALAPPDATA: data },
+    env: { ...process.env, NOVAWING_DATA_DIR: data },
     createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
     createExecutor: () => ({
       async execute() { executions++; throw new Error('VERIFY must not execute coding') },

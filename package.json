@@ -54,8 +54,8 @@
     "release:prepare": "node scripts/release-prepare.mjs",
     "release:inspect": "node scripts/release-inspect.mjs",
     "release:selftest": "node scripts/release-selftest.mjs",
-    "guardian:chatgpt:install": "bash scripts/install-ask-bridge.sh",
-    "guardian:chatgpt:login": "node scripts/guardian-ask-bridge-login.mjs",
+    "guardian:chatgpt:install": "npm run build && node scripts/install-ask-bridge.mjs",
+    "guardian:chatgpt:login": "npm run build && node scripts/guardian-ask-bridge-login.mjs",
     "guardian:chatgpt:poc": "npm run build && node scripts/guardian-chatgpt-poc.mjs",
     "guardian:poc": "npm run build && node scripts/guardian-loop-poc.mjs",
     "guardian:poc:canary": "npm run build && node scripts/guardian-full-loop-canary.mjs",
@@ -67,7 +67,8 @@
     "guardian:notification-channel:smoke": "npm run build && node scripts/novawing-notification-channel-smoke.mjs",
     "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
     "analytics:backfill": "npm run build && node scripts/analytics-backfill.mjs",
-    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries"
+    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform",
+    "check:platform": "node scripts/check-platform-boundaries.mjs"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

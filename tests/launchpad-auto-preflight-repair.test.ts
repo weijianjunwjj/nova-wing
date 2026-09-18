@@ -67,7 +67,7 @@ function recordingAudit(recorded: RecordingDeps): RepairAuditSink {
 function scriptedLlmAgent(runner: RepairModelRunner): RepairAgent {
   return createLlmRepairAgent({
     runner,
-    describeRepository: async () => ({ packageScripts: { test: 'node --test' }, testFileCandidates: [], topLevelEntries: [], hasPytestConfig: false, hasWindowsVenvPython: false }),
+    describeRepository: async () => ({ packageScripts: { test: 'node --test' }, testFileCandidates: [], topLevelEntries: [], hasPytestConfig: false, hasVenvPython: false }),
     isRuntimeAvailable: () => true,
   })
 }

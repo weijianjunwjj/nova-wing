@@ -18,10 +18,8 @@ try {
   const address = await launchpad.start()
   const browser = await openLaunchpadInAppMode(address.url)
 
-  if (!browser.opened) {
-    console.log('NovaWing Launchpad:')
-    console.log(address.url)
-  }
+  console.log(`NovaWing Launchpad: ${address.url}`)
+  if (!browser.opened) console.log('Open the URL above in your browser.')
 
   let closing = false
   const close = async () => {

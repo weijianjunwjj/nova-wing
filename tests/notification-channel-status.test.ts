@@ -215,7 +215,7 @@ test('a non-Windows host reports the desktop channel as SKIPPED, never FAILED', 
   }
   const notifier = createWindowsTaskRunNotifier({ platform: 'linux' })
   const results = await deliverNotificationToChannels(notifier, 'COMPLETED', skipped)
-  assert.deepEqual(results, [{ channel: 'DESKTOP', status: 'SKIPPED', reason: '当前平台没有 Windows 桌面通知渠道。' }])
+  assert.deepEqual(results, [{ channel: 'DESKTOP', status: 'SKIPPED', reason: '当前平台未提供桌面通知渠道。' }])
   assert.equal(overallNotificationStatus(results), 'ALL_SUCCEEDED', 'an inapplicable channel is never a failure')
 })
 

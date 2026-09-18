@@ -1,6 +1,7 @@
+import { platformPaths } from '../../platform/paths.js'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 
 import type { ContractRepairProposal, RepairClassification, RepairErrorCode, StructuredRepairTask } from './repair.js'
 
@@ -107,8 +108,7 @@ export interface FileRepairAuditOptions {
 }
 
 export function defaultRepairAuditPath(env: NodeJS.ProcessEnv = process.env, userHome = homedir()): string {
-  const localAppData = env.LOCALAPPDATA?.trim() || join(userHome, 'AppData', 'Local')
-  return join(localAppData, 'NovaWing', 'repair-audit.log')
+  return platformPaths({ env, userHome }).repairAudit
 }
 
 /** Append-only JSONL audit log; never throws the underlying record into the request path. */

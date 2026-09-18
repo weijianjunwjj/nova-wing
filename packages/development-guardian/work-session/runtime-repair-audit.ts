@@ -1,3 +1,4 @@
+import { platformPaths } from '../platform/paths.js'
 /**
  * NovaWing v0.2.4 — Runtime Repair append-only audit log.
  *
@@ -9,7 +10,7 @@
 
 import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 
 import type { RuntimeRepairAuditEventName } from './runtime-repair.js'
 import type { RuntimeRepairOutcome, RuntimeRepairReasonCode } from './runtime-repair.js'
@@ -44,8 +45,7 @@ export interface FileRuntimeRepairAuditOptions {
 }
 
 export function defaultRuntimeRepairAuditPath(env: NodeJS.ProcessEnv = process.env, userHome = homedir()): string {
-  const localAppData = env.LOCALAPPDATA?.trim() || join(userHome, 'AppData', 'Local')
-  return join(localAppData, 'NovaWing', 'runtime-repair-audit.log')
+  return platformPaths({ env, userHome }).runtimeRepairAudit
 }
 
 /** Append-only JSONL audit sink; never throws the underlying record into the request path. */

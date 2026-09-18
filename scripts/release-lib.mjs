@@ -1,3 +1,4 @@
+import { npmCommand } from './platform/npm-command.mjs'
 /* global process */
 import { createHash } from 'node:crypto'
 import {
@@ -31,10 +32,8 @@ export function run(command, arguments_, options = {}) {
 }
 
 export function runNpm(arguments_, cwd = repositoryRoot) {
-  const npmCli = process.env.npm_execpath
-  return npmCli === undefined
-    ? run(process.platform === 'win32' ? 'npm.cmd' : 'npm', arguments_, { cwd })
-    : run(process.execPath, [npmCli, ...arguments_], { cwd })
+  const spec = npmCommand(arguments_)
+  return run(spec.executable, spec.args, { cwd })
 }
 
 export function deriveGitHubRepository() {

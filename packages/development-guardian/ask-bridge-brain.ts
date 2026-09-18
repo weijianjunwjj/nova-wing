@@ -1,7 +1,11 @@
+import { commandEnvironment } from './platform/environment.js'
+import { terminateAskBridgeProcessTree } from './platform/process.js'
+export { terminateAskBridgeProcessTree, type AskBridgeProcessTreeCleanupOptions } from './platform/process.js'
+import { resolveAskBridgeExecutable, defaultAskBridgeHeadless } from './platform/executables.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile, unlink } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import type {
@@ -77,51 +81,6 @@ export type AskBridgeCommandRunner = (
 
 export type AskBridgeProcessTreeTerminator = (child: ChildProcess) => Promise<void>
 
-export interface AskBridgeProcessTreeCleanupOptions {
-  platform?: NodeJS.Platform
-  windowsTreeKill?: (pid: number) => Promise<boolean>
-}
-
-function runWindowsTreeKill(pid: number): Promise<boolean> {
-  return new Promise((resolveRun) => {
-    const systemRoot = process.env.SystemRoot?.trim() || 'C:\\Windows'
-    const killer = spawn(join(systemRoot, 'System32', 'taskkill.exe'), [
-      '/PID', String(pid), '/T', '/F',
-    ], {
-      shell: false,
-      windowsHide: true,
-      stdio: 'ignore',
-    })
-    let settled = false
-    const finish = (success: boolean): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolveRun(success)
-    }
-    killer.once('error', () => finish(false))
-    killer.once('exit', (code) => finish(code === 0))
-    const timer = setTimeout(() => {
-      killer.kill()
-      finish(false)
-    }, 5_000)
-    timer.unref()
-  })
-}
-
-/** Terminate only the process tree rooted at the ask-bridge process spawned for this request. */
-export async function terminateAskBridgeProcessTree(
-  child: ChildProcess,
-  options: AskBridgeProcessTreeCleanupOptions = {},
-): Promise<void> {
-  const platform = options.platform ?? process.platform
-  if (platform === 'win32' && child.pid !== undefined) {
-    const killed = await (options.windowsTreeKill ?? runWindowsTreeKill)(child.pid)
-    if (killed) return
-  }
-  child.kill()
-}
-
 export interface AskBridgeCommandRunnerOptions {
   terminateProcessTree?: AskBridgeProcessTreeTerminator
 }
@@ -153,12 +112,6 @@ export interface AskBridgeBrainProviderState {
   configuration?: AskBridgeProviderConfigurationState
 }
 
-function defaultAskBridgeCommand(): string {
-  return process.platform === 'win32'
-    ? join(homedir(), '.local', 'bin', 'ask-bridge.exe')
-    : 'ask-bridge'
-}
-
 export function createAskBridgeCommandRunner(
   options: AskBridgeCommandRunnerOptions = {},
 ): AskBridgeCommandRunner {
@@ -166,7 +119,7 @@ export function createAskBridgeCommandRunner(
   return (request) => new Promise((resolve, reject) => {
     const startedAt = performance.now()
     const child = spawn(request.executable, [...request.args], {
-      env: process.env,
+      env: commandEnvironment(),
       stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -507,8 +460,8 @@ export class AskBridgeBrain implements GuardianBrain {
   constructor(private readonly options: AskBridgeBrainOptions = {}) {
     this.runner = options.commandRunner ?? defaultCommandRunner
     this.timeoutMs = options.timeoutMs ?? DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS
-    this.command = options.command ?? defaultAskBridgeCommand()
-    this.headless = options.headless ?? process.platform !== 'win32'
+    this.command = options.command ?? resolveAskBridgeExecutable()
+    this.headless = options.headless ?? defaultAskBridgeHeadless()
   }
 
   /**

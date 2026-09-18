@@ -1,3 +1,4 @@
+import { commandEnvironment } from './platform/environment.js'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { guardianShellCommand } from './shell-contract.js'
@@ -73,30 +74,11 @@ export function createDefaultTenXChatCommand(
   timeoutMs: number,
   options: Pick<TenXChatProcessTransportOptions, 'gitBashPath' | 'platform' | 'env'> = {},
 ): { command: string; args: string[]; nativeGitBash?: true } {
-  if ((options.platform ?? process.platform) === 'win32') {
-    const command = guardianShellCommand(
-      `exec npx --yes 10x-chat@${TEN_X_CHAT_PINNED_VERSION} delegate chatgpt --headed --timeout ${timeoutMs}`,
-      options,
-    )
-    return {
-      command: command.executable,
-      args: command.args,
-      ...(command.nativeGitBash === true ? { nativeGitBash: true } : {}),
-    }
-  }
+  const spec = guardianShellCommand(
+    `exec npx --yes 10x-chat@${TEN_X_CHAT_PINNED_VERSION} delegate chatgpt --headed --timeout ${timeoutMs}`, options,
+  )
+  return { command: spec.executable, args: spec.args, ...(spec.nativeGitBash ? { nativeGitBash: true } : {}) }
 
-  return {
-    command: 'npx',
-    args: [
-      '--yes',
-      `10x-chat@${TEN_X_CHAT_PINNED_VERSION}`,
-      'delegate',
-      'chatgpt',
-      '--headed',
-      '--timeout',
-      String(timeoutMs),
-    ],
-  }
 }
 
 function describeProcessFailure(stderr: string, fallback: string): Error {
@@ -113,7 +95,7 @@ export function createTenXChatProcessTransport(
   const args = [...(options.args ?? defaults.args)]
   const child = spawn(command, args, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    env: options.env ?? process.env,
+    env: commandEnvironment(options.env, options.platform),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: false,
     shell: false,

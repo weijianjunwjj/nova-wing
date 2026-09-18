@@ -1,3 +1,4 @@
+import { pythonRuntime } from './platform/executables.js'
 import type { DelegationPacket, ExecutionReport, GuardianTask } from './model.js'
 import type { GuardianBrain } from './ports.js'
 import type {
@@ -263,7 +264,7 @@ export function buildGuardianBrainPrompt(input: {
     '- npm run lint',
     '- npm run check',
     '- git diff --check',
-    '- .venv/Scripts/python.exe -m pytest',
+    `- ${pythonRuntime().venv} -m pytest`,
     '唯一例外：如果 Task 明确要求 `cd <repo-relative-dir> && <repo .venv python> -m alembic upgrade head` 形式的精确 migration verification，且 approved_scoped_verification_command 为 null，把该完整命令作为 verification 的唯一元素，返回 blocked，instructions 为空，并在 rationale 说明需要 scoped verification approval。',
     '如果 approved_scoped_verification_command 与 Task 所需的该 exact command 相同，不得再次因该命令 blocked；继续当前 Task，并把 exact command 保留在 verification 中交给 Guardian verifier。',
     '该例外只是请求 NovaWing 走专用 verification approval；Reviewer 不得声称已获批准，不得从 user_resume_input 推断批准，也不得扩展为 generic shell/Python/Alembic capability。路径、命令和仓库边界将由 Runtime 的精确 parser 再验证。',
@@ -275,19 +276,19 @@ export function buildGuardianBrainPrompt(input: {
     '- execution_report.incomplete_reason 非空且无 blocker 时，表示执行安全但尚未完成；不得 done，应根据现有证据返回 revise，或在确实需要人工决策时 blocked。',
     '- 如果 execution_report.permission_denials 非空且无 blocker：',
     '  - 判断是否存在"不增加权限、不突破 scope"的已授权替代方案；',
-    '  - 如果被拒绝的验证命令（如 .venv/Scripts/python.exe -m pytest、git diff --check）属于 deterministic_verification_capabilities：',
+    `  - 如果被拒绝的验证命令（如 ${pythonRuntime().venv} -m pytest、git diff --check）属于 deterministic_verification_capabilities：`,
     '    Guardian 可以在 Claude 执行之后独立完成这些验证；不得因为 Claude 无法直接运行该命令而 blocked。',
-    '    verdict=revise，instructions 必须明确告诉 Executor：不要让 Claude 再次执行该 denied verification command，只完成代码修改，验证命令交由 Guardian deterministic verifier；verification 列出安全验证命令（如 .venv/Scripts/python.exe -m pytest），Guardian 后续自行执行。',
+    `    verdict=revise，instructions 必须明确告诉 Executor：不要让 Claude 再次执行该 denied verification command，只完成代码修改，验证命令交由 Guardian deterministic verifier；verification 列出安全验证命令（如 ${pythonRuntime().venv} -m pytest），Guardian 后续自行执行。`,
     '  - 只有真正需要新的写入/执行 capability、且 Guardian 自身也没有等价验证路径时：verdict=blocked（PERMISSION_REQUIRED），rationale 说明需要什么 capability 和为什么；',
     '  - 如果可以使用 executor_capabilities 内已有能力完成：verdict=revise，instructions 必须明确告诉 Executor 不要重复被拒绝操作，改用当前已授权能力（例如优先使用 Write/Edit，而不是未授权 shell 生成文件）；',
     '  - 禁止建议绕过权限系统，禁止要求 generic Bash，禁止把 permission denial 当成已执行成功。',
-    '- 如果 execution_report 的确定性验证失败原因明确表示 .venv/Scripts/python.exe 不存在（例如 No such file or directory / ENOENT），且 executor_capabilities 同时包含 "python venv bootstrap" 与 "venv pip install"：',
+    `- 如果 execution_report 的确定性验证失败原因明确表示 ${pythonRuntime().venv} 不存在（例如 No such file or directory / ENOENT），且 executor_capabilities 同时包含 "python venv bootstrap" 与 "venv pip install"：`,
     '  这是 recoverable bootstrap prerequisite，不是需要人工介入的 environment failure；',
     '  必须 verdict=revise，不得 blocked，不得把该失败当作 ENVIRONMENT_REQUIRED / PERMISSION_REQUIRED 上报；',
     '  保留当前 worktree，不得要求 Executor 重写现有业务代码；',
-    '  instructions 必须按顺序明确要求 Executor 使用已有授权能力执行：先 "python -m venv .venv"，再 ".venv/Scripts/python.exe -m pip install -r <requirements 路径>"；requirements 路径必须来自当前 task/repo 已知事实，不要泛化设计 dependency resolver；',
+    `  instructions 必须按顺序明确要求 Executor 使用已有授权能力执行：先 "${pythonRuntime().bootstrap}"，再 "${pythonRuntime().venv} -m pip install -r <requirements 路径>"；requirements 路径必须来自当前 task/repo 已知事实，不要泛化设计 dependency resolver；`,
     '  不要让 Executor 自己执行 pytest / git diff --check：deterministic verification 继续交由 Guardian deterministic verifier；',
-    '  verification 保持既有安全验证命令（如 .venv/Scripts/python.exe -m pytest、git diff --check），由 Guardian 后续自行执行；',
+    `  verification 保持既有安全验证命令（如 ${pythonRuntime().venv} -m pytest、git diff --check），由 Guardian 后续自行执行；`,
     '  不得要求新增 generic Bash、pytest Bash capability、git diff Bash capability、uv、poetry、conda 或 bare pip 等权限。',
     '- 需要产品/架构选择、需要突破禁止范围、证据不足以安全继续：blocked。',
     '- 只有 execution_report 存在、无 blocker、确定性验证全部 passed、且 acceptance_criteria 已满足时才允许 done。',

@@ -1,3 +1,4 @@
+import { workspacePathKey } from './platform/paths.js'
 import { realpath } from 'node:fs/promises'
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { DelegationPacket, ExecutionReport, GuardianTask, VerificationExecutionStep } from './model.js'
@@ -143,7 +144,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
     this.taskId = input.task.id
     const workspace = await realpath(this.options.cwd)
     // Local DB arbitration covers different runtime instances AND different Tasks sharing a workspace.
-    const release = this.options.store.acquire(process.platform === 'win32' ? workspace.toLowerCase() : workspace, this.options.taskKey)
+    const release = this.options.store.acquire(workspacePathKey(workspace), this.options.taskKey)
     let ownershipReleased = false
     try {
       this.select()
@@ -264,7 +265,7 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
 
   async retryVerification(input: { task: GuardianTask; report: ExecutionReport; verificationSteps?: readonly VerificationExecutionStep[] }): Promise<ExecutionReport> {
     const workspace = await realpath(this.options.cwd)
-    const release = this.options.store.acquire(process.platform === 'win32' ? workspace.toLowerCase() : workspace, this.options.taskKey)
+    const release = this.options.store.acquire(workspacePathKey(workspace), this.options.taskKey)
     let ownershipReleased = false
     try {
       this.select()

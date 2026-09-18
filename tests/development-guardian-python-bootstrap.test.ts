@@ -1,3 +1,4 @@
+import { pythonRuntime } from '../packages/development-guardian/platform/executables.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -100,11 +101,11 @@ test('executor does not include Python bootstrap permission by default', async (
 
   const tools = claudeRequest.args.slice(allowedToolsIndex + 1)
   assert.ok(
-    !tools.includes('Bash(python -m venv .venv)'),
+    !tools.includes(`Bash(${pythonRuntime().bootstrap})`),
     'should not include python venv permission by default',
   )
   assert.ok(
-    !tools.includes('Bash(.venv/Scripts/python.exe -m pip install:*)'),
+    !tools.includes(`Bash(${pythonRuntime().venv} -m pip install:*)`),
     'should not include pip install permission by default',
   )
   assert.ok(tools.includes('Read'), 'should include Read permission')
@@ -139,11 +140,11 @@ test('executor includes only specified Python bootstrap permissions when enabled
 
   const tools = claudeRequest.args.slice(allowedToolsIndex + 1)
   assert.ok(
-    tools.includes('Bash(python -m venv .venv)'),
+    tools.includes(`Bash(${pythonRuntime().bootstrap})`),
     'should include python venv permission when enabled',
   )
   assert.ok(
-    tools.includes('Bash(.venv/Scripts/python.exe -m pip install:*)'),
+    tools.includes(`Bash(${pythonRuntime().venv} -m pip install:*)`),
     'should include pip install permission when enabled',
   )
   assert.ok(!tools.includes('Bash'), 'should not include generic Bash permission')
@@ -185,11 +186,11 @@ test('executor preserves Python bootstrap permission through recovery', async (t
 
     const tools = claudeRequest.args.slice(allowedToolsIndex + 1)
     assert.ok(
-      tools.includes('Bash(python -m venv .venv)'),
+      tools.includes(`Bash(${pythonRuntime().bootstrap})`),
       'python venv permission should be preserved through recovery',
     )
     assert.ok(
-      tools.includes('Bash(.venv/Scripts/python.exe -m pip install:*)'),
+      tools.includes(`Bash(${pythonRuntime().venv} -m pip install:*)`),
       'pip install permission should be preserved through recovery',
     )
   }
@@ -267,7 +268,7 @@ test('brain prompt includes Python pytest in allowed verification commands', () 
   const prompt = buildGuardianBrainPrompt({ task })
 
   assert.ok(prompt.includes('MVP verification 只能从以下命令中选择：'), 'should have verification section')
-  assert.ok(prompt.includes('- .venv/Scripts/python.exe -m pytest'), 'should list pytest command')
+  assert.ok(prompt.includes(`- ${pythonRuntime().pytest}`), 'should list pytest command')
   assert.ok(prompt.includes('- npm test'), 'should still list npm test')
   assert.ok(prompt.includes('- git diff --check'), 'should still list git diff --check')
 })
@@ -312,10 +313,10 @@ test('executor never includes generic or disallowed Python commands', async (t) 
   for (const pattern of disallowedPatterns) {
     const found = tools.some((tool) => {
       // 允许的工具不应该被误判
-      if (tool === 'Bash(python -m venv .venv)') {
+      if (tool === `Bash(${pythonRuntime().bootstrap})`) {
         return false
       }
-      if (tool === 'Bash(.venv/Scripts/python.exe -m pip install:*)') {
+      if (tool === `Bash(${pythonRuntime().venv} -m pip install:*)`) {
         return false
       }
       if (tool.startsWith('Bash(git ')) {

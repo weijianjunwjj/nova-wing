@@ -108,3 +108,6 @@ export {
   environmentVerificationFailure,
   persistVerificationOutput,
 } from './verification-evidence.js'
+
+export { platformPaths, resolveHostArgumentPath, workspacePathKey } from './platform/paths.js'
+export { pythonRuntime } from './platform/executables.js'

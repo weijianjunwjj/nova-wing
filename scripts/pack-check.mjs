@@ -1,3 +1,4 @@
+import { npmCommand } from './platform/npm-command.mjs'
 /* global console, process */
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -8,11 +9,7 @@ const repositoryRoot = resolve(import.meta.dirname, '..')
 const distRoot = resolve(repositoryRoot, 'dist/packages')
 
 function runNpm(arguments_) {
-  const npmCli = process.env.npm_execpath
-  const command = npmCli === undefined
-    ? (process.platform === 'win32' ? 'npm.cmd' : 'npm')
-    : process.execPath
-  const args = npmCli === undefined ? arguments_ : [npmCli, ...arguments_]
+  const { executable: command, args } = npmCommand(arguments_)
   const result = spawnSync(command, args, {
     cwd: repositoryRoot,
     encoding: 'utf8',

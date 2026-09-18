@@ -123,9 +123,9 @@ test('Windows shell resolver uses known Git installations but fails closed witho
   assert.equal(
     resolveWindowsGitBashExecutable({
       env: { ProgramFiles: 'C:/Program Files' },
-      pathExists: (path) => path === 'C:/Program Files\\Git\\bin\\bash.exe',
+      pathExists: (path) => path === 'C:\\Program Files\\Git\\bin\\bash.exe',
     }),
-    'C:/Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\bin\\bash.exe',
   )
   assert.throws(
     () => guardianShellCommand('git status', { platform: 'win32', env: {}, pathExists: () => false }),
@@ -150,7 +150,7 @@ test('non-Windows shell commands retain Bash compatibility without Windows execu
   const tenX = createDefaultTenXChatCommand(12_345, { platform: 'darwin' })
 
   assert.deepEqual(command, { executable: 'bash', args: ['-lc', 'git status --porcelain'] })
-  assert.equal(tenX.command, 'npx')
+  assert.equal(tenX.command, 'bash')
   assert.ok(!tenX.args.join(' ').includes('E:/Tools/Git/bin/bash.exe'))
 })
 

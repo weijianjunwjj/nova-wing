@@ -1,6 +1,7 @@
+import { RECOGNIZED_EXECUTABLE_PATTERN } from '../../platform/executables.js'
 export type AcceptanceCriterionKind = 'COMMAND_BEARING' | 'NON_COMMAND'
 
-const EXECUTABLE = /(?:^|[^A-Za-z0-9_./\\-])((?:npm|pnpm|yarn|node|npx|git|tsc|vitest|jest|pytest)(?:\.(?:exe|cmd))?|\.venv[\\/]Scripts[\\/]python\.exe)(?=\s|[;&|<>]|$)/giu
+const EXECUTABLE = RECOGNIZED_EXECUTABLE_PATTERN
 const RESULT_ONLY = /^(?:(?:并)?(?:应当|应该|应|必须|需要|需|确保)?(?:通过|成功)|(?:and\s+)?(?:(?:should|must)\s+|ensure\s+)?(?:pass|passes|succeed|succeeds))[。.,，;；:：]*$/iu
 const OPTION = /^--?[A-Za-z][A-Za-z0-9-]*(?=[=\s。.,，;；:："'`”’&|<>]|$)/u
 const PACKAGE_ACTION = /^(?:run\s+(?:"[A-Za-z0-9][A-Za-z0-9:_-]*"|'[A-Za-z0-9][A-Za-z0-9:_-]*'|[A-Za-z0-9][A-Za-z0-9:_-]*)|run|test|build|lint|check|typecheck|install|add|remove|update|exec|publish)(?=[\s。.,，;；:："'`”’&|<>]|$)/iu

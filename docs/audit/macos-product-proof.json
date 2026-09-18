@@ -1,0 +1,46 @@
+{
+  "session": "novawing-macos-product-hiwokv-202609180935-06d8a1",
+  "repo": "/private/tmp/novawing-macos-product.hiwoKV",
+  "branch": "codex/macos-real-agent-smoke",
+  "task": "macOS Real Agent Smoke Test",
+  "state": "COMPLETED",
+  "bytes": "NovaWing works on macOS.",
+  "changedFiles": [
+    "hello-novawing.txt"
+  ],
+  "sha256": "07ea6c3676fc8e82d94fb523b8b4452e2b2aea2442cf349d0ab161fa995c7f56",
+  "checkpoint": "c6af763e3fbe1006e46f0a6e2b2ba715018226c8",
+  "worktree": "clean",
+  "verifiers": [
+    {
+      "name": "git diff --check",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 34.93025000000489
+    },
+    {
+      "name": "npm test",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 181.67233299999498
+    }
+  ],
+  "executor": [
+    {
+      "taskId": "macos-real-agent-smoke",
+      "mode": "codex",
+      "activeExecutor": "codex",
+      "history": [
+        "codex"
+      ],
+      "model": "gpt-5.6-terra",
+      "reasoningEffort": "high"
+    }
+  ],
+  "executeCount": 1,
+  "verifyCount": 1,
+  "startedAt": "2026-09-18T09:35:44.899Z",
+  "completedAt": "2026-09-18T09:36:08.291Z",
+  "durationMs": 23392,
+  "errors": []
+}

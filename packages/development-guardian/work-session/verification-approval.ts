@@ -1,3 +1,5 @@
+import { VENV_PYTHON_PATHS } from '../platform/executables.js'
+import { sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isAbsolute, relative, resolve } from 'node:path'
 
@@ -35,8 +37,8 @@ export function isEligibleScopedVerificationCommand(
   const repo = resolve(targetRepo)
   const cwd = resolve(repo, cwdText)
   const cwdRelation = relative(repo, cwd)
-  if (cwdRelation === '..' || cwdRelation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(cwdRelation)) {
+  if (cwdRelation === '..' || cwdRelation.startsWith(`..${sep}`) || isAbsolute(cwdRelation)) {
     return false
   }
-  return resolve(cwd, executableText) === resolve(repo, '.venv', 'Scripts', 'python.exe')
+  return VENV_PYTHON_PATHS.some((path) => resolve(cwd, executableText) === resolve(repo, path))
 }

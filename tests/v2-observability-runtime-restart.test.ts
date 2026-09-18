@@ -104,7 +104,7 @@ test('production Codex-to-DeepSeek failover records health change, provider swit
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {
-      env: { ...process.env, LOCALAPPDATA: data },
+      env: { ...process.env, NOVAWING_DATA_DIR: data },
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
       createCodexExecutor: () => ({ async execute() {
         await writeFile(join(root, 'src', 'a.ts'), 'export const partial = true\n')

@@ -186,7 +186,7 @@ function scriptedLlmAgent(bindings: readonly { criterion: string; requiredEviden
     runner: async () => ({ text: JSON.stringify({ acceptanceEvidenceBindings: bindings }) }),
     describeRepository: async () => ({
       packageScripts: { test: 'node --test' }, testFileCandidates: [], topLevelEntries: [],
-      hasPytestConfig: false, hasWindowsVenvPython: false,
+      hasPytestConfig: false, hasVenvPython: false,
     }),
     isRuntimeAvailable: () => true,
   })
@@ -482,7 +482,7 @@ export const s28: CertificationScenario = {
       repairAudit: rec.auditSink,
       repairLlmAgent: createLlmRepairAgent({
         runner: async () => { throw new RepairProviderUnavailableError('no login', 'Codex Local is not authenticated') },
-        describeRepository: async () => ({ packageScripts: {}, testFileCandidates: [], topLevelEntries: [], hasPytestConfig: false, hasWindowsVenvPython: false }),
+        describeRepository: async () => ({ packageScripts: {}, testFileCandidates: [], topLevelEntries: [], hasPytestConfig: false, hasVenvPython: false }),
         isRuntimeAvailable: () => true,
       }),
     } })

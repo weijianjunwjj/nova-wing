@@ -1,11 +1,8 @@
 /* global console */
 import { spawn } from 'node:child_process'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { resolveAskBridgeExecutable } from 'nova-wing/development-guardian'
 
-const command = process.platform === 'win32'
-  ? join(homedir(), '.local', 'bin', 'ask-bridge.exe')
-  : 'ask-bridge'
+const command = resolveAskBridgeExecutable(process.env)
 
 const child = spawn(command, ['--provider', 'chatgpt', 'login'], {
   env: process.env,

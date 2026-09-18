@@ -1,9 +1,10 @@
+import { workspacePathKey } from '../platform/paths.js'
+import { platformPaths } from '../platform/paths.js'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFile, mkdir, realpath, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
 
@@ -34,7 +35,7 @@ import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
 import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
-import { combineWorkSessionNotifiers, createWindowsTaskRunNotifier } from './task-run-notifier.js'
+import { combineWorkSessionNotifiers, createDesktopTaskRunNotifier } from './task-run-notifier.js'
 import {
   WorkSessionRuntime,
   type NotificationChannelEntry,
@@ -44,7 +45,7 @@ import {
 } from './runtime.js'
 import { createRuntimeRepairEngine } from './runtime-repair-engine.js'
 import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type RuntimeRepairAuditSink } from './runtime-repair-audit.js'
-import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
+import { createDesktopRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 import type { RuntimeRepairRefresh } from './runtime-repair.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalyticsStore } from './task-run-analytics.js'
 import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/task-eta.js'
@@ -557,8 +558,7 @@ export interface ProductionWorkSessionUi {
 }
 
 export function defaultStorageUrl(sessionId: string, env: NodeJS.ProcessEnv): string {
-  const base = env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing')
-  return new URL(`file:///${join(base, 'NovaWing', 'work-sessions', `${sessionId}.db`).replaceAll('\\', '/')}`).href
+  return pathToFileURL(join(platformPaths({ env }).sessions, `${sessionId}.db`)).href
 }
 
 function brainReasoning(env: NodeJS.ProcessEnv): 'auto' | 'instant' | 'medium' | 'high' {
@@ -583,7 +583,7 @@ export async function createProductionWorkSessionUi(
           : { createTransport: dependencies.createSmtpTransport }),
       })
     : undefined
-  const toastNotifier = dependencies.createRuntime === undefined ? createWindowsTaskRunNotifier() : undefined
+  const toastNotifier = dependencies.createRuntime === undefined ? createDesktopTaskRunNotifier() : undefined
   const notifier = emailNotifier === undefined
     ? undefined
     : toastNotifier === undefined ? emailNotifier : combineWorkSessionNotifiers([emailNotifier, toastNotifier])
@@ -795,7 +795,7 @@ export async function createProductionWorkSessionUi(
             })),
           auditSink: dependencies.runtimeRepair?.auditSink ??
             createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
-          notifier: dependencies.runtimeRepair?.notifier ?? createWindowsToastRuntimeRepairNotifier(),
+          notifier: dependencies.runtimeRepair?.notifier ?? createDesktopRuntimeRepairNotifier(),
         }
         let analyticsProjector: TaskRunAnalyticsProjector | undefined
         if (dependencies.createRuntime === undefined) {
@@ -922,7 +922,7 @@ export async function createProductionWorkSessionUi(
         recoverExecutorOwnership: async (checkpoint) => {
           const workspace = await realpath(checkpoint.repo.repoPath)
           codingStore.recoverOwnership(
-            process.platform === 'win32' ? workspace.toLowerCase() : workspace,
+            workspacePathKey(workspace),
             taskKey(checkpoint.task.id),
           )
         },

@@ -1,3 +1,4 @@
+import { VENV_PYTEST_COMMANDS } from './platform/executables.js'
 import { createHash } from 'node:crypto'
 
 export type VerificationAdmission = 'ALLOWED' | 'APPROVAL_REQUIRED' | 'UNSUPPORTED'
@@ -22,7 +23,7 @@ const EXACT_ALLOWED = new Set([
   'npm run lint',
   'npm run check',
   'git diff --check',
-  '.venv/Scripts/python.exe -m pytest',
+  ...VENV_PYTEST_COMMANDS,
 ])
 
 export function deterministicVerificationCapabilities(): string[] {

@@ -1,3 +1,4 @@
+import { platformPaths } from 'nova-wing/development-guardian'
 /**
  * NovaWing v0.2.4 — real dogfood harness: Runtime AI Repair & Resume with a real
  * independent reviewer.
@@ -27,9 +28,9 @@ import { loadTaskStateV2 } from '../dist/packages/development-guardian/work-sess
 
 const DEFAULT_SESSION_ID = 'fly-weave-202609101531-c2cebb'
 const sessionId = (process.argv[2] ?? process.env.NOVAWING_DOGFOOD_SESSION ?? DEFAULT_SESSION_ID).trim()
-const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local')
-const srcConfig = join(localAppData, 'NovaWing', 'canary-configs', `${sessionId}.json`)
-const srcDbDir = join(localAppData, 'NovaWing', 'work-sessions')
+const paths = platformPaths()
+const srcConfig = join(paths.trustedConfig, `${sessionId}.json`)
+const srcDbDir = paths.sessions
 
 if (!existsSync(srcConfig)) {
   console.error(`No trusted config for session ${sessionId} at ${srcConfig}`)
@@ -63,7 +64,7 @@ const auditEntries = []
 const toasts = []
 const realNotifier = createWindowsToastRuntimeRepairNotifier()
 const app = await createProductionWorkSessionUi(config, {
-  env: { ...process.env, LOCALAPPDATA: work },
+  env: { ...process.env, NOVAWING_DATA_DIR: work },
   runtimeRepair: {
     auditSink: {
       record: async (entry) => {

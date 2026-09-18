@@ -1,3 +1,4 @@
+import { isVenvPythonPath } from '../../platform/executables.js'
 import { assessVerificationCommand } from '../../verification-command-policy.js'
 import type { VerifierCommandCanonicalization } from '../risk-evidence.js'
 import { classifyAcceptanceCriterion } from './acceptance-criterion.js'
@@ -58,7 +59,7 @@ function completeCommand(command: string): boolean {
     return rest.length === 0 || (rest[0] === '--' && rest.length > 1 && rest.slice(1).every(testPath))
   }
   if (args[0] === 'pytest') return args.slice(1).every(testPath)
-  if (/^\.venv[\\/]Scripts[\\/]python\.exe$/u.test(args[0]!) && args[1] === '-m' && args[2] === 'pytest') {
+  if (isVenvPythonPath(args[0]!) && args[1] === '-m' && args[2] === 'pytest') {
     return args.slice(3).every(testPath)
   }
   return false

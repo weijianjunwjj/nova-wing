@@ -1,3 +1,7 @@
+import { commandEnvironment } from './platform/environment.js'
+import { SHELL_START_FAILURE } from './platform/shell.js'
+import { pythonRuntime } from './platform/executables.js'
+import { sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -371,7 +375,7 @@ function defaultCommandRunner(request: GuardianCommandRequest): Promise<Guardian
         (error as NodeJS.ErrnoException).code === 'ENOENT'
       ) {
         reject(new Error(
-          'Native Git Bash unavailable: the configured Git for Windows bash.exe could not be started',
+          SHELL_START_FAILURE,
         ))
         return
       }
@@ -684,7 +688,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   }
 
   private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv {
-    const { NODE_TEST_CONTEXT: _nodeTestContext, ...ambient } = process.env
+    const ambient = commandEnvironment(process.env, this.options.platform)
     if (nativeGitBash !== true) return ambient
     return {
       ...ambient,
@@ -892,8 +896,8 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       allowedTools.push('Bash(npm install:*)')
     }
     if (this.options.allowPythonBootstrap === true) {
-      allowedTools.push('Bash(python -m venv .venv)')
-      allowedTools.push('Bash(.venv/Scripts/python.exe -m pip install:*)')
+      allowedTools.push(`Bash(${pythonRuntime(this.options.platform).bootstrap})`)
+      allowedTools.push(`Bash(${pythonRuntime(this.options.platform).venv} -m pip install:*)`)
     }
     args.push('--allowedTools', ...allowedTools)
     return args
@@ -936,7 +940,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         try {
           actualCwd = await realpath(resolve(repositoryRoot, step.cwd))
           const escaped = relative(repositoryRoot, actualCwd)
-          if (escaped === '..' || escaped.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(escaped)) {
+          if (escaped === '..' || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) {
             cwdFailure = 'verification cwd escapes the repository workspace'
           }
         } catch {
@@ -959,7 +963,7 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
             else {
               const manifestPath = await realpath(resolve(repositoryRoot, step.sourceManifest!))
               const escaped = relative(repositoryRoot, manifestPath)
-              if (escaped === '..' || escaped.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(escaped)) sourceValid = false
+              if (escaped === '..' || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) sourceValid = false
               else {
                 const parsed = JSON.parse(await readFile(manifestPath, 'utf8')) as { scripts?: unknown }
                 const scripts = parsed.scripts !== null && typeof parsed.scripts === 'object' && !Array.isArray(parsed.scripts)

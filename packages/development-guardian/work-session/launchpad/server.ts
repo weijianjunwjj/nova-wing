@@ -1,3 +1,5 @@
+import { VENV_PYTEST_COMMANDS } from '../../platform/executables.js'
+import { platformPaths } from '../../platform/paths.js'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { access, mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -69,7 +71,7 @@ import {
   type RepairAuditSink,
   type RepairProviderIdentity,
 } from './repair-audit.js'
-import { createWindowsToastRepairNotifier, type RepairNotifier } from './repair-notifier.js'
+import { createDesktopRepairNotifier, type RepairNotifier } from './repair-notifier.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsStore } from '../task-run-analytics.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
@@ -392,11 +394,11 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
 export function defaultTrustedConfigDirectory(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
+  platform: NodeJS.Platform = process.platform,
 ): string {
   const override = env.NOVAWING_CONFIG_DIR?.trim()
   if (override !== undefined && override.length > 0) return resolve(override)
-  const localAppData = env.LOCALAPPDATA?.trim() || join(userHome, 'AppData', 'Local')
-  return join(localAppData, 'NovaWing', 'canary-configs')
+  return platformPaths({ env, userHome, platform }).trustedConfig
 }
 
 export async function discoverTrustedWorkSessionConfigs(
@@ -539,7 +541,7 @@ export class NovaWingLaunchpad {
       reasoningEffort: REPAIR_DEFAULT_REASONING_EFFORT,
     }
     this.repairAudit = dependencies.repairAudit ?? createFileRepairAuditSink()
-    this.repairNotifier = dependencies.repairNotifier ?? createWindowsToastRepairNotifier()
+    this.repairNotifier = dependencies.repairNotifier ?? createDesktopRepairNotifier()
     this.analyticsPath = dependencies.analyticsPath ?? defaultTaskRunAnalyticsPath()
     this.server = createServer((request, response) => {
       void this.handle(request, response)
@@ -1754,6 +1756,8 @@ export async function createNovaWingLaunchpad(options: {
     : options.dependencies
   const launchpadDependencies: NovaWingLaunchpadDependencies = {
     ...dependencies,
+    analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),
+    resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
       new CodingExecutionStore(defaultCodingExecutionStorePath(options.env)).availability()),
   }
@@ -2058,7 +2062,8 @@ function parseCommandCanonicalizations(value: unknown): VerifierCommandCanonical
 }
 
 function looksLikeTestVerifierCommand(command: string): boolean {
-  return /^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|node\s+--test\b|npx\s+(?:vitest|jest)\b|(?:vitest|jest)\b|\.venv\/Scripts\/python\.exe\s+-m\s+pytest\b)/iu.test(command.trim())
+  if (VENV_PYTEST_COMMANDS.some((value) => command.trim() === value || command.trim().startsWith(`${value} `))) return true
+  return /^(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|node\s+--test\b|npx\s+(?:vitest|jest)\b|(?:vitest|jest)\b)/iu.test(command.trim())
 }
 
 function composerEvidenceBindings(

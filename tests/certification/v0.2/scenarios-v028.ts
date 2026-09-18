@@ -86,7 +86,7 @@ export const s111: CertificationScenario = {
     let app: ProductionWorkSessionUi | undefined
     const actions: string[] = []
     const launchpad = await createNovaWingLaunchpad({ configDirectory: configsDir, dependencies: {
-      resolveEnvironment: async () => ({ ...process.env, LOCALAPPDATA: ctx.dirs.data }),
+      resolveEnvironment: async () => ({ ...process.env, NOVAWING_DATA_DIR: ctx.dirs.data }),
       preflight: async () => healthyReport(),
       gitProcessRunner: async () => ({ exitCode: 0, stdout: 'feat/real-003-v028-smoke\n', stderr: '' }),
       createWorkSession: async (config, input) => {

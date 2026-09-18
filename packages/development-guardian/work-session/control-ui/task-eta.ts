@@ -1,6 +1,6 @@
+import { platformPaths } from '../../platform/paths.js'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import type { ExecutionLedgerEvent } from '../execution-ledger.js'
@@ -305,7 +305,7 @@ export function createRuntimeTaskEtaService(options: {
   timeoutMs?: number
 } = {}): TaskEtaService {
   const env = options.env ?? process.env
-  const directory = options.directory ?? join(env.LOCALAPPDATA?.trim() || join(homedir(), '.novawing'), 'NovaWing', 'runtime-ui', 'eta')
+  const directory = options.directory ?? platformPaths({ env }).eta
   return new TaskEtaService({
     cache: new FileTaskEtaCache(directory),
     runner: options.runner ?? createCodexRepairModelRunner({ env }),

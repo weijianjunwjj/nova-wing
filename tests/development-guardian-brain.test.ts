@@ -1,3 +1,4 @@
+import { pythonRuntime } from '../packages/development-guardian/platform/executables.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -309,8 +310,8 @@ test('brain prompt requires revise (not blocked) when venv missing and python bo
   assert.match(prompt, /PERMISSION_REQUIRED/)
 
   // instructions 必须明确精确的 venv 命令
-  assert.match(prompt, /python -m venv \.venv/)
-  assert.match(prompt, /\.venv\/Scripts\/python\.exe -m pip install -r/)
+  assert.ok(prompt.includes(pythonRuntime().bootstrap))
+  assert.ok(prompt.includes(`${pythonRuntime().venv} -m pip install -r`))
 
   // requirements 路径来自 task/repo 已知事实，不泛化 dependency resolver
   assert.match(prompt, /requirements 路径必须来自当前 task\/repo 已知事实/)

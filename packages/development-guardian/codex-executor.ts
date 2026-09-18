@@ -1,4 +1,6 @@
-import { spawn } from 'node:child_process'
+import { codexChatGptEnvironment } from './platform/executables.js'
+export { codexChatGptEnvironment } from './platform/executables.js'
+export * from './platform/codex-development-runtime.js'
 import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@openai/codex-sdk'
 import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-code-executor.js'
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
@@ -11,18 +13,6 @@ import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
 export const NO_OP_EXECUTION = 'NO_OP_EXECUTION'
-export const DEFAULT_CODEX_WSL_DISTRO = 'Ubuntu-24.04'
-export const WINDOWS_WSL_EXECUTABLE = 'C:\\Windows\\System32\\wsl.exe'
-
-export interface CodexDevelopmentRuntimeProbeOptions {
-  platform?: NodeJS.Platform
-  cwd: string
-  distro?: string
-  commandRunner?: (request: { executable: string; args: readonly string[]; timeoutMs: number }) => Promise<{
-    exitCode: number; stdout: string; stderr: string; timedOut?: boolean
-  }>
-}
-
 export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   codexModel?: string
   reasoningEffort?: ThreadOptions['modelReasoningEffort']
@@ -34,86 +24,6 @@ export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   preflightTimeoutMs?: number
   /** Test seam for the locally-owned MCP listener. */
   listenWorkspace?: (workspace: CodexWorkspaceTools) => Promise<Awaited<ReturnType<CodexWorkspaceTools['listen']>>>
-}
-
-function windowsPathToWsl(path: string): string {
-  const normalized = path.replaceAll('\\', '/')
-  const match = /^([a-z]):\/(.*)$/iu.exec(normalized)
-  if (match === null) throw Object.assign(new Error('Codex workspace must use an absolute Windows drive path'), { code: 'configuration_error' })
-  return `/mnt/${match[1]!.toLowerCase()}/${match[2]}`
-}
-
-function runDevelopmentRuntimeProbe(request: { executable: string; args: readonly string[]; timeoutMs: number }): Promise<{
-  exitCode: number; stdout: string; stderr: string; timedOut?: boolean
-}> {
-  return new Promise((resolveRun) => {
-    const child = spawn(request.executable, [...request.args], {
-      windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    const finish = (result: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean }): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolveRun(result)
-    }
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => { stdout += chunk })
-    child.stderr.on('data', (chunk: string) => { stderr += chunk })
-    child.once('error', (error) => finish({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` }))
-    child.once('exit', (code) => finish({ exitCode: code ?? 1, stdout, stderr }))
-    const timer = setTimeout(() => {
-      child.kill()
-      finish({ exitCode: 1, stdout, stderr, timedOut: true })
-    }, request.timeoutMs)
-    timer.unref()
-  })
-}
-
-/** Explicitly selects a development WSL distro and proves bash + cwd + Git are usable. */
-export async function inspectCodexDevelopmentRuntime(options: CodexDevelopmentRuntimeProbeOptions): Promise<{
-  distro: string; workspace: string; bash: string
-}> {
-  if ((options.platform ?? process.platform) !== 'win32') {
-    return { distro: 'native', workspace: options.cwd, bash: '/usr/bin/bash' }
-  }
-  const distro = options.distro ?? DEFAULT_CODEX_WSL_DISTRO
-  if (!/^[A-Za-z0-9._-]+$/u.test(distro) || /^docker-desktop(?:-data)?$/iu.test(distro)) {
-    throw Object.assign(new Error('No supported development WSL distribution available'), { code: 'configuration_error' })
-  }
-  const workspace = windowsPathToWsl(options.cwd)
-  const script = [
-    'set -eu',
-    'test "$(command -v bash)" = /usr/bin/bash -o "$(command -v bash)" = /bin/bash',
-    'bash --version >/dev/null',
-    'git --version >/dev/null',
-    'test "$(pwd)" != /',
-    'git -c safe.directory="$PWD" status --short >/dev/null',
-    'printf "NOVAWING_CODEX_PREFLIGHT|%s|%s" "$(command -v bash)" "$(pwd)"',
-  ].join('; ')
-  const result = await (options.commandRunner ?? runDevelopmentRuntimeProbe)({
-    executable: WINDOWS_WSL_EXECUTABLE,
-    args: ['-d', distro, '--cd', workspace, '--exec', '/usr/bin/bash', '-lc', script],
-    timeoutMs: 15_000,
-  })
-  if (result.exitCode !== 0 || result.timedOut === true ||
-      !result.stdout.includes(`NOVAWING_CODEX_PREFLIGHT|/usr/bin/bash|${workspace}`)) {
-    throw Object.assign(new Error('Codex development WSL workspace, bash, or Git inspection is unavailable'), {
-      code: 'configuration_error',
-    })
-  }
-  return { distro, workspace, bash: '/usr/bin/bash' }
-}
-
-/** Whitelist rather than passing ambient OpenAI/DeepSeek keys or app privileges to the runtime. */
-export function codexChatGptEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
-  const allowed = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'HOME', 'LOCALAPPDATA',
-    'APPDATA', 'TEMP', 'TMP', 'CODEX_HOME', 'SSL_CERT_FILE', 'CODEX_CA_CERTIFICATE', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'])
-  return Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] =>
-    entry[1] !== undefined && allowed.has(entry[0].toUpperCase())))
 }
 
 export function codexEffectiveConfiguration(options: CodexExecutorOptions, executable: string, url: string, mcpNames: string[]): {
@@ -159,8 +69,7 @@ export function codexEffectiveConfiguration(options: CodexExecutorOptions, execu
  * consulted nor required. Authentication and the controlled MCP connection
  * are proven by CodexExecutor.preflight's real SDK probe below.
  */
-export async function inspectCodexLocal(_env: NodeJS.ProcessEnv = process.env, cwd?: string): Promise<{ executable: string; mcpNames: string[] }> {
-  if (cwd === undefined) throw Object.assign(new Error('Codex workspace is required'), { code: 'configuration_error' })
+export async function inspectCodexLocal(_env: NodeJS.ProcessEnv = process.env, _cwd?: string): Promise<{ executable: string; mcpNames: string[] }> {
   return { executable: bundledCodexExecutable(), mcpNames: [] }
 }
 

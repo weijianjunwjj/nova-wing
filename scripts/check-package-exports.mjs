@@ -31,6 +31,8 @@ const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
   'nova-wing/development-guardian': [
     'AskBridgeBrain',
+    'createDesktopRepairNotifier', 'createDesktopRuntimeRepairNotifier', 'createDesktopTaskRunNotifier',
+    'platformPaths', 'resolveHostArgumentPath', 'workspacePathKey', 'pythonRuntime',
     'BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE',
     'CONTROLLED_QUOTA_INJECTION_FLAG',
     'ClaudeCodeExecutor',
