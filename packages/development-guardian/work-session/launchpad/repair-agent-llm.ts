@@ -158,6 +158,9 @@ export function createLlmRepairAgent(options: LlmRepairAgentOptions = {}): Repai
   return {
     id: 'llm-repair-agent',
     async repair(context) {
+      if (context.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION')) {
+        return { classification: 'REPAIR_REJECTED', reason: '未能安全识别验证命令，需要确认；a model cannot supply missing command authority.' }
+      }
       if (options.runner === undefined && !isRuntimeAvailable()) {
         return {
           classification: 'PROVIDER_UNAVAILABLE',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -21,6 +21,7 @@ import {
   type WorkSessionRuntimeConfig,
 } from 'nova-wing/development-guardian'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
+import type { AutonomousDiagnosisEvidence } from '../packages/development-guardian/work-session/autonomous-diagnosis.js'
 
 const AGENT = {
   id: 'production-golden-executor',
@@ -170,6 +171,57 @@ function assertGoldenImplementationPacket(packet: DelegationPacket): void {
   assert.ok(packet.instructions.some((instruction) => /NovaWing runs deterministic verification separately/u.test(instruction)))
   assert.equal(packet.instructions.some((instruction) => instruction.includes('npm run test:filter-empty')), false)
 }
+
+await test('v0.3.1 production Golden exhausted uses diagnosis then implementation-only Advanced and exact verifier contract', async () => {
+  const fixture = await fixtureRepo()
+  let app: Awaited<ReturnType<typeof createProductionWorkSessionUi>> | undefined
+  try {
+    const config = await validateTrustedWorkSessionConfig(rawConfig(fixture.repo, fixture.outside, { golden: true }))
+    let runtime: WorkSessionRuntimeConfig | undefined
+    const packets: DelegationPacket[] = []
+    const evidence: AutonomousDiagnosisEvidence[] = []
+    const commands: string[] = []
+    app = await createProductionWorkSessionUi(config, {
+      serverPort: 0, env: { LOCALAPPDATA: fixture.outside }, v2Agents: [AGENT],
+      createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
+      autonomousRecovery: {
+        inspectDiff: async () => execFileSync('git', ['diff', '--no-ext-diff', 'HEAD'], { cwd: fixture.repo, encoding: 'utf8', windowsHide: true }),
+        readVerificationOutput: async (result) => result.rawOutputRef === undefined ? undefined : readFile(result.rawOutputRef, 'utf8'),
+        diagnose: async (input) => {
+          evidence.push(input)
+          return { recoverable: true, diagnosis: 'The return value is still broken.', strategy: 'FIX_IMPLEMENTATION', instructions: 'Return the cleared filter state; preserve tests.',
+            requiresHuman: false, humanReason: null, requiredAuthority: [], paths: ['apps/web/src/filter.js'], commands: [] }
+        },
+      },
+      createCodexExecutor(options) {
+        return new ClaudeCodeExecutor({ ...options, codingRuntime: { label: 'Scripted autonomous fixture', async run({ packet }) {
+          packets.push(structuredClone(packet))
+          if (packets.length !== 2) await writeFile(join(fixture.repo, 'apps/web/src/filter.js'), `export const clearFilters = () => "${packets.length === 1 ? 'broken' : 'cleared'}"\n`)
+          return { summary: `Executor attempt ${packets.length}`, commandsRun: ['git_status', 'read_file', ...(packets.length === 2 ? [] : ['write_file'])], blockers: [] }
+        } }, onVerification(event) { if (event.status === 'running') commands.push(event.command) } })
+      },
+    })
+    assert.ok(runtime)
+    const events = new TaskEventLogV2()
+    const result = await runtime.taskRunner.run(runtime.definition.tasks[0]!, undefined, undefined, { taskEventLog: events, recoveryInstructions: ['Only change the src implementation.'] })
+    assert.equal(result.status, 'COMPLETED', JSON.stringify(result.humanRequired ?? result))
+    assert.equal(packets.length, 3)
+    packets.forEach(assertGoldenImplementationPacket)
+    assert.ok(packets[2]!.instructions.includes('Return the cleared filter state; preserve tests.'))
+    assert.ok(packets[2]!.instructions.includes('Only change the src implementation.'))
+    assert.equal(evidence.length, 1)
+    assert.deepEqual(evidence[0]!.task.autonomousRecovery?.executorHistory.map((item) => item.summary), ['Executor attempt 1', 'Executor attempt 2'])
+    assert.ok(evidence[0]!.verifierOutputs.some((item) => /broken|cleared/u.test(item.output)))
+    assert.equal(commands.filter((command) => command === 'node --test tests/filter.test.js').length, 2)
+    assert.equal(result.taskStateV2?.autonomousRecovery?.goldenExecuteCount, 2)
+    assert.equal(result.taskStateV2?.autonomousRecovery?.goldenVerifyCount, 1)
+    assert.equal(result.taskStateV2?.actionBudget?.recoveryConsumed, 3)
+    assert.equal(events.count('ADVANCED_RECOVERY'), 1)
+    const targeted = result.completionEvidence?.verificationResults.find((item) => item.stepId === 'targeted-test')
+    assert.equal(targeted?.cwd, 'apps/web')
+    assert.equal(targeted?.status, 'passed')
+  } finally { await app?.close(); await rm(fixture.repo, { recursive: true, force: true }); await rm(fixture.outside, { recursive: true, force: true }) }
+})
 
 await test('v0.3.0 production A: Launchpad-style LOW config selects Golden with zero Controller decisions', async () => {
   const fixture = await fixtureRepo()

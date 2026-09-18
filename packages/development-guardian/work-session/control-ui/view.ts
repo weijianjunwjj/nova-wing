@@ -51,23 +51,13 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span id="branch" class="value">—</span>
     </div>
     <div class="meta">
-      <span class="label">已运行时间</span>
-      <span id="active-time" class="value">00:00</span>
-    </div>
-    <div class="meta">
       <span class="label">限制</span>
       <span id="limits" class="value">—</span>
     </div>
   </section>
 
-  <section class="card" aria-label="Execution">
-    <h2>Execution</h2>
-    <p id="coding-execution" class="note">尚未选择 Executor</p>
-    <p id="coding-failover" class="note"></p>
-  </section>
-
   <section id="decision-card" class="card decision" hidden>
-    <h2 id="decision-title">需要人工决策</h2>
+    <h2 id="decision-title">需要你的决定</h2>
     <div class="row">
       <span class="label">类别</span>
       <span id="decision-category" class="value">—</span>
@@ -76,25 +66,24 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <span class="label">原因</span>
       <span id="decision-reason" class="value">—</span>
     </div>
+    <div id="decision-evidence" hidden>
+      <p class="label">已尝试</p>
+      <ul id="decision-attempts"></ul>
+      <p id="decision-verification" class="note" hidden></p>
+      <p id="decision-changes" class="note" hidden></p>
+    </div>
     <p id="decision-guidance" class="note"></p>
-    <textarea id="decision-input" maxlength="2000" rows="4" hidden></textarea>
-    <button id="resume-decision-btn" type="button" class="primary" hidden>提交决策并恢复</button>
+    <button id="diagnose-continue-btn" type="button" class="primary" hidden>✨ AI 诊断并继续</button>
+    <label id="decision-input-label" for="decision-input" hidden>补充指令</label>
+    <textarea id="decision-input" aria-label="补充指令" placeholder="例如：只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。" maxlength="2000" rows="4" hidden></textarea>
+    <button id="resume-decision-btn" type="button" class="primary" hidden>提交指令并继续</button>
     <button id="approve-verification-btn" type="button" class="primary" hidden>批准此验证并继续</button>
+    <button id="reject-verification-btn" type="button" hidden>拒绝</button>
     <button id="runtime-repair-btn" type="button" class="primary" hidden>✨ AI 修复并继续</button>
     <button id="resume-resolved-btn" type="button" class="primary" hidden>已处理，恢复</button>
     <button id="resume-paused-btn" type="button" class="primary" hidden>恢复</button>
     <button id="recover-checkpoint-btn" type="button" class="primary" hidden>重新验证并继续</button>
     <span id="resume-note" class="note"></span>
-  </section>
-
-  <section class="card" aria-label="开始时间">
-    <h2>开始时间</h2>
-    <div class="row"><span class="label">创建 / Created</span><span id="created-at" class="value">—</span></div>
-    <div class="row"><span class="label">计划 / Scheduled Start</span><span id="scheduled-at" class="value">—</span></div>
-    <div class="row"><span class="label">来源 / Reason</span><span id="schedule-source" class="value">—</span></div>
-    <div class="row"><span class="label">实际 / Actual Start</span><span id="started-at" class="value">—</span></div>
-    <div class="row"><span class="label">完成 / Completed</span><span id="completed-at" class="value">—</span></div>
-    <p id="schedule-note" class="note"></p>
   </section>
 
   <section id="recoverable-card" class="card decision" hidden>
@@ -131,41 +120,34 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
     <ol id="task-list" class="task-list"></ol>
   </section>
 
-  <section class="card">
-    <h2>当前活动</h2>
-    <div class="row">
-      <span id="activity-orchestration-label" class="label">Guardian</span>
-      <span id="guardian-phase" class="value">—</span>
-    </div>
-    <div class="row">
-      <span class="label">轮次</span>
-      <span id="guardian-iteration" class="value">—</span>
-    </div>
-    <p id="guardian-detail" class="detail">—</p>
-    <div class="row"><span class="label">Executor</span><span id="executor-running" class="value">—</span></div>
-    <div class="row"><span class="label">Provider</span><span id="execution-provider" class="value">—</span></div>
-    <div class="row"><span class="label">活动已运行</span><span id="execution-elapsed" class="value">—</span></div>
-    <div class="row"><span class="label">最后活动</span><span id="execution-last-activity" class="value">—</span></div>
-    <p id="execution-idle-status" class="note"></p>
+  <section class="card runtime-overview" aria-label="运行概览">
+    <h2>运行概览</h2>
+    <dl class="overview-grid">
+      <div><dt>状态</dt><dd id="overview-status">就绪</dd></div>
+      <div><dt>当前阶段</dt><dd id="overview-phase">等待开始</dd></div>
+      <div><dt>创建时间</dt><dd id="created-at">—</dd></div>
+      <div><dt>开始方式</dt><dd id="start-mode">立即开始</dd></div>
+      <div><dt>实际开始</dt><dd id="started-at">尚未开始</dd></div>
+      <div><dt>预计完成</dt><dd id="estimated-completion">正在估算…</dd></div>
+      <div><dt>实际完成</dt><dd id="completed-at">尚未完成</dd></div>
+      <div><dt>总耗时</dt><dd id="total-elapsed">0 秒</dd></div>
+      <div><dt>Executor</dt><dd id="overview-executor">尚未执行</dd></div>
+      <div><dt>轮次</dt><dd id="overview-iteration">尚未执行</dd></div>
+    </dl>
+    <p id="schedule-note" class="note" hidden></p>
+    <p id="coding-failover" class="note" hidden></p>
+    <p id="execution-last-activity" class="note" hidden></p>
   </section>
 
-  <section class="card">
-    <h2>Execution Activity Feed</h2>
-    <ul id="execution-activity-list" class="recent-list"></ul>
+  <section class="card" aria-label="活动日志">
+    <h2>活动日志</h2>
+    <p id="activity-empty" class="note">开始后将在这里显示执行、验证和 checkpoint 进展。</p>
+    <ol id="activity-list" class="activity-list" aria-label="运行时间线"></ol>
   </section>
 
-  <section class="card">
-    <h2>最近活动</h2>
-    <ul id="recent-list" class="recent-list"></ul>
-  </section>
-
-  <details class="card">
-    <summary>Raw Runtime Log</summary>
-    <ul id="ledger-list" class="recent-list"></ul>
-  </details>
-
-  <details class="card debug">
+  <details id="debug-panel" class="card debug">
     <summary>Debug</summary>
+    <p class="note">完整安全状态与排障证据：runtime、event、provider、verification、checkpoint、humanRequired 和 error。</p>
     <pre id="debug-output"></pre>
   </details>
 </main>
@@ -204,17 +186,6 @@ function setText(id, text) {
   if (node) node.textContent = text
 }
 
-function formatDuration(ms) {
-  if (typeof ms !== 'number' || !isFinite(ms)) return '00:00'
-  var totalSeconds = Math.floor(ms / 1000)
-  var h = Math.floor(totalSeconds / 3600)
-  var m = Math.floor((totalSeconds % 3600) / 60)
-  var s = totalSeconds % 60
-  var mm = String(m).padStart(2, '0')
-  var ss = String(s).padStart(2, '0')
-  return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss
-}
-
 function formatTime(iso) {
   if (!iso) return '--:--:--'
   var d = new Date(iso)
@@ -230,6 +201,7 @@ var BADGE_CLASS = {
   SCHEDULED: 'badge-ready',
   RUNNING: 'badge-running',
   SUSPENDED: 'badge-suspended',
+  PAUSED: 'badge-suspended',
   RECOVERABLE: 'badge-recoverable',
   COMPLETED: 'badge-completed',
   FAILED: 'badge-failed',
@@ -241,6 +213,7 @@ var STATE_LABELS = {
   SCHEDULED: 'Scheduled · 等待开始',
   RUNNING: '运行中',
   SUSPENDED: '已暂停',
+  PAUSED: '已暂停',
   RECOVERABLE: '可恢复',
   COMPLETED: '已完成',
   FAILED: '失败',
@@ -251,16 +224,31 @@ var HUMAN_REQUIRED_LABELS = {
   DECISION_REQUIRED: '需要人工决策',
   REPO_DRIFT: 'Repository 状态漂移',
   PERMISSION_REQUIRED: '需要授权',
+  APPROVAL_REQUIRED: '需要授权',
   CREDENTIAL_REQUIRED: '需要完成凭据或登录设置',
   ENVIRONMENT_REQUIRED: '需要处理运行环境',
   EXECUTOR_RETRY_REQUIRED: 'Executor 需要重新执行',
   SAFETY_BLOCKED: '被安全策略阻止',
   BUDGET_EXHAUSTED: 'Work Session 时间额度已耗尽',
-  ACTION_BUDGET_EXHAUSTED: 'Controller action budget 已耗尽',
+  ACTION_BUDGET_EXHAUSTED: '任务恢复动作额度已用完',
   STALLED_NO_PROGRESS: 'Executor 未产生实现进展',
   CYCLIC_NO_PROGRESS: 'Controller 检测到无进展循环',
   REVIEWER_PROTOCOL_FAILURE: 'Reviewer 协议失败',
   PLANNING_REQUIRED: '需要补充验证计划',
+  CODE_FAILURE_AFTER_SINGLE_FIX: '自动修复后验证仍未通过',
+  EXECUTOR_NO_PROGRESS_AFTER_RETRY: '重试后仍未产生有效修改',
+  NO_IMPLEMENTATION_PROGRESS: '未产生有效修改',
+  CODE_FAILURE: '代码验证未通过',
+  CODE_VERIFICATION_FAILED: '代码验证未通过',
+  VERIFIER_CONFIGURATION_REQUIRED: '验证配置需要修复',
+  VERIFIER_CONFIGURATION_FAILURE: '验证配置需要修复',
+  CONFIGURATION_REQUIRED: '验证配置需要修复',
+  EVIDENCE_MISSING: '验证证据不足',
+  INSUFFICIENT: '验证证据不足',
+  AUTONOMOUS_RECOVERY_EXHAUSTED: '自动恢复额度已用完',
+  RECOVERY_BUDGET_EXHAUSTED: '自动恢复额度已用完',
+  RECOVERY_REQUIRES_AUTHORIZATION: '恢复需要额外授权或你的决定',
+  RECOVERY_BLOCKED: '恢复条件尚未满足',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 基础设施故障',
   STALLED: '执行停滞',
   USER_PAUSED: '用户已暂停'
@@ -281,7 +269,16 @@ var GUARDIAN_PHASE_LABELS = {
   RECONCILING: '正在核对 Repository',
   UNKNOWN: '状态未知',
   COMPLETED: '已完成',
-  HUMAN_REQUIRED: '需要人工处理',
+  HUMAN_REQUIRED: '等待人工处理',
+  SUSPENDED: '已暂停',
+  PAUSED: '已暂停',
+  RECOVERABLE: '等待恢复',
+  FAILED: '运行失败',
+  CANCELLED: '已取消',
+  READY: '等待开始',
+  SCHEDULED: '等待计划开始',
+  AUTONOMOUS_DIAGNOSIS: 'AI 正在诊断',
+  ADVANCED_RECOVERY: '正在受限恢复',
   BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用'
 }
 
@@ -300,47 +297,28 @@ var NOTIFICATION_OVERALL_LABELS = {
   ALL_SUCCEEDED: '全部成功', PARTIAL_SUCCESS: '部分成功', ALL_FAILED: '全部失败'
 }
 
-var GUARDIAN_STATUS_LABELS = {
-  active: '进行中',
-  completed: '已完成',
-  failed: '失败',
-  suspended: '已暂停'
-}
-
 function displayValue(value, labels) {
   if (value === undefined || value === null || value === '') return '—'
   return (labels && labels[value]) || String(value)
 }
 
+var renderedRuntime
+var renderedSnapshot
+var decisionScope = ''
+var decisionRequestPending = false
+
 function render(snapshot) {
   var cfg = snapshot.configuredSession
   var rt = snapshot.runtime
-  var guardian = snapshot.guardian || {}
-  setText('activity-orchestration-label', cfg.controlPlane === 'v2' ? 'TASK' : 'Guardian')
-  var executions = snapshot.codingExecutions || []
-  var execution = executions.find((entry) => entry.taskId === rt.currentTaskId) || executions[executions.length - 1]
-  setText('coding-execution', execution ? execution.taskId + ' · ' + execution.mode.toUpperCase() + ' · '
-    + (execution.activeExecutor || '等待开始') + (execution.model ? ' · ' + execution.model : '')
-    + (execution.reasoningEffort ? ' · ' + execution.reasoningEffort : '') : '尚未选择 Executor')
-  setText('coding-failover', execution && execution.failoverReason
-    ? 'Codex quota exhausted → DeepSeek 接力（本 Task 保持 DeepSeek）'
-    : execution && execution.lastError || '')
-  var localTime = (value) => value ? new Date(value).toLocaleString() : '—'
-  setText('created-at', localTime(rt.createdAt))
-  setText('scheduled-at', localTime(rt.scheduledStartAt))
-  setText('started-at', localTime(rt.startedAt))
-  setText('completed-at', localTime(rt.completedAt))
-  setText('schedule-source', rt.scheduleSource === 'deepseek_off_peak' ? 'DeepSeek 闲时 · Off-Peak' : rt.scheduleSource === 'custom' ? '自定义时间' : '立即开始')
-  setText('schedule-note', rt.state === 'SCHEDULED' ? '到点自动开始；等待不计执行时长。请保持 NovaWing 运行；关闭后将在重新打开时补启动。' : '')
-
   setText('project', cfg.targetRepo)
   setText('branch', cfg.branch)
-  setText('active-time', formatDuration(rt.activeElapsedMs))
   setText('limits',
     '软限制 ' + cfg.limits.softMinutes + ' 分钟 · 硬限制 ' + cfg.limits.hardMinutes +
     ' 分钟 · 最多 ' + cfg.limits.maxTasks + ' 个 Task')
 
   var displayState = rt.displayState || rt.state || 'READY'
+  if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state)) displayState = rt.state
+  if (rt.state === 'SUSPENDED' && rt.humanRequired) displayState = 'SUSPENDED'
   var badge = el('state-badge')
   if (badge) {
     badge.textContent = displayValue(displayState, STATE_LABELS)
@@ -348,49 +326,159 @@ function render(snapshot) {
   }
 
   renderTasks(cfg, rt)
-  renderGuardian(guardian)
-  renderExecutionActivity(snapshot.executionActivity || {})
-  renderRecent(snapshot.recentEvents || [])
-  renderLedger(snapshot.executionLedger || [])
-  renderDecision(rt)
+  renderOverview(snapshot)
+  renderActivities(snapshot.activities || [])
+  // /api/status is already sanitized by the controller. Bootstrap credentials
+  // remain separate and never enter this diagnostic snapshot.
+  setText('debug-output', JSON.stringify(snapshot, null, 2))
+  renderedRuntime = rt
+  renderedSnapshot = snapshot
+  renderDecision(rt, snapshot)
   renderRecoverable(rt)
   renderControls(rt, snapshot.controls || {})
 }
 
-var ACTIVITY_KIND_LABELS = {
-  CONTROLLER_PHASE_CHANGED: 'Controller 阶段切换',
-  PROVIDER_DISPATCHED: '已派发 Provider', PROVIDER_COMPLETED: 'Provider 已完成', PROVIDER_FAILED: 'Provider 执行失败',
-  VERIFIER_STARTED: '开始运行 verifier', VERIFIER_COMPLETED: 'verifier 已完成',
-  REPOSITORY_CHANGED: 'Repository revision/diff 已变化', RUNTIME_REPAIR: '正在恢复运行环境'
+var EXECUTOR_STATUS_LABELS = {
+  NOT_STARTED: '尚未执行', RUNNING: '执行中', COMPLETED: '已完成', FAILED: '执行失败', WAITING: '等待继续'
 }
 
-function renderExecutionActivity(activity) {
-  setText('executor-running', activity.running ? '运行中' : '未运行')
-  setText('execution-provider', activity.provider || '—')
-  setText('execution-elapsed', formatDuration(activity.elapsedMs))
-  setText('execution-last-activity', activity.lastActivityAt
-    ? formatTime(activity.lastActivityAt) + (Number.isFinite(activity.idleMs) ? ' · ' + Math.floor(activity.idleMs / 1000) + ' 秒前' : '') : '—')
-  setText('execution-idle-status', activity.idleStatus === 'QUIET' ? '暂无新活动，Executor 仍在运行'
-    : activity.idleStatus === 'LONG_QUIET' ? '较长时间无新活动，正在等待 Executor' : '')
-  var list = el('execution-activity-list')
+function providerName(value) {
+  return ({ codex: 'Codex', deepseek: 'DeepSeek' })[value] || value || ''
+}
+
+function localDateTime(value, fallback) {
+  if (!value) return fallback || '—'
+  var date = new Date(value)
+  return isNaN(date.getTime()) ? fallback || '—' : date.toLocaleString()
+}
+
+function setNote(id, text) {
+  var node = el(id)
+  if (node) {
+    node.textContent = text
+    node.hidden = !text
+  }
+}
+
+function displayIteration(iteration) {
+  var current = iteration && iteration.current
+  if (!Number.isInteger(current) || current < 1) return '尚未执行'
+  return Number.isInteger(iteration.maximum) && iteration.maximum >= current
+    ? current + ' / ' + iteration.maximum : '第 ' + current + ' 轮'
+}
+
+function formatEta(eta) {
+  if (!eta || !eta.estimatedCompletionAt || isNaN(new Date(eta.estimatedCompletionAt).getTime())) return '正在估算…'
+  var text = formatTime(eta.estimatedCompletionAt).slice(0, 5)
+  if (eta.adjusted) text += ' · 已调整'
+  if (eta.confidence === 'low') return text + ' · 粗略估计'
+  return text + (Number.isFinite(eta.uncertaintyMs)
+    ? ' · 约 ±' + Math.max(1, Math.ceil(eta.uncertaintyMs / 60000)) + ' 分钟' : ' · 预计')
+}
+
+function renderOverview(snapshot) {
+  var rt = snapshot.runtime
+  var overview = snapshot.runtimeOverview || {}
+  var status = rt.displayState || rt.state || overview.status || 'READY'
+  if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state)) status = rt.state
+  if (rt.state === 'SUSPENDED' && rt.humanRequired) status = 'SUSPENDED'
+  var recovering = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state) &&
+    (rt.recoveryInProgress === true || decisionRequestPending)
+  var phase = ['COMPLETED', 'FAILED', 'CANCELLED', 'SUSPENDED', 'PAUSED', 'RECOVERABLE', 'READY', 'SCHEDULED'].includes(status)
+    ? status : overview.currentPhase
+  if (status === 'SUSPENDED' && rt.humanRequired) phase = 'HUMAN_REQUIRED'
+  setText('overview-status', recovering ? '正在恢复当前任务' : status === 'SUSPENDED' && rt.humanRequired ? '等待人工处理 · 已暂停' : displayValue(status, STATE_LABELS))
+  setText('overview-phase', recovering ? '正在恢复' : phase ? displayValue(phase, GUARDIAN_PHASE_LABELS) : '等待开始')
+  setText('created-at', localDateTime(overview.createdAt))
+  var mode = overview.startMode === 'deepseek_off_peak' ? 'DeepSeek Off-Peak'
+    : overview.startMode === 'custom' ? '定时开始' : '立即开始'
+  if (overview.scheduledStartAt) mode += ' · ' + localDateTime(overview.scheduledStartAt)
+  setText('start-mode', mode)
+  setText('started-at', localDateTime(overview.startedAt, '尚未开始'))
+  setText('estimated-completion', formatEta(snapshot.eta))
+  setText('completed-at', localDateTime(overview.completedAt, '尚未完成'))
+  setText('total-elapsed', formatElapsed(overview.totalElapsedMs || 0))
+  var executor = overview.executor || {}
+  var executorText = [providerName(executor.provider), displayValue(executor.status || 'NOT_STARTED', EXECUTOR_STATUS_LABELS)]
+    .filter(Boolean).join(' · ')
+  if (executor.model) executorText += ' · ' + executor.model
+  setText('overview-executor', executorText)
+  setText('overview-iteration', displayIteration(overview.iteration))
+  setNote('schedule-note', status === 'SCHEDULED' ? '到点自动开始；等待不计执行时长。请保持 NovaWing 运行；关闭后将在重新打开时补启动。' : '')
+  var executions = snapshot.codingExecutions || []
+  var execution = executions.find((entry) => entry.taskId === overview.taskId)
+  setNote('coding-failover', execution && execution.failoverReason ? 'Codex 配额已耗尽，DeepSeek 接力（本 Task 保持 DeepSeek）。' : '')
+  var activity = snapshot.executionActivity || {}
+  var lastActivity = overview.lastActivityAt
+  var lastText = status === 'RUNNING' && lastActivity ? '最后活动 ' + formatTime(lastActivity)
+    + (Number.isFinite(activity.idleMs) ? ' · ' + Math.floor(activity.idleMs / 1000) + ' 秒前' : '') : ''
+  if (lastText && activity.idleStatus === 'QUIET') lastText += ' · Executor 仍在运行'
+  if (lastText && activity.idleStatus === 'LONG_QUIET') lastText += ' · 正在等待 Executor'
+  setNote('execution-last-activity', lastText)
+}
+
+var activityRows = new Map()
+
+function renderActivities(activities) {
+  var list = el('activity-list')
   if (!list) return
-  list.textContent = ''
-  var items = activity.items || []
-  for (var i = Math.max(0, items.length - 30); i < items.length; i++) {
+  var activeIds = new Set()
+  var items = activities.slice(-80)
+  setNote('activity-empty', items.length ? '' : '开始后将在这里显示执行、验证和 checkpoint 进展。')
+  for (var i = 0; i < items.length; i++) {
     var item = items[i]
-    var li = document.createElement('li')
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(item.timestamp)
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    var parts = [ACTIVITY_KIND_LABELS[item.kind] || item.kind, displayValue(item.phase, GUARDIAN_PHASE_LABELS)]
-    if (item.provider) parts.push(item.provider)
-    if (item.verifier) parts.push(item.verifier)
-    if (item.outcome) parts.push(item.outcome)
-    if (Number.isFinite(item.changedFileCount)) parts.push(String(item.changedFileCount) + ' 个文件')
-    data.textContent = parts.join(' · ')
-    li.appendChild(time); li.appendChild(data); list.appendChild(li)
+    if (activeIds.has(item.id)) continue
+    activeIds.add(item.id)
+    var row = activityRows.get(item.id)
+    if (!row) {
+      row = document.createElement('li')
+      row.setAttribute('data-activity-id', item.id)
+      var time = document.createElement('time')
+      time.className = 'time'
+      var mark = document.createElement('span')
+      mark.className = 'activity-mark'
+      var content = document.createElement('div')
+      var label = document.createElement('span')
+      label.className = 'activity-label'
+      var detail = document.createElement('span')
+      detail.className = 'activity-detail'
+      content.appendChild(label)
+      content.appendChild(detail)
+      row.appendChild(time)
+      row.appendChild(mark)
+      row.appendChild(content)
+      activityRows.set(item.id, row)
+    }
+    var state = item.status || 'completed'
+    row.className = 'activity-' + state
+    var stateText = state === 'running' ? '进行中' : state === 'completed' ? '已完成' : state === 'human_required' ? '需要人工处理' : '失败'
+    row.children[0].textContent = formatTime(item.timestamp)
+    row.children[0].setAttribute('datetime', item.timestamp)
+    row.children[1].textContent = state === 'running' ? '●' : state === 'completed' ? '✓' : '!'
+    row.children[1].setAttribute('aria-label', stateText)
+    var parts = [item.label]
+    if (Number.isFinite(item.durationMs) && item.durationMs > 0) parts.push(formatElapsed(item.durationMs))
+    if (item.checkpointSha) parts.push(item.checkpointSha.slice(0, 7))
+    row.children[2].children[0].textContent = parts.join(' · ')
+    var details = []
+    if (item.provider) details.push(providerName(item.provider))
+    if (item.model) details.push(item.model)
+    if (Number.isFinite(item.changedFileCount)) details.push(item.changedFileCount + ' 个文件')
+    for (var verifier of item.verifiers || []) {
+      details.push(verifier.name + ' ' + ({ RUNNING: '执行中', PASSED: '通过', FAILED: '失败' })[verifier.outcome])
+    }
+    row.children[2].children[1].textContent = details.join(' · ')
+    row.children[2].children[1].hidden = details.length === 0
+    // Reuse each semantic identity across SSE/poll updates, including the
+    // transition from started to completed. Unchanged rows keep their DOM node.
+    var position = activeIds.size - 1
+    if (list.children[position] !== row) list.insertBefore(row, list.children[position] || null)
+  }
+  for (var entry of activityRows) {
+    if (!activeIds.has(entry[0])) {
+      list.removeChild(entry[1])
+      activityRows.delete(entry[0])
+    }
   }
 }
 
@@ -423,7 +511,8 @@ function renderRecoverable(rt) {
   var card = el('recoverable-card')
   if (!card) return
   var summary = rt.recoverableSummary
-  if (rt.displayState !== 'RECOVERABLE' || !summary) {
+  if (rt.displayState !== 'RECOVERABLE' || !summary ||
+    rt.state === 'SUSPENDED' && rt.humanRequired && !rt.durableVerificationRecovery) {
     card.hidden = true
     return
   }
@@ -464,175 +553,59 @@ function renderTasks(cfg, rt) {
   }
 }
 
-function renderGuardian(guardian) {
-  setText('guardian-phase', displayValue(guardian.phase, GUARDIAN_PHASE_LABELS))
-  setText('guardian-iteration',
-    displayIteration(guardian.phase, guardian.iteration))
-  setText('guardian-detail', displayValue(guardian.status, GUARDIAN_STATUS_LABELS))
-}
-
-function displayIteration(phase, iteration) {
-  if (typeof iteration !== 'number' || phase === 'PREPARING') return '—'
-  if (phase === 'REVIEWING') return '第 ' + (iteration + 1) + ' 轮'
-  return iteration > 0 ? '第 ' + iteration + ' 轮' : '—'
-}
-
 function formatElapsed(ms) {
-  if (typeof ms !== 'number' || !isFinite(ms)) return ''
-  var value = ms < 1000 ? ms : (ms < 60000 ? ms / 1000 : ms / 60000)
-  var unit = ms < 1000 ? '毫秒' : (ms < 60000 ? '秒' : '分钟')
-  return String(Number((Math.round(value * 100) / 100).toFixed(2))) + ' ' + unit
+  if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) return '0 秒'
+  if (ms === 0) return '0 秒'
+  if (ms < 1000) return String(Number(ms.toFixed(2))) + ' 毫秒'
+  if (ms < 60000) return String(Number((ms / 1000).toFixed(1))) + ' 秒'
+  var seconds = Math.floor(ms / 1000)
+  var hours = Math.floor(seconds / 3600)
+  var minutes = Math.floor(seconds % 3600 / 60)
+  var rest = seconds % 60
+  return (hours ? hours + '小时' : '') + (minutes ? minutes + '分' : '') + (rest ? rest + '秒' : '')
 }
 
-function notificationChannelText(data) {
-  if (!Array.isArray(data.channels) || data.channels.length === 0) return ''
-  var parts = []
-  for (var i = 0; i < data.channels.length; i++) {
-    var entry = data.channels[i]
-    if (!entry || typeof entry !== 'object') continue
-    var name = NOTIFICATION_CHANNEL_LABELS[entry.channel] || String(entry.channel || '未知渠道')
-    var state = NOTIFICATION_CHANNEL_STATUS_LABELS[entry.status] || String(entry.status || '')
-    parts.push(name + '：' + state)
+function renderDecisionEvidence(snapshot, engineering) {
+  var rt = snapshot.runtime
+  var debug = snapshot.debug || {}
+  var taskId = rt.currentTaskId
+  var events = (debug.taskEvents || {})[taskId] || []
+  var task = (debug.taskStates || {})[taskId] || {}
+  var attempts = []
+  var round = 0
+  for (var event of events) {
+    if (event.type === 'AGENT_DISPATCHED' && event.action === 'EXECUTE') {
+      round++
+      attempts.push('第 ' + round + ' 轮 Executor')
+    } else if (event.type === 'VERIFICATION_FAILED') attempts.push('验证未通过')
+    else if (event.type === 'NO_IMPLEMENTATION_PROGRESS' || event.type === 'NO_PROGRESS_DETECTED') attempts.push('没有产生新的有效修改')
+    else if (event.type === 'AUTONOMOUS_DIAGNOSIS' || event.type === 'AUTONOMOUS_DIAGNOSIS_STARTED') attempts.push('AI 自主诊断')
+    else if (event.type === 'ADVANCED_RECOVERY' || event.type === 'ADVANCED_RECOVERY_STARTED') attempts.push('进入受限 Advanced Recovery')
   }
-  return parts.join(' · ')
+  var list = el('decision-attempts')
+  if (list) {
+    list.textContent = ''
+    for (var attempt of attempts.slice(-8)) {
+      var li = document.createElement('li')
+      li.textContent = attempt
+      list.appendChild(li)
+    }
+  }
+  var failure = rt.verificationFailure
+  var failedResult = (task.verificationResults || []).filter((result) => result.status === 'failed').slice(-1)[0]
+  var verification = failure ? failure.command : failedResult ? failedResult.name : ''
+  var exitCode = failure ? failure.exitCode : failedResult ? failedResult.exitCode : undefined
+  setNote('decision-verification', engineering && verification ? '最后验证未通过：' + verification +
+    (typeof exitCode === 'number' ? ' · 退出码 ' + exitCode : '') : '')
+  var git = task.gitState || {}
+  var changedFiles = git.changedFiles || []
+  setNote('decision-changes', engineering ? '当前修改：' + (changedFiles.length ? changedFiles.join('、') : '暂无已记录的文件改动') +
+    (git.headSha ? ' · HEAD ' + git.headSha.slice(0, 8) : '') + '。完整验证证据见 Debug。' : '')
+  var evidence = el('decision-evidence')
+  if (evidence) evidence.hidden = !engineering
 }
 
-function notificationOverallText(data, fallback) {
-  var mapped = NOTIFICATION_OVERALL_LABELS[data.overallStatus]
-  return '总体：' + (mapped || fallback)
-}
-
-function summarizeEvent(ev) {
-  var data = ev.data && typeof ev.data === 'object' ? ev.data : {}
-  if (ev.type === 'GUARDIAN_PHASE' || ev.type === 'TASK_PHASE') {
-    var parts = [displayValue(data.phase, GUARDIAN_PHASE_LABELS)]
-    if (data.status !== undefined) parts.push(displayValue(data.status, GUARDIAN_STATUS_LABELS))
-    var iteration = displayIteration(data.phase, data.iteration)
-    if (iteration !== '—') parts.push(iteration)
-    var elapsed = formatElapsed(data.elapsedMs)
-    if (elapsed) parts.push(elapsed)
-    return parts.join(' · ')
-  }
-  if (ev.type === 'NOTIFICATION_SENT' || ev.type === 'NOTIFICATION_FAILED') {
-    // Per-channel truth wins over the collapsed event type: a delivered email
-    // plus a failed desktop toast must read as 部分成功, not 发送失败.
-    var channelText = notificationChannelText(data)
-    var kind = data.kind === undefined ? '' : displayValue(data.kind, NOTIFICATION_KIND_LABELS) + '通知'
-    var sections = []
-    if (kind) sections.push(kind)
-    if (channelText) sections.push(channelText)
-    sections.push(notificationOverallText(data, ev.type === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
-    return sections.join(' · ')
-  }
-  var eventLabels = {
-    SESSION_STARTED: 'Work Session 已开始', SESSION_STATE_CHANGED: 'Work Session 状态已更新',
-    SCHEDULE_CANCELLED: '计划已取消',
-    TASK_STARTED: 'Task 已开始', TASK_COMPLETED: 'Task 已完成',
-    CHECKPOINT_COMMITTED: 'Git checkpoint 已提交', CHECKPOINT_PUSHED: 'Git checkpoint 已推送',
-    HUMAN_REQUIRED: '需要人工处理', SESSION_COMPLETED: 'Work Session 已完成',
-    BRAIN_INFRASTRUCTURE_FAILED: 'Brain 暂时不可用',
-    SESSION_FAILED: 'Work Session 失败', PAUSE_REQUESTED: '已请求暂停',
-    SESSION_PAUSED: 'Work Session 已暂停', STOP_AFTER_TASK_REQUESTED: '当前 Task 完成后停止已请求',
-    SESSION_RESUME_REQUESTED: '已请求恢复', SESSION_RESUMED: 'Work Session 已恢复',
-    NOTIFICATION_SENT: '通知已发送', NOTIFICATION_FAILED: '通知发送失败'
-  }
-  var summary = eventLabels[ev.type] || String(ev.type || '')
-  var details = []
-  if (data.taskId !== undefined && data.taskId !== null) details.push('Task：' + data.taskId)
-  if (data.category !== undefined) details.push('类别：' + displayValue(data.category, HUMAN_REQUIRED_LABELS))
-  if (data.state !== undefined) details.push('状态：' + displayValue(data.state, STATE_LABELS))
-  if (data.message !== undefined) details.push(String(data.message))
-  return details.length === 0 ? summary : summary + ' · ' + details.join(' · ')
-}
-
-function renderRecent(events) {
-  var list = el('recent-list')
-  if (!list) return
-  list.textContent = ''
-  var tail = events.slice(-40)
-  for (var i = 0; i < tail.length; i++) {
-    var ev = tail[i]
-    var li = document.createElement('li')
-
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(ev.timestamp)
-
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    data.textContent = summarizeEvent(ev)
-
-    li.appendChild(time)
-    li.appendChild(data)
-    list.appendChild(li)
-  }
-
-  var debug = el('debug-output')
-  if (debug) debug.textContent = JSON.stringify(events, null, 2)
-}
-
-var FAILURE_STAGE_LABELS = {
-  REVIEWER: 'Reviewer', EXECUTOR: 'Executor', VERIFICATION: 'Verification',
-  FINAL_REVIEW: 'Final Review', GIT_COMMIT: 'Git Commit', GIT_PUSH: 'Git Push',
-  RUNTIME: 'Runtime', NOTIFICATION: 'Notification', UNKNOWN: 'Unknown'
-}
-
-function summarizeLedgerEvent(ev) {
-  if (ev.eventType === 'SESSION_FAILED') {
-    return [
-      displayValue(ev.failureStage, FAILURE_STAGE_LABELS),
-      '失败',
-      displayValue(ev.failureCategory),
-      displayValue(ev.safeMessage)
-    ].join(' · ')
-  }
-  if (ev.eventType === 'GIT_COMMIT_COMPLETED') {
-    return 'Git Commit 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.commitSha)
-  }
-  if (ev.eventType === 'GIT_PUSH_COMPLETED') {
-    return 'Git Push 已完成 · Task：' + displayValue(ev.taskId) + ' · SHA：' + displayValue(ev.pushSha)
-  }
-  if (ev.eventType === 'CHECKPOINT_RECOVERY_REQUESTED' ||
-      ev.eventType === 'CHECKPOINT_RECOVERY_COMPLETED' ||
-      ev.eventType === 'CHECKPOINT_RECOVERY_FAILED') {
-    return 'Git checkpoint 恢复 · Task：' + displayValue(ev.taskId) +
-      ' · ' + displayValue(ev.recoveryAction) + ' · ' + displayValue(ev.status)
-  }
-  if (ev.eventType === 'NOTIFICATION_SENT' || ev.eventType === 'NOTIFICATION_FAILED') {
-    var ledgerSections = [displayValue(ev.notificationKind, NOTIFICATION_KIND_LABELS) + '通知']
-    var ledgerChannels = notificationChannelText({ channels: ev.notificationChannels })
-    if (ledgerChannels) ledgerSections.push(ledgerChannels)
-    ledgerSections.push(notificationOverallText({ overallStatus: ev.notificationOverall }, ev.eventType === 'NOTIFICATION_SENT' ? '已发送' : '发送失败'))
-    return ledgerSections.join(' · ')
-  }
-  var parts = [displayValue(ev.eventType)]
-  if (ev.taskId) parts.push('Task：' + ev.taskId)
-  if (ev.phase) parts.push(displayValue(ev.phase, GUARDIAN_PHASE_LABELS))
-  if (ev.status) parts.push(displayValue(ev.status, GUARDIAN_STATUS_LABELS))
-  return parts.join(' · ')
-}
-
-function renderLedger(events) {
-  var list = el('ledger-list')
-  if (!list) return
-  list.textContent = ''
-  var tail = events.slice(-30)
-  for (var i = 0; i < tail.length; i++) {
-    var ev = tail[i]
-    var li = document.createElement('li')
-    var time = document.createElement('span')
-    time.className = 'time'
-    time.textContent = formatTime(ev.timestamp)
-    var data = document.createElement('span')
-    data.className = 'event-data'
-    data.textContent = summarizeLedgerEvent(ev)
-    li.appendChild(time)
-    li.appendChild(data)
-    list.appendChild(li)
-  }
-}
-
-function renderDecision(rt) {
+function renderDecision(rt, snapshot) {
   var card = el('decision-card')
   if (!card) return
   var hr = rt.humanRequired
@@ -643,73 +616,113 @@ function renderDecision(rt) {
     rt.suspensionReason === 'BRAIN_INFRASTRUCTURE_FAILED' && brainFailure
   var checkpointRecovery = rt.recovery && rt.recovery.available === true
   var verificationApproval = rt.pendingVerificationApproval
+  var approvalRejected = verificationApproval && verificationApproval.status === 'REJECTED'
+  // The domain projection owns eligibility, including an exhausted grant. Do
+  // not maintain a second browser-side failure policy or infer it from prose.
+  var engineering = !!rt.autonomousRecovery
+  var authorizationRequired = category === 'RECOVERY_REQUIRES_AUTHORIZATION'
+  var recovering = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state) &&
+    (rt.recoveryInProgress === true || decisionRequestPending)
+  var scope = (snapshot.configuredSession.id || '') + ':' + (rt.currentTaskId || '') + ':' + (rt.humanRequiredGeneration || 0)
+  if (scope !== decisionScope) {
+    var scopedInput = el('decision-input')
+    if (scopedInput) scopedInput.value = ''
+    setText('resume-note', '')
+    decisionScope = scope
+  }
   var durableVerificationRecovery = rt.durableVerificationRecovery &&
     rt.durableVerificationRecovery.available === true
   if (durableVerificationRecovery) {
     card.hidden = true
     return
   }
-  if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery) {
+  if ((rt.state === 'SUSPENDED' && (hr || userPaused || brainUnavailable)) || checkpointRecovery || recovering) {
     card.hidden = false
-    setText('decision-title', verificationApproval ? '需要验证授权' : checkpointRecovery
+    setText('decision-title', recovering ? '正在恢复当前任务' : verificationApproval ? '需要验证授权' : (category === 'PERMISSION_REQUIRED' || category === 'APPROVAL_REQUIRED') ? '需要授权' : checkpointRecovery
       ? 'Git checkpoint 推送未确认'
       : brainUnavailable
       ? 'Brain 暂时不可用'
-      : (userPaused ? '已由你暂停' : '需要人工处理'))
+      : (userPaused ? '已由你暂停' : '需要你的决定'))
     setText('decision-category', verificationApproval ? '验证授权' : checkpointRecovery
       ? 'Git Push'
       : brainUnavailable
       ? 'Brain Review · ' + displayValue(brainFailure.category)
-      : displayValue(userPaused ? 'USER_PAUSED' : category, HUMAN_REQUIRED_LABELS))
+      : HUMAN_REQUIRED_LABELS[userPaused ? 'USER_PAUSED' : category] || '需要确认下一步')
     setText('decision-reason', verificationApproval
       ? 'Task: ' + verificationApproval.taskId + '；验证命令：' + verificationApproval.command
       : checkpointRecovery
       ? '当前 Task 已产生本地 checkpoint commit，但远端推送未确认。'
       : brainUnavailable
       ? brainFailure.safeMessage
-      : (userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。' : (hr.reason || '—')))
+      : userPaused ? '准备就绪后可从已保存的 checkpoint 恢复。'
+      : engineering ? '自动处理后仍未完成当前任务。NovaWing 无法在现有修改权限和恢复额度内确定安全的下一步。'
+      : authorizationRequired ? '恢复方案涉及额外权限、凭据、产品选择或费用，需要你明确处理后才能继续。'
+      : hr ? hr.reason || '请确认下一步操作。' : '正在使用已有执行记录恢复此任务。')
+    renderDecisionEvidence(snapshot, engineering)
 
     var input = el('decision-input')
+    var inputLabel = el('decision-input-label')
     var decisionBtn = el('resume-decision-btn')
     var approvalBtn = el('approve-verification-btn')
+    var rejectBtn = el('reject-verification-btn')
+    var diagnoseBtn = el('diagnose-continue-btn')
     var repairBtn = el('runtime-repair-btn')
     var resolvedBtn = el('resume-resolved-btn')
     var pausedBtn = el('resume-paused-btn')
     var recoveryBtn = el('recover-checkpoint-btn')
     var budgetRecovery = rt.actionBudgetRecovery
-    var needsDecision = !verificationApproval && (category === 'DECISION_REQUIRED' || category === 'STALLED' ||
+    var needsDecision = !verificationApproval && (engineering || category === 'DECISION_REQUIRED' || category === 'STALLED' ||
       (category === 'ACTION_BUDGET_EXHAUSTED' && budgetRecovery && budgetRecovery.available === true))
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
     var repair = rt.runtimeRepair
-    if (input) input.hidden = !needsDecision
-    if (decisionBtn) decisionBtn.hidden = !needsDecision
-    if (approvalBtn) approvalBtn.hidden = !verificationApproval
+    var autonomous = rt.autonomousRecovery
+    if (input) { input.hidden = !needsDecision; input.disabled = recovering }
+    if (inputLabel) inputLabel.hidden = !needsDecision
+    if (decisionBtn) { decisionBtn.hidden = !needsDecision; decisionBtn.disabled = recovering }
+    if (approvalBtn) { approvalBtn.hidden = !verificationApproval; approvalBtn.disabled = !!approvalRejected || recovering }
+    if (rejectBtn) { rejectBtn.hidden = !verificationApproval; rejectBtn.disabled = !!approvalRejected || recovering }
+    if (diagnoseBtn) {
+      diagnoseBtn.hidden = !engineering || !!verificationApproval
+      diagnoseBtn.disabled = recovering || !(autonomous && autonomous.available === true) || autonomous.exhausted === true
+      diagnoseBtn.textContent = recovering ? '正在诊断并恢复…' : '✨ AI 诊断并继续'
+    }
     if (repairBtn) {
       repairBtn.hidden = !(repair && repair.available === true)
-      repairBtn.disabled = !!(repair && repair.inProgress === true)
+      repairBtn.disabled = recovering || !!(repair && repair.inProgress === true)
       repairBtn.textContent = (repair && repair.inProgress === true) ? '正在诊断运行环境…' : '✨ AI 修复并继续'
     }
     if (resolvedBtn) {
       resolvedBtn.hidden = !resolvedAck
+      resolvedBtn.disabled = recovering
       resolvedBtn.textContent = category === 'EXECUTOR_RETRY_REQUIRED' ? '重新执行 Executor' : '已处理，恢复'
     }
     if (pausedBtn) {
       pausedBtn.hidden = !userPaused && !brainUnavailable
+      pausedBtn.disabled = recovering
       pausedBtn.textContent = brainUnavailable ? '修复后恢复' : '恢复'
     }
-    if (recoveryBtn) recoveryBtn.hidden = !checkpointRecovery
+    if (recoveryBtn) { recoveryBtn.hidden = !checkpointRecovery; recoveryBtn.disabled = recovering }
 
     var repairFailure = repair && repair.available === true && repair.lastOutcome && repair.lastOutcome.classification !== 'REPAIRED'
-    if (repair && repair.inProgress === true) {
+    if (recovering) {
+      setText('decision-guidance', '正在恢复当前 Session 的此 Task；将保留验证计划、失败证据与执行历史。')
+    } else if (repair && repair.inProgress === true) {
       setText('decision-guidance', '正在诊断 → 检查 Provider → 寻找独立 Reviewer → 修复成功 → 恢复 Session')
     } else if (repairFailure) {
       setText('decision-guidance', 'AI 修复失败：' + (repair.lastOutcome.reason || repair.lastOutcome.classification) + '。可修复后重试，或手动处理。')
     } else if (verificationApproval) {
-      setText('decision-guidance', '此命令由 Reviewer 要求，用于完成当前 Task 的 deterministic verification。授权仅对当前 Task 的这一条命令生效。')
+      setText('decision-guidance', approvalRejected ? '已拒绝此验证授权。任务保持暂停，原验证证据已保留。'
+        : '授权仅对当前 Task 的这一条验证命令生效；拒绝后保留执行证据并保持暂停。')
     } else if (checkpointRecovery) {
       setText('decision-guidance', 'NovaWing 将先重新验证远端状态；不会重新执行当前 Task。')
     } else if (brainUnavailable) {
       setText('decision-guidance', '修复 browser/Bridge 基础设施后，可从已有 checkpoint 继续当前 Brain Review；不会重新执行已完成的 Executor 工作。')
+    } else if (engineering) {
+      setText('decision-guidance', autonomous && autonomous.exhausted === true
+        ? '自动恢复额度已用完。请补充处理指令或说明已手动完成的修复；提交会保存指令，但不会重置恢复额度或扩大修改权限。'
+        : autonomous && autonomous.available === true
+        ? '可以让 AI 结合已有失败证据再诊断，或补充明确的修复指令后继续。恢复仍遵守原修改范围和命令授权。'
+        : '当前没有可用的自动恢复额度。请补充处理指令或先修复上方验证问题，再从原任务继续。')
     } else if (resolvedAck) {
       setText('decision-guidance', category === 'EXECUTOR_RETRY_REQUIRED'
         ? '此前执行没有 workspace inspection、文件改动或可信工具证据。将保留原 Task ID、任务范围和 recovery lineage，重新执行 Executor。'
@@ -718,7 +731,9 @@ function renderDecision(rt) {
           ? 'Executor 尚未启动。请按上方原因修复标明的 preflight 项后，从原 Task 重新尝试。'
           : '代码执行阶段已经完成。修复外部服务或本地 runtime 后，NovaWing 只重试失败的 deterministic verification，不会重新运行 Executor。')
         : '请在 NovaWing 外完成所需操作。请勿在此输入凭据。')
-    } else if (category === 'PERMISSION_REQUIRED') {
+    } else if (authorizationRequired) {
+      setText('decision-guidance', '当前任务保持暂停。请在受信任的项目配置中处理修改范围或命令授权，在外部完成登录，或明确验收与费用决定；自动恢复不会替你批准这些操作。详细原因见 Debug。')
+    } else if (category === 'PERMISSION_REQUIRED' || category === 'APPROVAL_REQUIRED') {
       setText('decision-guidance', '请先更新受信任的项目权限。')
     } else if (category === 'BUDGET_EXHAUSTED') {
       setText('decision-guidance', '请以新批准的限制启动新的 Work Session。')
@@ -773,7 +788,7 @@ async function start() {
 
 async function requestControl(path) {
   try {
-    await fetch(path, {
+    return await fetch(path, {
       method: 'POST',
       headers: { 'X-NovaWing-Control-Token': controlToken }
     })
@@ -784,6 +799,13 @@ async function requestControl(path) {
 
 async function resumeSession(payload) {
   var note = el('resume-note')
+  if (decisionRequestPending) return
+  decisionRequestPending = true
+  if (renderedSnapshot) {
+    renderDecision(renderedRuntime, renderedSnapshot)
+    renderOverview(renderedSnapshot)
+  }
+  if (note) note.textContent = '正在恢复当前任务…'
   try {
     var res = await fetch('/api/session/resume', {
       method: 'POST',
@@ -793,10 +815,29 @@ async function resumeSession(payload) {
       },
       body: JSON.stringify(payload)
     })
-    if (note) note.textContent = res.status === 202 ? '已请求恢复' : '恢复被拒绝'
+    if (note) note.textContent = res.status === 202 ? '已提交，正在恢复当前任务' : '恢复请求未被接受，请确认当前任务状态后重试。'
+    if (res.status === 202 && payload.decision) {
+      var input = el('decision-input')
+      if (input) input.value = ''
+    }
+  } catch (error) {
+    if (note) note.textContent = '暂时无法提交，请检查连接后重试。'
   } finally {
+    decisionRequestPending = false
+    if (renderedSnapshot) {
+      renderDecision(renderedRuntime, renderedSnapshot)
+      renderOverview(renderedSnapshot)
+    }
     refresh()
   }
+}
+
+function scopedRecoveryPayload(payload) {
+  if (renderedRuntime && renderedRuntime.currentTaskId) {
+    payload.taskId = renderedRuntime.currentTaskId
+    payload.generation = renderedRuntime.humanRequiredGeneration || 0
+  }
+  return payload
 }
 
 async function resumeRecoverableSession(payload) {
@@ -827,19 +868,32 @@ if (stopBtn) stopBtn.addEventListener('click', function () {
   requestControl('/api/session/stop-after-task')
 })
 var resumeDecisionBtn = el('resume-decision-btn')
-if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', function () {
+if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', async function () {
   var input = el('decision-input')
   var decision = input ? input.value.trim() : ''
-  if (decision.length > 0) resumeSession({ decision: decision })
+  if (decision.length > 0) await resumeSession(scopedRecoveryPayload({ decision: decision }))
+  else setText('resume-note', '请先填写补充指令。')
+})
+var diagnoseContinueBtn = el('diagnose-continue-btn')
+if (diagnoseContinueBtn) diagnoseContinueBtn.addEventListener('click', async function () {
+  if (!diagnoseContinueBtn.disabled) await resumeSession(scopedRecoveryPayload({ recovery: 'diagnose' }))
 })
 var approveVerificationBtn = el('approve-verification-btn')
 if (approveVerificationBtn) approveVerificationBtn.addEventListener('click', async function () {
   approveVerificationBtn.disabled = true
   try { await requestControl('/api/session/approve-verification') } finally { approveVerificationBtn.disabled = false }
 })
+var rejectVerificationBtn = el('reject-verification-btn')
+if (rejectVerificationBtn) rejectVerificationBtn.addEventListener('click', async function () {
+  rejectVerificationBtn.disabled = true
+  try {
+    var res = await requestControl('/api/session/reject-verification')
+    setText('resume-note', res.status === 202 ? '已拒绝授权，当前任务保持暂停。' : '拒绝请求未被接受，请刷新后重试。')
+  } finally { rejectVerificationBtn.disabled = false }
+})
 var resumeResolvedBtn = el('resume-resolved-btn')
 if (resumeResolvedBtn) resumeResolvedBtn.addEventListener('click', function () {
-  resumeSession({ approval: true })
+  return resumeSession({ approval: true })
 })
 var runtimeRepairBtn = el('runtime-repair-btn')
 if (runtimeRepairBtn) runtimeRepairBtn.addEventListener('click', async function () {
@@ -848,7 +902,7 @@ if (runtimeRepairBtn) runtimeRepairBtn.addEventListener('click', async function 
 })
 var resumePausedBtn = el('resume-paused-btn')
 if (resumePausedBtn) resumePausedBtn.addEventListener('click', function () {
-  resumeSession({})
+  return resumeSession({})
 })
 var resumeRecoverableBtn = el('resume-recoverable-btn')
 if (resumeRecoverableBtn) resumeRecoverableBtn.addEventListener('click', async function () {
@@ -957,7 +1011,7 @@ main {
 
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr 1fr 2fr;
   gap: 12px;
 }
 
@@ -1007,13 +1061,47 @@ main {
   padding: 6px 0;
 }
 
-.detail {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  margin: 4px 0 0;
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 28px;
+  margin: 0;
 }
+
+.overview-grid > div { min-width: 0; }
+.overview-grid dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.overview-grid dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.overview-grid > div:nth-child(-n+2) dd { font-size: 15px; font-weight: 600; }
+.runtime-overview .note { margin-bottom: 0; }
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.activity-list li {
+  display: grid;
+  grid-template-columns: 62px 14px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.activity-list li:last-child { border-bottom: 0; }
+.activity-list .time { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.activity-mark { color: var(--ok); }
+.activity-running .activity-mark { color: var(--accent); }
+.activity-failed .activity-mark { color: var(--danger); }
+.activity-human_required .activity-mark { color: var(--warn); }
+.activity-label, .activity-detail { display: block; overflow-wrap: anywhere; }
+.activity-detail { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.activity-detail[hidden] { display: none; }
 
 .task-list {
   list-style: none;
@@ -1040,35 +1128,17 @@ main {
 .task-list li.pending .mark { color: var(--muted); }
 .task-list li .task-label { font-family: var(--mono); font-size: 13px; }
 
-.recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 2px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.recent-list li {
-  display: flex;
-  gap: 12px;
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.recent-list .time { color: var(--muted); flex: none; }
-.recent-list .event-type { color: var(--accent); flex: none; width: 190px; }
-.recent-list .event-data { color: var(--text); word-break: break-all; }
-
 .decision {
   border-color: var(--warn);
   background: rgba(250, 204, 21, 0.06);
 }
 
 .decision h2 { color: var(--warn); }
+.decision [hidden] { display: none; }
+.decision button { margin: 4px 6px 4px 0; }
+.decision label { display: block; margin-top: 12px; color: var(--muted); }
+.decision ul { margin: 6px 0; padding-left: 20px; }
+.decision .note { overflow-wrap: anywhere; }
 
 .decision textarea {
   width: 100%;
@@ -1092,6 +1162,8 @@ main {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.debug summary { cursor: pointer; color: var(--muted); }
 
 .footer {
   max-width: 920px;
@@ -1139,6 +1211,15 @@ button.primary:disabled {
 }
 
 @media (max-width: 760px) {
-  .meta-grid { grid-template-columns: repeat(2, 1fr); }
+  .meta-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .meta-grid > :last-child { grid-column: 1 / -1; }
+  .overview-grid { gap: 14px 18px; }
+  .footer { flex-wrap: wrap; }
+}
+
+@media (max-width: 420px) {
+  main { padding: 16px 12px; }
+  .overview-grid { grid-template-columns: 1fr; }
+  .activity-list li { gap: 8px; }
 }
 `

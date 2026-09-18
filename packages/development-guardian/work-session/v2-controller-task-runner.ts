@@ -1,11 +1,13 @@
 import type { VerificationResult } from '../model.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
+import { verifierEvidenceFromBindings } from './completion-criteria.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
 import { approvalContext, assessRisk, completionGate, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
 import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
+import { RECOVERY_ACTION_BUDGET } from './autonomous-diagnosis.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
@@ -69,7 +71,7 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
 }
@@ -128,7 +130,6 @@ function appendProviderHistory(history: readonly string[], provider: string): re
 }
 
 const MAX_NO_PROGRESS_REPEATS = 2
-const RECOVERY_ACTION_BUDGET = 4
 const CONVERGENCE_HISTORY_LIMIT = 12
 
 function semanticProgressKey(task: TaskStateV2, health: ProviderHealthRegistry): string {
@@ -330,7 +331,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       if (state.identity.taskId !== task.id || state.identity.sessionId !== this.options.sessionId) throw new Error('task identity mismatch')
       const configured = createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task)
       const trustedBindings = state.verificationPlan !== undefined && verificationPlanFingerprintValid(state.verificationPlan)
-        ? bindingsFromVerificationPlan(state.verificationPlan) : configured.completion.bindings
+        ? bindingsFromVerificationPlan(state.verificationPlan, state.autonomousRecovery?.phase === 'ADVANCED' ? { identity: 'step' } : {}) : configured.completion.bindings
       if (JSON.stringify([state.goal, state.constraints, state.acceptanceCriteria, state.permissions, state.completion.bindings]) !==
           JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, trustedBindings])) throw new Error('persisted task policy does not match trusted definition')
     } catch {
@@ -545,7 +546,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const selected = structuredClone(agent)
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
         : createStructuredHandoff(dispatchedState, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
-      const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState, ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) })
+      const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState, ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+        recoveryInstructions: [...(context?.recoveryInstructions ?? []), ...(state.autonomousRecovery?.diagnosis?.instructions ? [state.autonomousRecovery.diagnosis.instructions] : [])] })
       const actualProvider = result.providerHistory?.at(-1) ?? projectedProvider
       approvedVerificationCommand = undefined
       // Real runtime/router observations from this dispatch become Provider Health facts.
@@ -680,6 +682,6 @@ export function completionEvidence(state: TaskStateV2, verificationResults: read
     verificationResults,
     blockers: state.blockers,
     finalReviewerVerdict: 'done' as const,
-    requiredVerification: [...new Set(state.completion.bindings.flatMap((binding) => binding.requiredEvidence))],
+    requiredVerification: [...new Set(verifierEvidenceFromBindings(state.completion.bindings))],
   }
 }

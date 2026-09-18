@@ -70,6 +70,7 @@ import {
 import {
   finalizeCompletedTask,
   readCurrentHeadSha,
+  GitCheckpointError,
   GitPushError,
   RemoteVerificationUnavailableError,
   recoverCheckpointPush,
@@ -78,6 +79,7 @@ import {
   type GitCheckpointPolicy,
 } from './git-checkpoint.js'
 import { isTerminalWorkSessionState } from './recoverability.js'
+import { runtimeAcceptanceEvidence } from './completion-criteria.js'
 import { ScheduledStartStore } from './scheduled-start-store.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import {
@@ -87,6 +89,7 @@ import {
 } from './verification-approval.js'
 import { TaskController, type TaskAction } from './task-controller.js'
 import { createTaskStateV2, loadTaskStateV2 } from './task-state-v2.js'
+import { isAutonomousRecoveryCategory } from './autonomous-diagnosis.js'
 import { ProviderHealthRegistry, TaskEventLogV2, type TaskEventV2, type TaskEventType } from './task-observability.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { RuntimeRepairAgent } from './runtime-repair-engine.js'
@@ -170,6 +173,9 @@ export interface WorkSessionRuntimeRepairConfig {
 export interface ResumeInput {
   decision?: string
   approval?: boolean
+  recovery?: 'diagnose'
+  taskId?: string
+  generation?: number
 }
 
 export interface RecoveryCheckpointResumeOptions {
@@ -191,6 +197,10 @@ const WorkflowStateSchema = z.object({
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
   taskStatesV2: z.record(z.string(), z.any()).optional(),
+  taskRecoveryInstructions: z.record(z.string(), z.array(z.object({
+    sessionId: z.string(), taskId: z.string(), generation: z.number().int().nonnegative(),
+    instruction: z.string().min(1).max(2_000), recordedAt: z.string(),
+  }))).optional(),
   // Controller Observability projections: append-only history + last-known health.
   // Both are advisory; TaskStateV2 remains the single semantic authority.
   taskEventLogs: z.record(z.string(), z.any()).optional(),
@@ -202,7 +212,7 @@ const WorkflowStateSchema = z.object({
   pendingVerificationApproval: z.object({
     sessionId: z.string(), taskId: z.string(), command: z.string(),
     commandFingerprint: z.string(), generation: z.number().int().positive(),
-    status: z.enum(['REQUESTED', 'APPROVED']),
+    status: z.enum(['REQUESTED', 'APPROVED', 'REJECTED']),
   }).optional(),
   runtimeRepair: z.object({
     reasonCode: z.string(),
@@ -945,6 +955,27 @@ export class WorkSessionRuntime {
         throw new Error('No suspended step found in persisted state')
       }
 
+      const persisted = (await this.readPersistedWorkflowSnapshot())?.state
+      if ((resumeInput.taskId !== undefined && resumeInput.taskId !== persisted?.currentTaskId) ||
+          (resumeInput.generation !== undefined && resumeInput.generation !== persisted?.humanRequiredGeneration)) {
+        throw new Error('resume input does not match the current task and suspension')
+      }
+      if (persisted?.pendingVerificationApproval?.status === 'REJECTED') {
+        throw new Error('verification authorization was declined')
+      }
+      if (resumeInput.recovery !== undefined) {
+        const current = persisted?.currentTaskId === null || persisted?.currentTaskId === undefined
+          ? undefined : persisted.taskStatesV2?.[persisted.currentTaskId] as import('./task-state-v2.js').TaskStateV2 | undefined
+        if (resumeInput.taskId === undefined || resumeInput.generation === undefined ||
+            resumeInput.decision !== undefined || resumeInput.approval !== undefined ||
+            persisted?.pendingVerificationApproval !== undefined ||
+            !isAutonomousRecoveryCategory(persisted?.humanRequired?.category ?? '') ||
+            current?.actionBudget?.recoveryExhausted ||
+            (current?.actionBudget !== undefined && current.actionBudget.recoveryConsumed >= current.actionBudget.recoveryLimit)) {
+          throw new Error('autonomous diagnosis is unavailable for this suspension')
+        }
+      }
+
       // 步骤 4: 用相同 runId 重建 Run instance
       const run = await workflow.createRun({
         runId,
@@ -994,6 +1025,44 @@ export class WorkSessionRuntime {
     return this.verificationApprovalPromise
   }
 
+  /** Declining the exact pending verifier preserves the suspended session and evidence. */
+  async rejectPendingVerification(): Promise<WorkSessionDurableState> {
+    if (this.verificationApprovalPromise !== undefined || this.suspendedResumePromise !== undefined) {
+      throw new Error('verification decision already in progress')
+    }
+    this.verificationApprovalPromise = this.doRejectPendingVerification()
+      .finally(() => { this.verificationApprovalPromise = undefined })
+    return this.verificationApprovalPromise
+  }
+
+  private async doRejectPendingVerification(): Promise<WorkSessionDurableState> {
+    const runId = this.config.definition.id
+    const storage = this.mastra.getStorage()
+    const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
+    if (workflows === undefined) throw new Error('verification approval storage unavailable')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId })
+    if (snapshot === null || snapshot.status !== 'suspended') throw new Error('session is not suspended')
+    const state = WorkflowStateSchema.parse(snapshot.value)
+    const pending = state.pendingVerificationApproval
+    if (pending?.status !== 'REQUESTED' || pending.sessionId !== runId ||
+        pending.taskId !== state.currentTaskId || pending.generation !== state.humanRequiredGeneration) {
+      throw new Error('verification approval is not available for the current task')
+    }
+    const log = new TaskEventLogV2(state.taskEventLogs?.[pending.taskId])
+    log.append({ taskId: pending.taskId, sessionId: runId, type: 'HUMAN_ACTION_RECORDED', metadata: { action: 'REJECT_APPROVAL' } })
+    log.append({ taskId: pending.taskId, sessionId: runId, type: 'HUMAN_DECISION_RECORDED', metadata: { approval: false } })
+    const rejected: WorkflowState = { ...state,
+      pendingVerificationApproval: { ...pending, status: 'REJECTED' },
+      taskEventLogs: { ...state.taskEventLogs, [pending.taskId]: [...log.events] },
+      humanRequired: { category: 'PERMISSION_REQUIRED', reason: '你已拒绝此验证命令授权。当前修改和验证证据已保留；请调整受信配置后再继续。' },
+      updatedAt: new Date().toISOString(),
+    }
+    snapshot.value = rejected as unknown as Record<string, string>
+    await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId, snapshot })
+    this.latestState = rejected
+    return this.convertWorkflowStateToDurableState(rejected)
+  }
+
   private async doApprovePendingVerificationAndContinue(): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
     const storage = this.mastra.getStorage()
@@ -1008,7 +1077,7 @@ export class WorkSessionRuntime {
     const state = parsed.data
     const pending = state.pendingVerificationApproval
     if (
-      state.state !== 'SUSPENDED' || state.humanRequired?.category !== 'DECISION_REQUIRED' ||
+      state.state !== 'SUSPENDED' || !['DECISION_REQUIRED', 'APPROVAL_REQUIRED'].includes(state.humanRequired?.category ?? '') ||
       pending === undefined || pending.status !== 'REQUESTED' ||
       pending.sessionId !== runId || pending.taskId !== state.currentTaskId ||
       pending.generation !== state.humanRequiredGeneration ||
@@ -1449,6 +1518,9 @@ export class WorkSessionRuntime {
       resumeSchema: z.object({
         decision: z.string().optional(),
         approval: z.boolean().optional(),
+        recovery: z.literal('diagnose').optional(),
+        taskId: z.string().optional(),
+        generation: z.number().int().nonnegative().optional(),
       }),
       suspendSchema: z.object({
         reason: z.string(),
@@ -1459,7 +1531,8 @@ export class WorkSessionRuntime {
 
         // 使用本地变量追踪最新状态
         let currentState = state
-        if (currentState.currentTaskId !== null && (resumeData?.decision !== undefined || resumeData?.approval !== undefined)) {
+        const resumedTaskId = currentState.currentTaskId
+        if (currentState.currentTaskId !== null && (resumeData?.decision !== undefined || resumeData?.approval !== undefined || resumeData?.recovery !== undefined)) {
           const resumedTaskId = currentState.currentTaskId
           const log = new TaskEventLogV2(currentState.taskEventLogs?.[resumedTaskId])
           const base = { taskId: resumedTaskId, sessionId: currentState.sessionId } as const
@@ -1468,9 +1541,20 @@ export class WorkSessionRuntime {
             ...(resumeData.decision === undefined ? {} : { decision: resumeData.decision }),
             ...(resumeData.approval === undefined ? {} : { approval: resumeData.approval }),
           } })
-          currentState = { ...currentState, taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [resumedTaskId]: [...log.events] }, updatedAt: new Date().toISOString() }
+          const instruction = resumeData.decision?.trim()
+          currentState = { ...currentState,
+            ...(instruction ? { taskRecoveryInstructions: {
+              ...(currentState.taskRecoveryInstructions ?? {}),
+              [resumedTaskId]: [...(currentState.taskRecoveryInstructions?.[resumedTaskId] ?? []), {
+                sessionId: currentState.sessionId, taskId: resumedTaskId,
+                generation: currentState.humanRequiredGeneration ?? 0,
+                instruction, recordedAt: new Date().toISOString(),
+              }],
+            } } : {}),
+            taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [resumedTaskId]: [...log.events] }, updatedAt: new Date().toISOString() }
           await setState(currentState)
           self.latestState = currentState
+          await self.persistDurableState(currentState)
         }
 
         // W004-B: 恢复（suspend 已清空 segment start）时重新开始 active segment。
@@ -1677,6 +1761,9 @@ export class WorkSessionRuntime {
           const taskEventLog = v2 ? new TaskEventLogV2(currentState.taskEventLogs?.[task.id]) : undefined
           const providerHealth = v2 ? new ProviderHealthRegistry(currentState.providerHealth) : undefined
           const runContext: WorkSessionTaskRunContext = {
+            recoveryInstructions: (currentState.taskRecoveryInstructions?.[task.id] ?? [])
+              .filter((entry) => entry.sessionId === currentState.sessionId && entry.taskId === task.id)
+              .map((entry) => entry.instruction),
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
@@ -1698,7 +1785,7 @@ export class WorkSessionRuntime {
               ? {}
               : { chosenReviewer: currentState.runtimeRepair.chosenReviewer }),
           }
-          const result = await self.config.taskRunner.run(task, resumeData, checkpoint, runContext)
+          const result = await self.config.taskRunner.run(task, task.id === resumedTaskId ? resumeData : undefined, checkpoint, runContext)
           // A Runtime Repair selection is consumed by exactly one resume. Clear it
           // once so a later Task never inherits a stale chosen reviewer.
           if (v2 && currentState.runtimeRepair !== undefined) {
@@ -1757,15 +1844,17 @@ export class WorkSessionRuntime {
           }
           if (result.status === 'COMPLETED') {
             const completionEvidence = result.completionEvidence
+            const checkpointRequired = task.acceptanceCriteria?.some((criterion) => runtimeAcceptanceEvidence(criterion) === 'CHECKPOINT_COMMITTED') === true
 
             // W004-A REVIEW REVISE: autoCommit 开启时，真 COMPLETED 必须携带结构化 evidence。
             // 不允许"跳过 finalizer 直接把 Task 标 COMPLETED 并进入下一 Task"。
             if (
-              gitCheckpoint !== undefined &&
-              gitCheckpoint.policy.autoCommit === true &&
-              completionEvidence === undefined
+              (gitCheckpoint !== undefined && gitCheckpoint.policy.autoCommit === true && completionEvidence === undefined) ||
+              (checkpointRequired && gitCheckpoint?.policy.autoCommit !== true)
             ) {
-              const failureReason = `completed task ${task.id} missing completion evidence`
+              const failureReason = checkpointRequired && gitCheckpoint?.policy.autoCommit !== true
+                ? `completed task ${task.id} requires runtime checkpoint finalization`
+                : `completed task ${task.id} missing completion evidence`
               const failure = classifyWorkSessionFailure(failureReason, {
                 failureStage: 'RUNTIME',
                 failureCategory: 'PROTOCOL',
@@ -1811,6 +1900,9 @@ export class WorkSessionRuntime {
                     ? { expectedBaseHeadSha: currentState.currentTaskBaseHeadSha }
                     : {}),
                 })
+                if (checkpointRequired && (commitResult.disposition === 'ALREADY_SATISFIED' || commitResult.commitSha.trim().length === 0)) {
+                  throw new GitCheckpointError('required CHECKPOINT_COMMITTED evidence was not produced by finalization')
+                }
                 if (commitResult.disposition === 'ALREADY_SATISFIED') {
                   self.recordGitCommitSkipped(task.id, currentState)
                 } else {
@@ -2033,8 +2125,8 @@ export class WorkSessionRuntime {
             const requestedCommand = result.pendingVerificationCommand
             const newVerificationApproval =
               requestedCommand !== undefined &&
-              result.humanRequired?.category === 'DECISION_REQUIRED' &&
-              result.humanRequired.reason.includes(VERIFICATION_APPROVAL_BLOCKER) &&
+              (result.humanRequired?.category === 'APPROVAL_REQUIRED' ||
+                (result.humanRequired?.category === 'DECISION_REQUIRED' && result.humanRequired.reason.includes(VERIFICATION_APPROVAL_BLOCKER))) &&
               isEligibleScopedVerificationCommand(requestedCommand, self.config.definition.targetRepo)
                 ? {
                     sessionId: currentState.sessionId,
@@ -2219,6 +2311,9 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.taskRecoveryInstructions !== undefined) {
+      result.taskRecoveryInstructions = wfState.taskRecoveryInstructions
     }
     if (wfState.taskStatesV2 !== undefined) {
       result.taskStatesV2 = wfState.taskStatesV2 as Record<string, import('./task-state-v2.js').TaskStateV2>
@@ -2412,6 +2507,7 @@ export class WorkSessionRuntime {
     }
 
     const persisted = state.pendingVerificationApproval as PendingVerificationApproval | undefined
+    if (persisted?.status === 'REJECTED') return undefined
     if (
       persisted !== undefined &&
       (persisted.sessionId !== state.sessionId || persisted.taskId !== taskId)

@@ -72,6 +72,10 @@ export function createDeterministicRepairAgent(
         }
       }
 
+      if (context.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION')) {
+        return { classification: 'REPAIR_REJECTED', reason: '未能安全识别验证命令，需要确认；Repair Agent cannot turn ambiguous acceptance prose into command authority.' }
+      }
+
       const testEntry = await resolveTestEntry(context.targetRepo)
       const allowed = [...TRUSTED_VERIFIER_COMMANDS, ...(testEntry === undefined ? [] : [testEntry])]
 
@@ -151,6 +155,7 @@ const KNOWN_MECHANICAL_CODES: ReadonlySet<string> = new Set([
   'PACKAGE_SCRIPT_NOT_FOUND',
   'TEST_PATH_NOT_FOUND',
   'VERIFIER_APPROVAL_REQUIRED',
+  'UNSAFE_VERIFIER_EXTRACTION',
   'BINDING_IDENTITY_MISMATCH',
   'BINDING_DSL_AMBIGUOUS',
   'DUPLICATE_CRITERION',

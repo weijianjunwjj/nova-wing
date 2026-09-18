@@ -2,6 +2,10 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import type { AcceptanceEvidenceBinding } from '../risk-evidence.js'
+import { runtimeAcceptanceEvidence } from '../completion-criteria.js'
+import { assessVerificationCommand, scopedNodeTestPath } from '../../verification-command-policy.js'
+import { classifyAcceptanceCriterion } from './acceptance-criterion.js'
+import { extractAcceptanceVerifier, hasUncanonicalizedVerifierText, type VerifierCommandCanonicalization } from './verifier-command-extraction.js'
 
 export type ContractIssueCode =
   | 'MISSING_EVIDENCE_BINDING'
@@ -14,6 +18,7 @@ export type ContractIssueCode =
   | 'TEST_PATH_NOT_FOUND'
   | 'BINDING_DSL_AMBIGUOUS'
   | 'VERIFIER_APPROVAL_REQUIRED'
+  | 'UNSAFE_VERIFIER_EXTRACTION'
 
 export type VerifierPreflightClassification = 'TRUSTED' | 'APPROVAL_REQUIRED' | 'INVALID'
 
@@ -31,6 +36,7 @@ export interface VerifierPreflightResult {
   command: string
   classification: VerifierPreflightClassification
   reason: string
+  canonicalization?: VerifierCommandCanonicalization
 }
 
 export type TaskContractPreflightResult =
@@ -195,6 +201,8 @@ export async function describeRepairRepository(root: string): Promise<RepairRepo
 }
 
 function obviousTestPaths(command: string): string[] {
+  const scopedPath = scopedNodeTestPath(command)
+  if (scopedPath !== undefined) return [scopedPath]
   const candidates = command.match(/[A-Za-z0-9_@+.,={}()[\]/\\:-]+/gu) ?? []
   return candidates
     .map((candidate) => candidate.replaceAll('\\', '/').replace(/^['"]|['"]$/gu, ''))
@@ -207,6 +215,7 @@ function classifyVerifier(
   facts: RepositoryContractFacts,
 ): VerifierPreflightResult {
   if (command.length === 0) return { criterion, command, classification: 'INVALID', reason: 'Verifier command is empty.' }
+  if (hasUncanonicalizedVerifierText(command)) return { criterion, command, classification: 'INVALID', reason: '未能安全识别验证命令，需要确认：verifier contains uncanonicalized acceptance text.' }
   if (PLACEHOLDER.test(command)) return { criterion, command, classification: 'INVALID', reason: 'Verifier contains an unresolved placeholder.' }
   const script = packageScript(command)
   if (script !== undefined && !facts.packageScripts[script]?.trim()) {
@@ -220,16 +229,14 @@ function classifyVerifier(
     return !facts.files.has(path.replace(/^\.\//u, ''))
   })
   if (missingPath !== undefined) return { criterion, command, classification: 'INVALID', reason: `Test path does not exist: ${missingPath}.` }
-  if (TRUSTED_COMMANDS.has(command)) return { criterion, command, classification: 'TRUSTED', reason: 'Command is in the deterministic verifier allowlist and is valid for this repository.' }
+  const assessment = assessVerificationCommand(command)
+  if (assessment.status === 'UNSUPPORTED') return { criterion, command, classification: 'INVALID', reason: '未能安全识别验证命令，需要确认：command is outside the supported verifier forms.' }
+  if (assessment.status === 'ALLOWED') return { criterion, command, classification: 'TRUSTED', reason: 'Command is in the deterministic verifier allowlist and is valid for this repository.' }
   return { criterion, command, classification: 'APPROVAL_REQUIRED', reason: 'Command is repository-valid but outside the deterministic verifier allowlist.' }
 }
 
 function normalizedIdentity(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US')
-}
-
-function looksLikeVerifierCommand(value: string): boolean {
-  return /^(?:npm|pnpm|yarn|node|npx|git|tsc|vitest|jest|pytest|\.venv[\\/])/iu.test(value.trim())
 }
 
 /** Repository-aware, fail-closed preflight. It never changes Task semantics or permission policy. */
@@ -282,6 +289,16 @@ export async function preflightTaskContract(input: {
       continue
     }
     if (criterion !== rawBinding.criterion) repairs.push(`Normalized binding identity to criterion: ${criterion}`)
+    // Client metadata is never authority. Verify it and reconstruct proof below,
+    // including after Quick Fill's editable text form discards the metadata.
+    for (const proof of rawBinding.commandCanonicalizations ?? []) {
+      const extracted = classifyAcceptanceCriterion(proof.sourceText) === 'COMMAND_BEARING' ? extractAcceptanceVerifier(proof.sourceText) : undefined
+      if (proof.sourceText !== criterion || extracted === undefined || extracted.command !== proof.command ||
+          proof.grammar !== extracted.canonicalization.grammar || proof.assessment !== extracted.canonicalization.assessment ||
+          !rawBinding.requiredEvidence.includes(proof.command)) {
+        issues.push({ issueCode: 'UNSAFE_VERIFIER_EXTRACTION', criterion, reason: '未能安全识别验证命令，需要确认：canonicalization evidence does not match the criterion and command.' })
+      }
+    }
     const requiredEvidence = [...new Set(rawBinding.requiredEvidence.map((command) => command.trim()))]
     const existing = bindingsByCriterion.get(criterion)
     if (existing !== undefined) {
@@ -295,9 +312,19 @@ export async function preflightTaskContract(input: {
 
   for (const criterion of criteria) {
     if (!bindingsByCriterion.has(criterion)) {
-      if (looksLikeVerifierCommand(criterion)) {
-        bindingsByCriterion.set(criterion, { criterion, requiredEvidence: [criterion] })
-        repairs.push(`Bound command-shaped criterion to its exact verifier: ${criterion}`)
+      if (classifyAcceptanceCriterion(criterion) === 'COMMAND_BEARING') {
+        const extracted = extractAcceptanceVerifier(criterion)
+        if (extracted !== undefined) {
+          bindingsByCriterion.set(criterion, { criterion, requiredEvidence: [extracted.command] })
+          repairs.push(`Canonicalized acceptance verifier using ${extracted.canonicalization.grammar}: ${extracted.command}`)
+          continue
+        }
+        issues.push({ issueCode: 'UNSAFE_VERIFIER_EXTRACTION', criterion, reason: '未能安全识别验证命令，需要确认。',
+          whyRepairWasUnsafeOrImpossible: 'No complete command boundary was proven; neither approval nor automatic evidence selection can resolve prose ambiguity.' })
+        continue
+      }
+      if (runtimeAcceptanceEvidence(criterion) !== undefined) {
+        repairs.push(`Deferred system-state evidence to FINALIZING: ${criterion}`)
         continue
       }
       if (input.verificationPlannerEnabled === true) {
@@ -335,20 +362,37 @@ export async function preflightTaskContract(input: {
       }
       repairedCommands.push(command)
     }
-    bindingsByCriterion.set(criterion, { ...binding, requiredEvidence: [...new Set(repairedCommands)] })
+    const extracted = classifyAcceptanceCriterion(criterion) === 'COMMAND_BEARING' ? extractAcceptanceVerifier(criterion) : undefined
+    const commandCanonicalizations = extracted !== undefined && extracted.command !== criterion && repairedCommands.includes(extracted.command)
+      ? [extracted.canonicalization] : []
+    bindingsByCriterion.set(criterion, { ...binding, requiredEvidence: [...new Set(repairedCommands)],
+      ...(commandCanonicalizations.length === 0 ? {} : { commandCanonicalizations }) })
   }
 
   const bindings = criteria.flatMap((criterion) => {
     const binding = bindingsByCriterion.get(criterion)
     return binding === undefined ? [] : [binding]
   })
-  const verifiers = bindings.flatMap((binding) => binding.requiredEvidence.map((command) => classifyVerifier(command, binding.criterion, facts)))
+  const verifiers = bindings.flatMap((binding) => binding.requiredEvidence.map((command) => {
+    if (issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION' && issue.criterion === binding.criterion)) {
+      return { criterion: binding.criterion, command, classification: 'INVALID' as const, reason: '未能安全识别验证命令，需要确认：invalid canonicalization evidence.' }
+    }
+    const canonicalization = binding.commandCanonicalizations?.find((proof) => proof.command === command)
+    const inferred = classifyAcceptanceCriterion(binding.criterion) === 'COMMAND_BEARING' ? extractAcceptanceVerifier(binding.criterion) : undefined
+    if (inferred !== undefined && inferred.command === command && inferred.command !== binding.criterion && canonicalization === undefined) {
+      return { criterion: binding.criterion, command, classification: 'INVALID' as const, reason: '未能安全识别验证命令，需要确认：missing canonicalization evidence.' }
+    }
+    return { ...classifyVerifier(command, binding.criterion, facts), ...(canonicalization === undefined ? {} : { canonicalization }) }
+  }))
   for (const verifier of verifiers) {
     if (verifier.classification === 'TRUSTED') continue
     const binding = bindingsByCriterion.get(verifier.criterion)
     if (verifier.classification === 'APPROVAL_REQUIRED') {
       issues.push({ issueCode: 'VERIFIER_APPROVAL_REQUIRED', criterion: verifier.criterion, ...(binding === undefined ? {} : { binding }), reason: `${verifier.reason} Approval required for: ${verifier.command}`,
         whyRepairWasUnsafeOrImpossible: 'Preflight cannot grant human approval or widen the verifier allowlist.' })
+    } else if (/未能安全识别验证命令/u.test(verifier.reason)) {
+      issues.push({ issueCode: 'UNSAFE_VERIFIER_EXTRACTION', criterion: verifier.criterion, ...(binding === undefined ? {} : { binding }), reason: verifier.reason,
+        whyRepairWasUnsafeOrImpossible: 'Acceptance prose is not an executable verifier and cannot be fixed by granting approval.' })
     } else if (/package\.json/u.test(verifier.reason)) {
       issues.push({ issueCode: 'PACKAGE_SCRIPT_NOT_FOUND', criterion: verifier.criterion, ...(binding === undefined ? {} : { binding }), reason: verifier.reason,
         whyRepairWasUnsafeOrImpossible: 'Changing to another package script without a placeholder would alter an explicit verifier.' })

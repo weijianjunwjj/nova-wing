@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { verifierEvidenceFromBindings } from './completion-criteria.js'
 
 import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
@@ -25,6 +26,9 @@ import type { ProviderHealthObservation, ProviderHealthStatus } from './task-obs
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'
 import { GoldenPathTaskRunner } from './golden-path.js'
+import { createAutonomousDiagnosisRunner, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
+import { readAutonomousRecoveryDiff, readAutonomousVerificationOutput } from './autonomous-recovery-evidence.js'
+import { createCodexRepairModelRunner } from './launchpad/repair-model.js'
 import { computeWorktreeFingerprint, parseGitStatus } from './worktree-fingerprint.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
@@ -43,6 +47,7 @@ import { createFileRuntimeRepairAuditSink, defaultRuntimeRepairAuditPath, type R
 import { createWindowsToastRuntimeRepairNotifier, type RuntimeRepairNotifier } from './runtime-repair-notifier.js'
 import type { RuntimeRepairRefresh } from './runtime-repair.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalyticsStore } from './task-run-analytics.js'
+import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/task-eta.js'
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
 import {
@@ -77,6 +82,10 @@ const AcceptanceEvidenceBindingSchema = z.object({
   criterion: z.string(),
   requiredEvidence: z.array(z.string()),
   requiresApproval: z.boolean().optional(),
+  commandCanonicalizations: z.array(z.object({
+    sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'),
+    assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']),
+  }).strict()).optional(),
 }).strict()
 
 const TrustedConfigSchema = z.object({
@@ -450,6 +459,10 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  /** Scriptable recovery seam; normal production reuses the read-only repair model. */
+  autonomousRecovery?: AutonomousRecoveryOptions
+  /** Optional presentation-only estimator; injected runtimes otherwise use deterministic ETA. */
+  taskEta?: Pick<TaskEtaService, 'project' | 'close'>
   createCodexExecutor?: (options: CodexExecutorOptions) => RouterCodexExecutor
   createBrain?: (options: AskBridgeBrainOptions) => GuardianBrain
   createExecutor?: (options: ClaudeCodeExecutorOptions) => GuardianRecoverableExecutor
@@ -623,6 +636,10 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    ...(dependencies.taskEta !== undefined ? { taskEta: dependencies.taskEta }
+      : dependencies.createExecutor === undefined && dependencies.createCodexExecutor === undefined &&
+        dependencies.createRuntime === undefined && dependencies.createV2Dispatcher === undefined
+        ? { taskEta: createRuntimeTaskEtaService({ env }) } : {}),
     readCodingExecutions: () => trusted.tasks.map((task) => {
       const state = codingStore.read(taskKey(task.id))
       return { taskId: task.id, mode: taskModes.get(task.id)!,
@@ -673,7 +690,7 @@ export async function createProductionWorkSessionUi(
         const reviewDispatcher = createReviewDispatcher({ registry: reviewerRegistry, inspectRepository })
         const defaultDispatcher: V2ActionDispatcher = {
           inspectRepository,
-          dispatch: async ({ action, task: taskState, agent, approvedVerificationCommand, retry }) => {
+          dispatch: async ({ action, task: taskState, agent, approvedVerificationCommand, retry, recoveryInstructions }) => {
             // The selected reviewer profile decides the provider; independence and the
             // read-only guarantee are enforced by the dispatcher, not by the runner.
             if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task: taskState })
@@ -701,8 +718,9 @@ export async function createProductionWorkSessionUi(
             const entries = parseGitStatus((await gitRunner('git status --porcelain --untracked-files=all')).stdout)
             router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
               changedFiles: taskState.gitState.changedFiles, worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) })
-            const requiredEvidence = taskState.completion.bindings.flatMap((binding) => binding.requiredEvidence)
-            const goldenImplementationOnly = action === 'EXECUTE' && taskState.execution?.path === 'GOLDEN'
+            const requiredEvidence = verifierEvidenceFromBindings(taskState.completion.bindings)
+            const goldenImplementationOnly = action === 'EXECUTE' &&
+              (taskState.execution?.path === 'GOLDEN' || taskState.autonomousRecovery?.phase === 'ADVANCED')
             const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,
               maxIterations: trusted.executor.maxTurns, constraints: taskState.constraints, acceptanceCriteria: taskState.acceptanceCriteria,
               allowedPaths: taskState.permissions.allowedPaths, forbiddenPaths: taskState.permissions.forbiddenPaths,
@@ -733,13 +751,14 @@ export async function createProductionWorkSessionUi(
               })()
               : await router.execute({ task: transportTask,
               packet: { verdict: 'proceed', goal: taskState.goal,
-                instructions: [action, ...(retry === undefined ? [] : [retry.instruction]), ...(goldenImplementationOnly
+                instructions: [action, ...(recoveryInstructions ?? []), ...(retry === undefined ? [] : [retry.instruction]), ...(goldenImplementationOnly
                   ? ['Implement only: inspect the repository and edit the scoped files. Do not execute verification commands; NovaWing runs deterministic verification separately after implementation.']
                   : [])],
                 constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : requiredEvidence,
                 ...(goldenImplementationOnly ? { deferVerification: true } : {}), doNotDo: taskState.permissions.forbiddenPaths } })
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
+              summary: report.summary,
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),
               ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },
@@ -753,6 +772,13 @@ export async function createProductionWorkSessionUi(
         const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
         const runner = definition.goldenPath?.enabled === true
           ? new GoldenPathTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, repositoryRoot: definition.targetRepo,
+              ...(dependencies.autonomousRecovery !== undefined ? { autonomousRecovery: dependencies.autonomousRecovery }
+                : dependencies.createV2Dispatcher !== undefined ? {} : { autonomousRecovery: {
+                  diagnose: createAutonomousDiagnosisRunner({ runner: createCodexRepairModelRunner({ env }) }),
+                  inspectDiff: () => readAutonomousRecoveryDiff(definition.targetRepo,
+                    (args) => (dependencies.gitProcessRunner ?? defaultGitProcessRunner)('git', args, definition.targetRepo)),
+                  readVerificationOutput: (result) => readAutonomousVerificationOutput(verificationOutputDirectory, result),
+                } }),
               fallbackRunner: new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) }),
               ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
           : new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,

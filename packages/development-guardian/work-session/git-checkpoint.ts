@@ -26,6 +26,7 @@ import { spawn } from 'node:child_process'
 import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
 import { normalizePath, parseGitStatus, computeWorktreeFingerprint } from './worktree-fingerprint.js'
+import { isRuntimeAcceptanceBinding, runtimeAcceptanceEvidence } from './completion-criteria.js'
 
 export interface PushRemotePolicy {
   /** remote 名（如 origin） */
@@ -446,7 +447,7 @@ function defaultGitWait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
-function validateCompletionEvidence(evidence: TaskCompletionEvidence): void {
+function validateCompletionEvidence(evidence: TaskCompletionEvidence, runtimeOnly = false): void {
   if (evidence.finalReviewerVerdict !== 'done') {
     throw new GitCheckpointError(
       `final reviewer verdict is ${evidence.finalReviewerVerdict}, not done; refusing to commit`,
@@ -460,7 +461,7 @@ function validateCompletionEvidence(evidence: TaskCompletionEvidence): void {
       `task has ${evidence.blockers.length} blocker(s); refusing to commit`,
     )
   }
-  if (evidence.verificationResults.length === 0) {
+  if (evidence.verificationResults.length === 0 && !(runtimeOnly && evidence.requiredVerification.length === 0)) {
     throw new GitCheckpointError(
       'task has no deterministic verification results; refusing to commit',
     )
@@ -523,7 +524,11 @@ export async function finalizeCompletedTask(
   }
 
   // gate: completion evidence 完整且全 passed（含 finalReviewerVerdict=done、blockers=0）
-  validateCompletionEvidence(completionEvidence)
+  const runtimeOnly = (task.acceptanceCriteria?.length ?? 0) > 0 && task.acceptanceCriteria!.every((criterion) => runtimeAcceptanceEvidence(criterion) !== undefined) &&
+    (task.acceptanceEvidenceBindings ?? []).every(isRuntimeAcceptanceBinding)
+  // A checkpoint-only contract is proved by the owned finalization below. Its
+  // branch, index, path and staged-diff checks still run before any commit.
+  validateCompletionEvidence(completionEvidence, runtimeOnly)
 
   // gate: definition branch 不得是 protected branch
   if (PROTECTED_BRANCHES.has(expectedBranch)) {

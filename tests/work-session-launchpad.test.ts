@@ -23,6 +23,7 @@ import {
 } from 'nova-wing/development-guardian'
 
 import { createProductionWorkSessionUi } from '../packages/development-guardian/work-session/production.js'
+import { assessVerificationCommand } from '../packages/development-guardian/verification-command-policy.js'
 import { GoldenPathTaskRunner } from '../packages/development-guardian/work-session/golden-path.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
@@ -585,6 +586,199 @@ function composerRequest(requestId: string, overrides: Record<string, unknown> =
     ...overrides,
   }
 }
+
+await test('natural-language acceptance text must never leak into executable verifier command in the final structured Task', async () => {
+  const directory = await createConfigDirectory()
+  const targetRepo = join(directory, 'repository')
+  await mkdir(join(targetRepo, 'tests'), { recursive: true })
+  await writeFile(join(targetRepo, 'package.json'), JSON.stringify({ scripts: {
+    test: 'node --test', typecheck: 'tsc --noEmit', build: 'tsc',
+  } }), 'utf8')
+  await writeFile(join(targetRepo, 'tests', 'ticket-status.test.js'), '', 'utf8')
+  const state = emptyFakeState()
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const expectedCommands = new Map([
+      ['git diff --check 通过。', 'git diff --check'],
+      ['npm run typecheck 必须通过', 'npm run typecheck'],
+      ['运行 npm run build 并确保成功', 'npm run build'],
+      ['node --test tests/ticket-status.test.js 应通过。', 'node --test tests/ticket-status.test.js'],
+    ])
+    const briefResponse = await postBrief(launchpad, { brief: [
+      '【Task ID】 UAT-V031-001', '【目标】修复 verifier command parsing',
+      '【允许修改路径】', 'packages/development-guardian/**', 'tests/**',
+      '【验收标准】', ...expectedCommands.keys(),
+    ].join('\n') }, auth)
+    assert.equal(briefResponse.status, 200)
+    const analysis = await briefResponse.json() as ReturnType<typeof analyzeTaskBrief>
+    assert.equal(analysis.fields.taskId, 'UAT-V031-001')
+    assert.deepEqual(analysis.fields.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+
+    // Round-trip through the actual Composer text DSL, which does not carry hidden metadata.
+    const response = await postCreate(launchpad, composerRequest('natural-language-verifier-invariant', {
+      targetRepo, tasks: [{ id: analysis.fields.taskId, goal: analysis.fields.taskInstructions }],
+      guardian: {
+        allowedPaths: analysis.fields.allowedPaths,
+        acceptanceCriteria: analysis.fields.acceptanceCriteria,
+        acceptanceEvidenceBindings: analysis.fields.acceptanceEvidenceBindings?.map((binding) => ({
+          criterion: binding.criterion, requiredEvidence: binding.requiredEvidence,
+        })),
+      },
+    }), auth)
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()))
+    assert.equal(state.createCalls, 1, 'Only the injected fake session factory is called.')
+    const task = state.receivedConfigs[0]!.tasks[0]!
+    assert.equal(task.id, 'UAT-V031-001')
+    assert.deepEqual(task.guardian.allowedPaths, ['packages/development-guardian/**', 'tests/**'])
+    assert.ok(task.acceptanceEvidenceBindings)
+    for (const binding of task.acceptanceEvidenceBindings) {
+      for (const command of binding.requiredEvidence) {
+        assert.doesNotMatch(command, /通过|成功|应通过|必须通过|确保通过|确保成功|\s(?:passes?|should pass|must pass|succeeds)[。，.,;：:]*$/iu)
+        assert.equal(assessVerificationCommand(command).status, 'ALLOWED', command)
+        const expected = expectedCommands.get(binding.criterion)
+        if (expected === undefined) continue
+        assert.equal(command, expected)
+        const proof = binding.commandCanonicalizations?.find((entry) => entry.command === command)
+        assert.ok(proof, `Natural-language-derived command must retain canonicalization evidence: ${binding.criterion}`)
+        assert.equal(proof.sourceText, binding.criterion)
+        assert.equal(proof.grammar, 'acceptance-command-v1')
+        assert.equal(proof.assessment, 'ALLOWED')
+      }
+    }
+    for (const [criterion, command] of expectedCommands) {
+      assert.deepEqual(task.acceptanceEvidenceBindings.find((binding) => binding.criterion === criterion)?.requiredEvidence, [command])
+    }
+    const persisted = await loadTrustedWorkSessionConfig(join(directory, `${state.receivedConfigs[0]!.session.id}.json`))
+    assert.deepEqual(persisted.tasks[0]?.acceptanceEvidenceBindings, task.acceptanceEvidenceBindings,
+      'The trusted config validator and persistence must retain canonicalization evidence.')
+
+    for (const [index, criterion] of [
+      '如果需要可以考虑运行 npm test，但不要执行全量测试',
+    ].entries()) {
+      const invalid = await postCreate(launchpad, composerRequest(`ambiguous-verifier-invariant-${index}`, {
+        targetRepo, guardian: { allowedPaths: ['tests/**'], acceptanceCriteria: [criterion] },
+      }), auth)
+      assert.equal(invalid.status, 400)
+      const body = await invalid.json() as { issues: Array<{ issueCode: string }> }
+      assert.ok(body.issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION'), JSON.stringify(body))
+      assert.ok(body.issues.every((issue) => issue.issueCode !== 'VERIFIER_APPROVAL_REQUIRED'))
+      assert.equal(state.createCalls, 1, 'Unresolved natural-language commands never start a session or auto-repair into a verifier.')
+    }
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+await test('Composer Quick Fill starts semantic and mixed Task Briefs while only executable criteria become verifiers', async () => {
+  const directory = await createConfigDirectory()
+  const targetRepo = join(directory, 'repository')
+  await mkdir(targetRepo, { recursive: true })
+  await writeFile(join(targetRepo, 'package.json'), JSON.stringify({ scripts: {
+    test: 'node --test', typecheck: 'tsc --noEmit',
+  } }), 'utf8')
+  const state = emptyFakeState()
+  let repairCalls = 0
+  const unexpectedRepairAgent = {
+    id: 'unexpected-semantic-criterion-repair',
+    async repair() {
+      repairCalls += 1
+      throw new Error('Semantic acceptance criteria must not invoke preflight repair.')
+    },
+  }
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: {
+    createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
+    gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
+    repairAgent: unexpectedRepairAgent, repairLlmAgent: unexpectedRepairAgent,
+  } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const semanticCriteria = [
+      '代码实际完成。',
+      '不存在 unresolved blocker。',
+      '功能满足验收标准。',
+      '不得修改 tests/**。',
+      '保持现有行为不变。',
+      '成功生成 Git checkpoint。',
+      '运行适合当前项目的测试并确保通过',
+    ]
+    const commandCriteria = new Map([
+      ['git diff --check 通过。', 'git diff --check'],
+      ['npm run typecheck 必须通过。', 'npm run typecheck'],
+    ])
+
+    for (const [index, includeCommands] of [false, true].entries()) {
+      const criteria = includeCommands ? [
+        semanticCriteria[0]!,
+        ...commandCriteria.keys(),
+        ...semanticCriteria.slice(1),
+      ] : semanticCriteria
+      const expectedBindings = includeCommands
+        ? [...commandCriteria].map(([criterion, command]) => ({ criterion, requiredEvidence: [command] }))
+        : []
+      const briefResponse = await postBrief(launchpad, { brief: [
+        `Workspace: ${targetRepo}`,
+        `Task ID: T-COMPOSER-SEMANTIC-${index}`,
+        '目标：修复任务验收与验证命令的分类。',
+        'Allowed Paths:', 'packages/**',
+        'Acceptance Criteria:', ...criteria.map((criterion) => `- ${criterion}`),
+        'Auto Commit: ON', 'Auto Push: OFF', 'Start: Immediately',
+      ].join('\n') }, auth)
+      assert.equal(briefResponse.status, 200)
+      const analysis = await briefResponse.json() as ReturnType<typeof analyzeTaskBrief>
+      assert.deepEqual(analysis.fields.acceptanceCriteria, criteria)
+      assert.deepEqual((analysis.fields.acceptanceEvidenceBindings ?? []).map(({ criterion, requiredEvidence }) => ({
+        criterion, requiredEvidence,
+      })), expectedBindings, 'Quick Fill must bind only criteria with executable-command syntax.')
+      assert.ok(analysis.warnings.every((warning) => !/UNSAFE_VERIFIER_EXTRACTION|未能安全识别验证命令|需要确认/u.test(warning)),
+        JSON.stringify(analysis.warnings))
+      assert.equal(state.createCalls, index, 'Quick Fill does not launch a Work Session.')
+
+      const response = await postCreate(launchpad, composerRequest(`semantic-criteria-composer-${index}`, {
+        targetRepo: analysis.fields.targetRepo,
+        tasks: [{ id: analysis.fields.taskId, goal: analysis.fields.taskInstructions }],
+        // Match the normal browser Composer submission, which enables verification planning.
+        directPathEnabled: true,
+        goldenPathEnabled: true,
+        autoCommit: analysis.fields.autoCommit,
+        autoPush: analysis.fields.autoPush,
+        guardian: {
+          allowedPaths: analysis.fields.allowedPaths,
+          acceptanceCriteria: analysis.fields.acceptanceCriteria,
+          acceptanceEvidenceBindings: analysis.fields.acceptanceEvidenceBindings?.map(({ criterion, requiredEvidence }) => ({
+            criterion, requiredEvidence,
+          })),
+        },
+      }), auth)
+      const body = await response.json()
+      assert.equal(repairCalls, 0, 'Ordinary semantic criteria must not trigger deterministic or LLM repair.')
+      assert.equal(response.status, 202, JSON.stringify(body))
+      assert.deepEqual(body, { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
+      assert.equal(state.createCalls, index + 1)
+      assert.equal(state.startCalls, index + 1)
+      assert.equal(state.controllerStartCalls, index + 1, 'Create-and-start reaches only the injected fake controller.')
+      const config = state.receivedConfigs[index]!
+      const task = config.tasks[0]!
+      for (const criterion of criteria) assert.ok(task.guardian.acceptanceCriteria.includes(criterion))
+      const inputBindings = (task.acceptanceEvidenceBindings ?? []).filter((binding) => criteria.includes(binding.criterion))
+      assert.deepEqual(inputBindings.map(({ criterion, requiredEvidence }) => ({ criterion, requiredEvidence })), expectedBindings,
+        'Final Composer preflight must not invent shell evidence for semantic, constraint, or checkpoint criteria.')
+      assert.equal(config.gitCheckpoint.autoCommit, true)
+      assert.equal(config.gitCheckpoint.autoPush, false)
+      assert.equal(config.session.directPath?.enabled, true)
+      assert.equal(config.session.goldenPath?.enabled, true)
+    }
+  } finally {
+    await launchpad.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 await test('Launchpad discovery uses the trusted validator and ignores invalid JSON configs', async () => {
   const directory = await createConfigDirectory()
@@ -2006,7 +2200,7 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     const targetRepo = { value: 'old-repo' }
     const branch = { value: 'old-branch' }
     const taskId = { value: 'OLD' }
-    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old' }]))
+    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old', removeAttribute() {} }]))
     const briefResult = { textContent: '' }
     const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
       taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},

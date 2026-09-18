@@ -38,6 +38,10 @@ import type {
 } from './events.js'
 import { isExecutorProviderCredentialRecovery } from '../guardian-task-runner.js'
 import { deriveRuntimeRepairReasonCode, isRuntimeRepairable } from '../runtime-repair.js'
+import { deriveUserActivities } from './activity-projection.js'
+import { deriveRuntimeOverview, projectTaskDiagnostics } from './runtime-overview.js'
+import { projectTaskEta, type TaskEtaService } from './task-eta.js'
+import { isAutonomousRecoveryCategory } from '../autonomous-diagnosis.js'
 
 /** runtime factory：控制面注入 createRuntime(eventSink)，测试注入 fake runtime。 */
 export type WorkSessionRuntimeFactory = (
@@ -46,6 +50,7 @@ export type WorkSessionRuntimeFactory = (
 ) => WorkSessionControlRuntime
 
 export interface WorkSessionControlControllerOptions {
+  taskEta?: Pick<TaskEtaService, 'project' | 'close'>
   readCodingExecutions?: () => NonNullable<WorkSessionControlSnapshot['codingExecutions']>
   createRuntime: WorkSessionRuntimeFactory
   /** Revalidates external dependencies immediately before a recoverable resume. */
@@ -81,10 +86,7 @@ function effectiveHumanRequired(state: WorkSessionDurableState): HumanRequired |
   return state.humanRequired
 }
 
-export interface ControlResumeInput {
-  decision?: string
-  approval?: boolean
-}
+export type ControlResumeInput = import('../runtime.js').ResumeInput
 
 /** Guardian phase 快照：只保留结构化字段，绝不携带 raw detail / provider payload。 */
 interface GuardianPhaseSnapshot {
@@ -95,6 +97,7 @@ interface GuardianPhaseSnapshot {
 }
 
 export class WorkSessionControlController {
+  private readonly taskEta: WorkSessionControlControllerOptions['taskEta']
   private readonly readCodingExecutions: WorkSessionControlControllerOptions['readCodingExecutions']
   private readonly runtime: WorkSessionControlRuntime
   private readonly pollIntervalMs: number
@@ -123,6 +126,7 @@ export class WorkSessionControlController {
   private resumeInputRedactionTaskId: string | undefined
 
   private guardianPhase: GuardianPhaseSnapshot | undefined
+  private guardianPhaseTaskId: string | undefined
   private readonly executionActivities: ExecutionActivityView[] = []
   private executionActivityId = 0
   private executionActivityStartedAt: string | undefined
@@ -137,6 +141,7 @@ export class WorkSessionControlController {
   }
 
   constructor(options: WorkSessionControlControllerOptions) {
+    this.taskEta = options.taskEta
     this.readCodingExecutions = options.readCodingExecutions
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.maxRecentEvents = options.maxRecentEvents ?? DEFAULT_MAX_RECENT_EVENTS
@@ -424,7 +429,7 @@ export class WorkSessionControlController {
     const state = this.runtime.getDurableState()
     const pending = state?.pendingVerificationApproval
     if (
-      state?.state !== 'SUSPENDED' || state.humanRequired?.category !== 'DECISION_REQUIRED' ||
+      state?.state !== 'SUSPENDED' || !['DECISION_REQUIRED', 'APPROVAL_REQUIRED'].includes(state.humanRequired?.category ?? '') ||
       pending === undefined || pending.status !== 'REQUESTED' ||
       pending.sessionId !== state.sessionId || pending.taskId !== state.currentTaskId ||
       this.runtime.approvePendingVerificationAndContinue === undefined
@@ -436,6 +441,22 @@ export class WorkSessionControlController {
       .then(() => { this.emit({ type: 'SESSION_RESUMED', data: safeEventData }); this.broadcastSnapshot() })
       .catch(() => { this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } }); this.broadcastSnapshot() })
       .finally(() => { this.resumePromise = undefined })
+    return { accepted: true }
+  }
+
+  rejectPendingVerification(): { accepted: boolean; reason?: string } {
+    const state = this.runtime.getDurableState()
+    const pending = state?.pendingVerificationApproval
+    if (state?.state !== 'SUSPENDED' || pending?.status !== 'REQUESTED' ||
+        pending.taskId !== state.currentTaskId || pending.sessionId !== state.sessionId ||
+        this.runtime.rejectPendingVerification === undefined) {
+      return { accepted: false, reason: 'verification approval is unavailable' }
+    }
+    if (this.resumePromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
+    this.resumePromise = this.runtime.rejectPendingVerification()
+      .then(() => { this.broadcastSnapshot() })
+      .catch(() => { this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } }) })
+      .finally(() => { this.resumePromise = undefined; this.broadcastSnapshot() })
     return { accepted: true }
   }
 
@@ -508,7 +529,7 @@ export class WorkSessionControlController {
     const hasActiveExecution = this.runtime.hasActiveExecution?.() ?? false
     const displayState = deriveDisplayState(state, hasActiveExecution)
     const fullLedger = this.runtime.readExecutionLedger?.()
-    const executionLedger = fullLedger?.slice(-50)
+    const executionLedger = fullLedger
     const recoverableSummary =
       displayState === 'RECOVERABLE' && state !== undefined
         ? deriveRecoverySummary(definition, state, fullLedger ?? [])
@@ -523,15 +544,38 @@ export class WorkSessionControlController {
         : undefined
     const currentBudget = state?.currentTaskId === null || state?.currentTaskId === undefined
       ? undefined : state.taskStatesV2?.[state.currentTaskId]?.actionBudget
+    const autonomousTask = state?.currentTaskId === null || state?.currentTaskId === undefined
+      ? undefined : state.taskStatesV2?.[state.currentTaskId]?.autonomousRecovery
     const now = this.clock?.now() ?? Date.now()
+    const codingExecutions = this.readCodingExecutions?.()
+    const activities = deriveUserActivities({
+      definition, ...(state === undefined ? {} : { state }), ledger: fullLedger ?? [],
+      recentEvents: this.recentEvents, executionActivities: this.executionActivities,
+      ...(codingExecutions === undefined ? {} : { codingExecutions }),
+    })
+    const runtimeOverview = deriveRuntimeOverview({
+      definition, state, ledger: fullLedger ?? [], recentEvents: this.recentEvents,
+      executionActivities: this.executionActivities, codingExecutions,
+      currentPhase: this.guardianPhase?.phase, currentPhaseTaskId: this.guardianPhaseTaskId,
+      hasActiveExecution, displayState, now,
+    })
+    runtimeOverview.iteration.current = Math.max(runtimeOverview.iteration.current,
+      activities.filter(item => item.taskId === runtimeOverview.taskId && item.kind === 'EXECUTE' && item.executorDispatched).length)
+    const etaInput = { definition, state, ledger: fullLedger, codingExecutions }
+    let eta = projectTaskEta(etaInput)
+    try { eta = this.taskEta?.project(etaInput) ?? eta } catch { /* Optional prediction cannot block status or runtime. */ }
     const lastActivityMs = this.lastExecutionActivityAt === undefined ? undefined : Date.parse(this.lastExecutionActivityAt)
     const activityStartedMs = this.executionActivityStartedAt === undefined ? undefined : Date.parse(this.executionActivityStartedAt)
     const idleMs = lastActivityMs === undefined ? undefined : Math.max(0, now - lastActivityMs)
-    const activityElapsedMs = activityStartedMs === undefined ? 0 : Math.max(0, now - activityStartedMs)
+    const activityEndMs = state !== undefined && state.state !== 'RUNNING'
+      ? Date.parse(runtimeOverview.completedAt ?? state.updatedAt.toISOString()) : now
+    const activityElapsedMs = activityStartedMs === undefined ? 0 : Math.max(0, activityEndMs - activityStartedMs)
 
     return {
       server: { ...this.serverInfo },
-      ...(this.readCodingExecutions === undefined ? {} : { codingExecutions: this.readCodingExecutions() }),
+      ...(codingExecutions === undefined ? {} : { codingExecutions }),
+      runtimeOverview, activities, debug: projectTaskDiagnostics(state),
+      ...(eta === undefined ? {} : { eta }),
       configuredSession: {
         id: definition.id,
         targetRepo: definition.targetRepo,
@@ -575,6 +619,17 @@ export class WorkSessionControlController {
               ...(state.humanRequired !== undefined
                 ? { humanRequired: this.safeHumanRequired(state) }
                 : {}),
+              ...(state.humanRequiredGeneration === undefined ? {} : { humanRequiredGeneration: state.humanRequiredGeneration }),
+              recoveryInProgress: this.resumePromise !== undefined,
+              ...(state.humanRequired === undefined || (!isAutonomousRecoveryCategory(state.humanRequired.category) &&
+                !(state.humanRequired.category === 'ACTION_BUDGET_EXHAUSTED' && autonomousTask !== undefined)) ? {} : {
+                autonomousRecovery: {
+                  available: state.state === 'SUSPENDED' && !(currentBudget?.recoveryExhausted ?? false) &&
+                    (currentBudget === undefined || currentBudget.recoveryConsumed < currentBudget.recoveryLimit),
+                  exhausted: (currentBudget?.recoveryExhausted ?? false) ||
+                    (currentBudget !== undefined && currentBudget.recoveryConsumed >= currentBudget.recoveryLimit),
+                },
+              }),
               ...(currentBudget === undefined ? {} : { actionBudgetRecovery: {
                 available: currentBudget.originalExhausted && !currentBudget.recoveryGranted,
                 originalLimit: currentBudget.originalLimit, originalConsumed: currentBudget.originalConsumed,
@@ -612,11 +667,12 @@ export class WorkSessionControlController {
                       : { affectedTests: state.verificationFailure.affectedTests }),
                   } }),
               ...(state.pendingVerificationApproval !== undefined &&
-              state.pendingVerificationApproval.status === 'REQUESTED'
+              state.pendingVerificationApproval.status !== 'APPROVED'
                 ? { pendingVerificationApproval: {
                     taskId: state.pendingVerificationApproval.taskId,
                     command: state.pendingVerificationApproval.command,
                     generation: state.pendingVerificationApproval.generation,
+                    status: state.pendingVerificationApproval.status,
                   } }
                 : {}),
               ...(durableVerificationRecovery === undefined
@@ -672,6 +728,7 @@ export class WorkSessionControlController {
       return
     }
     this.closed = true
+    this.taskEta?.close()
     if (this.pollTimer !== undefined) {
       clearInterval(this.pollTimer)
       this.pollTimer = undefined
@@ -838,10 +895,13 @@ export class WorkSessionControlController {
       }
     }
 
-    if (prev.humanRequired === undefined && curr.humanRequired !== undefined) {
+    if (curr.humanRequired !== undefined && (prev.humanRequired === undefined ||
+        prev.currentTaskId !== curr.currentTaskId || prev.humanRequiredGeneration !== curr.humanRequiredGeneration ||
+        prev.humanRequired.category !== curr.humanRequired.category)) {
       events.push({
         type: 'HUMAN_REQUIRED',
-        data: humanRequiredData(this.safeHumanRequired(curr)),
+        data: { ...humanRequiredData(this.safeHumanRequired(curr)), taskId: curr.currentTaskId,
+          ...(curr.humanRequiredGeneration === undefined ? {} : { generation: curr.humanRequiredGeneration }) },
       })
     }
 
@@ -880,6 +940,8 @@ export class WorkSessionControlController {
   private onGuardianProgress(event: GuardianProgressEvent): void {
     // W005-A FINAL: 只保留结构化字段。event.detail 可能含 provider raw output /
     // credential / stdout，绝不进入 snapshot / SSE / recentEvents / Debug。
+    const taskId = this.runtime.getDurableState()?.currentTaskId ?? undefined
+    this.guardianPhaseTaskId = taskId
     this.guardianPhase = {
       phase: event.phase,
       status: event.status,
@@ -897,6 +959,7 @@ export class WorkSessionControlController {
         ? event.activity.verifier : undefined
       this.executionActivities.push({
         id: ++this.executionActivityId, timestamp, kind: event.activity.kind, phase: event.phase,
+        ...(taskId === undefined ? {} : { taskId }),
         ...(this.executionActivityProvider === undefined ? {} : { provider: this.executionActivityProvider }),
         ...(verifier === undefined ? {} : { verifier }),
         ...(event.activity.outcome === undefined ? {} : { outcome: event.activity.outcome }),
@@ -909,11 +972,12 @@ export class WorkSessionControlController {
       status: event.status,
       iteration: event.iteration,
       elapsedMs: event.elapsedMs,
+      ...(taskId === undefined ? {} : { taskId }),
     }
     // Guardian deliberately emits a second EXECUTING/completed event when an
     // incompleteReason is present. Detail is intentionally not web-visible;
     // fold only consecutive events whose safe rendered fields are identical.
-    const presentationKey = guardianPresentationKey(data)
+    const presentationKey = JSON.stringify([taskId, guardianPresentationKey(data)])
     if (presentationKey !== this.lastGuardianPresentationKey) {
       this.emit({ type: this.runtime.getDefinition().controlPlane === 'v2' ? 'TASK_PHASE' : 'GUARDIAN_PHASE', data })
       this.lastGuardianPresentationKey = presentationKey
@@ -968,7 +1032,8 @@ export class WorkSessionControlController {
     }
     if (
       state.currentTaskId !== null &&
-      state.currentTaskId === this.resumeInputRedactionTaskId
+      (state.currentTaskId === this.resumeInputRedactionTaskId ||
+        (state.taskRecoveryInstructions?.[state.currentTaskId]?.length ?? 0) > 0)
     ) {
       return {
         category: humanRequired.category,
@@ -1010,7 +1075,7 @@ export class WorkSessionControlController {
     }
     const event: ControlEvent = {
       id: ++this.eventId,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(this.now()).toISOString(),
       type: input.type,
       data: input.data ?? {},
     }
@@ -1073,12 +1138,39 @@ function validateResumeForState(
   state: WorkSessionDurableState,
   input: ControlResumeInput,
 ): { accepted: boolean; reason?: string; input?: ControlResumeInput } {
+  if ((input.taskId !== undefined && input.taskId !== state.currentTaskId) ||
+      (input.generation !== undefined && input.generation !== state.humanRequiredGeneration)) {
+    return { accepted: false, reason: 'the task or suspension has changed; refresh before continuing' }
+  }
   if (state.pendingVerificationApproval !== undefined) {
     return { accepted: false, reason: 'verification approval must use its dedicated control' }
   }
   const decision = typeof input.decision === 'string' ? input.decision.trim() : undefined
   const hasDecision = decision !== undefined && decision.length >= 1 && decision.length <= 2_000
   const hasApproval = input.approval !== undefined
+
+  const task = state.currentTaskId === null ? undefined : state.taskStatesV2?.[state.currentTaskId]
+  if (isAutonomousRecoveryCategory(effectiveHumanRequired(state)?.category ?? '') ||
+      (state.humanRequired?.category === 'ACTION_BUDGET_EXHAUSTED' && task?.autonomousRecovery !== undefined)) {
+    if (input.taskId === undefined || input.generation === undefined) {
+      return { accepted: false, reason: 'recovery requires the current taskId and suspension generation' }
+    }
+    if (hasApproval || (!hasDecision && input.recovery !== 'diagnose') || (hasDecision && input.recovery !== undefined)) {
+      return { accepted: false, reason: 'a recovery instruction or diagnosis request is required' }
+    }
+    if (input.recovery === 'diagnose') {
+      const budget = state.currentTaskId === null ? undefined : state.taskStatesV2?.[state.currentTaskId]?.actionBudget
+      if (budget?.recoveryExhausted || (budget !== undefined && budget.recoveryConsumed >= budget.recoveryLimit)) {
+        return { accepted: false, reason: 'automatic recovery budget is exhausted' }
+      }
+    }
+    return { accepted: true, input: {
+      ...(hasDecision ? { decision } : { recovery: 'diagnose' as const }),
+      ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+      ...(input.generation === undefined ? {} : { generation: input.generation }),
+    } }
+  }
+  if (input.recovery !== undefined) return { accepted: false, reason: 'this decision requires its dedicated human control' }
 
   if (state.suspensionReason === 'USER_PAUSED') {
     if (input.decision !== undefined || input.approval !== undefined) {

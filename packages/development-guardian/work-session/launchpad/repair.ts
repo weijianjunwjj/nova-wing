@@ -79,6 +79,7 @@ const MECHANICAL_ISSUE_CODES: ReadonlySet<TaskContractIssue['issueCode']> = new 
   'PACKAGE_SCRIPT_NOT_FOUND',
   'TEST_PATH_NOT_FOUND',
   'VERIFIER_APPROVAL_REQUIRED',
+  'UNSAFE_VERIFIER_EXTRACTION',
   'BINDING_IDENTITY_MISMATCH',
   'BINDING_DSL_AMBIGUOUS',
   'DUPLICATE_CRITERION',
@@ -96,6 +97,7 @@ export function classifyRepairErrorCode(issues: readonly TaskContractIssue[]): R
     codes.has('EMPTY_VERIFIER_COMMAND') ||
     codes.has('PACKAGE_SCRIPT_NOT_FOUND') ||
     codes.has('TEST_PATH_NOT_FOUND') ||
+    codes.has('UNSAFE_VERIFIER_EXTRACTION') ||
     codes.has('BINDING_DSL_AMBIGUOUS')
   ) {
     return 'INVALID_VERIFIER'
@@ -225,6 +227,7 @@ export const LLM_REPAIRABLE_ISSUE_CODES: ReadonlySet<TaskContractIssue['issueCod
 
 /** True when at least one remaining issue is worth a model round-trip. */
 export function hasLlmRepairableIssue(issues: readonly TaskContractIssue[]): boolean {
+  if (issues.some((issue) => issue.issueCode === 'UNSAFE_VERIFIER_EXTRACTION')) return false
   return issues.some((issue) => LLM_REPAIRABLE_ISSUE_CODES.has(issue.issueCode))
 }
 

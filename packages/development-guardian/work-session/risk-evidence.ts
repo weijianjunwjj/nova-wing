@@ -1,11 +1,23 @@
 import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
+import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type EvidenceStatus = 'PASSED' | 'FAILED' | 'MISSING' | 'STALE'
 export interface EvidenceV2 { type: string; status: EvidenceStatus; source: string; repositoryIdentity?: string; branch?: string; headSha?: string; workspaceIdentity?: string; timestamp: string; details?: string }
 export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string }
 export interface ApprovalEvidence { approved: boolean; repositoryIdentity?: string; branch?: string; workspaceIdentity: string; reviewedCommit?: string; risk: RiskLevel; riskContext?: string; timestamp: string }
-export interface AcceptanceEvidenceBinding { criterion: string; requiredEvidence: readonly string[]; requiresApproval?: boolean | undefined }
+export interface VerifierCommandCanonicalization {
+  sourceText: string
+  command: string
+  grammar: 'acceptance-command-v1'
+  assessment: 'ALLOWED' | 'APPROVAL_REQUIRED'
+}
+export interface AcceptanceEvidenceBinding {
+  criterion: string
+  requiredEvidence: readonly string[]
+  requiresApproval?: boolean | undefined
+  commandCanonicalizations?: readonly VerifierCommandCanonicalization[] | undefined
+}
 export interface RiskAssessment { level: RiskLevel; factors: readonly string[] }
 
 /** Criteria without one exact, non-empty trusted evidence contract. */
@@ -84,7 +96,10 @@ export function completionGate(input: { task: TaskStateV2; evidence: readonly Ev
   if (new Set(bindings.map((b) => b.criterion)).size !== bindings.length ||
       !task.acceptanceCriteria.every((criterion) => bindings.some((b) => b.criterion === criterion))) return false
   if (evidence.some((item) => item.source !== 'deterministic' || item.status !== 'PASSED' || evidenceIsStale(item, task))) return false
-  if (!bindings.every((binding) => binding.requiredEvidence.length > 0 && binding.requiredEvidence.every((type) => evidence.some((item) => item.type === type && item.status === 'PASSED')))) return false
+  // COMPLETE authorizes runtime finalization. Its checkpoint assertion is only
+  // discharged by the runtime's own committed SHA before durable Task completion.
+  if (!bindings.every((binding) => isRuntimeAcceptanceBinding(binding) ||
+      (binding.requiredEvidence.length > 0 && binding.requiredEvidence.every((type) => evidence.some((item) => item.type === type && item.status === 'PASSED'))))) return false
   if ((risk.level === 'CRITICAL' || bindings.some((b) => b.requiresApproval)) && !approvalSatisfied(task)) return false
   if (risk.level === 'HIGH' && !reviewSatisfied(task)) return false
   return true

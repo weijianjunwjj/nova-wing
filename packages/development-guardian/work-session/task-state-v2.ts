@@ -3,6 +3,8 @@ import type { VerificationResult } from '../model.js'
 import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence } from './risk-evidence.js'
 import type { VerificationPlan } from './verification-planner.js'
+import { autonomousDiagnosisDecisionSchema, RECOVERY_ACTION_BUDGET, type AutonomousDiagnosisDecision } from './autonomous-diagnosis.js'
+import { runtimeAcceptanceEvidence } from './completion-criteria.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
 
@@ -77,6 +79,18 @@ export interface TaskStateV2 {
   }
   /** Per-Task durable action accounting. At most one bounded recovery grant is legal. */
   actionBudget?: TaskActionBudgetV2
+  /** Golden history survives escalation; recovery consumes the existing Controller budget. */
+  autonomousRecovery?: {
+    phase: 'GOLDEN' | 'DIAGNOSING' | 'ADVANCED' | 'HUMAN_REQUIRED' | 'COMPLETED'
+    goldenExecuteCount: number
+    goldenVerifyCount: number
+    executorHistory: readonly { status: 'SUCCESS' | 'FAILED' | 'BLOCKED'; summary?: string; blockers: readonly string[]; changedFiles: readonly string[] }[]
+    verificationHistory: readonly (readonly VerificationResult[])[]
+    triggerCategory?: string
+    triggerReason?: string
+    diagnosis?: AutonomousDiagnosisDecision
+    originalVerificationPlan?: VerificationPlan
+  }
   updatedAt: string
 }
 
@@ -90,6 +104,13 @@ export function createTaskStateV2(
   session: Pick<WorkSessionDefinition, 'id' | 'branch'>,
   task: WorkSessionTask,
 ): TaskStateV2 {
+  const bindings = [...(task.acceptanceEvidenceBindings ?? [])]
+  for (const criterion of task.acceptanceCriteria ?? []) {
+    const evidence = runtimeAcceptanceEvidence(criterion)
+    if (evidence !== undefined && !bindings.some((binding) => binding.criterion === criterion)) {
+      bindings.push({ criterion, requiredEvidence: [evidence] })
+    }
+  }
   return {
     version: TASK_STATE_V2_VERSION,
     identity: { taskId: task.id, sessionId: session.id }, goal: task.goal,
@@ -105,17 +126,28 @@ export function createTaskStateV2(
       branch: session.branch, changedFiles: [],
     },
     verificationState: { results: [] },
-    completion: { evidence: [], bindings: task.acceptanceEvidenceBindings ?? [] },
+    completion: { evidence: [], bindings },
     providerHistory: [], risk: task.risk ?? 'NORMAL', status: 'PENDING', blockers: [], updatedAt: new Date().toISOString(),
     humanConstraints: { verifyOnly: false },
     controllerConvergence: { recentDecisions: [] },
-    actionBudget: { originalLimit: 20, originalConsumed: 0, originalExhausted: false, recoveryLimit: 4, recoveryGranted: false, recoveryConsumed: 0, recoveryExhausted: false },
+    actionBudget: { originalLimit: 20, originalConsumed: 0, originalExhausted: false, recoveryLimit: RECOVERY_ACTION_BUDGET, recoveryGranted: false, recoveryConsumed: 0, recoveryExhausted: false },
   }
 }
 
 const strings = z.array(z.string())
 const actor = z.object({ agent: z.string().min(1), provider: z.string().min(1), runtimeIdentity: z.string().min(1) })
 const riskLevel = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
+const verificationResult = z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()
+const verificationPlan = z.object({
+  planId: z.string(), fingerprint: z.string(),
+  mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), requiresApproval: z.boolean().optional(),
+    commandCanonicalizations: z.array(z.object({ sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'), assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']) })).optional() })),
+  steps: z.array(z.object({ id: z.string(), command: z.string(), cwd: z.string(), originalCommand: z.string().optional(),
+    admission: z.enum(['ALLOWED', 'APPROVAL_REQUIRED', 'UNSUPPORTED']).optional(), admissionReason: z.string().optional(),
+    sourceManifest: z.string().optional(), sourceScript: z.string().optional(), sourceFingerprint: z.string().optional(),
+    scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), expectedCoverage: strings, environmentPrerequisites: strings, failureClassifications: strings })),
+  escalationSequence: strings, estimatedScope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), estimatedCost: z.enum(['LOW', 'MEDIUM', 'HIGH']), confidence: z.enum(['HIGH', 'MEDIUM', 'INSUFFICIENT']), approvalRequired: z.boolean(), invalidationConditions: strings, packageRoots: strings, explicitBindings: z.boolean(), rationale: strings,
+})
 const persistedTask = z.object({
   version: z.literal(2), identity: z.object({ taskId: z.string().min(1), sessionId: z.string().min(1) }),
   goal: z.string(), constraints: strings, acceptanceCriteria: strings,
@@ -123,18 +155,11 @@ const persistedTask = z.object({
   progress: z.object({ completedWork: strings, pendingWork: strings }),
   decisions: strings, assumptions: strings, openQuestions: strings, artifacts: strings,
   gitState: z.object({ repositoryIdentity: z.string().min(1).optional(), branch: z.string().min(1).optional(), headSha: z.string().min(1).optional(), changedFiles: strings, worktreeFingerprint: z.string().min(1).optional() }),
-  verificationState: z.object({ results: z.array(z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
-  verificationPlan: z.object({
-    planId: z.string(), fingerprint: z.string(),
-    mappings: z.array(z.object({ criterion: z.string(), evidence: strings, scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), requiresApproval: z.boolean().optional() })),
-    steps: z.array(z.object({ id: z.string(), command: z.string(), cwd: z.string(), originalCommand: z.string().optional(),
-      admission: z.enum(['ALLOWED', 'APPROVAL_REQUIRED', 'UNSUPPORTED']).optional(), admissionReason: z.string().optional(),
-      sourceManifest: z.string().optional(), sourceScript: z.string().optional(), sourceFingerprint: z.string().optional(),
-      scope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), reason: z.string(), expectedCoverage: strings, environmentPrerequisites: strings, failureClassifications: strings })),
-    escalationSequence: strings, estimatedScope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), estimatedCost: z.enum(['LOW', 'MEDIUM', 'HIGH']), confidence: z.enum(['HIGH', 'MEDIUM', 'INSUFFICIENT']), approvalRequired: z.boolean(), invalidationConditions: strings, packageRoots: strings, explicitBindings: z.boolean(), rationale: strings,
-  }).optional(),
+  verificationState: z.object({ results: z.array(verificationResult), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
+  verificationPlan: verificationPlan.optional(),
   completion: z.object({
-    bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional() })),
+    bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional(),
+      commandCanonicalizations: z.array(z.object({ sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'), assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']) })).optional() })),
     evidence: z.array(z.object({ type: z.string(), status: z.enum(['PASSED', 'FAILED', 'MISSING', 'STALE']), source: z.string(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), workspaceIdentity: z.string().optional(), timestamp: z.string() }).passthrough()),
     review: z.object({ passed: z.boolean(), findings: strings, severity: riskLevel, blockingFindings: strings, reviewer: actor, implementer: actor, reviewedRepository: z.string().optional(), reviewedBranch: z.string().optional(), reviewedCommit: z.string().optional(), reviewedWorkspace: z.string().optional(), reviewedFiles: strings, timestamp: z.string() }).optional(),
     approval: z.object({ approved: z.boolean(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), workspaceIdentity: z.string(), reviewedCommit: z.string().optional(), risk: riskLevel, riskContext: z.string().optional(), timestamp: z.string() }).optional(),
@@ -148,6 +173,14 @@ const persistedTask = z.object({
   actionBudget: z.object({
     originalLimit: z.number().int().positive(), originalConsumed: z.number().int().nonnegative(), originalExhausted: z.boolean(),
     recoveryLimit: z.number().int().positive(), recoveryGranted: z.boolean(), recoveryConsumed: z.number().int().nonnegative(), recoveryExhausted: z.boolean(),
+  }).optional(),
+  autonomousRecovery: z.object({
+    phase: z.enum(['GOLDEN', 'DIAGNOSING', 'ADVANCED', 'HUMAN_REQUIRED', 'COMPLETED']),
+    goldenExecuteCount: z.number().int().min(0).max(2), goldenVerifyCount: z.number().int().min(0).max(2),
+    executorHistory: z.array(z.object({ status: z.enum(['SUCCESS', 'FAILED', 'BLOCKED']), summary: z.string().optional(), blockers: strings, changedFiles: strings })).max(2),
+    verificationHistory: z.array(z.array(verificationResult)).max(2),
+    triggerCategory: z.string().optional(), triggerReason: z.string().optional(), diagnosis: autonomousDiagnosisDecisionSchema.optional(),
+    originalVerificationPlan: verificationPlan.optional(),
   }).optional(),
 })
 
