@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import { execFileSync } from 'node:child_process'
 import test from 'node:test'
+import type { Mastra } from '@mastra/core'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { ScheduledStartStore } from '../packages/development-guardian/work-session/scheduled-start-store.js'
 import { getDeepSeekPricingPeriod, normalizeScheduledStart } from '../packages/development-guardian/work-session/schedule-policy.js'
@@ -62,7 +64,7 @@ test('timestamp parsing rejects malformed and ambiguous dates and normalizes off
   assert.throws(() => getDeepSeekPricingPeriod(new Date(NaN)))
 })
 
-async function fixture(t: test.TestContext, overrides: Partial<WorkSessionDefinition> = {}, taskResult: WorkSessionTaskResult = { status: 'COMPLETED' }) {
+async function fixture(t: test.TestContext, overrides: Partial<WorkSessionDefinition> = {}, taskResult: WorkSessionTaskResult | (() => Promise<WorkSessionTaskResult>) = { status: 'COMPLETED' }) {
   const directory = await mkdtemp(join(tmpdir(), 'novawing-scheduled-'))
   const storageUrl = pathToFileURL(join(directory, 'session.db')).href
   let now = Date.parse('2026-08-31T08:20:00Z')
@@ -76,7 +78,7 @@ async function fixture(t: test.TestContext, overrides: Partial<WorkSessionDefini
   const create = () => {
     const runtime = new WorkSessionRuntime({
       definition, storageUrl, clock: { now: () => now },
-      taskRunner: { async run() { calls++; return taskResult } },
+      taskRunner: { async run() { calls++; return typeof taskResult === 'function' ? taskResult() : taskResult } },
     })
     runtimes.push(runtime)
     return runtime
@@ -128,21 +130,138 @@ test('Scheduled waiting has zero execution, ledger, retries, timeout and no susp
   assert.ok(runtime.readExecutionLedger().some((event) => event.eventType === 'TASK_COMPLETED'))
 })
 
-test('future schedule persists across restart and overdue restart runs only once', async (t) => {
-  const f = await fixture(t)
-  const first = f.create()
-  await first.start()
-  await first.close()
-  const second = f.create()
-  assert.equal((await second.loadPersistedState())?.state, 'SCHEDULED')
-  assert.equal(f.calls(), 0)
+function assertDatabaseIntegrity(storageUrl: string): void {
+  // Inspect only after every runtime using the session file has closed. Mixing
+  // independent SQLite engines while either owns an open connection is unsafe.
+  const database = new DatabaseSync(fileURLToPath(storageUrl), { readOnly: true })
+  try {
+    assert.deepEqual(database.prepare('PRAGMA integrity_check').all().map((row) => row.integrity_check), ['ok'])
+  } finally {
+    database.close()
+  }
+}
+
+for (let attempt = 1; attempt <= 3; attempt++) {
+  test(`future schedule persists across restart and overdue restart runs only once (${attempt})`, async (t) => {
+    const f = await fixture(t)
+    const first = f.create()
+    assert.equal((await first.start()).state, 'SCHEDULED')
+    await first.close()
+    assertDatabaseIntegrity(f.storageUrl)
+    const second = f.create()
+    assert.equal((await second.loadPersistedState())?.state, 'SCHEDULED')
+    assert.equal(f.calls(), 0)
+    f.setNow('2026-09-01T00:00:00Z')
+    assert.equal((await second.start()).state, 'COMPLETED')
+    await second.close()
+    assertDatabaseIntegrity(f.storageUrl)
+    for (let reopen = 0; reopen < 5; reopen++) {
+      const runtime = f.create()
+      assert.equal((await runtime.loadPersistedState())?.state, 'COMPLETED')
+      assert.equal((await runtime.start()).state, 'COMPLETED')
+      assert.equal(f.calls(), 1)
+      await runtime.close()
+      assertDatabaseIntegrity(f.storageUrl)
+    }
+  })
+}
+
+test('runtime close drains an active task and its completed snapshot before releasing storage', async (t) => {
+  let releaseTask!: () => void
+  let taskEntered!: () => void
+  const taskGate = new Promise<void>((resolve) => { releaseTask = resolve })
+  const entered = new Promise<void>((resolve) => { taskEntered = resolve })
+  const f = await fixture(t, {}, async () => {
+    taskEntered()
+    await taskGate
+    return { status: 'COMPLETED' }
+  })
+  const runtime = f.create()
+  await runtime.loadPersistedState()
   f.setNow('2026-09-01T00:00:00Z')
-  assert.equal((await second.start()).state, 'COMPLETED')
-  await second.close()
-  const third = f.create()
-  assert.equal((await third.loadPersistedState())?.state, 'COMPLETED')
-  assert.equal((await third.start()).state, 'COMPLETED')
+  const started = runtime.start()
+  await entered
+  let closeSettled = false
+  const closing = runtime.close().finally(() => { closeSettled = true })
+  const finished = Promise.allSettled([started, closing])
+  try {
+    // Advance one event-loop turn, without delaying a write or relying on time.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(closeSettled, false, 'close must wait while the TaskRunner is still active')
+  } finally {
+    releaseTask()
+    await finished
+  }
+  assert.equal((await started).state, 'COMPLETED')
+  await closing
+  assertDatabaseIntegrity(f.storageUrl)
+  const reopened = f.create()
+  assert.equal((await reopened.loadPersistedState())?.state, 'COMPLETED')
+  assert.equal((await reopened.start()).state, 'COMPLETED')
   assert.equal(f.calls(), 1)
+  await reopened.close()
+  assertDatabaseIntegrity(f.storageUrl)
+})
+
+test('runtime close drains an admitted createRun after its pending snapshot is persisted', async (t) => {
+  const f = await fixture(t)
+  const runtime = f.create()
+  await runtime.loadPersistedState()
+  f.setNow('2026-09-01T00:00:00Z')
+  let releaseCreateRun!: () => void
+  let snapshotCreated!: () => void
+  const createRunGate = new Promise<void>((resolve) => { releaseCreateRun = resolve })
+  const created = new Promise<void>((resolve) => { snapshotCreated = resolve })
+  // Intercept only the return boundary; Mastra still creates the real run and
+  // writes its real pending snapshot before shutdown begins.
+  const mastra = (runtime as unknown as { mastra: Mastra }).mastra
+  const workflow = mastra.getWorkflow(`work-session-${f.definition.id}`)
+  const originalCreateRun = workflow.createRun
+  workflow.createRun = async (options) => {
+    const run = await originalCreateRun.call(workflow, options)
+    snapshotCreated()
+    await createRunGate
+    return run
+  }
+  t.after(() => { workflow.createRun = originalCreateRun })
+  const started = runtime.start()
+  let closing: Promise<void> | undefined
+  // Own failures during setup as well, so an assertion cannot leave the gate
+  // closed and make the fixture's shutdown wait forever.
+  let finished = Promise.allSettled<unknown>([started])
+  try {
+    await Promise.race([created, started.then(() => assert.fail('createRun gate was not reached'))])
+    const workflows = await mastra.getStorage()?.getStore('workflows')
+    assert.ok(workflows)
+    const snapshot = await workflows.loadWorkflowSnapshot({
+      workflowName: `work-session-${f.definition.id}`, runId: f.definition.id,
+    })
+    assert.equal(snapshot?.status, 'pending')
+    assert.deepEqual(snapshot?.value, {})
+    assert.equal(f.calls(), 0)
+
+    let closeSettled = false
+    const shutdown = runtime.close()
+    assert.equal(runtime.close(), shutdown, 'concurrent close calls share the same drain')
+    closing = shutdown.finally(() => { closeSettled = true })
+    finished = Promise.allSettled([started, closing])
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(closeSettled, false, 'close must wait for the admitted createRun')
+    assert.equal(f.calls(), 0)
+  } finally {
+    releaseCreateRun()
+    await finished
+  }
+  assert.equal((await started).state, 'COMPLETED')
+  await closing
+  assert.equal(f.calls(), 1)
+  assertDatabaseIntegrity(f.storageUrl)
+  const reopened = f.create()
+  assert.equal((await reopened.loadPersistedState())?.state, 'COMPLETED')
+  assert.equal((await reopened.start()).state, 'COMPLETED')
+  assert.equal(f.calls(), 1)
+  await reopened.close()
+  assertDatabaseIntegrity(f.storageUrl)
 })
 
 test('same-instance calls and competing runtime instances claim one due task', async (t) => {

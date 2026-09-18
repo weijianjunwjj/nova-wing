@@ -1,10 +1,8 @@
-import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
-
 import { Codex, type CodexOptions, type ThreadOptions } from '@openai/codex-sdk'
 
 import { CODING_EXECUTOR_DEFAULTS } from '../../coding-executor-config.js'
 import { codexChatGptEnvironment } from '../../codex-executor.js'
+import { bundledCodexExecutable } from '../../codex-runtime.js'
 
 /** Default Repair model; overridable per Launchpad. */
 export const REPAIR_DEFAULT_MODEL = CODING_EXECUTOR_DEFAULTS.codex.model
@@ -51,19 +49,6 @@ export interface CodexRepairModelRunnerOptions {
   env?: NodeJS.ProcessEnv
   /** Test seam for the bounded repair turn. */
   run?: (thread: ReturnType<Codex['startThread']>, prompt: string, timeoutMs: number) => Promise<string>
-}
-
-function bundledCodexExecutable(): string {
-  if (process.platform !== 'win32' || !['x64', 'arm64'].includes(process.arch)) {
-    throw new RepairProviderUnavailableError(
-      `Codex Local host is unsupported on ${process.platform}/${process.arch}`,
-      'Codex Local is unavailable on this platform',
-    )
-  }
-  const require = createRequire(import.meta.url)
-  const root = dirname(require.resolve(`@openai/codex-win32-${process.arch}/package.json`))
-  const triple = process.arch === 'x64' ? 'x86_64-pc-windows-msvc' : 'aarch64-pc-windows-msvc'
-  return join(root, 'vendor', triple, 'bin', 'codex.exe')
 }
 
 function safeProviderFailure(error: unknown): string {

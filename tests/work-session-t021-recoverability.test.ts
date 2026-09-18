@@ -28,6 +28,7 @@ import {
 } from 'nova-wing/development-guardian'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { createNovaWingLaunchpad } from 'nova-wing/development-guardian'
+import { crashAtSecondTask } from './work-session-crash-fixture.js'
 
 const REPO = process.cwd()
 const BRANCH = 'feat/work-session-mvp'
@@ -64,9 +65,6 @@ async function withStorage(
     }
   }
 }
-
-/** 永不 resolve 的 promise，模拟进程在 RUNNING 中异常退出。 */
-const NEVER = new Promise<never>(() => undefined)
 
 function completedRunner(sideEffects: Map<string, number>): WorkSessionTaskRunner {
   return {
@@ -159,30 +157,12 @@ await test('T021 deriveRecoverySummary 仅从持久化事实推导恢复信息',
 await test('T021 restart: RUNNING 崩溃遗留的 unfinished Session 被识别为 RECOVERABLE', async () => {
   await withStorage('t021-restart-running-', async (storageUrl) => {
     const session = definition('t021-restart-running', 2)
-    let t2Entered: (() => void) | undefined
-    const t2EnteredPromise = new Promise<void>((resolve) => { t2Entered = resolve })
+    const interrupted = await crashAtSecondTask(session, storageUrl)
 
-    const runtime1 = new WorkSessionRuntime({
-      definition: session,
-      storageUrl,
-      taskRunner: {
-        async run(task): Promise<WorkSessionTaskResult> {
-          if (task.id === 'T1') return { status: 'COMPLETED' }
-          t2Entered?.()
-          await NEVER
-          return { status: 'COMPLETED' }
-        },
-      },
-    })
-    const startPromise = runtime1.start()
-    await t2EnteredPromise
-
-    // 进程内 domain state 已持久化为 RUNNING + currentTaskId=T2
-    assert.equal(runtime1.getDurableState()?.state, 'RUNNING')
-    assert.deepEqual(runtime1.getDurableState()?.completedTaskIds, ['T1'])
-    assert.equal(runtime1.getDurableState()?.currentTaskId, 'T2')
-    await runtime1.close()
-    void startPromise
+    // 子进程已确认此 domain state 持久化，然后被真实 kill 并等待退出。
+    assert.equal(interrupted.state, 'RUNNING')
+    assert.deepEqual(interrupted.completedTaskIds, ['T1'])
+    assert.equal(interrupted.currentTaskId, 'T2')
 
     // 模拟进程重启：新 Runtime 只 hydrate，不执行
     const runtime2 = new WorkSessionRuntime({
@@ -208,27 +188,8 @@ await test('T021 CASE A: resumeInterrupted 使用原 Session，只执行下一 T
   await withStorage('t021-case-a-', async (storageUrl) => {
     const session = definition('t021-case-a', 3)
     const sideEffects = new Map<string, number>()
-    let t2Entered: (() => void) | undefined
-    const t2EnteredPromise = new Promise<void>((resolve) => { t2Entered = resolve })
-
-    const runtime1 = new WorkSessionRuntime({
-      definition: session,
-      storageUrl,
-      taskRunner: {
-        async run(task): Promise<WorkSessionTaskResult> {
-          sideEffects.set(task.id, (sideEffects.get(task.id) ?? 0) + 1)
-          if (task.id === 'T1') return { status: 'COMPLETED' }
-          t2Entered?.()
-          await NEVER
-          return { status: 'COMPLETED' }
-        },
-      },
-    })
-    const startPromise = runtime1.start()
-    await t2EnteredPromise
-    assert.deepEqual(runtime1.getDurableState()?.completedTaskIds, ['T1'])
-    await runtime1.close()
-    void startPromise
+    const interrupted = await crashAtSecondTask(session, storageUrl, sideEffects)
+    assert.deepEqual(interrupted.completedTaskIds, ['T1'])
 
     // 重启后显式恢复
     const runtime2 = new WorkSessionRuntime({
@@ -256,25 +217,7 @@ await test('T021 CASE A: resumeInterrupted 使用原 Session，只执行下一 T
 await test('T021 repeated resumeInterrupted 不创建两个活动 Runner', async () => {
   await withStorage('t021-idempotent-', async (storageUrl) => {
     const session = definition('t021-idempotent', 2)
-    let t2Entered: (() => void) | undefined
-    const t2EnteredPromise = new Promise<void>((resolve) => { t2Entered = resolve })
-
-    const runtime1 = new WorkSessionRuntime({
-      definition: session,
-      storageUrl,
-      taskRunner: {
-        async run(task): Promise<WorkSessionTaskResult> {
-          if (task.id === 'T1') return { status: 'COMPLETED' }
-          t2Entered?.()
-          await NEVER
-          return { status: 'COMPLETED' }
-        },
-      },
-    })
-    const startPromise = runtime1.start()
-    await t2EnteredPromise
-    await runtime1.close()
-    void startPromise
+    await crashAtSecondTask(session, storageUrl)
 
     let freshReviewerConversations = 0
     const runtime2 = new WorkSessionRuntime({
@@ -365,25 +308,7 @@ await test('T021 终态 Session 不可 resumeInterrupted，fresh Session 保持 
 await test('T021 controller 暴露 displayState、恢复信息，并显式分派 resumeRecoverable', async () => {
   await withStorage('t021-controller-', async (storageUrl) => {
     const session = definition('t021-controller', 2)
-    let t2Entered: (() => void) | undefined
-    const t2EnteredPromise = new Promise<void>((resolve) => { t2Entered = resolve })
-
-    const runtime1 = new WorkSessionRuntime({
-      definition: session,
-      storageUrl,
-      taskRunner: {
-        async run(task): Promise<WorkSessionTaskResult> {
-          if (task.id === 'T1') return { status: 'COMPLETED' }
-          t2Entered?.()
-          await NEVER
-          return { status: 'COMPLETED' }
-        },
-      },
-    })
-    const startPromise = runtime1.start()
-    await t2EnteredPromise
-    await runtime1.close()
-    void startPromise
+    await crashAtSecondTask(session, storageUrl)
 
     const sideEffects = new Map<string, number>()
     const runtime2 = new WorkSessionRuntime({
@@ -425,25 +350,7 @@ await test('T021 controller 暴露 displayState、恢复信息，并显式分派
 await test('T021 Launchpad 读取持久化状态并派生与控制器一致的展示状态', async () => {
   await withStorage('t021-launchpad-', async (storageUrl) => {
     const session = definition('t021-launchpad-session', 2)
-    let t2Entered: (() => void) | undefined
-    const t2EnteredPromise = new Promise<void>((resolve) => { t2Entered = resolve })
-
-    const runtime1 = new WorkSessionRuntime({
-      definition: session,
-      storageUrl,
-      taskRunner: {
-        async run(task): Promise<WorkSessionTaskResult> {
-          if (task.id === 'T1') return { status: 'COMPLETED' }
-          t2Entered?.()
-          await NEVER
-          return { status: 'COMPLETED' }
-        },
-      },
-    })
-    const startPromise = runtime1.start()
-    await t2EnteredPromise
-    await runtime1.close()
-    void startPromise
+    await crashAtSecondTask(session, storageUrl)
 
     // 控制器侧：读同一持久化 storage
     const runtime2 = new WorkSessionRuntime({

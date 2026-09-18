@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test, { type TestContext } from 'node:test'
@@ -171,6 +171,36 @@ test('Claude invocation forwards argv through the Git Bash -- delimiter', async 
   assert.deepEqual(claude.args.slice(0, 3), ['-lc', 'exec claude "$@"', '--'])
   assert.equal(claude.args[3], '-p')
   assert.equal(claude.nativeGitBash, true)
+  for (const request of runner.requests) {
+    assert.equal(request.env?.NODE_TEST_CONTEXT, undefined)
+    assert.equal(request.env?.BASH, 'E:/Tools/Git/bin/bash.exe')
+    assert.equal(request.env?.SHELL, 'E:/Tools/Git/bin/bash.exe')
+    assert.equal(request.env?.npm_config_script_shell, 'E:/Tools/Git/bin/bash.exe')
+    assert.equal(request.env?.NOVAWING_GIT_BASH_PATH, 'E:/Tools/Git/bin/bash.exe')
+  }
+})
+
+test('independent node verifier executes failing tests instead of inheriting node:test context', async (t) => {
+  const cwd = await createExecutorWorkspace(t)
+  const command = 'node --test failing.test.mjs'
+  await writeFile(join(cwd, 'failing.test.mjs'), [
+    'import test from "node:test"',
+    'import assert from "node:assert/strict"',
+    'test("intentional verifier failure", () => assert.fail("verifier really executed"))',
+  ].join('\n'))
+  // This parent runs under node --test, which sets the context inherited by children.
+  assert.ok(process.env.NODE_TEST_CONTEXT)
+  const report = await new ClaudeCodeExecutor({ cwd, verificationOutputDirectory: join(cwd, 'output') }).retryVerification({
+    task: task(),
+    report: { summary: 'fixture', changedFiles: [], commandsRun: [], blockers: [],
+      verificationResults: [{ name: command, status: 'failed' }] },
+    verificationSteps: [{ stepId: 'failing-node-test', command, cwd: '.' }],
+  })
+  const verification = report.verificationResults[0]!
+  assert.equal(verification.status, 'failed')
+  assert.equal(verification.exitCode, 1)
+  assert.ok(verification.rawOutputRef)
+  assert.match(await readFile(verification.rawOutputRef, 'utf8'), /verifier really executed/)
 })
 
 test('large Claude prompt is streamed over stdin instead of the Windows command line', async (t) => {

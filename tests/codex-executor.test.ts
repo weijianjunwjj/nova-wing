@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readFile, rm, link, symlink, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { access, readFile, rm, link, symlink, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { codexTestRepo } from './codex-test-fixture.js'
@@ -16,6 +17,8 @@ import {
   inspectCodexLocal,
 } from '../packages/development-guardian/codex-executor.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
+import { bundledCodexExecutable, codexRuntimeTarget } from '../packages/development-guardian/codex-runtime.js'
+import { isCodexRepairRuntimeAvailable } from '../packages/development-guardian/work-session/launchpad/repair-model.js'
 import { CodexWorkspaceTools } from '../packages/development-guardian/codex-workspace-tools.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -107,9 +110,35 @@ test('effective SDK configuration defaults to Terra high, ChatGPT auth and no am
 })
 
 test('SDK runtime discovery does not require a system codex command', async () => {
-  const runtime = await inspectCodexLocal({ PATH: 'C:\\system-without-codex' }, process.cwd())
-  assert.match(runtime.executable, /@openai[\\/]codex-win32-/u)
+  const runtime = await inspectCodexLocal({ PATH: '' }, process.cwd())
+  const target = codexRuntimeTarget(process.platform, process.arch)
+  assert.ok(runtime.executable.includes(join('@openai', `codex-${process.platform}-${process.arch}`)))
+  assert.ok(runtime.executable.endsWith(join('vendor', target.triple, 'bin', target.binaryName)))
+  await access(runtime.executable, constants.X_OK)
+  assert.equal(runtime.executable, bundledCodexExecutable())
+  assert.equal(isCodexRepairRuntimeAvailable(), true)
   assert.deepEqual(runtime.mcpNames, [])
+})
+
+for (const [platform, arch, triple, binaryName] of [
+  ['darwin', 'arm64', 'aarch64-apple-darwin', 'codex'],
+  ['darwin', 'x64', 'x86_64-apple-darwin', 'codex'],
+  ['linux', 'arm64', 'aarch64-unknown-linux-musl', 'codex'],
+  ['linux', 'x64', 'x86_64-unknown-linux-musl', 'codex'],
+  ['win32', 'arm64', 'aarch64-pc-windows-msvc', 'codex.exe'],
+  ['win32', 'x64', 'x86_64-pc-windows-msvc', 'codex.exe'],
+] as const) {
+  test(`bundled Codex target ${platform}/${arch} follows the SDK native layout`, () => {
+    assert.deepEqual(codexRuntimeTarget(platform, arch), {
+      packageName: `@openai/codex-${platform}-${arch}`, triple, binaryName,
+    })
+  })
+}
+
+test('unsupported Codex hosts fail with configuration_error', () => {
+  for (const [platform, arch] of [['freebsd', 'x64'], ['darwin', 'ia32'], ['linux', 'arm'], ['win32', 'ia32']]) {
+    assert.throws(() => codexRuntimeTarget(platform!, arch!), { code: 'configuration_error' })
+  }
 })
 
 test('scoped workspace tools reject escapes, forbidden paths, linked files and post-revocation writes', async () => {

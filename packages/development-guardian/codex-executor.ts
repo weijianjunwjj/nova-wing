@@ -1,11 +1,11 @@
-import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@openai/codex-sdk'
 import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-code-executor.js'
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
 import { classifyCodexError, type ClassifiedCodexError } from './codex-error.js'
 import { CodexWorkspaceTools, type CodexWorkspaceProbeResult } from './codex-workspace-tools.js'
+import { bundledCodexExecutable } from './codex-runtime.js'
+export { bundledCodexExecutable } from './codex-runtime.js'
 import type { DelegationPacket, ExecutionReport, GuardianTask, VerificationExecutionStep } from './model.js'
 import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
@@ -151,16 +151,6 @@ export function codexEffectiveConfiguration(options: CodexExecutorOptions, execu
       networkAccessEnabled: false, webSearchMode: 'disabled', additionalDirectories: [],
     },
   }
-}
-
-export function bundledCodexExecutable(): string {
-  if (process.platform !== 'win32' || !['x64', 'arm64'].includes(process.arch)) {
-    throw Object.assign(new Error('Unsupported Codex Local host'), { code: 'configuration_error' })
-  }
-  const require = createRequire(import.meta.url)
-  const root = dirname(require.resolve(`@openai/codex-win32-${process.arch}/package.json`))
-  const triple = process.arch === 'x64' ? 'x86_64-pc-windows-msvc' : 'aarch64-pc-windows-msvc'
-  return join(root, 'vendor', triple, 'bin', 'codex.exe')
 }
 
 /**

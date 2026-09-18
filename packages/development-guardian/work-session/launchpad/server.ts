@@ -571,13 +571,10 @@ export class NovaWingLaunchpad {
   private async hydrateStatuses(): Promise<void> {
     await Promise.all([...this.configs.values()].map(async (config) => {
       const configId = config.summary.configId
-      try {
-        const status = await this.readSessionStatus(config.config)
-        this.statuses.set(configId, status)
-      } catch {
-        // 读取失败按 READY 处理（与 discovery 的容错一致），不阻塞其余卡片。
-        this.statuses.set(configId, 'READY')
-      }
+      // Storage failures are not evidence of a new/READY session. Propagate them
+      // so a corrupt or unreadable completed session cannot be offered as fresh.
+      const status = await this.readSessionStatus(config.config)
+      this.statuses.set(configId, status)
     }))
   }
 

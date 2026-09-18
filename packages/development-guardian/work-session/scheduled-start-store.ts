@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DatabaseSync } from 'node:sqlite'
+import type Libsql from 'libsql'
 import type { ScheduleSource } from './schedule-policy.js'
 
 interface ScheduleRow {
@@ -13,15 +14,23 @@ interface ScheduleRow {
   owner_pid: number | null
 }
 
+// Resolve through Mastra's dependency graph, not a hoisted/global driver. Mixing
+// node:sqlite and libSQL connections to this same file corrupts scheduled state
+// across WAL close/reopen on macOS. Both stores must use the same native library.
+const requireMastra = createRequire(createRequire(import.meta.url).resolve('@mastra/libsql'))
+const requireClient = createRequire(requireMastra.resolve('@libsql/client'))
+const Database = requireClient('libsql') as typeof Libsql
+
 /** One-time execution gate in the existing session DB, not a second task runtime. */
 export class ScheduledStartStore {
-  private readonly db: DatabaseSync
+  private readonly db: Libsql.Database
 
   constructor(storageUrl: string) {
     const path = fileURLToPath(storageUrl)
     mkdirSync(dirname(path), { recursive: true })
-    this.db = new DatabaseSync(path)
-    this.db.exec(`PRAGMA busy_timeout = 5000;
+    this.db = new Database(path)
+    try {
+      this.db.exec(`PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS work_session_scheduled_start (
         session_id TEXT PRIMARY KEY,
         scheduled_start_at TEXT NOT NULL,
@@ -30,6 +39,10 @@ export class ScheduledStartStore {
         status TEXT NOT NULL CHECK (status IN ('SCHEDULED', 'CLAIMED', 'CANCELLED')),
         owner_pid INTEGER
       )`)
+    } catch (error) {
+      this.db.close()
+      throw error
+    }
   }
 
   ensure(id: string, at: string, source: ScheduleSource, createdAt: string): void {
@@ -72,7 +85,8 @@ export class ScheduledStartStore {
       WHERE session_id = ? AND status = 'SCHEDULED'`).run(id).changes === 1
   }
 
-  close(): void { this.db.close() }
+  /** This store owns only its connection; Mastra owns its own libSQL client. */
+  close(): void { if (this.db.open) this.db.close() }
 }
 
 function isProcessAlive(pid: number): boolean {

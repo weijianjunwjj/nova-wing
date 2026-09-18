@@ -683,9 +683,9 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     }
   }
 
-  private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv | undefined {
-    if (nativeGitBash !== true) return undefined
+  private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv {
     const { NODE_TEST_CONTEXT: _nodeTestContext, ...ambient } = process.env
+    if (nativeGitBash !== true) return ambient
     return {
       ...ambient,
       BASH: executable,

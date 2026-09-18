@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 import vm from 'node:vm'
 
@@ -799,9 +799,10 @@ await test('Launchpad discovery uses the trusted validator and ignores invalid J
 })
 
 await test('Launchpad config directory supports NOVAWING_CONFIG_DIR and the LOCALAPPDATA default', () => {
+  const override = join(tmpdir(), 'novawing-trusted-configs')
   assert.equal(
-    defaultTrustedConfigDirectory({ NOVAWING_CONFIG_DIR: 'D:/trusted-configs' }, 'C:/Users/test'),
-    join('D:/trusted-configs'),
+    defaultTrustedConfigDirectory({ NOVAWING_CONFIG_DIR: override }, tmpdir()),
+    resolve(override),
   )
   assert.equal(
     defaultTrustedConfigDirectory({ LOCALAPPDATA: 'C:/Users/test/AppData/Local' }, 'C:/ignored'),

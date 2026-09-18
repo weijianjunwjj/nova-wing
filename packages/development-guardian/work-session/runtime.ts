@@ -389,6 +389,10 @@ function persistedVerificationResult(
   )
 }
 
+class RuntimeClosedError extends Error {
+  constructor() { super('Work Session runtime closed before dispatch') }
+}
+
 export class WorkSessionRuntime {
   private mastra: Mastra
   private config: WorkSessionRuntimeConfig
@@ -406,6 +410,8 @@ export class WorkSessionRuntime {
   private scheduleStore: ScheduledStartStore | undefined
   private startOperation: Promise<WorkSessionDurableState> | undefined
   private closed = false
+  private closeOperation: Promise<void> | undefined
+  private readonly storageOperations = new Set<Promise<unknown>>()
   /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
   private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
   /** Direct runtime idempotency guard; the control layer also rejects duplicate clicks. */
@@ -425,8 +431,13 @@ export class WorkSessionRuntime {
     const scheduledStartAt = normalizeScheduledStart(config.definition.scheduledStartAt)
     if (scheduledStartAt !== null) {
       this.scheduleStore = new ScheduledStartStore(config.storageUrl)
-      this.scheduleStore.ensure(config.definition.id, scheduledStartAt,
-        config.definition.scheduleSource ?? 'custom', config.definition.createdAt ?? new Date(this.now()).toISOString())
+      try {
+        this.scheduleStore.ensure(config.definition.id, scheduledStartAt,
+          config.definition.scheduleSource ?? 'custom', config.definition.createdAt ?? new Date(this.now()).toISOString())
+      } catch (error) {
+        this.scheduleStore.close()
+        throw error
+      }
     }
     // runId = sessionId，简化 identity 管理
     this.workflowId = `work-session-${config.definition.id}`
@@ -457,6 +468,17 @@ export class WorkSessionRuntime {
   /** W004-B: 当前 clock 帧内时间（毫秒） */
   private now(): number {
     return this.config.clock?.now() ?? Date.now()
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new RuntimeClosedError()
+  }
+
+  private async withStorageOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertOpen()
+    const pending = operation()
+    this.storageOperations.add(pending)
+    try { return await pending } finally { this.storageOperations.delete(pending) }
   }
 
   /** W004-B: active working time（毫秒）。suspend 期间不累积。 */
@@ -513,6 +535,10 @@ export class WorkSessionRuntime {
    * a fabricated READY state.
    */
   async loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
+    return this.withStorageOperation(() => this.doLoadPersistedState())
+  }
+
+  private async doLoadPersistedState(): Promise<WorkSessionDurableState | undefined> {
     const persisted = await this.readPersistedWorkflowSnapshot()
     if (persisted === undefined) return this.loadScheduledState()
 
@@ -546,6 +572,7 @@ export class WorkSessionRuntime {
   }
 
   async start(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.startOperation !== undefined) return this.startOperation
     const operation = this.startWhenDue()
     this.startOperation = operation
@@ -565,10 +592,10 @@ export class WorkSessionRuntime {
   }
 
   private async startWhenDue(): Promise<WorkSessionDurableState> {
-    if (this.closed) throw new Error('Work Session runtime is closed')
+    this.assertOpen()
     if (this.scheduleStore !== undefined) {
       const persisted = await this.readPersistedWorkflowSnapshot()
-      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
+      this.assertOpen()
       if (persisted !== undefined) {
         this.latestState = persisted.state
         return this.convertWorkflowStateToDurableState(persisted.state)
@@ -633,11 +660,12 @@ export class WorkSessionRuntime {
 
     try {
       // 使用 sessionId 作为 runId
-      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
+      this.assertOpen()
+      // Admission boundary: createRun may persist a pending snapshot. Once it
+      // begins, close() must drain this run, not abandon an empty pending value.
       const run = await workflow.createRun({
         runId,
       })
-      if (this.closed) throw new Error('Work Session runtime closed before dispatch')
 
       this.recordLedger({
         eventType: 'SESSION_STARTED',
@@ -683,6 +711,7 @@ export class WorkSessionRuntime {
   }
 
   async resume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.suspendedResumePromise !== undefined) {
       throw new Error('session resume already in progress')
     }
@@ -724,6 +753,10 @@ export class WorkSessionRuntime {
    * the TaskRunner checkpoint gate before any provider or verifier execution.
    */
   async resumeWithDurableVerificationApproval(): Promise<WorkSessionDurableState> {
+    return this.withStorageOperation(() => this.doResumeWithDurableVerificationApproval())
+  }
+
+  private async doResumeWithDurableVerificationApproval(): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
     const storage = this.mastra.getStorage()
     const workflows = storage === undefined ? undefined : await storage.getStore('workflows')
@@ -770,6 +803,7 @@ export class WorkSessionRuntime {
    * → resume the same Session. A legal repair never re-runs the Executor.
    */
   async repairRuntimeAndResume(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.runtimeRepairPromise !== undefined) {
       throw new Error('runtime repair already in progress')
     }
@@ -1017,6 +1051,7 @@ export class WorkSessionRuntime {
    * durable request already bound to this runtime's session and current task.
    */
   async approvePendingVerificationAndContinue(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.verificationApprovalPromise !== undefined) {
       throw new Error('verification approval already in progress')
     }
@@ -1027,6 +1062,7 @@ export class WorkSessionRuntime {
 
   /** Declining the exact pending verifier preserves the suspended session and evidence. */
   async rejectPendingVerification(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.verificationApprovalPromise !== undefined || this.suspendedResumePromise !== undefined) {
       throw new Error('verification decision already in progress')
     }
@@ -1127,6 +1163,12 @@ export class WorkSessionRuntime {
   async resumeFromRecoveryCheckpoint(
     options: RecoveryCheckpointResumeOptions,
   ): Promise<WorkSessionDurableState> {
+    return this.withStorageOperation(() => this.doResumeFromRecoveryCheckpoint(options))
+  }
+
+  private async doResumeFromRecoveryCheckpoint(
+    options: RecoveryCheckpointResumeOptions,
+  ): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
     if (options.sessionId !== runId) {
       throw new Error(
@@ -1181,6 +1223,12 @@ export class WorkSessionRuntime {
    * never fabricates a new Task or bypasses checkpoint verification.
    */
   async recoverFailedExecutorWithCheckpoint(
+    options: FailedExecutorRecoveryOptions,
+  ): Promise<WorkSessionDurableState> {
+    return this.withStorageOperation(() => this.doRecoverFailedExecutorWithCheckpoint(options))
+  }
+
+  private async doRecoverFailedExecutorWithCheckpoint(
     options: FailedExecutorRecoveryOptions,
   ): Promise<WorkSessionDurableState> {
     const runId = this.config.definition.id
@@ -1269,6 +1317,7 @@ export class WorkSessionRuntime {
 
   /** Narrow closure for a failed, already-committed Git push checkpoint only. */
   async recoverFailedGitCheckpoint(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.checkpointRecoveryPromise !== undefined) {
       throw new Error('checkpoint recovery already in progress')
     }
@@ -1366,6 +1415,7 @@ export class WorkSessionRuntime {
    * 必须由用户显式调用；loadPersistedState 只发现、不自动恢复。
    */
   async resumeInterrupted(): Promise<WorkSessionDurableState> {
+    this.assertOpen()
     if (this.resumeInterruptedPromise !== undefined) {
       throw new Error('interrupted resume already in progress')
     }
@@ -2453,21 +2503,40 @@ export class WorkSessionRuntime {
     return result
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.closeOperation !== undefined) return this.closeOperation
     this.closed = true
-    if (this.scheduleStore !== undefined && !this.executionStarted) {
-      await this.startOperation?.catch(() => undefined)
+    this.closeOperation = this.drainAndClose()
+    return this.closeOperation
+  }
+
+  private async drainAndClose(): Promise<void> {
+    // No new operations can enter. Existing workflow operations include their
+    // awaited snapshot writes; notifications may be queued as they complete.
+    const results = await Promise.allSettled([
+      ...this.storageOperations, this.startOperation, this.suspendedResumePromise,
+      this.resumeInterruptedPromise, this.verificationApprovalPromise,
+      this.checkpointRecoveryPromise, this.runtimeRepairPromise,
+    ])
+    results.push(...await Promise.allSettled([this.notificationPromise]))
+    const failures = results.flatMap((result) => result.status === 'rejected' &&
+      !(result.reason instanceof RuntimeClosedError) ? [result.reason] : [])
+    // LibSQL starts async PRAGMA setup in its constructor. Even an unused
+    // runtime must settle initialization before its client can be closed.
+    try { await this.mastra.getStorage()?.init() } catch (error) { failures.push(error) }
+    // Close each owned connection even when another close fails. Storage errors
+    // remain visible to the caller; only our own pre-dispatch cancellation is normal.
+    for (const close of [
+      () => this.ledger?.close(),
+      () => this.scheduleStore?.close(),
+      () => this.config.analyticsProjector?.store.close(),
+      () => this.mastra.getStorage()?.close(),
+    ]) {
+      try { await close() } catch (error) { failures.push(error) }
     }
-    await this.notificationPromise
-    this.ledger?.close()
     this.ledger = undefined
-    this.scheduleStore?.close()
     this.scheduleStore = undefined
-    this.config.analyticsProjector?.store.close()
-    const storage = this.mastra.getStorage()
-    if (storage) {
-      await storage.close()
-    }
+    if (failures.length > 0) throw new AggregateError(failures, 'Work Session runtime close failed')
   }
 
   /**
@@ -2610,6 +2679,7 @@ export class WorkSessionRuntime {
   }
 
   requestStopAfterTask(): { accepted: boolean; reason?: string } {
+    if (this.closed) return { accepted: false, reason: 'Work Session runtime is closed' }
     if (this.latestState?.state === 'SCHEDULED') {
       const accepted = this.scheduleStore?.cancel(this.config.definition.id) === true
       this.loadScheduledState()
@@ -3422,7 +3492,11 @@ export class WorkSessionRuntime {
    * 验证 Mastra snapshot 是否存在
    * 用于测试验证持久化
    */
-  async verifySnapshot(): Promise<{
+  async verifySnapshot() {
+    return this.withStorageOperation(() => this.doVerifySnapshot())
+  }
+
+  private async doVerifySnapshot(): Promise<{
     exists: boolean
     status?: string
     hasSuspendedStep?: boolean

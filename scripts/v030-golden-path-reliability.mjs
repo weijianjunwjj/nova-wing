@@ -88,7 +88,11 @@ async function runOnce() {
             for (const step of task.verificationPlan.steps) {
               const cwd = step.cwd === '.' ? repo : join(repo, step.cwd)
               const result = await processRun(step.command, [], cwd, true)
-              results.push({ name: step.command, status: result.exitCode === 0 ? 'passed' : 'failed', ...(result.exitCode === 0 ? {} : { classification: 'CODE_FAILURE' }) })
+              results.push({
+                stepId: step.id, name: step.command, command: step.command, cwd: step.cwd,
+                exitCode: result.exitCode, status: result.exitCode === 0 ? 'passed' : 'failed',
+                ...(result.exitCode === 0 ? {} : { classification: 'CODE_FAILURE' }),
+              })
             }
             return { status: 'SUCCESS', verificationResults: results }
           }
