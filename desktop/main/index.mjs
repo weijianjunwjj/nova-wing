@@ -1,48 +1,42 @@
-import { app, BrowserWindow } from 'electron'
+import { app } from 'electron'
+import { requireDesktopIsolation } from './isolation.mjs'
 
-// Phase 1 deliberately owns only a window. No production Host is started here.
-app.on('window-all-closed', () => app.quit())
+const root = requireDesktopIsolation()
+let host
+let closePromise
+let quitAllowed = false
 
-const page = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NovaWing Desktop Bootstrap</title>
-<style>body{font:18px system-ui,sans-serif;background:#101827;color:#e8eef8;margin:0;padding:64px}h1{font-size:30px}p{line-height:1.6;color:#b8c5d9}</style>
-</head><body><h1>NovaWing Desktop Bootstrap</h1>
-<p>The desktop shell is ready.</p><p>Close this window to exit.</p></body></html>`
-
-async function createBootstrapWindow() {
-  const bootstrapWindow = new BrowserWindow({
-    width: 800,
-    height: 520,
-    title: 'NovaWing Desktop Bootstrap',
-    show: false,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      partition: 'novawing-desktop-bootstrap',
-    },
-  })
-
-  bootstrapWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  bootstrapWindow.webContents.on('will-navigate', (event) => event.preventDefault())
-  bootstrapWindow.webContents.on('will-attach-webview', (event) => event.preventDefault())
-  bootstrapWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-  bootstrapWindow.webContents.session.setPermissionCheckHandler(() => false)
-  bootstrapWindow.setMenuBarVisibility(false)
-
-  await bootstrapWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`)
-  bootstrapWindow.show()
-  return bootstrapWindow
+export function shutdownDesktop() {
+  if (!closePromise) closePromise = (async () => { await host?.close() })()
+  return closePromise
 }
 
-// Main module evaluation must finish before Electron can emit ready.
-export const bootstrapReady = app.whenReady().then(createBootstrapWindow)
-bootstrapReady.catch((error) => {
-  console.error('Desktop bootstrap failed:', error)
+app.on('window-all-closed', () => app.quit())
+app.on('before-quit', (event) => {
+  if (quitAllowed) return
+  event.preventDefault()
+  void shutdownDesktop().catch((error) => {
+    console.error('Desktop Host close failed:', error)
+    process.exitCode = 1
+  }).finally(() => { quitAllowed = true; app.quit() })
+})
+
+// End ESM evaluation before waiting for ready. Phase 1B only uses isolated fake work.
+export const desktopReady = app.whenReady().then(async () => {
+  const { createIsolatedLaunchpadFixture } = await import('./isolated-fixture.mjs')
+  const { createDesktopHost } = await import('./host.mjs')
+  const { createDesktopWindow } = await import('./window.mjs')
+  const fixture = await createIsolatedLaunchpadFixture({
+    root, env: process.env, holdTasks: process.env.NOVAWING_DESKTOP_HOLD_TASKS === '1',
+  })
+  host = await createDesktopHost({ configDirectory: fixture.configDirectory, env: process.env, dependencies: fixture.dependencies })
+  await host.start()
+  const { window, blocked } = await createDesktopWindow(host)
+  console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
+  return { window, host, fixture, blocked }
+})
+desktopReady.catch((error) => {
+  console.error('Desktop Launchpad startup failed:', error)
   process.exitCode = 1
   app.quit()
 })

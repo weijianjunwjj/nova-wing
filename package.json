@@ -37,7 +37,7 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
     "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
-    "desktop:dev": "npm run build && electron desktop/main/index.mjs",
+    "desktop:dev": "npm run build && node scripts/desktop-dev.mjs",
     "desktop:smoke": "npm run build && node scripts/desktop-smoke.mjs",
     "check:desktop": "node --test \"desktop/tests/*.test.mjs\"",
     "benchmark:v1v2": "node dist-tests/tests/benchmark/run-benchmark.js",

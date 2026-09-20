@@ -13,7 +13,7 @@
   },
   "include": [
     "desktop/**/*.mjs",
-    "scripts/desktop-smoke.mjs",
+    "scripts/desktop-*.mjs",
     "scripts/platform/desktop-smoke-environment.mjs"
   ]
 }

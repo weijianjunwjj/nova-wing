@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { detachedSmokeProcess, smokeEnvironment, terminateOwnedElectron } from './platform/desktop-smoke-environment.mjs'
+import { createDesktopIsolation, installedElectronBinary, repositoryRoot } from './desktop-isolation.mjs'
 
-const repositoryRoot = resolve(import.meta.dirname, '..')
 const evidenceDirectory = join(repositoryRoot, 'artifacts', 'desktop', 'bootstrap-smoke')
 const timeoutMs = 60_000
 let electronPath
@@ -15,8 +13,8 @@ let expectedVersion
 
 async function runElectron(entry, prefix, root) {
   const child = spawn(String(electronPath), [join(repositoryRoot, entry), `--user-data-dir=${join(root, 'electron-user-data')}`], {
-    cwd: join(root, 'repo'), env: smokeEnvironment(root), shell: false,
-    windowsHide: prefix !== 'DESKTOP_SHELL_RESULT', detached: detachedSmokeProcess, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: join(root, 'repo'), env: { ...smokeEnvironment(root), NOVAWING_DESKTOP_HOLD_TASKS: '1' }, shell: false,
+    windowsHide: prefix !== 'DESKTOP_LAUNCHPAD_SMOKE', detached: detachedSmokeProcess, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''
   let stderr = ''
@@ -59,10 +57,19 @@ async function runElectron(entry, prefix, root) {
     assert.equal(exited.signal, null, 'Electron must exit without a signal')
     assert.equal(timedOut, false, 'Electron timed out')
     assert.equal(errors.length, 0)
+    assert.equal(report.environment?.electron, expectedVersion, 'Smoke must use the pinned Electron binary')
     if (prefix === 'DESKTOP_COMPATIBILITY_RESULT') {
-      assert.equal(report.environment?.electron, expectedVersion, 'Smoke must use the pinned Electron binary')
       for (const name of ['guardian_import', 'node_sqlite', 'libsql', 'runtime_create', 'fake_task', 'runtime_close', 'runtime_reopen', 'resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing compatibility gate: ${name}`)
+      }
+    } else {
+      for (const name of ['electron_main', 'isolation', 'launchpad_create', 'launchpad_start', 'launchpad_http',
+        'browser_load', 'renderer_js', 'renderer_node_access', 'launchpad_api', 'session_create', 'session_start',
+        'control_origin_registered', 'control_navigation', 'control_http', 'control_sse', 'fake_task', 'terminal_state',
+        'renderer_reload_no_duplicate_runtime', 'external_navigation_blocked', 'random_loopback_blocked',
+        'file_navigation_blocked', 'javascript_navigation_blocked', 'window_open_denied', 'webview_denied',
+        'permission_denied', 'host_close', 'control_origin_unregistered']) {
+        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Launchpad gate: ${name}`)
       }
     }
     // Electron-owned Chromium children are evidence only, never independent kill targets.
@@ -82,33 +89,22 @@ async function runElectron(entry, prefix, root) {
 
 const result = { name: 'DESKTOP_COMPATIBILITY_SMOKE', timeoutMs, runs: [], cleanup: {}, errors: [], result: 'FAIL' }
 let root
-let tempParent
+let isolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
-  // Resolving metadata avoids Electron's lazy synchronous download (outside our timeout)
-  // and does not honor ELECTRON_OVERRIDE_DIST_PATH from the calling shell.
-  const electronDirectory = dirname(createRequire(import.meta.url).resolve('electron'))
-  const executable = (await readFile(join(electronDirectory, 'path.txt'), 'utf8')).trim()
-  electronPath = await realpath(join(electronDirectory, 'dist', executable))
+  electronPath = await installedElectronBinary()
   expectedVersion = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')).devDependencies.electron
-  tempParent = await realpath(tmpdir())
-  root = await mkdtemp(join(tempParent, 'novawing-desktop-smoke-'))
-  for (const directory of ['config', 'data', 'repo', 'home', 'tmp', 'home/roaming', 'home/local', 'home/config', 'home/data', 'home/cache']) {
-    await mkdir(join(root, directory), { recursive: true })
-  }
-  result.runs.push(await runElectron('desktop/tests/shell-smoke.mjs', 'DESKTOP_SHELL_RESULT', root))
+  isolation = await createDesktopIsolation()
+  root = isolation.root
+  result.runs.push(await runElectron('desktop/tests/launchpad-smoke.mjs', 'DESKTOP_LAUNCHPAD_SMOKE', root))
   result.runs.push(await runElectron('desktop/tests/runtime-compatibility.mjs', 'DESKTOP_COMPATIBILITY_RESULT', root))
 } catch (error) {
   result.errors.push(String(error?.stack ?? error))
 } finally {
   if (root) {
     try {
-      // Verify the exact mkdtemp target before recursive deletion, including symlink identity.
-      assert.equal(dirname(root), tempParent)
-      assert.ok(basename(root).startsWith('novawing-desktop-smoke-'))
-      assert.equal(await realpath(root), root)
-      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
+      await isolation.cleanup()
       result.cleanup = { status: 'PASS', temporaryRoot: root }
     } catch (error) {
       result.cleanup = { status: 'FAIL', code: error.code, temporaryRoot: root, error: String(error),
@@ -119,11 +115,23 @@ try {
 }
 result.result = result.runs.length === 2 && result.runs.every((run) => run.result === 'PASS') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
+const launchpadRun = result.runs.find((run) => run.entry === 'desktop/tests/launchpad-smoke.mjs')
+const launchpadReport = {
+  ...launchpadRun?.report,
+  checks: { ...launchpadRun?.report?.checks,
+    electron_exit: { status: launchpadRun?.result === 'PASS' ? 'PASS' : 'FAIL',
+      detail: { exitCode: launchpadRun?.exitCode, timedOut: launchpadRun?.timedOut, errors: launchpadRun?.errors } },
+    cleanup: result.cleanup,
+  },
+  result: launchpadRun?.result === 'PASS' && result.cleanup.status === 'PASS' ? 'PASS' : 'FAIL',
+}
 try {
+  await writeFile(join(evidenceDirectory, 'launchpad-result.json'), `${JSON.stringify(launchpadReport, null, 2)}\n`)
   await writeFile(join(evidenceDirectory, 'result.json'), `${JSON.stringify(result, null, 2)}\n`)
 } catch (error) {
   result.result = 'FAIL'
   result.errors.push(`Cannot save result evidence: ${String(error)}`)
 }
+console.log(`DESKTOP_LAUNCHPAD_SMOKE ${JSON.stringify(launchpadReport)}`)
 console.log(`DESKTOP_COMPATIBILITY_SMOKE ${JSON.stringify(result)}`)
 process.exitCode = result.result === 'PASS' ? 0 : 1
