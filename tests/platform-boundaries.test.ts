@@ -90,9 +90,26 @@ const secrets = { NOVAWING_SMTP_HOST: 'smtp.invalid', NOVAWING_SMTP_PORT: '465',
 test('REAL HOST secret persistence: private atomic replacement and fail-closed permissions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'novawing-permissions-'))
   const path = join(root, 'private', 'smtp.json')
+  const inheritedModulePath = process.env.PSModulePath
   try {
+    if (secretProtectionStrategy() === 'windows-acl') {
+      const modules = join(root, 'parent-modules')
+      const securityModule = join(modules, 'Microsoft.PowerShell.Security')
+      await mkdir(securityModule, { recursive: true })
+      await writeFile(join(securityModule, 'Microsoft.PowerShell.Security.psd1'), "@{ RootModule = 'Microsoft.PowerShell.Security.psm1'; ModuleVersion = '1.0.0'; FunctionsToExport = @('Get-Acl', 'Set-Acl'); CmdletsToExport = @() }")
+      await writeFile(join(securityModule, 'Microsoft.PowerShell.Security.psm1'), "throw 'NOVAWING_INCOMPATIBLE_PARENT_POWERSHELL_MODULE'")
+      process.env.PSModulePath = modules
+      const incompatible = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; Import-Module Microsoft.PowerShell.Security"], { env: process.env, encoding: 'utf8', windowsHide: true, timeout: 10_000 })
+      assert.equal(incompatible.status, 1)
+      assert.match(incompatible.stderr, /NOVAWING_INCOMPATIBLE_PARENT_POWERSHELL_MODULE/)
+    }
     await saveLocalSmtpSecrets(secrets, { path })
     assert.deepEqual(await loadLocalSmtpSecrets(path), secrets)
+    // Every replacement re-protects the existing directory. This must not need
+    // audit ACL privileges, even after its inheritance was disabled on creation.
+    const replacement = { ...secrets, NOVAWING_SMTP_PASS: 'replacement-secret' }
+    await saveLocalSmtpSecrets(replacement, { path })
+    assert.deepEqual(await loadLocalSmtpSecrets(path), replacement)
     if (secretProtectionStrategy() === 'posix-mode') {
       assert.equal((await stat(path)).mode & 0o777, 0o600)
       assert.equal((await stat(join(root, 'private'))).mode & 0o777, 0o700)
@@ -105,7 +122,11 @@ test('REAL HOST secret persistence: private atomic replacement and fail-closed p
     const original = await readFile(path, 'utf8')
     await assert.rejects(saveLocalSmtpSecrets({ ...secrets, NOVAWING_SMTP_PASS: 'replacement' }, { path, restrictAcl: async () => { throw new Error('permission denied') } }), /permission denied/)
     assert.equal(await readFile(path, 'utf8'), original)
-  } finally { await rm(root, { recursive: true, force: true }) }
+  } finally {
+    if (inheritedModulePath === undefined) delete process.env.PSModulePath
+    else process.env.PSModulePath = inheritedModulePath
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 

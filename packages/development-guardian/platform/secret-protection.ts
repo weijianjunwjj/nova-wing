@@ -22,15 +22,20 @@ export async function restrictWindowsSecretFileAcl(path: string): Promise<void> 
     '$acl.SetAccessRuleProtection($true, $false)',
     '$rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, "FullControl", "Allow")',
     '$acl.AddAccessRule($rule)',
-    'Set-Acl -LiteralPath $p -AclObject $acl',
+    // Persist only the modified owner/DACL; Set-Acl can also request audit ACL
+    // privileges when reapplying a descriptor to an already protected directory.
+    '$item.SetAccessControl($acl)',
     '$actual = Get-Acl -LiteralPath $p',
     'if (-not $actual.AreAccessRulesProtected) { throw "ACL inheritance remains" }',
     '$rules = $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])',
     'if ($rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid -or $rules[0].AccessControlType -ne "Allow" -or $rules[0].FileSystemRights -ne "FullControl") { throw "ACL verification failed" }',
   ].join('; ')
+  // Node inherits PowerShell 7's module search path, but this compatibility host
+  // must load its own Windows PowerShell modules for Get-Acl.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'))
   try {
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-      env: { ...process.env, NOVAWING_SECRET_ACL_TARGET: path }, shell: false, windowsHide: true, timeout: 10_000,
+      env: { ...env, NOVAWING_SECRET_ACL_TARGET: path }, shell: false, windowsHide: true, timeout: 10_000,
     })
   } catch { throw new Error('failed to secure local SMTP secrets with Windows ACL') }
 }
