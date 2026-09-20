@@ -37,6 +37,9 @@
   "scripts": {
     "build": "node scripts/clean-output.mjs dist && tsc -p tsconfig.build.json",
     "build:tests": "node scripts/clean-output.mjs dist-tests && tsc -p tsconfig.tests.json",
+    "desktop:dev": "npm run build && electron desktop/main/index.mjs",
+    "desktop:smoke": "npm run build && node scripts/desktop-smoke.mjs",
+    "check:desktop": "node --test \"desktop/tests/*.test.mjs\"",
     "benchmark:v1v2": "node dist-tests/tests/benchmark/run-benchmark.js",
     "benchmark:v028": "npm run build:tests && node dist-tests/tests/benchmark/run-architecture-benchmark.js",
     "dogfood:v028": "npm run build && node scripts/dogfood-v028-direct-path.mjs",
@@ -45,7 +48,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && npm run build:tests && node --test --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
     "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
-    "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters",
+    "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters && tsc -p tsconfig.desktop.json",
     "check:migration": "npm run build && node scripts/verify-migration.mjs",
     "check:exports": "npm run build && node scripts/check-package-exports.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
@@ -67,12 +70,13 @@
     "guardian:notification-channel:smoke": "npm run build && node scripts/novawing-notification-channel-smoke.mjs",
     "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
     "analytics:backfill": "npm run build && node scripts/analytics-backfill.mjs",
-    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform",
+    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform && npm run check:desktop",
     "check:platform": "node scripts/check-platform-boundaries.mjs"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
     "@types/nodemailer": "^8.0.1",
+    "electron": "44.4.3",
     "typescript": "5.9.3"
   },
   "dependencies": {

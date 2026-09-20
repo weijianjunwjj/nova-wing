@@ -86,6 +86,57 @@ test('static guard rejects platform literals in common source, including newly c
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('platform guard scans both Desktop Main and the Electron compatibility entry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'novawing-desktop-platform-'))
+  try {
+    for (const directory of ['main', 'tests']) {
+      const folder = join(root, 'desktop', directory)
+      await mkdir(folder, { recursive: true })
+      const entry = join(folder, 'new-entry.mjs')
+      await writeFile(entry, 'const environment = { platform: process.platform }\nconsole.log(environment)\n')
+      let result = spawnSync(process.execPath, ['scripts/check-platform-boundaries.mjs', '--root', root], { encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      for (const source of ["spawn('powershell.exe')", "const path = process.env.LOCALAPPDATA", "if (process.platform === 'win32') run()"]) {
+        await writeFile(entry, source)
+        result = spawnSync(process.execPath, ['scripts/check-platform-boundaries.mjs', '--root', root], { encoding: 'utf8' })
+        assert.equal(result.status, 1, source)
+        assert.match(result.stderr, new RegExp(`desktop/${directory}/new-entry\\.mjs`))
+      }
+      await rm(entry)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('package guard scans Desktop imports and requires public NovaWing exports', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'novawing-desktop-package-'))
+  try {
+    for (const directory of ['scripts', 'tests', 'desktop/main', 'desktop/tests', 'packages/core/src', 'packages/sqlite/src', 'packages/testing/src', 'packages/host-snapshot/src']) {
+      await mkdir(join(root, directory), { recursive: true })
+    }
+    const checker = join(root, 'scripts', 'check-boundaries.mjs')
+    await writeFile(checker, await readFile('scripts/check-boundaries.mjs', 'utf8'))
+    await writeFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
+    await writeFile(join(root, 'packages/sqlite/src/schema.ts'), ['nw_mainline_entries', 'nw_meta', 'nw_proposals'].map((table) => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT);`).join('\n'))
+    const keyword = ['im', 'port'].join('')
+    for (const directory of ['main', 'tests']) {
+      const entry = join(root, 'desktop', directory, 'new-entry.mjs')
+      await writeFile(entry, `${keyword} { WorkSessionRuntime } from 'nova-wing/development-guardian'\n`)
+      let result = spawnSync(process.execPath, [checker], { encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      for (const specifier of ['nova-wing/development-guardian/internal', '../../packages/development-guardian/index.js', '../../dist/packages/development-guardian/index.js', '../../packages/core/src/index.js', '../../../outside.mjs']) {
+        for (const source of [`${keyword} '${specifier}'`, `${keyword} { value } from '${specifier}'`, `await ${keyword}('${specifier}')`]) {
+          await writeFile(entry, source)
+          result = spawnSync(process.execPath, [checker], { encoding: 'utf8' })
+          assert.equal(result.status, 1, `${directory}: ${source}\n${result.stdout}`)
+          assert.match(result.stderr, /non-public NovaWing package import|bypasses a public package export|deep source import is forbidden|import escapes NovaWing repository/)
+          assert.ok(result.stderr.includes(join('desktop', directory, 'new-entry.mjs')), result.stderr)
+        }
+      }
+      await rm(entry)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 const secrets = { NOVAWING_SMTP_HOST: 'smtp.invalid', NOVAWING_SMTP_PORT: '465', NOVAWING_SMTP_SECURE: 'true', NOVAWING_SMTP_USER: 'test', NOVAWING_SMTP_PASS: 'fixture-secret', NOVAWING_NOTIFY_FROM: 'a@example.test', NOVAWING_NOTIFY_TO: 'b@example.test' }
 test('REAL HOST secret persistence: private atomic replacement and fail-closed permissions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'novawing-permissions-'))

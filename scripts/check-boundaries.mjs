@@ -3,7 +3,9 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
-const sourceRoots = ['packages', 'tests', 'scripts'].map((path) => resolve(repositoryRoot, path))
+const sourceRoots = ['packages', 'tests', 'scripts', 'desktop'].map((path) => resolve(repositoryRoot, path))
+const desktopRoot = resolve(repositoryRoot, 'desktop')
+const packageRoots = ['packages', 'dist/packages'].map((path) => resolve(repositoryRoot, path))
 const coreRoot = resolve(repositoryRoot, 'packages/core/src')
 const sqliteRoot = resolve(repositoryRoot, 'packages/sqlite/src')
 const testingRoot = resolve(repositoryRoot, 'packages/testing/src')
@@ -40,7 +42,7 @@ function walk(path) {
 
 const files = sourceRoots.flatMap(walk)
 const sourceFiles = files.filter((path) => path.endsWith('.ts') || path.endsWith('.mjs'))
-const importPattern = /(?:from\s+|import\s*\(\s*)['"]([^'"]+)['"]/gu
+const importPattern = /(?:from\s+|import\s*\(\s*|import\s+)['"]([^'"]+)['"]/gu
 
 for (const file of sourceFiles) {
   const source = readFileSync(file, 'utf8')
@@ -64,6 +66,9 @@ for (const file of sourceFiles) {
     const resolvedImport = resolve(dirname(file), specifier.replace(/\.js$/u, '.ts'))
     if (!isInside(repositoryRoot, resolvedImport)) {
       fail(`import escapes NovaWing repository: ${relative(repositoryRoot, file)} -> ${specifier}`)
+    }
+    if (isInside(desktopRoot, file) && packageRoots.some((root) => isInside(root, resolvedImport))) {
+      fail(`desktop caller bypasses a public package export: ${relative(repositoryRoot, file)} -> ${specifier}`)
     }
     if (
       !isInside(coreRoot, file) &&

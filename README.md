@@ -169,6 +169,29 @@ SQLite session URL 已写入可信 config 的继续沿用原位置。
 阻止 common runtime 再引入 OS 路径、工具、环境变量和 locale 硬编码。
 
 
+## Desktop Bootstrap（v0.4.0 Phase 1）
+
+```powershell
+npm run desktop:dev
+npm run desktop:smoke
+```
+
+`desktop:dev` 先 build，再启动 Electron ESM 的最小安全窗口；关闭窗口即退出。
+当前窗口只展示内置静态页面。`desktop:smoke` 从外部 Node 启动真实 Electron Main，
+验证窗口、Guardian production 出口、node:sqlite、libSQL，以及现有 WorkSessionRuntime
+与 FakeTaskRunner 的执行、关闭和持久化重开。config/data/repo、用户目录与 Chromium
+profile 全部隔离到新临时目录，不运行真实模型或加载用户 Launchpad。
+
+Electron 精确固定在 devDependencies；若首次安装尚未下载平台二进制，先执行
+`npx --no install-electron`。smoke 在缺少二进制时返回机器可读失败，不在门禁中隐式下载。
+每个 Electron 进程限时 60 秒，超时只清理本次创建的进程树。stdout/stderr 和 JSON 结果
+位于 `artifacts/desktop/bootstrap-smoke/`；关闭失败和退出后的临时目录清理失败分别记录。
+Desktop JS 类型/unused、包边界、平台边界及资源检测回归均已纳入 `npm run check`。
+Windows 的完整测试仍需配置有效的 `NOVAWING_GIT_BASH_PATH`（见上文）。
+
+本阶段不包含真实 UI Host、后台模式或分发。根 npm exports/files 保持原边界，
+Desktop 后续使用独立 packaging staging。
+
 ## 当前切片假设
 
 - 为满足当前独立开发边界，本阶段使用独立临时 SQLite；未来同库运行时仍只注入 SQLite 连接/路径，不改变 Core API，也不得查询宿主表。

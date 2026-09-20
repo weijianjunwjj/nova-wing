@@ -18,6 +18,7 @@ export const platformAdapters = {
   'packages/development-guardian/platform/windows-runtime-repair-notifier.ts': 'Guarded optional Windows toast adapter.',
   'packages/development-guardian/platform/windows-task-run-notifier.ts': 'Guarded optional Windows toast adapter.',
   'scripts/platform/npm-command.mjs': 'Node/npm CLI process entrypoint for tooling without shell shims.',
+  'scripts/platform/desktop-smoke-environment.mjs': 'Isolated Electron smoke environment and owned child process cleanup for each host.',
   'scripts/guardian-repair-notification-smoke.mjs': 'Explicit Windows notification acceptance script, not an app prerequisite.',
   'scripts/novawing-notification-channel-smoke.mjs': 'Notification acceptance script with deliberate Windows fixtures.',
   'scripts/check-platform-boundaries.mjs': 'Static guard definitions (not runtime).',
@@ -57,7 +58,10 @@ export function scanPlatformBoundaries(root) {
   let files = 0
   function walk(directory) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (['.git', 'node_modules', 'dist', 'dist-tests', 'artifacts', '.tmp', 'docs', 'tests', 'benchmark'].includes(entry.name)) continue
+      if (['.git', 'node_modules', 'dist', 'dist-tests', 'artifacts', '.tmp', 'docs', 'benchmark'].includes(entry.name)) continue
+      // Root unit-test fixtures deliberately contain platform examples. Desktop smoke
+      // entries execute in Electron Main and must retain the common-source guard.
+      if (directory === root && entry.name === 'tests') continue
       const absolute = resolve(directory, entry.name)
       if (entry.isDirectory()) walk(absolute)
       else if (/\.(?:ts|mjs|cjs|js)$/u.test(entry.name)) {
