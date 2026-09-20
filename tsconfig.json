@@ -9,7 +9,8 @@
       "nova-wing/development-guardian": ["packages/development-guardian/index.ts"],
       "nova-wing/host-snapshot": ["packages/host-snapshot/src/index.ts"],
       "nova-wing/sqlite": ["packages/sqlite/src/index.ts"],
-      "nova-wing/testing": ["packages/testing/src/index.ts"]
+      "nova-wing/testing": ["packages/testing/src/index.ts"],
+      "nova-wing/dev-guardian": ["packages/dev-guardian/src/index.ts"]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,
