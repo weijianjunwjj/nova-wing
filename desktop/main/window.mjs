@@ -34,7 +34,14 @@ export async function createDesktopWindow(host) {
     callback({ cancel: !allowed })
   })
   window.setMenuBarVisibility(false)
-  await loadOwnedURL(window, host, host.launchpadUrl)
-  window.show()
-  return { window, blocked }
+  try {
+    await loadOwnedURL(window, host, host.launchpadUrl)
+    window.show()
+    return { window, blocked }
+  } catch (error) {
+    // Main shutdown may race the navigation await. The factory owns this
+    // unreturned window and must release it even when startup fails.
+    if (!window.isDestroyed()) window.destroy()
+    throw error
+  }
 }

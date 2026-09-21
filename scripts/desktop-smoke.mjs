@@ -68,7 +68,9 @@ async function runElectron(entry, prefix, root) {
         'control_origin_registered', 'control_navigation', 'control_http', 'control_sse', 'fake_task', 'terminal_state',
         'renderer_reload_no_duplicate_runtime', 'external_navigation_blocked', 'random_loopback_blocked',
         'file_navigation_blocked', 'javascript_navigation_blocked', 'window_open_denied', 'webview_denied',
-        'permission_denied', 'host_close', 'control_origin_unregistered']) {
+        'permission_denied', 'host_close', 'control_origin_unregistered', 'strict_shared_close',
+        'strict_repeated_quit', 'strict_accepted_operation_drain', 'strict_reject_new_operations',
+        'strict_sse_closed', 'strict_resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Launchpad gate: ${name}`)
       }
     }
@@ -125,13 +127,27 @@ const launchpadReport = {
   },
   result: launchpadRun?.result === 'PASS' && result.cleanup.status === 'PASS' ? 'PASS' : 'FAIL',
 }
+const strictShutdownReport = {
+  name: 'DESKTOP_STRICT_SHUTDOWN',
+  checks: Object.fromEntries([
+    ['shared_close', 'strict_shared_close'], ['reject_new_operations', 'strict_reject_new_operations'],
+    ['accepted_operations_drained', 'strict_accepted_operation_drain'], ['sse_closed', 'strict_sse_closed'],
+    ['http_closed', 'strict_resources'], ['runtime_closed', 'host_close'],
+    ['control_origins_cleared', 'control_origin_unregistered'], ['timers_cleared', 'strict_resources'],
+    ['repeated_quit', 'strict_repeated_quit'], ['electron_exit', 'electron_exit'],
+  ].map(([name, source]) => [name, launchpadReport.checks[source] ?? { status: 'FAIL', detail: 'Not run' }])),
+  cleanup: result.cleanup,
+  result: launchpadReport.result,
+}
 try {
   await writeFile(join(evidenceDirectory, 'launchpad-result.json'), `${JSON.stringify(launchpadReport, null, 2)}\n`)
+  await writeFile(join(evidenceDirectory, 'strict-shutdown-result.json'), `${JSON.stringify(strictShutdownReport, null, 2)}\n`)
   await writeFile(join(evidenceDirectory, 'result.json'), `${JSON.stringify(result, null, 2)}\n`)
 } catch (error) {
   result.result = 'FAIL'
   result.errors.push(`Cannot save result evidence: ${String(error)}`)
 }
 console.log(`DESKTOP_LAUNCHPAD_SMOKE ${JSON.stringify(launchpadReport)}`)
+console.log(`DESKTOP_STRICT_SHUTDOWN ${JSON.stringify(strictShutdownReport)}`)
 console.log(`DESKTOP_COMPATIBILITY_SMOKE ${JSON.stringify(result)}`)
 process.exitCode = result.result === 'PASS' ? 0 : 1

@@ -64,11 +64,18 @@ export interface ProductionDependencyPreflightOptions extends GuardianShellContr
   /** Omitted preserves the legacy DeepSeek-only preflight contract. */
   executorModes?: readonly ExecutorMode[]
   inspectCodex?: () => Promise<unknown>
+  /** Strict hosts retain probe workers until process and stdio closure. */
+  shutdownMode?: 'strict' | 'bounded'
+  spawnProcess?: typeof spawn
 }
 
-async function defaultCommandRunner(request: DependencyCommandRequest, env: NodeJS.ProcessEnv): Promise<DependencyCommandResult> {
+async function defaultCommandRunner(
+  request: DependencyCommandRequest,
+  env: NodeJS.ProcessEnv,
+  options: ProductionDependencyPreflightOptions,
+): Promise<DependencyCommandResult> {
   return new Promise((resolveRun) => {
-    const child = spawn(request.executable, [...request.args], {
+    const child = (options.spawnProcess ?? spawn)(request.executable, [...request.args], {
       cwd: request.cwd,
       env: commandEnvironment(env),
       shell: false,
@@ -78,6 +85,10 @@ async function defaultCommandRunner(request: DependencyCommandRequest, env: Node
     let stdout = ''
     let stderr = ''
     let settled = false
+    let failed = false
+    let timedOut = false
+    let timer: NodeJS.Timeout | undefined
+    const strict = options.shutdownMode === 'strict'
     const finish = (result: DependencyCommandResult): void => {
       if (settled) return
       settled = true
@@ -88,11 +99,22 @@ async function defaultCommandRunner(request: DependencyCommandRequest, env: Node
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => { stdout += chunk })
     child.stderr.on('data', (chunk: string) => { stderr += chunk })
-    child.once('error', (error) => finish({ exitCode: 1, stdout, stderr: `${stderr}${error.message}` }))
-    child.once('close', (code) => finish({ exitCode: code ?? 1, stdout, stderr }))
-    const timer = setTimeout(() => {
-      child.kill()
-      finish({ exitCode: 1, stdout, stderr, timedOut: true })
+    child.once('error', (error) => {
+      failed = true
+      stderr = `${stderr}${error.message}`
+      if (!strict) finish({ exitCode: 1, stdout, stderr })
+    })
+    child.once('close', (code) => finish({
+      exitCode: failed || timedOut ? 1 : code ?? 1, stdout, stderr,
+      ...(timedOut ? { timedOut: true } : {}),
+    }))
+    timer = setTimeout(() => {
+      timedOut = true
+      try { child.kill() } catch (error) {
+        stderr = `${stderr}\n${error instanceof Error ? error.message : String(error)}`
+      }
+      // A termination request cannot establish that the probe worker is gone.
+      if (!strict) finish({ exitCode: 1, stdout, stderr, timedOut: true })
     }, request.timeoutMs)
     timer.unref()
   })
@@ -133,14 +155,15 @@ async function probeCommand(
 }
 
 /**
- * One-shot, bounded, side-effect-free dependency preflight. It never invokes a
- * model and never retries. Every subprocess is addressed by an explicit path.
+ * One-shot dependency preflight. It never invokes a model and never retries.
+ * Probe deadlines stay bounded; strict hosts also wait for worker closure.
+ * Every subprocess is addressed by an explicit path.
  */
 export async function runProductionDependencyPreflight(
   options: ProductionDependencyPreflightOptions = {},
 ): Promise<DependencyHealthReport> {
   const env = options.env ?? process.env
-  const commandRunner = options.commandRunner ?? ((request) => defaultCommandRunner(request, env))
+  const commandRunner = options.commandRunner ?? ((request) => defaultCommandRunner(request, env, options))
   const accessFile = options.accessFile ?? (async (path: string) => access(path))
   const timeoutMs = options.timeoutMs ?? 3_000
   const shell = await probeShell({ ...options, env, commandRunner, accessFile, timeoutMs })

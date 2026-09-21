@@ -1,25 +1,25 @@
 import { app } from 'electron'
 import { requireDesktopIsolation } from './isolation.mjs'
+import { createShutdownCoordinator, describeShutdownError } from './shutdown.mjs'
 
 const root = requireDesktopIsolation()
 let host
-let closePromise
-let quitAllowed = false
+export const desktopShutdown = createShutdownCoordinator({
+  getStartup: () => desktopReady,
+  getHost: () => host,
+  requestFinalQuit: () => app.quit(),
+  reportFailure(error) {
+    process.exitCode = 1
+    console.error(`DESKTOP_SHUTDOWN_FAILURE ${JSON.stringify({ result: 'FAIL', error: describeShutdownError(error) })}`)
+  },
+})
 
 export function shutdownDesktop() {
-  if (!closePromise) closePromise = (async () => { await host?.close() })()
-  return closePromise
+  return desktopShutdown.shutdown()
 }
 
 app.on('window-all-closed', () => app.quit())
-app.on('before-quit', (event) => {
-  if (quitAllowed) return
-  event.preventDefault()
-  void shutdownDesktop().catch((error) => {
-    console.error('Desktop Host close failed:', error)
-    process.exitCode = 1
-  }).finally(() => { quitAllowed = true; app.quit() })
-})
+app.on('before-quit', desktopShutdown.beforeQuit)
 
 // End ESM evaluation before waiting for ready. Phase 1B only uses isolated fake work.
 export const desktopReady = app.whenReady().then(async () => {
@@ -31,12 +31,15 @@ export const desktopReady = app.whenReady().then(async () => {
   })
   host = await createDesktopHost({ configDirectory: fixture.configDirectory, env: process.env, dependencies: fixture.dependencies })
   await host.start()
+  // Startup was admitted before quit; let its owner settle without opening a
+  // late window. The coordinator waits for this operation and closes the host.
+  if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [] }
   const { window, blocked } = await createDesktopWindow(host)
   console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
   return { window, host, fixture, blocked }
 })
 desktopReady.catch((error) => {
-  console.error('Desktop Launchpad startup failed:', error)
+  console.error(`DESKTOP_STARTUP_FAILURE ${JSON.stringify({ result: 'FAIL', error: describeShutdownError(error) })}`)
   process.exitCode = 1
   app.quit()
 })

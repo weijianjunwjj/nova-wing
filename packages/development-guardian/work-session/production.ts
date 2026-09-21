@@ -7,6 +7,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
+import { ProductionWorkSessionInitializationError } from './production-lifecycle-errors.js'
 
 import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
@@ -460,10 +461,12 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  /** Desktop opts into complete controller drain; existing CLI callers keep their default. */
+  shutdownMode?: 'strict' | 'bounded'
   /** Scriptable recovery seam; normal production reuses the read-only repair model. */
   autonomousRecovery?: AutonomousRecoveryOptions
   /** Optional presentation-only estimator; injected runtimes otherwise use deterministic ETA. */
-  taskEta?: Pick<TaskEtaService, 'project' | 'close'>
+  taskEta?: Pick<TaskEtaService, 'project' | 'close'> & Partial<Pick<TaskEtaService, 'settled' | 'drain'>>
   createCodexExecutor?: (options: CodexExecutorOptions) => RouterCodexExecutor
   createBrain?: (options: AskBridgeBrainOptions) => GuardianBrain
   createExecutor?: (options: ClaudeCodeExecutorOptions) => GuardianRecoverableExecutor
@@ -583,7 +586,8 @@ export async function createProductionWorkSessionUi(
           : { createTransport: dependencies.createSmtpTransport }),
       })
     : undefined
-  const toastNotifier = dependencies.createRuntime === undefined ? createDesktopTaskRunNotifier() : undefined
+  const toastNotifier = dependencies.createRuntime === undefined
+    ? createDesktopTaskRunNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' }) : undefined
   const notifier = emailNotifier === undefined
     ? undefined
     : toastNotifier === undefined ? emailNotifier : combineWorkSessionNotifiers([emailNotifier, toastNotifier])
@@ -636,6 +640,7 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    ...(dependencies.shutdownMode === undefined ? {} : { shutdownMode: dependencies.shutdownMode }),
     ...(dependencies.taskEta !== undefined ? { taskEta: dependencies.taskEta }
       : dependencies.createExecutor === undefined && dependencies.createCodexExecutor === undefined &&
         dependencies.createRuntime === undefined && dependencies.createV2Dispatcher === undefined
@@ -663,7 +668,8 @@ export async function createProductionWorkSessionUi(
         return persisted?.activeExecutor ?? (mode === 'auto' && quotaBlocked ? 'deepseek' : mode)
       })
       const report = await (dependencies.preflight?.(definition.targetRepo) ??
-        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes, controlPlane: definition.controlPlane ?? 'v1' }))
+        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes, controlPlane: definition.controlPlane ?? 'v1',
+          ...(dependencies.shutdownMode === undefined ? {} : { shutdownMode: dependencies.shutdownMode }) }))
       requireDependencyPreflightReady(report)
     },
     createRuntime(eventSink, notificationSink) {
@@ -795,7 +801,7 @@ export async function createProductionWorkSessionUi(
             })),
           auditSink: dependencies.runtimeRepair?.auditSink ??
             createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
-          notifier: dependencies.runtimeRepair?.notifier ?? createDesktopRuntimeRepairNotifier(),
+          notifier: dependencies.runtimeRepair?.notifier ?? createDesktopRuntimeRepairNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' }),
         }
         let analyticsProjector: TaskRunAnalyticsProjector | undefined
         if (dependencies.createRuntime === undefined) {
@@ -937,20 +943,34 @@ export async function createProductionWorkSessionUi(
   if (runtime === undefined) throw new Error('Work Session runtime factory was not initialized')
   // Durability closure: restore the configured run before any HTTP request can
   // observe or mutate the control surface. This does not auto-resume the run.
-  await controller.loadPersistedState()
+  try {
+    await controller.loadPersistedState()
+  } catch (error) {
+    const cleanupErrors: unknown[] = []
+    try { await controller.close() } catch (cleanupError) { cleanupErrors.push(cleanupError) }
+    try { await runtime.close?.() } catch (cleanupError) { cleanupErrors.push(cleanupError) }
+    throw new ProductionWorkSessionInitializationError(error, cleanupErrors)
+  }
   const server = new WorkSessionControlServer({
     controller,
     ...(dependencies.serverPort === undefined ? {} : { port: dependencies.serverPort }),
   })
+  let closing = false
+  let startOperation: Promise<WorkSessionControlServerAddress> | undefined
+  let closeOperation: Promise<void> | undefined
   return {
     definition,
     controller,
     server,
     runtime,
-    async start() {
-      const address = await server.start()
-      localControlUrl = address.url
-      return address
+    start() {
+      if (startOperation !== undefined) return startOperation
+      if (closing) return Promise.reject(new Error('Production Work Session is closing'))
+      startOperation ??= server.start().then((address) => {
+        localControlUrl = address.url
+        return address
+      })
+      return startOperation
     },
     isLive() {
       return server.isListening()
@@ -958,9 +978,27 @@ export async function createProductionWorkSessionUi(
     hasActiveSession() {
       return controller.hasActiveOperation()
     },
-    async close() {
-      await server.close()
-      await runtime?.close?.()
+    close() {
+      if (closeOperation !== undefined) return closeOperation
+      const completion = Promise.withResolvers<void>()
+      closeOperation = completion.promise
+      closing = true
+      const errors: unknown[] = []
+      try { controller.stopAdmission() } catch (error) { errors.push(error) }
+      // Start server shutdown synchronously so no HTTP mutation can slip in
+      // while this owner waits for startup or a different resource.
+      let serverClose: Promise<void>
+      try { serverClose = server.close() } catch (error) { serverClose = Promise.reject(error) }
+      void (async () => {
+        for (const result of await Promise.allSettled([startOperation, serverClose])) {
+          if (result.status === 'rejected') errors.push(result.reason)
+        }
+        // An HTTP cleanup failure must never skip controller or runtime cleanup.
+        try { await controller.close() } catch (error) { errors.push(error) }
+        try { await runtime?.close?.() } catch (error) { errors.push(error) }
+        if (errors.length > 0) throw new AggregateError(errors, 'Production Work Session shutdown failed')
+      })().then(completion.resolve, completion.reject)
+      return closeOperation
     },
   }
 }

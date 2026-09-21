@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { createServer } from 'node:http'
+import { createServer, get, request } from 'node:http'
 import { basename, isAbsolute, join, resolve } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow } from 'electron'
-import { desktopReady, shutdownDesktop } from '../main/index.mjs'
+import { desktopReady, desktopShutdown, shutdownDesktop } from '../main/index.mjs'
+import { createResourceTracker } from './resource-tracker.mjs'
 
 const checkNames = [
   'electron_main', 'isolation', 'launchpad_create', 'launchpad_start', 'launchpad_http',
@@ -15,6 +16,8 @@ const checkNames = [
   'renderer_reload_no_duplicate_runtime', 'external_navigation_blocked', 'random_loopback_blocked',
   'file_navigation_blocked', 'javascript_navigation_blocked', 'window_open_denied',
   'webview_denied', 'permission_denied', 'host_close', 'control_origin_unregistered',
+  'strict_shared_close', 'strict_repeated_quit', 'strict_accepted_operation_drain',
+  'strict_reject_new_operations', 'strict_sse_closed', 'strict_resources',
 ]
 /** @type {Record<string, {status: 'PASS' | 'FAIL', detail?: unknown}>} */
 const checks = Object.fromEntries(checkNames.map((name) => [name, { status: 'FAIL', detail: 'Not run' }]))
@@ -27,6 +30,13 @@ const result = {
     execPath: process.execPath, cwd: process.cwd(),
   },
 }
+
+// Hold only the final, already drained quit long enough to inspect native destroy
+// callbacks and flush evidence. Every earlier request uses the real coordinator.
+let allowVerifiedQuit = false
+app.on('before-quit', (event) => {
+  if (desktopShutdown.completed && !allowVerifiedQuit) event.preventDefault()
+})
 
 /** @param {string} name @param {unknown} [detail] */
 function pass(name, detail) { checks[name] = { status: 'PASS', ...(detail === undefined ? {} : { detail }) } }
@@ -64,13 +74,54 @@ async function assertBlockedNavigation(window, url) {
   assert.equal(await evaluate(window, 'document.title'), 'NovaWing Work Session 控制台')
 }
 
+async function openSse(url) {
+  const connected = Promise.withResolvers()
+  const ended = Promise.withResolvers()
+  const client = get(`${url}/api/events`, { agent: false }, (response) => {
+    if (response.statusCode !== 200) connected.reject(new Error(`SSE HTTP ${response.statusCode}`))
+    response.setEncoding('utf8')
+    response.on('data', (chunk) => { if (chunk.includes('event: connected')) connected.resolve(undefined) })
+    response.once('end', () => ended.resolve(undefined))
+    response.once('error', (error) => ended.reject(error))
+  })
+  client.once('error', (error) => { connected.reject(error); ended.reject(error) })
+  await connected.promise
+  return { client, ended: ended.promise }
+}
+
+/** A shutdown may reject the HTTP request or stop its listener altogether. */
+async function rejectedMutation(url, headers, body = {}) {
+  return new Promise((resolveRequest, rejectRequest) => {
+    const client = request(url, { method: 'POST', agent: false,
+      headers: { ...headers, 'Content-Type': 'application/json', Connection: 'close' } }, (response) => {
+      response.resume()
+      response.once('end', () => {
+        if (response.statusCode === 503) resolveRequest({ status: response.statusCode })
+        else rejectRequest(new Error(`Mutation admitted during strict shutdown: HTTP ${response.statusCode}`))
+      })
+      response.once('error', rejectRequest)
+    })
+    client.once('error', (error) => {
+      const code = /** @type {NodeJS.ErrnoException} */ (error).code
+      if (['ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(code)) resolveRequest({ connection: code })
+      else rejectRequest(error)
+    })
+    client.end(JSON.stringify(body))
+  })
+}
+
 async function runLaunchpadSmoke() {
   let currentCheck = 'electron_main'
   let desktop
   let unrelatedServer
+  let strictSse
+  let resourceTracker
   try {
     assert.ok(process.versions.electron, 'Use the pinned real Electron binary')
     assert.equal(process.type, 'browser')
+    process.stdout.write('')
+    process.stderr.write('')
+    resourceTracker = createResourceTracker()
     pass('electron_main', result.environment)
     currentCheck = 'isolation'
     const root = process.env.NOVAWING_DESKTOP_SMOKE_ROOT
@@ -81,6 +132,7 @@ async function runLaunchpadSmoke() {
     // Main isolates Electron paths synchronously before app.whenReady; no top-level await.
     desktop = await desktopReady
     const { window, host, fixture, blocked } = desktop
+    assert.ok(window, 'Normal startup must create a window')
     assert.equal(fixture.repoDirectory, join(root, 'repo'))
     assert.equal(fixture.configDirectory, join(root, 'config'))
     assert.equal(fixture.dataDirectory, join(root, 'data'))
@@ -131,6 +183,7 @@ async function runLaunchpadSmoke() {
     })()`)
     assert.deepEqual(launchpadApi, { status: 200, configCount: 0, unauthorized: 403 })
     pass('launchpad_api', launchpadApi)
+    const launchToken = await evaluate(window, `JSON.parse(document.getElementById('novawing-bootstrap').textContent).launchToken`)
 
     // Observe Chromium's actual fetch/EventSource traffic. No mock fetch, injected
     // EventSource replacement, alternate renderer, or direct runtime start is used.
@@ -307,6 +360,31 @@ async function runLaunchpadSmoke() {
     await new Promise((resolveClose, rejectClose) => unrelatedServer.close((error) => error ? rejectClose(error) : resolveClose(undefined)))
     unrelatedServer = undefined
     window.webContents.debugger.detach()
+
+    // The original task proved the UI/reload path. Admit a second real workflow
+    // behind a fresh deferred gate so quit must wait for accepted execution.
+    currentCheck = 'strict_accepted_operation_drain'
+    const held = fixture.holdNextTasks()
+    await window.loadURL(host.launchpadUrl)
+    const drainRequest = { ...fixture.createRequest, requestId: 'desktop-strict-drain-0002',
+      tasks: [{ id: 'DESKTOP-DRAIN-002', goal: 'Drain an accepted offline task during repeated quit' }] }
+    const admitted = await evaluate(window, `(async () => {
+      const response = await fetch('/api/session/create', { method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token':
+          JSON.parse(document.getElementById('novawing-bootstrap').textContent).launchToken},
+        body: JSON.stringify(${JSON.stringify(drainRequest)}) })
+      return {status: response.status, body: await response.json()}
+    })()`)
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body))
+    await held.started
+    const drainUrl = admitted.body.controlUrl
+    await window.loadURL(drainUrl)
+    const controlToken = await evaluate(window, `JSON.parse(document.getElementById('novawing-bootstrap').textContent).controlToken`)
+    strictSse = await openSse(drainUrl)
+    let sseEnded = false
+    void strictSse.ended.then(() => { sseEnded = true })
+    assert.equal(fixture.getEvidence().taskRunCount, 2)
+    assert.equal(fixture.getEvidence().fakeExecutionCount, 1)
     result.childPids = app.getAppMetrics().map(({ pid }) => pid).filter((pid) => pid !== process.pid)
 
     currentCheck = 'host_close'
@@ -318,19 +396,73 @@ async function runLaunchpadSmoke() {
     // The production last-window -> app.quit path initiates close. Await the same
     // promise; do not manually close Launchpad or Runtime to simulate that path.
     assert.equal(host.observations.closeCalls, 1, 'Window close must initiate Host shutdown before the test awaits it')
-    await shutdownDesktop()
+    const shutdown = shutdownDesktop()
+    let shutdownSettled = false
+    void shutdown.then(() => { shutdownSettled = true })
+    app.quit()
+    app.quit()
+    assert.equal(shutdownDesktop(), shutdown)
+    assert.equal(host.close(), host.close())
+    for (let i = 0; i < 8; i++) await Promise.resolve()
+    assert.equal(shutdownSettled, false, 'Strict shutdown cannot finish while the accepted fake task is held')
+    assert.equal(desktopShutdown.observations.shutdownOperations, 1)
+    assert.equal(desktopShutdown.observations.quitRequests, 3)
+    pass('strict_shared_close', { shutdownOperations: 1, closeCalls: host.observations.closeCalls, samePromise: true })
+    currentCheck = 'strict_reject_new_operations'
+    const rejectionEvidence = await Promise.all([
+      ...['create', 'start', 'delete', 'repair'].map((action) => rejectedMutation(`${host.launchpadUrl}/api/session/${action}`,
+        { Origin: host.launchpadUrl, 'X-NovaWing-Launchpad-Token': launchToken }, drainRequest)),
+      ...['start', 'resume', 'approve-verification', 'runtime-repair', 'recover-checkpoint'].map((action) =>
+        rejectedMutation(`${drainUrl}/api/session/${action}`, { Origin: drainUrl, 'X-NovaWing-Control-Token': controlToken })),
+    ])
+    assert.equal(fixture.getEvidence().runtimeCreateCount, 2)
+    assert.equal(fixture.getEvidence().taskRunCount, 2)
+    assert.equal(shutdownSettled, false)
+    pass('strict_reject_new_operations', { rejected: rejectionEvidence, newRuntimeCount: 0, newTaskCount: 0 })
+    fixture.releaseTasks()
+    await shutdown
+    await strictSse.ended
+    assert.equal(sseEnded, true)
+    pass('strict_sse_closed', { connectedBeforeQuit: true, ended: true })
+    assert.equal(fixture.getEvidence().fakeExecutionCount, 2)
+    assert.equal(fixture.getEvidence().sessions[1].durableState.state, 'COMPLETED')
+    pass('strict_accepted_operation_drain', { pendingBeforeRelease: true, completedAfterRelease: true,
+      taskRunCount: 2, fakeExecutionCount: 2 })
     assert.equal(window.isDestroyed(), true)
     const closedEvidence = fixture.getEvidence()
-    assert.equal(closedEvidence.runtimeCloseCount, 1)
+    assert.equal(closedEvidence.runtimeCloseCount, 2)
+    assert.equal(closedEvidence.runtimeCloseAttemptCount, 2)
+    assert.equal(closedEvidence.sessions.length, 2)
+    for (const session of closedEvidence.sessions) {
+      assert.equal(session.runtimeCloseAttemptCount, 1, `${session.sessionId} must attempt Runtime close exactly once`)
+      assert.equal(session.runtimeCloseCount, 1, `${session.sessionId} must complete Runtime close exactly once`)
+    }
     assert.equal(host.observations.closeCalls, 1)
     assert.equal(host.observations.pendingControlCloses, 0)
     assert.deepEqual(host.observations.errors, [])
     pass('host_close', { trigger: 'last BrowserWindow closed', runtimeCloseCount: closedEvidence.runtimeCloseCount,
       closeCalls: host.observations.closeCalls })
+    assert.equal(desktopShutdown.observations.finalQuitRequests, 1)
+    pass('strict_repeated_quit', { ...desktopShutdown.observations, runtimeCloseAttemptCount: 2,
+      runtimeOwners: closedEvidence.sessions.map(({ runtimeCloseAttemptCount }) => ({ closeAttempts: runtimeCloseAttemptCount })) })
     assert.equal(host.isAllowedNavigation(controlUrl), false)
     assert.deepEqual(host.ownedOrigins(), [])
-    assert.deepEqual(host.observations.controlUnregistered, [controlUrl])
+    assert.deepEqual(host.observations.controlUnregistered.toSorted(), [controlUrl, drainUrl].toSorted())
     pass('control_origin_unregistered', { control: controlUrl, ownedOrigins: [] })
+    currentCheck = 'strict_resources'
+    await nextTurn()
+    await nextTurn()
+    let tracked = resourceTracker.snapshot()
+    for (let attempt = 0; tracked.live.length > 0 && attempt < 40; attempt++) {
+      await delay(25)
+      await nextTurn()
+      await nextTurn()
+      tracked = resourceTracker.snapshot()
+    }
+    assert.deepEqual(tracked.live, [], `Strict Host shutdown left resources: ${JSON.stringify(tracked)}`)
+    pass('strict_resources', { tracked, httpListeners: 0, sseConnections: 0, schedulerTimers: 0,
+      controlOrigins: host.ownedOrigins().length, liveProductionUi: host.observations.pendingControlCloses,
+      runtimeOwners: closedEvidence.runtimeCreateCount - closedEvidence.runtimeCloseCount })
     result.result = Object.values(checks).every((check) => check.status === 'PASS') ? 'PASS' : 'FAIL'
   } catch (error) {
     const detail = String(error?.stack ?? error)
@@ -356,13 +488,16 @@ async function runLaunchpadSmoke() {
     }
     process.exitCode = 1
   } finally {
+    resourceTracker?.stop()
+    strictSse?.client.destroy()
     if (unrelatedServer) unrelatedServer.close()
     if (result.result !== 'PASS') {
       desktop?.fixture.releaseTasks()
       try { await shutdownDesktop?.() } catch (error) { result.errors.push({ check: 'failure_cleanup', error: String(error?.stack ?? error) }) }
     }
-    console.log(`DESKTOP_LAUNCHPAD_SMOKE ${JSON.stringify(result)}`)
-    if (result.result !== 'PASS') app.quit()
+    await new Promise((done) => process.stdout.write(`DESKTOP_LAUNCHPAD_SMOKE ${JSON.stringify(result)}\n`, done))
+    allowVerifiedQuit = true
+    app.quit()
   }
 }
 

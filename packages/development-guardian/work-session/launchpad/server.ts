@@ -17,6 +17,7 @@ import {
   type ProductionWorkSessionUi,
   type TrustedWorkSessionConfig,
 } from '../production.js'
+import { ProductionWorkSessionInitializationError } from '../production-lifecycle-errors.js'
 import { WorkSessionRuntime, type PreflightRepairRecord } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
 import {
@@ -187,10 +188,12 @@ export interface NovaWingLaunchpadDependencies {
   resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
   createWorkSession?: (
     config: TrustedWorkSessionConfig,
-    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord },
+    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord; shutdownMode?: 'strict' | 'bounded' },
   ) => Promise<ManagedWorkSessionApp>
   gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
+  /** Strict hosts wait for every admitted operation and propagate cleanup failures. */
+  shutdownMode?: 'strict' | 'bounded'
   /** T021: 读取某 config 对应持久化 Session 的派生展示状态（缺省读 Mastra storage）。 */
   readSessionStatus?: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   /** One-shot bounded preflight; production enables it explicitly. */
@@ -244,6 +247,12 @@ class AutoRepairExhaustedError extends Error {
     readonly attempt: ContractRepairOutcome,
   ) {
     super('automatic preflight repair stopped without a launchable contract')
+  }
+}
+
+class SessionStatusProbeError extends AggregateError {
+  constructor(errors: unknown[], readonly cleanupFailed: boolean) {
+    super(errors, 'Launchpad session status probe failed')
   }
 }
 
@@ -481,6 +490,7 @@ export class NovaWingLaunchpad {
   private readonly createWorkSession: NonNullable<NovaWingLaunchpadDependencies['createWorkSession']>
   private readonly gitProcessRunner: ProductionGitProcessRunner | undefined
   private readonly shutdownTimeoutMs: number
+  private readonly shutdownMode: 'strict' | 'bounded'
   private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   private readonly preflight: NovaWingLaunchpadDependencies['preflight']
   private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
@@ -498,9 +508,15 @@ export class NovaWingLaunchpad {
   private readonly activeCreates = new Map<string, ComposerCreateEntry>()
   private readonly completedCreates = new Map<string, CompletedComposerCreateEntry>()
   private readonly liveApps = new Map<string, LiveWorkSessionApp>()
+  private readonly ownedApps = new Set<ManagedWorkSessionApp>()
+  private readonly appCloses = new WeakMap<ManagedWorkSessionApp, Promise<void>>()
+  private readonly acceptedOperations = new Set<Promise<unknown>>()
+  private readonly lifecycleErrors: unknown[] = []
 
   private address: NovaWingLaunchpadAddress | undefined
   private closed = false
+  private startOperation: Promise<NovaWingLaunchpadAddress> | undefined
+  private closeOperation: Promise<void> | undefined
   private scheduleRecoveryTimer: NodeJS.Timeout | undefined
   private scheduleRecovery: Promise<void> | undefined
   private dependencyHealth: DependencyHealthReport = {
@@ -528,6 +544,7 @@ export class NovaWingLaunchpad {
         createProductionWorkSessionUi(config, options)
     )
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
+    this.shutdownMode = dependencies.shutdownMode ?? 'bounded'
     this.gitProcessRunner = dependencies.gitProcessRunner
     this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
     this.preflight = dependencies.preflight
@@ -541,10 +558,23 @@ export class NovaWingLaunchpad {
       reasoningEffort: REPAIR_DEFAULT_REASONING_EFFORT,
     }
     this.repairAudit = dependencies.repairAudit ?? createFileRepairAuditSink()
-    this.repairNotifier = dependencies.repairNotifier ?? createDesktopRepairNotifier()
+    this.repairNotifier = dependencies.repairNotifier ?? createDesktopRepairNotifier({ shutdownMode: this.shutdownMode })
     this.analyticsPath = dependencies.analyticsPath ?? defaultTaskRunAnalyticsPath()
     this.server = createServer((request, response) => {
-      void this.handle(request, response)
+      if (this.closed) {
+        response.setHeader('Connection', 'close')
+        this.respondJson(response, 503, { error: 'LAUNCHPAD_CLOSING' })
+        request.resume()
+        return
+      }
+      // Admission is synchronous, before body parsing or any other await. An
+      // accepted handler owns its entire continuation, including nested repair.
+      const operation = this.trackOperation(Promise.resolve().then(() => this.handle(request, response)))
+      void operation.catch((error: unknown) => {
+        this.lifecycleErrors.push(error)
+        if (!response.headersSent) this.respondJson(response, 500, { error: SAFE_LAUNCH_ERROR })
+        else response.destroy()
+      })
     })
   }
 
@@ -571,13 +601,16 @@ export class NovaWingLaunchpad {
 
   /** T021: 读取每个 config 的持久化状态并派生展示状态。只发现、不自动恢复。 */
   private async hydrateStatuses(): Promise<void> {
-    await Promise.all([...this.configs.values()].map(async (config) => {
+    const results = await Promise.allSettled([...this.configs.values()].map(async (config) => {
       const configId = config.summary.configId
       // Storage failures are not evidence of a new/READY session. Propagate them
       // so a corrupt or unreadable completed session cannot be offered as fresh.
       const status = await this.readSessionStatus(config.config)
       this.statuses.set(configId, status)
     }))
+    const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason as unknown] : [])
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 0) throw new AggregateError(errors, 'Launchpad status hydration failed')
   }
 
   getAddress(): NovaWingLaunchpadAddress | undefined {
@@ -588,9 +621,15 @@ export class NovaWingLaunchpad {
     return this.token
   }
 
-  async start(): Promise<NovaWingLaunchpadAddress> {
-    if (this.closed) throw new Error('Launchpad is closed')
-    if (this.address !== undefined) return this.address
+  start(): Promise<NovaWingLaunchpadAddress> {
+    if (this.startOperation !== undefined) return this.startOperation
+    if (this.closed) return Promise.reject(new Error('Launchpad is closed'))
+    this.startOperation = this.trackOperation(Promise.resolve().then(() => this.startInternal()))
+    void this.startOperation.catch((error: unknown) => { this.lifecycleErrors.push(error) })
+    return this.startOperation
+  }
+
+  private async startInternal(): Promise<NovaWingLaunchpadAddress> {
     await this.hydrateStatuses()
     this.initialExecutorMode = await this.resolveInitialExecutorMode()
     if (this.preflight !== undefined) {
@@ -601,6 +640,7 @@ export class NovaWingLaunchpad {
         dependencies: [{ id: 'CORE' as const, state: 'DEGRADED' as const, failureType: 'PREFLIGHT_FAILED', safeMessage: 'Dependency preflight 无法完成。' }],
       }))
     }
+    if (this.closed && this.shutdownMode === 'bounded') throw new Error('Launchpad is closed')
     await new Promise<void>((resolveStart, rejectStart) => {
       const onError = (error: Error): void => rejectStart(error)
       this.server.once('error', onError)
@@ -619,32 +659,111 @@ export class NovaWingLaunchpad {
       url: `http://${LOOPBACK_HOST}:${address.port}`,
     }
     await this.recoverScheduledSessions()
-    this.scheduleRecoveryTimer = setInterval(() => { void this.recoverScheduledSessions() }, 5_000)
-    this.scheduleRecoveryTimer.unref()
+    if (!this.closed) {
+      this.scheduleRecoveryTimer = setInterval(() => { void this.recoverScheduledSessions() }, 5_000)
+      this.scheduleRecoveryTimer.unref()
+    }
     return this.address
   }
 
   /** Only scheduled configs are automatically reopened. Existing interrupted runs stay manual. */
-  private async recoverScheduledSessions(): Promise<void> {
-    if (this.closed || this.scheduleRecovery !== undefined) return
-    this.scheduleRecovery = (async () => {
+  private recoverScheduledSessions(): Promise<void> {
+    if (this.scheduleRecovery !== undefined) return this.scheduleRecovery
+    if (this.closed) return Promise.resolve()
+    const operation = this.trackOperation(Promise.resolve().then(async () => {
       for (const [id, entry] of this.configs) {
         if (this.closed) break
         if (entry.config.session.scheduledStartAt == null || this.liveApps.has(id) || this.activeDeletes.has(id)) continue
         try {
           const status = await this.readSessionStatus(entry.config)
           this.statuses.set(id, status)
-          if (status === 'SCHEDULED') await this.startWorkSession(id)
-        } catch { /* Storage/dependency outage: keep the durable gate, retry opening later. */ }
+          if (!this.closed && status === 'SCHEDULED') await this.startWorkSession(id)
+        } catch (error) {
+          // A read failure can be retried, but a failed read-only Runtime close
+          // is still an owner cleanup failure and must reach the strict host.
+          if (this.shutdownMode === 'strict' && error instanceof SessionStatusProbeError && error.cleanupFailed) {
+            this.lifecycleErrors.push(error)
+          }
+          // Storage/dependency outage: keep the durable gate, retry opening later.
+        }
       }
-    })()
-    try { await this.scheduleRecovery } finally { this.scheduleRecovery = undefined }
+    }))
+    this.scheduleRecovery = operation
+    void operation.then(
+      () => { this.scheduleRecovery = undefined },
+      (error: unknown) => { this.scheduleRecovery = undefined; this.lifecycleErrors.push(error) },
+    )
+    return operation
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return
+  close(): Promise<void> {
+    if (this.closeOperation !== undefined) return this.closeOperation
+    const completion = Promise.withResolvers<void>()
+    // Publish the shared operation before invoking an owned cleanup: an owner
+    // callback may synchronously request shutdown again.
+    this.closeOperation = completion.promise
     this.closed = true
     if (this.scheduleRecoveryTimer !== undefined) clearInterval(this.scheduleRecoveryTimer)
+    this.scheduleRecoveryTimer = undefined
+    // Stop Control mutation/scheduler admission now, while Launchpad's already
+    // admitted handlers finish. Apps still being created are closed on arrival.
+    if (this.shutdownMode === 'strict') {
+      for (const { app } of this.liveApps.values()) this.closeOwnedApp(app)
+    }
+    const operation = this.shutdownMode === 'strict' ? this.closeStrict() : this.closeBounded()
+    void operation.then(completion.resolve, completion.reject)
+    return this.closeOperation
+  }
+
+  private trackOperation<T>(operation: Promise<T>): Promise<T> {
+    this.acceptedOperations.add(operation)
+    void operation.then(
+      () => { this.acceptedOperations.delete(operation) },
+      () => { this.acceptedOperations.delete(operation) },
+    )
+    return operation
+  }
+
+  /** Retain ownership and failures until cleanup has actually settled. */
+  private closeOwnedApp(app: ManagedWorkSessionApp): Promise<void> {
+    const existing = this.appCloses.get(app)
+    if (existing !== undefined) return existing
+    const completion = Promise.withResolvers<void>()
+    const operation = completion.promise
+    this.appCloses.set(app, operation)
+    void operation.then(() => {
+      this.ownedApps.delete(app)
+      for (const [id, entry] of this.liveApps) {
+        if (entry.app === app) this.liveApps.delete(id)
+      }
+    }, (error: unknown) => { this.lifecycleErrors.push(error) })
+    try { void Promise.resolve(app.close()).then(completion.resolve, completion.reject) } catch (error) { completion.reject(error) }
+    return operation
+  }
+
+  private async closeStrict(): Promise<void> {
+    // Nested operations are part of their admitted parent's continuation. The
+    // loop also covers recovery registered while an admitted start is settling.
+    while (this.acceptedOperations.size > 0) {
+      await Promise.allSettled([...this.acceptedOperations])
+    }
+    await Promise.allSettled([...this.ownedApps].map((app) => this.closeOwnedApp(app)))
+    if (this.server.listening) {
+      try {
+        await new Promise<void>((resolveClose, rejectClose) => {
+          this.server.close((error) => error === undefined ? resolveClose() : rejectClose(error))
+        })
+        this.address = undefined
+      } catch (error) { this.lifecycleErrors.push(error) }
+    }
+    if (this.lifecycleErrors.length > 0) {
+      throw new AggregateError(this.lifecycleErrors, 'Launchpad strict shutdown failed')
+    }
+  }
+
+  /** Historical CLI contract: a timeout bounds waiting, not the underlying work. */
+  private async closeBounded(): Promise<void> {
+    await bounded(Promise.allSettled(this.startOperation === undefined ? [] : [this.startOperation]).then(() => undefined), this.shutdownTimeoutMs)
     await bounded(this.scheduleRecovery ?? Promise.resolve(), this.shutdownTimeoutMs)
     if (this.address !== undefined) {
       const closeListener = new Promise<void>((resolveClose) => {
@@ -664,7 +783,7 @@ export class NovaWingLaunchpad {
       this.shutdownTimeoutMs,
     )
     await bounded(
-      Promise.allSettled([...this.liveApps.values()].map(({ app }) => app.close())).then(() => undefined),
+      Promise.allSettled([...this.liveApps.values()].map(({ app }) => this.closeOwnedApp(app))).then(() => undefined),
       this.shutdownTimeoutMs,
     )
     this.liveApps.clear()
@@ -1059,8 +1178,8 @@ export class NovaWingLaunchpad {
     this.activeDeletes.add(configId)
     try {
       if (liveApp !== undefined) {
+        await this.retireApp(liveApp.app)
         this.liveApps.delete(configId)
-        await liveApp.app.close().catch(() => undefined)
       }
       try {
         await unlink(configPath)
@@ -1106,7 +1225,7 @@ export class NovaWingLaunchpad {
     discovered: DiscoveredLaunchpadConfig,
     preflightRepair?: PreflightRepairRecord,
   ): Promise<LaunchResult> {
-    if (this.closed) throw new Error('Launchpad is closed')
+    if (this.closed && this.shutdownMode === 'bounded') throw new Error('Launchpad is closed')
     const existing = this.liveApps.get(configId)
     if (existing !== undefined) {
       try {
@@ -1116,40 +1235,62 @@ export class NovaWingLaunchpad {
       } catch {
         // A failed liveness probe retires the stale app before relaunch.
       }
+      await this.retireApp(existing.app)
       this.liveApps.delete(configId)
-      await existing.app.close().catch(() => undefined)
     }
     const config = await this.loadConfig(discovered.configPath)
     if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
     const env = await this.resolveEnvironment(config)
-    const app = await this.createWorkSession(config, {
-      env,
-      serverPort: 0,
-      ...(preflightRepair === undefined ? {} : { preflightRepair }),
-    })
-    if (this.closed) {
-      await app.close()
+    let app: ManagedWorkSessionApp
+    try {
+      app = await this.createWorkSession(config, {
+        env,
+        serverPort: 0,
+        shutdownMode: this.shutdownMode,
+        ...(preflightRepair === undefined ? {} : { preflightRepair }),
+      })
+    } catch (error) {
+      // A factory may have failed while cleaning up partially initialized owners.
+      // Preserve that failure even when the HTTP layer renders a safe 500.
+      if (this.shutdownMode === 'strict' && (this.closed ||
+        (error instanceof ProductionWorkSessionInitializationError && error.cleanupErrors.length > 0))) {
+        this.lifecycleErrors.push(error)
+      }
+      throw error
+    }
+    this.ownedApps.add(app)
+    if (this.closed && this.shutdownMode === 'bounded') {
+      await this.closeOwnedApp(app)
       throw new Error('Launchpad is closed')
     }
 
     try {
       const address = await app.start()
-      if (this.closed) {
-        await app.close()
+      if (this.closed && this.shutdownMode === 'bounded') {
+        await this.closeOwnedApp(app)
         throw new Error('Launchpad is closed')
       }
       const result = app.controller.start()
       this.liveApps.set(configId, { app, controlUrl: address.url })
+      if (this.closed) this.closeOwnedApp(app)
       return {
         accepted: true,
         controlUrl: address.url,
         ...(result.started ? {} : { alreadyStarted: true }),
       }
     } catch (error) {
+      if (this.shutdownMode === 'strict' && this.closed) this.lifecycleErrors.push(error)
+      try { await this.retireApp(app) } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Work Session startup and cleanup failed')
+      }
       this.liveApps.delete(configId)
-      await app.close().catch(() => undefined)
       throw error
     }
+  }
+
+  private async retireApp(app: ManagedWorkSessionApp): Promise<void> {
+    if (this.shutdownMode === 'strict') await this.closeOwnedApp(app)
+    else await this.closeOwnedApp(app).catch(() => undefined)
   }
 
   private async createWorkSessionFromComposer(input: ComposerRequest): Promise<LaunchResult> {
@@ -1192,7 +1333,7 @@ export class NovaWingLaunchpad {
   }
 
   private async launchComposedWorkSession(input: ComposerRequest): Promise<LaunchResult> {
-    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
+    if (this.closed && this.shutdownMode === 'bounded') throw new ComposerLaunchError('SESSION_START_FAILED')
     const targetRepo = resolve(input.targetRepo)
     if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
       throw new ComposerLaunchError('INVALID_PROJECT_PATH')
@@ -1505,7 +1646,7 @@ export class NovaWingLaunchpad {
   }
 
   private async repairComposedWorkSession(input: ComposerRequest): Promise<RepairLaunchResult> {
-    if (this.closed) throw new ComposerLaunchError('SESSION_START_FAILED')
+    if (this.closed && this.shutdownMode === 'bounded') throw new ComposerLaunchError('SESSION_START_FAILED')
     const targetRepo = resolve(input.targetRepo)
     if (!isAbsolute(input.targetRepo) || !await isDirectory(targetRepo)) {
       throw new ComposerLaunchError('INVALID_PROJECT_PATH')
@@ -1735,6 +1876,7 @@ export async function createNovaWingLaunchpad(options: {
   env?: NodeJS.ProcessEnv
   dependencies?: NovaWingLaunchpadDependencies
   enableProductionPreflight?: boolean
+  shutdownMode?: 'strict' | 'bounded'
 } = {}): Promise<NovaWingLaunchpad> {
   const configDirectory = options.configDirectory ?? defaultTrustedConfigDirectory(options.env)
   const loadConfig = options.dependencies?.loadConfig ?? loadTrustedWorkSessionConfig
@@ -1744,6 +1886,7 @@ export async function createNovaWingLaunchpad(options: {
         ...options.dependencies,
         preflight: options.dependencies?.preflight ?? ((targetRepo?: string, controlPlane: 'v1' | 'v2' = 'v2') =>
           runProductionDependencyPreflight({
+            shutdownMode: options.shutdownMode ?? options.dependencies?.shutdownMode ?? 'bounded',
             // Launchpad's default Composer route is Codex. Check its local SDK
             // prerequisites at cold start so the topbar reports availability,
             // not whether an active Task has already selected a route.
@@ -1756,6 +1899,7 @@ export async function createNovaWingLaunchpad(options: {
     : options.dependencies
   const launchpadDependencies: NovaWingLaunchpadDependencies = {
     ...dependencies,
+    ...(options.shutdownMode === undefined ? {} : { shutdownMode: options.shutdownMode }),
     analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),
     resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
@@ -2191,11 +2335,18 @@ async function readProductionSessionStatus(
       },
     },
   })
+  const failures: unknown[] = []
+  let status: WorkSessionDisplayState | undefined
   try {
     const state = await runtime.loadPersistedState()
     // Launchpad 不持有活动 Runner：非终态即 RECOVERABLE。
-    return deriveDisplayState(state, false)
-  } finally {
-    await runtime.close()
+    status = deriveDisplayState(state, false)
+  } catch (error) { failures.push(error) }
+  let cleanupFailed = false
+  try { await runtime.close() } catch (error) {
+    failures.push(error)
+    cleanupFailed = true
   }
+  if (failures.length > 0) throw new SessionStatusProbeError(failures, cleanupFailed)
+  return status!
 }

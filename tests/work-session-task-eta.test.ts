@@ -182,6 +182,31 @@ test('hung LLM has a bounded deadline while Task/UI projection remains synchrono
   assert.equal(service.project(input())!.source, 'deterministic')
 })
 
+test('strict ETA drain outlives the presentation timeout and waits for the underlying runner', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  let release!: (response: { text: string }) => void
+  const runner = new Promise<{ text: string }>((resolve) => { release = resolve })
+  let calls = 0
+  const service = new TaskEtaService({ cache: memoryCache(), timeoutMs: 10,
+    runner: () => { calls++; return runner } })
+  service.project(input())
+  await Promise.resolve()
+  assert.equal(calls, 1)
+  context.mock.timers.tick(10)
+  await service.settled()
+  assert.equal(service.project(input())!.source, 'deterministic')
+  let drained = false
+  const closing = service.drain().then(() => { drained = true })
+  const later = input([event(1, 0, 'VERIFICATION_PLANNED'), event(2, 1, 'AGENT_DISPATCHED', 'EXECUTE'), event(3, 2, 'AGENT_COMPLETED', 'EXECUTE')])
+  service.project(later)
+  await Promise.resolve()
+  assert.equal(calls, 1, 'closing must not admit the later ETA milestone')
+  assert.equal(drained, false, 'UI timeout must not become successful host cleanup')
+  release({ text: '{"remainingDurationMs":300000,"confidence":"low","reason":"late"}' })
+  await closing
+  assert.equal(drained, true)
+})
+
 test('sidecar claims survive restart and prevent duplicate LLM calls for failed and successful attempts', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'novawing-eta-'))
   try {

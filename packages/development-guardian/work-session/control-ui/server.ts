@@ -51,9 +51,13 @@ export class WorkSessionControlServer {
   private readonly token: string
   private readonly server: Server
   private readonly sseClients = new Set<ServerResponse>()
+  private readonly mutationHandlers = new Set<Promise<void>>()
 
   private address: WorkSessionControlServerAddress | undefined
   private sseId = 0
+  private closing = false
+  private startOperation: Promise<WorkSessionControlServerAddress> | undefined
+  private closeOperation: Promise<void> | undefined
 
   constructor(options: WorkSessionControlServerOptions) {
     this.controller = options.controller
@@ -79,7 +83,14 @@ export class WorkSessionControlServer {
     return this.token
   }
 
-  async start(): Promise<WorkSessionControlServerAddress> {
+  start(): Promise<WorkSessionControlServerAddress> {
+    if (this.startOperation !== undefined) return this.startOperation
+    if (this.closing) return Promise.reject(new Error('Control server is closing'))
+    this.startOperation ??= this.startOnce()
+    return this.startOperation
+  }
+
+  private async startOnce(): Promise<WorkSessionControlServerAddress> {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => reject(error)
       this.server.once('error', onError)
@@ -100,31 +111,55 @@ export class WorkSessionControlServer {
     return this.address
   }
 
-  /** 关闭：结束 SSE 客户端、关闭 HTTP listener、清理 controller polling timer。 */
-  async close(): Promise<void> {
-    for (const res of this.sseClients) {
-      res.end()
-    }
-    this.sseClients.clear()
-
-    if (this.address !== undefined) {
-      await new Promise<void>((resolve) => {
-        this.server.close(() => resolve())
-      })
-      this.address = undefined
-    }
-    this.controller.close()
+  /** Admission closes before draining; SSE ends before waiting on HTTP close. */
+  close(): Promise<void> {
+    if (this.closeOperation !== undefined) return this.closeOperation
+    const completion = Promise.withResolvers<void>()
+    this.closeOperation = completion.promise
+    this.closing = true
+    const errors: unknown[] = []
+    try { this.controller.stopAdmission() } catch (error) { errors.push(error) }
+    let controllerClose: Promise<void>
+    try { controllerClose = this.controller.close() } catch (error) { controllerClose = Promise.reject(error) }
+    const handlers = [...this.mutationHandlers]
+    void (async () => {
+      for (const result of await Promise.allSettled([this.startOperation, controllerClose, ...handlers])) {
+        if (result.status === 'rejected') errors.push(result.reason)
+      }
+      for (const res of this.sseClients) {
+        try { res.end() } catch (error) { errors.push(error) }
+      }
+      this.sseClients.clear()
+      if (this.server.listening) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            this.server.close((error) => error === undefined ? resolve() : reject(error))
+          })
+          this.address = undefined
+        } catch (error) { errors.push(error) }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, 'Control server shutdown failed')
+    })().then(completion.resolve, completion.reject)
+    return this.closeOperation
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (this.closing) {
+      // Rejected requests own no work, including requests failing the Host gate.
+      // Their unfinished bodies must not keep listener cleanup open.
+      res.setHeader('Connection', 'close')
+      req.resume()
+    }
     // W005-A FINAL: strict Host gate —— 先于任何路由，拒绝 DNS rebinding。
     // 不返回 HTML/bootstrap/status/SSE，也不执行 mutation。
     if (req.headers.host !== this.expectedHost()) {
       return this.respondJson(res, 403, { error: 'forbidden host' })
     }
+    if (this.closing) return this.respondJson(res, 503, { error: 'Control server is closing' })
 
     const method = req.method ?? 'GET'
     const path = this.pathOf(req)
+    if (method === 'POST') this.trackMutationHandler(res)
 
     res.setHeader('Cache-Control', 'no-store')
 
@@ -192,6 +227,22 @@ export class WorkSessionControlServer {
     const raw = req.url ?? '/'
     const index = raw.indexOf('?')
     return index === -1 ? raw : raw.slice(0, index)
+  }
+
+  /** Request receipt and operation admission are separate: drain body/response
+   * handling, but only admit controller work once the complete body is valid. */
+  private trackMutationHandler(res: ServerResponse): void {
+    let finish!: () => void
+    const operation = new Promise<void>((resolve) => { finish = resolve })
+    this.mutationHandlers.add(operation)
+    const settled = (): void => {
+      this.mutationHandlers.delete(operation)
+      res.off('finish', settled)
+      res.off('close', settled)
+      finish()
+    }
+    res.once('finish', settled)
+    res.once('close', settled)
   }
 
   private serveHtml(res: ServerResponse): void {
@@ -429,6 +480,9 @@ export class WorkSessionControlServer {
     req.on('end', () => {
       if (!settled) {
         settled = true
+        // Receiving a body is not control-operation admission. Recheck at the
+        // dispatch boundary so a slow request cannot mutate after shutdown.
+        if (this.closing) return this.respondJson(res, 503, { error: 'Control server is closing' })
         onDone(body)
       }
     })

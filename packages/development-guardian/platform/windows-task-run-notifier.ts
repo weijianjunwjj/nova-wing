@@ -19,11 +19,14 @@ export interface WindowsTaskRunToastOptions {
   platform?: NodeJS.Platform
   timeoutMs?: number
   spawnToast?: (title: string, body: string, timeoutMs: number, localUrl?: string) => Promise<void>
+  /** Strict hosts wait for worker and stdio closure, including after timeout. */
+  shutdownMode?: 'strict' | 'bounded'
+  spawnProcess?: typeof spawn
 }
 
 export function createWindowsTaskRunNotifier(options: WindowsTaskRunToastOptions = {}): WorkSessionNotifier {
   const platform = options.platform ?? process.platform
-  const deliver = options.spawnToast ?? spawnTaskRunToast
+  const deliver = options.spawnToast ?? ((title, body, timeout, localUrl) => spawnTaskRunToast(title, body, timeout, localUrl, options))
   const timeoutMs = options.timeoutMs ?? 8_000
   const available = platform === 'win32'
 
@@ -152,18 +155,32 @@ export function buildWindowsToastCommand(title: string, body: string, localUrl?:
   }
 }
 
-function spawnTaskRunToast(title: string, body: string, timeoutMs: number, localUrl?: string): Promise<void> {
+function spawnTaskRunToast(title: string, body: string, timeoutMs: number, localUrl: string | undefined, options: WindowsTaskRunToastOptions): Promise<void> {
   const { command, args } = buildWindowsToastCommand(title, body, localUrl)
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    const child = (options.spawnProcess ?? spawn)(command, [...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
-    const timer = setTimeout(() => { child.kill(); reject(new Error('toast timed out')) }, timeoutMs); timer.unref()
+    let failure: Error | undefined
+    const strict = options.shutdownMode === 'strict'
+    const timer = setTimeout(() => {
+      failure = new Error('toast timed out')
+      try { child.kill() } catch (error) {
+        failure = new AggregateError([failure, error], 'toast timeout and termination failed')
+      }
+      if (!strict) reject(failure)
+    }, timeoutMs)
+    timer.unref()
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-2_000) })
-    child.once('error', (error) => { clearTimeout(timer); reject(error) })
-    child.once('exit', (code) => {
+    child.once('error', (error) => {
+      failure = failure === undefined ? error : new AggregateError([failure, error], 'toast worker failed')
       clearTimeout(timer)
-      if (code === 0) resolve()
+      if (!strict) reject(failure)
+    })
+    child.once(strict ? 'close' : 'exit', (code: number | null) => {
+      clearTimeout(timer)
+      if (failure !== undefined) reject(failure)
+      else if (code === 0) resolve()
       else reject(new Error(`toast exited ${String(code)}${stderr.trim().length === 0 ? '' : `: ${stderr.trim()}`}`))
     })
   })

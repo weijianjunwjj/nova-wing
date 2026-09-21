@@ -169,7 +169,7 @@ SQLite session URL 已写入可信 config 的继续沿用原位置。
 阻止 common runtime 再引入 OS 路径、工具、环境变量和 locale 硬编码。
 
 
-## Desktop Bootstrap（v0.4.0 Phase 1B）
+## Desktop Bootstrap / Strict Shutdown（v0.4.0 Phase 2A）
 
 ```powershell
 npm run desktop:dev
@@ -178,7 +178,8 @@ npm run desktop:smoke
 
 `desktop:dev` 先 build，再以全新临时 config/data/repo/home/profile 启动 Electron Main。
 Main 内的薄 Desktop Host 调用现有 Launchpad，BrowserWindow 加载它的真实 HTTP UI；
-关闭最后一个窗口会调用 Host → Launchpad close，再退出并删除临时目录。
+关闭最后一个窗口会调用 Host → Launchpad strict close，等待已接纳工作和资源 drain 后再退出。
+重复 Quit 复用同一 shutdown Promise；关闭失败输出结构化错误并保持停止接纳状态。
 此入口只接受终端输出的临时 repo：Composer 的 branch 使用 `desktop-smoke-fixture`，
 allowed paths 使用 `fixture.txt`，关闭 auto commit、auto push 和 email。
 Session 通过现有 Production Work Session 工厂创建，执行既有 FakeTaskRunner。
@@ -190,21 +191,28 @@ fixture 显式使用 v1 协议；不运行真实模型、Git 写入或用户历�
 外部网址、其他本机服务、file/javascript、新窗口、webview 和权限请求均被阻止。
 保持 nodeIntegration=false、contextIsolation/sandbox/webSecurity=true，无 preload/IPC。
 同时保留 Phase 1 的 production 导入、node:sqlite、libSQL、Runtime close/reopen 与资源检查。
+Phase 2A 还验证执行中的第二个 gated fake workload、重复 Quit、关闭后 mutation 拒绝、
+真实 SSE 结束及所有已登记资源归零。单元/集成门禁覆盖启动竞争、repair/recovery drain 与多错误传播。
 
 Electron 精确固定在 devDependencies；若首次安装尚未下载平台二进制，先执行
 `npx --no install-electron`。smoke 在缺少二进制时返回机器可读失败，不在门禁中隐式下载。
 每个 smoke Electron 进程限时 60 秒，超时只清理本次创建的进程树。stdout/stderr 和 JSON 结果
 位于 `artifacts/desktop/bootstrap-smoke/`；`launchpad-result.json` 含完整
 `DESKTOP_LAUNCHPAD_SMOKE` 门禁（含外部 runner 确认的 exit/cleanup），`result.json`
-汇总 UI 与兼容性两轮结果。关闭失败和退出后的临时目录清理失败分别记录。
+汇总 UI 与兼容性两轮结果；`strict-shutdown-result.json` 保存 `DESKTOP_STRICT_SHUTDOWN`。
+关闭失败和退出后的临时目录清理失败分别记录。runner 的 60 秒只用于判定 smoke 失败，
+并非 Desktop 产品的退出超时；strict close 不通过 timeout 假报 drain 成功。
 Desktop JS 类型/unused、包边界、平台边界及资源检测回归均已纳入 `npm run check`。
 Windows 的完整测试仍需配置有效的 `NOVAWING_GIT_BASH_PATH`（见上文）。
 
-本阶段只验证已完成的隔离 fake workload 正常关闭，尚未交付生产级 strict shutdown。
-下一步先做 Phase 2A：Host/Launchpad/Runtime drain、错误传播和 start/close race；
-之后才进入 Phase 2B 的后台模式与 Tray。根 npm exports/files 保持原边界，
+Desktop 显式使用 `createNovaWingLaunchpad({ shutdownMode: 'strict' })`；
+现有 CLI/default close 保留 bounded 兼容语义。strict 的新接纳在 close 调用时停止，
+已接纳 workflow 按现有 Runtime 语义完成，不新增取消 Task 或强制退出。
+当前仍只验证 Windows 开发环境与隔离 fake workload；真实 Codex 退出耗时、
+系统 shutdown/logoff、force kill、packaged 环境及 Git Bash discovery 尚未认证。
+Phase 2A 审查通过后才进入 Phase 2B 的后台模式与 Tray。根 npm exports/files 保持原边界，
 Desktop 后续使用独立 packaging staging。本轮完整证据见
-[`Phase 1B Report`](docs/audit/NovaWing-v0.4.0-Phase-1B-Report.md)。
+[`Phase 2A Report`](docs/audit/NovaWing-v0.4.0-Phase-2A-Report.md)。
 
 ## 当前切片假设
 

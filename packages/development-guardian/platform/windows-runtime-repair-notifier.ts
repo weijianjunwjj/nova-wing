@@ -59,12 +59,15 @@ export interface WindowsToastRuntimeRepairOptions {
   platform?: NodeJS.Platform
   spawnToast?: (title: string, body: string, timeoutMs: number) => Promise<{ exitCode: number | null; stderr: string }>
   timeoutMs?: number
+  /** Strict hosts retain the worker until process and stdio closure. */
+  shutdownMode?: 'strict' | 'bounded'
+  spawnProcess?: typeof spawn
 }
 
-/** Windows 10/11 toast；notify 在 toast host 退出后才 resolve。 */
+/** Windows 10/11 toast；strict 模式即使超时，也等待 worker close 后才 settle。 */
 export function createWindowsToastRuntimeRepairNotifier(options: WindowsToastRuntimeRepairOptions = {}): RuntimeRepairNotifier {
   const isWindows = (options.platform ?? process.platform) === 'win32'
-  const spawnToast = options.spawnToast ?? spawnRuntimeRepairToast
+  const spawnToast = options.spawnToast ?? ((title, body, timeout) => spawnRuntimeRepairToast(title, body, timeout, options))
   const timeoutMs = options.timeoutMs ?? 15_000
   return {
     async notify(notification) {
@@ -84,7 +87,7 @@ function xmlEscape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-function spawnRuntimeRepairToast(title: string, body: string, timeoutMs: number): Promise<{ exitCode: number | null; stderr: string }> {
+function spawnRuntimeRepairToast(title: string, body: string, timeoutMs: number, options: WindowsToastRuntimeRepairOptions): Promise<{ exitCode: number | null; stderr: string }> {
   const script = [
     '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null',
     '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null',
@@ -96,13 +99,16 @@ function spawnRuntimeRepairToast(title: string, body: string, timeoutMs: number)
   ].join('; ')
   const encoded = Buffer.from(script, 'utf16le').toString('base64')
   return new Promise((resolveToast) => {
-    const child = spawn(
+    const child = (options.spawnProcess ?? spawn)(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
       { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
     )
     let stderr = ''
     let settled = false
+    let failed = false
+    let timer: NodeJS.Timeout | undefined
+    const strict = options.shutdownMode === 'strict'
     const finish = (delivery: { exitCode: number | null; stderr: string }): void => {
       if (settled) return
       settled = true
@@ -111,11 +117,19 @@ function spawnRuntimeRepairToast(title: string, body: string, timeoutMs: number)
     }
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4_000) })
-    child.once('error', (error) => finish({ exitCode: 1, stderr: `${stderr}${error.message}` }))
-    child.once('close', (code) => finish({ exitCode: code ?? 1, stderr }))
-    const timer = setTimeout(() => {
-      child.kill()
-      finish({ exitCode: null, stderr: `${stderr}\nWindows toast host timed out after ${timeoutMs}ms`.trim() })
+    child.once('error', (error) => {
+      failed = true
+      stderr = `${stderr}${error.message}`
+      if (!strict) finish({ exitCode: 1, stderr })
+    })
+    child.once('close', (code) => finish({ exitCode: failed && code === 0 ? 1 : code ?? 1, stderr }))
+    timer = setTimeout(() => {
+      failed = true
+      stderr = `${stderr}\nWindows toast host timed out after ${timeoutMs}ms`.trim()
+      try { child.kill() } catch (error) {
+        stderr = `${stderr}\n${error instanceof Error ? error.message : String(error)}`
+      }
+      if (!strict) finish({ exitCode: null, stderr })
     }, timeoutMs)
     timer.unref()
   })

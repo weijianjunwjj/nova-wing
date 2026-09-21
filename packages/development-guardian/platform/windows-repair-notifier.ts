@@ -24,18 +24,22 @@ export type ToastSpawner = (title: string, body: string, timeoutMs: number) => P
 export interface WindowsToastOptions {
   platform?: NodeJS.Platform
   spawnToast?: ToastSpawner
-  /** Bounded wait for the toast host; a slow shell must not stall a repair. */
+  /** Strict hosts retain the notification worker until its close event. */
+  shutdownMode?: 'strict' | 'bounded'
+  /** Low-level process adapter; a custom toast delivery still owns its own worker. */
+  spawnProcess?: typeof spawn
+  /** Delivery deadline; strict mode also waits for the timed-out worker to close. */
   timeoutMs?: number
 }
 
 /**
- * Windows 10/11 toast via the WinRT API. `notify` resolves only after the
- * PowerShell toast host exits, so a delivery failure is observable instead of
- * silently discarded; the Launchpad still treats notification as best-effort.
+ * Windows 10/11 toast via the WinRT API. Strict delivery waits for the
+ * PowerShell worker's close event even on failure; the legacy default bounds
+ * its wait. The Launchpad still treats notification delivery as best-effort.
  */
 export function createWindowsToastRepairNotifier(options: WindowsToastOptions = {}): RepairNotifier {
   const isWindows = (options.platform ?? process.platform) === 'win32'
-  const spawnToast = options.spawnToast ?? spawnWindowsToast
+  const spawnToast = options.spawnToast ?? ((title, body, timeout) => spawnWindowsToast(title, body, timeout, options))
   const timeoutMs = options.timeoutMs ?? 15_000
   return {
     async notify(notification) {
@@ -56,7 +60,7 @@ function xmlEscape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-function spawnWindowsToast(title: string, body: string, timeoutMs: number): Promise<ToastDelivery> {
+function spawnWindowsToast(title: string, body: string, timeoutMs: number, options: WindowsToastOptions): Promise<ToastDelivery> {
   const script = [
     '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null',
     '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null',
@@ -68,13 +72,16 @@ function spawnWindowsToast(title: string, body: string, timeoutMs: number): Prom
   ].join('; ')
   const encoded = Buffer.from(script, 'utf16le').toString('base64')
   return new Promise<ToastDelivery>((resolveToast) => {
-    const child = spawn(
+    const child = (options.spawnProcess ?? spawn)(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
       { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
     )
     let stderr = ''
     let settled = false
+    let failed = false
+    let timer: NodeJS.Timeout | undefined
+    const strict = options.shutdownMode === 'strict'
     const finish = (delivery: ToastDelivery): void => {
       if (settled) return
       settled = true
@@ -83,11 +90,20 @@ function spawnWindowsToast(title: string, body: string, timeoutMs: number): Prom
     }
     child.stderr?.setEncoding('utf8')
     child.stderr?.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4_000) })
-    child.once('error', (error) => finish({ exitCode: 1, stderr: `${stderr}${error.message}` }))
-    child.once('close', (code) => finish({ exitCode: code, stderr }))
-    const timer = setTimeout(() => {
-      child.kill()
-      finish({ exitCode: null, stderr: `${stderr}\nWindows toast host timed out after ${timeoutMs}ms`.trim() })
+    child.once('error', (error) => {
+      failed = true
+      stderr = `${stderr}${error.message}`
+      if (!strict) finish({ exitCode: 1, stderr })
+    })
+    child.once('close', (code) => finish({ exitCode: failed && code === 0 ? 1 : code, stderr }))
+    timer = setTimeout(() => {
+      failed = true
+      stderr = `${stderr}\nWindows toast host timed out after ${timeoutMs}ms`.trim()
+      try { child.kill() } catch (error) {
+        stderr = `${stderr}\n${error instanceof Error ? error.message : String(error)}`
+      }
+      // A kill request does not establish that the worker and its pipes exited.
+      if (!strict) finish({ exitCode: null, stderr })
     }, timeoutMs)
     timer.unref()
   })

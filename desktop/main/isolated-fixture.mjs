@@ -48,7 +48,8 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
   }
   /** @type {Array<{ sessionId: string, storageUrl: string, runtime: WorkSessionRuntime, runner: FakeTaskRunner, app?: ProductionUi, runtimeCreateCount: number, runtimeCloseCount: number, runtimeCloseAttemptCount: number, taskRunCount: number }>} */
   const sessions = []
-  const taskGate = Promise.withResolvers()
+  let taskGate = Promise.withResolvers()
+  let taskStarted = Promise.withResolvers()
   if (!holdTasks) taskGate.resolve(undefined)
 
   /** @returns {never} */
@@ -153,6 +154,7 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
             async run(...args) {
               evidence.taskRunCount++
               owned.taskRunCount++
+              taskStarted.resolve(undefined)
               await taskGate.promise
               return runner.run(...args)
             },
@@ -193,6 +195,14 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
   return {
     root: fixtureRoot, env: fixtureEnv, configDirectory, dataDirectory, repoDirectory, branch, dependencies, evidence,
     releaseTasks() { taskGate.resolve(undefined) },
+    holdNextTasks() {
+      if (sessions.some(({ runtime }) => runtime.getDurableState()?.state !== 'COMPLETED')) {
+        throw new Error('Only a settled isolated fixture can arm its next task gate')
+      }
+      taskGate = Promise.withResolvers()
+      taskStarted = Promise.withResolvers()
+      return { started: taskStarted.promise }
+    },
     getEvidence,
     async getPersistedStates() {
       return Promise.all(sessions.map(async ({ runtime }) => {
