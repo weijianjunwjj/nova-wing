@@ -16,6 +16,7 @@ import type { WorkSessionControlController } from './controller.js'
 import type { ControlResumeInput } from './controller.js'
 import { renderHtml, APP_JS, STYLES_CSS } from './view.js'
 import type { ControlEvent } from './events.js'
+import { trackHttpPreconnections } from '../http-preconnections.js'
 
 export interface WorkSessionControlServerOptions {
   controller: WorkSessionControlController
@@ -50,6 +51,7 @@ export class WorkSessionControlServer {
   private readonly port: number
   private readonly token: string
   private readonly server: Server
+  private readonly closePreconnections: () => void
   private readonly sseClients = new Set<ServerResponse>()
   private readonly mutationHandlers = new Set<Promise<void>>()
 
@@ -66,6 +68,7 @@ export class WorkSessionControlServer {
     this.server = createServer((req, res) => {
       void this.handle(req, res)
     })
+    this.closePreconnections = trackHttpPreconnections(this.server)
   }
 
   /** 返回实际 host/port/url。host 恒为 127.0.0.1。 */
@@ -134,6 +137,7 @@ export class WorkSessionControlServer {
         try {
           await new Promise<void>((resolve, reject) => {
             this.server.close((error) => error === undefined ? resolve() : reject(error))
+            this.closePreconnections()
           })
           this.address = undefined
         } catch (error) { errors.push(error) }

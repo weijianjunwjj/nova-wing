@@ -2,8 +2,10 @@ import { createNovaWingLaunchpad, createProductionWorkSessionUi } from 'nova-win
 import { createNavigationRegistry } from './navigation.mjs'
 
 /** Thin ownership wrapper. Task execution and HTTP/SSE remain in the existing factories. */
-export async function createDesktopHost({ configDirectory, env, dependencies, launchpadFactory = createNovaWingLaunchpad }) {
+export async function createDesktopHost({ configDirectory, env, dependencies, desktopNotifier = undefined, launchpadFactory = createNovaWingLaunchpad }) {
   const registry = createNavigationRegistry()
+  // Session identity comes from trusted composition, never a notification URL.
+  const controls = new Map()
   const observations = { controlRegistered: [], controlUnregistered: [], closeCalls: 0, pendingControlCloses: 0, errors: [] }
   let launchpadUrl
   let closing = false
@@ -15,7 +17,10 @@ export async function createDesktopHost({ configDirectory, env, dependencies, la
     dependencies: {
       ...dependencies,
       async createWorkSession(config, options) {
-        const app = await createWorkSession(config, options)
+        const app = await createWorkSession(config, {
+          ...options, ...(desktopNotifier === undefined ? {} : { desktopNotifier }),
+        })
+        const sessionId = config.session.id
         let origin
         let controlStartPromise
         let controlClosePromise
@@ -30,6 +35,7 @@ export async function createDesktopHost({ configDirectory, env, dependencies, la
               const address = await app.start()
               if (!closing && !controlClosePromise) {
                 origin = registry.register(app, address.url)
+                controls.set(sessionId, { owner: app, url: address.url })
                 observations.controlRegistered.push(origin)
               }
               return address
@@ -40,6 +46,7 @@ export async function createDesktopHost({ configDirectory, env, dependencies, la
             if (!controlClosePromise) {
               const completion = Promise.withResolvers()
               controlClosePromise = completion.promise
+              if (controls.get(sessionId)?.owner === app) controls.delete(sessionId)
               observations.pendingControlCloses++
               let operation
               try { operation = app.close() } catch (error) { operation = Promise.reject(error) }
@@ -69,6 +76,11 @@ export async function createDesktopHost({ configDirectory, env, dependencies, la
     get launchpadUrl() { return launchpadUrl },
     ownedOrigins: () => registry.origins(),
     isAllowedNavigation: (url) => !closing && registry.allows(url),
+    resolveSessionUrl(sessionId) {
+      if (closing || typeof sessionId !== 'string') return undefined
+      const control = controls.get(sessionId)
+      return control && control.owner.isLive?.() !== false && registry.allows(control.url) ? control.url : undefined
+    },
     start() {
       if (startPromise) return startPromise
       if (closing) return Promise.reject(new Error('Desktop Host is closing'))
@@ -87,6 +99,7 @@ export async function createDesktopHost({ configDirectory, env, dependencies, la
         const completion = Promise.withResolvers()
         closePromise = completion.promise
         closing = true
+        controls.clear()
         observations.closeCalls++
         // Launchpad closes admission synchronously and owns its startup race.
         // Attach a rejection observer now while the Host waits for start too.

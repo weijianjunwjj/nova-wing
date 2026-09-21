@@ -1,8 +1,10 @@
-import { app, Menu, nativeImage, powerSaveBlocker, Tray } from 'electron'
+import { app, Menu, nativeImage, Notification, powerSaveBlocker, Tray } from 'electron'
 import { requireDesktopIsolation } from './isolation.mjs'
 import { createShutdownCoordinator, describeShutdownError } from './shutdown.mjs'
 import { createDesktopPowerManager } from './power.mjs'
 import { createDesktopTray } from './tray.mjs'
+import { createDesktopNotificationProvider } from './notifications.mjs'
+import { DESKTOP_IDENTITY } from './identity.mjs'
 
 const root = requireDesktopIsolation()
 let fixture
@@ -17,6 +19,7 @@ let host
 let windows
 let tray
 let power
+let notifications
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
 }
@@ -27,6 +30,7 @@ export const desktopShutdown = createShutdownCoordinator({
   afterDrain() {
     // Keep native recovery controls and the blocker throughout strict drain.
     // On Host failure this continuation is never entered.
+    notifications?.dispose()
     power?.dispose()
     tray?.destroy()
     windows?.destroyWindowForQuit()
@@ -63,6 +67,13 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   const { createIsolatedLaunchpadFixture } = await import('./isolated-fixture.mjs')
   const { createDesktopHost } = await import('./host.mjs')
   const { createDesktopWindowLifecycle } = await import('./window.mjs')
+  app.setName(DESKTOP_IDENTITY.appName)
+  notifications = createDesktopNotificationProvider({
+    Notification,
+    isQuitRequested: () => desktopShutdown.requested,
+    onSessionClick: (sessionId) => windows?.showSession(sessionId),
+    onDiagnostic: (detail) => console.error(`DESKTOP_NOTIFICATION_DIAGNOSTIC ${JSON.stringify(detail)}`),
+  })
   power = createDesktopPowerManager({ powerSaveBlocker, reportFailure: reportBackgroundFailure })
   desktopInstance.fixtureCreateCount++
   fixture = await createIsolatedLaunchpadFixture({
@@ -70,7 +81,7 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   })
   desktopInstance.hostCreateCount++
   host = await createDesktopHost({ configDirectory: fixture.configDirectory, env: process.env,
-    dependencies: { ...fixture.dependencies, activityObserver: power.observe } })
+    dependencies: { ...fixture.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
   desktopInstance.launchpadCreateCount++
   await host.start()
   // Startup was admitted before quit; let its owner settle without opening a
@@ -87,7 +98,7 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   power.subscribe((count) => tray.setActivity(count))
   await windows.showWindow()
   console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
-  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power }
+  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications }
 }) : Promise.resolve(undefined)
 desktopReady.catch((error) => {
   console.error(`DESKTOP_STARTUP_FAILURE ${JSON.stringify({ result: 'FAIL', error: describeShutdownError(error) })}`)

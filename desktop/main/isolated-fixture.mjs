@@ -50,7 +50,7 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
   const sessions = []
   let taskGate = Promise.withResolvers()
   let taskStarted = Promise.withResolvers()
-  /** @type {Map<string, {gate: PromiseWithResolvers<void>, started: PromiseWithResolvers<void>, behavior?: import('nova-wing/development-guardian').FakeTaskBehavior, error?: Error}>} */
+  /** @type {Map<string, {gate: PromiseWithResolvers<void>, started: PromiseWithResolvers<void>, behavior?: import('nova-wing/development-guardian').FakeTaskBehavior, error?: Error, desktopNotifier?: import('nova-wing/development-guardian').WorkSessionNotifier | null}>} */
   const taskControls = new Map()
   const allowedSchedules = new Set()
   if (!holdTasks) taskGate.resolve(undefined)
@@ -140,8 +140,13 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
     async createWorkSession(config, options) {
       await assertFixtureConfig(config)
       evidence.productionUiCreateCount++
+      // Main-only fault injection for the notification smoke. It cannot be set
+      // by a Composer request and never admits SMTP or any external execution.
+      const taskControl = taskControls.get(config.tasks[0]?.id)
       const app = await createProductionWorkSessionUi(config, {
         ...options, env: { ...fixtureEnv }, preflight, gitProcessRunner,
+        ...(taskControl && Object.hasOwn(taskControl, 'desktopNotifier')
+          ? { desktopNotifier: taskControl.desktopNotifier } : {}),
         createBrain: () => ({ review: async () => forbidden() }),
         createExecutor: forbidden, createCodexExecutor: forbidden,
         createReviewerRegistry: () => new ReviewerRuntimeRegistry(),
@@ -166,7 +171,7 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
               return runner.run(...args)
             },
           }
-          const runtime = new WorkSessionRuntime({ ...runtimeConfig, taskRunner })
+          const runtime = new WorkSessionRuntime({ ...runtimeConfig, taskRunner, notificationRetryDelayMs: 0 })
           const owned = {
             sessionId: runtimeConfig.definition.id, storageUrl: runtimeConfig.storageUrl, runtime, runner,
             runtimeCreateCount: 1, runtimeCloseCount: 0, runtimeCloseAttemptCount: 0, taskRunCount: 0,

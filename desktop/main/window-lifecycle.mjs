@@ -9,7 +9,8 @@ export function loadOwnedURL(window, host, url) {
 /**
  * BrowserWindow ownership only: hiding, recreation and recovery never own Host.
  * The factory seam makes races and security policy testable without Electron.
- * @param {{ launchpadUrl: string, isAllowedNavigation: (url: string) => boolean }} host
+ * @param {{ launchpadUrl: string, isAllowedNavigation: (url: string) => boolean,
+ *   resolveSessionUrl?: (sessionId: string) => string | undefined }} host
  * @param {{ createWindow: (settings: import('electron').BrowserWindowConstructorOptions) => import('electron').BrowserWindow,
  *   isQuitRequested?: () => boolean, reportDiagnostic?: (diagnostic: object) => void,
  *   now?: () => number, maxRecoveryAttempts?: number, recoveryWindowMs?: number }} options
@@ -31,6 +32,7 @@ export function createWindowLifecycle(host, {
   let visibleIntent = false
   /** @type {Promise<void> | undefined} */
   let pendingRecovery
+  let pendingSessionNavigation = Promise.resolve()
   let recoveryTimes = []
   const quitting = () => destroyedForQuit || isQuitRequested()
 
@@ -170,6 +172,38 @@ export function createWindowLifecycle(host, {
     return window
   }
 
+  function showSession(sessionId) {
+    if (quitting()) return Promise.resolve(undefined)
+    visibleIntent = true
+    // Serialize clicks and re-resolve the live mapping after every await. No
+    // notification payload is ever interpreted as a navigation destination.
+    const operation = pendingSessionNavigation.then(async () => {
+      await pendingRecovery
+      if (quitting()) return undefined
+      const window = await ensureWindow()
+      if (quitting() || !window || window.isDestroyed()) return undefined
+      const sessionUrl = host.resolveSessionUrl?.(sessionId)
+      const url = sessionUrl && host.isAllowedNavigation(sessionUrl) ? sessionUrl : host.launchpadUrl
+      const revoked = () => !host.isAllowedNavigation(url) ||
+        (url === sessionUrl && host.resolveSessionUrl?.(sessionId) !== sessionUrl)
+      try {
+        await loadOwnedURL(window, host, url)
+      } catch (error) {
+        if (quitting()) return undefined
+        if (!revoked()) throw error
+      }
+      if (quitting()) return undefined
+      // The server can be revoked while Chromium is finishing its load.
+      if (revoked() && host.isAllowedNavigation(host.launchpadUrl)) {
+        await loadOwnedURL(window, host, host.launchpadUrl)
+      }
+      showExisting(window)
+      return window
+    })
+    pendingSessionNavigation = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
   function hideWindow() {
     visibleIntent = false
     const window = current?.window
@@ -184,7 +218,7 @@ export function createWindowLifecycle(host, {
   }
 
   return {
-    ensureWindow, showWindow, hideWindow, destroyWindowForQuit, blocked, observations,
+    ensureWindow, showWindow, showSession, hideWindow, destroyWindowForQuit, blocked, observations,
     get window() { return current?.window },
     get lastTrustedUrl() { return lastTrustedUrl },
     get pendingRecovery() { return pendingRecovery },

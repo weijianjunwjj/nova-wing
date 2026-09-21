@@ -19,6 +19,7 @@ import {
 } from '../production.js'
 import { ProductionWorkSessionInitializationError } from '../production-lifecycle-errors.js'
 import { observeWorkSessionActivity, type WorkSessionActivityObserver } from '../activity.js'
+import { trackHttpPreconnections } from '../http-preconnections.js'
 import { WorkSessionRuntime, type PreflightRepairRecord } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
 import {
@@ -506,6 +507,7 @@ export class NovaWingLaunchpad {
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
+  private readonly closePreconnections: () => void
   private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
   private readonly activeDeletes = new Set<string>()
   private readonly activeCreates = new Map<string, ComposerCreateEntry>()
@@ -580,6 +582,7 @@ export class NovaWingLaunchpad {
         else response.destroy()
       })
     })
+    this.closePreconnections = trackHttpPreconnections(this.server)
   }
 
   getConfigs(): readonly LaunchpadConfigSummary[] {
@@ -756,6 +759,7 @@ export class NovaWingLaunchpad {
       try {
         await new Promise<void>((resolveClose, rejectClose) => {
           this.server.close((error) => error === undefined ? resolveClose() : rejectClose(error))
+          this.closePreconnections()
         })
         this.address = undefined
       } catch (error) { this.lifecycleErrors.push(error) }

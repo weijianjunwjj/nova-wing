@@ -336,3 +336,78 @@ test('a close or quit during renderer recovery cannot cause a late show', async 
   assert.equal(lifecycle.observations.recovered, 0)
   assert.equal(lifecycle.observations.recoveryFailures, 0)
 })
+
+test('Session click resolves trusted identity, restores hidden window and falls back to Launchpad', async () => {
+  const { lifecycle, windows, host, registry, control, controlUrl, launchpadUrl } = harness()
+  host.resolveSessionUrl = (id) => id === 'one' ? controlUrl : undefined
+  await lifecycle.showWindow()
+  const [window] = windows
+  window.minimized = true
+  lifecycle.hideWindow()
+  await lifecycle.showSession('one')
+  assert.equal(window.loads.at(-1), controlUrl)
+  assert.equal(window.visible, true)
+  assert.equal(window.restores, 1)
+  assert.equal(window.focused, 2)
+  registry.unregister(control)
+  await lifecycle.showSession('one')
+  assert.equal(window.loads.at(-1), launchpadUrl)
+  await lifecycle.showSession('https://example.com')
+  assert.equal(window.loads.at(-1), launchpadUrl)
+  assert.equal(windows.length, 1)
+})
+
+test('Session click re-resolves after asynchronous creation, with quit and hide preventing late show', async () => {
+  let quit = false
+  let resolveSessionUrl
+  const gate = Promise.withResolvers()
+  const window = new FakeWindow()
+  window.load = () => gate.promise
+  const { lifecycle, host, registry, control, controlUrl, launchpadUrl } = harness({
+    createWindow: () => window, isQuitRequested: () => quit,
+  })
+  host.resolveSessionUrl = (id) => resolveSessionUrl?.(id)
+  resolveSessionUrl = () => controlUrl
+  const click = lifecycle.showSession('one')
+  await Promise.resolve()
+  registry.unregister(control)
+  lifecycle.hideWindow()
+  gate.resolve(undefined)
+  await click
+  assert.equal(window.loads.at(-1), launchpadUrl)
+  assert.equal(window.visible, false)
+  quit = true
+  const loads = window.loads.length
+  assert.equal(await lifecycle.showSession('one'), undefined)
+  assert.equal(window.loads.length, loads)
+})
+
+test('Session click rejects an arbitrary mapped URL and serializes successive session loads', async () => {
+  const { lifecycle, windows, host, launchpadUrl, controlUrl } = harness()
+  host.resolveSessionUrl = (id) => id === 'one' ? controlUrl : 'file:///private'
+  await lifecycle.ensureWindow()
+  await Promise.all([lifecycle.showSession('one'), lifecycle.showSession('untrusted')])
+  assert.deepEqual(windows[0].loads, [launchpadUrl, controlUrl, launchpadUrl])
+  assert.equal(lifecycle.lastTrustedUrl, launchpadUrl)
+})
+
+test('Session revocation during navigation falls back even while its owned origin drains', async () => {
+  const { lifecycle, host, windows, controlUrl, launchpadUrl } = harness()
+  let live = true
+  host.resolveSessionUrl = () => live ? controlUrl : undefined
+  await lifecycle.showWindow()
+  const entered = Promise.withResolvers()
+  const loadGate = Promise.withResolvers()
+  windows[0].load = (url) => {
+    if (url === controlUrl) { entered.resolve(undefined); return loadGate.promise }
+    return Promise.resolve()
+  }
+  const click = lifecycle.showSession('one')
+  await entered.promise
+  live = false
+  assert.equal(host.isAllowedNavigation(controlUrl), true)
+  loadGate.reject(new Error('Control server closed while Runtime still drains'))
+  await click
+  assert.equal(windows[0].loads.at(-1), launchpadUrl)
+  assert.equal(windows[0].visible, true)
+})

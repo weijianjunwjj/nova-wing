@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { request, type Server } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -244,6 +246,54 @@ await test('real SSE remains independent of strict drain and closes before the H
   } finally {
     runtime.startDeferred!.resolve(makeState({ state: 'COMPLETED' }))
     await server.close()
+  }
+})
+
+await test('strict Control drains admitted work and SSE without waiting for HTTP preconnections', { timeout: 10_000 }, async () => {
+  const runtime = new FakeRuntime(makeDefinition())
+  runtime.deferStart()
+  const controller = new WorkSessionControlController({ createRuntime: () => runtime, shutdownMode: 'strict' })
+  const server = new WorkSessionControlServer({ controller, port: 0 })
+  const address = await server.start()
+  const http = (server as unknown as { server: Server }).server
+  const response = await fetch(`${address.url}/api/events`)
+  const reader = response.body!.getReader()
+  await reader.read()
+  const connected = once(http, 'connection')
+  const empty = createConnection({ host: address.host, port: address.port })
+  await Promise.all([connected, once(empty, 'connect')])
+  const partialConnected = once(http, 'connection')
+  const partial = createConnection({ host: address.host, port: address.port })
+  const [[partialServerSocket]] = await Promise.all([partialConnected, once(partial, 'connect')])
+  const headersReceived = once(partialServerSocket, 'data')
+  partial.write('GET /api/status HTTP/1.1\r\nHost:')
+  await headersReceived
+  controller.start()
+  const closing = server.close()
+  const settled = watch(closing)
+  let sseEnded = false
+  const streamEnded = (async () => {
+    while (!(await reader.read()).done) { /* keep consuming the live SSE response */ }
+    sseEnded = true
+  })()
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(settled(), false)
+    assert.equal(sseEnded, false, 'an admitted Runtime still owns the live SSE response')
+    assert.equal(empty.destroyed, false)
+    assert.equal(partial.destroyed, false)
+    const httpClosed = once(http, 'close', { signal: AbortSignal.timeout(2_000) })
+    runtime.startDeferred!.resolve(makeState({ state: 'COMPLETED' }))
+    await httpClosed
+    await Promise.all([closing, streamEnded])
+    assert.equal(server.isListening(), false)
+    assert.equal(controller.getSubscriberCount(), 0)
+    assert.equal(runtime.startCalls, 1)
+  } finally {
+    empty.destroy()
+    partial.destroy()
+    runtime.startDeferred!.resolve(makeState({ state: 'COMPLETED' }))
+    await Promise.all([server.close(), streamEnded])
   }
 })
 

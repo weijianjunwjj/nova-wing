@@ -169,7 +169,7 @@ SQLite session URL 已写入可信 config 的继续沿用原位置。
 阻止 common runtime 再引入 OS 路径、工具、环境变量和 locale 硬编码。
 
 
-## Desktop Background Runtime（v0.4.0 Phase 2B）
+## Desktop Native Notification（v0.4.0 Phase 3）
 
 ```powershell
 npm run desktop:dev
@@ -180,7 +180,8 @@ npm run desktop:smoke
 Main 内的薄 Desktop Host 调用现有 Launchpad，BrowserWindow 加载它的真实 HTTP UI；
 普通关闭窗口只隐藏；Main、Tray、Host 与正在执行的 Runtime 保持存活。
 Tray 提供打开、当前活动状态、隐藏、退出；只有明确 Quit 才调用 Host → Launchpad strict close，
-等待已接纳工作和资源 drain，最后释放 Power、Tray、窗口并退出。
+等待已接纳工作和通知投递 drain，最后释放 Notification、Power、Tray、窗口并退出。
+Control 与 Launchpad 在 drain 后清理尚未产生 HTTP request 的 TCP 预连接，避免浏览器预连接拖住退出。
 重复 Quit 复用同一 shutdown Promise；关闭失败输出结构化错误并保持停止接纳状态。
 此入口只接受终端输出的临时 repo：Composer 的 branch 使用 `desktop-smoke-fixture`，
 allowed paths 使用 `fixture.txt`，关闭 auto commit、auto push 和 email。
@@ -204,6 +205,23 @@ Power 由通用代码的进程内 operation activity observer 驱动，多 Sessi
 `prevent-app-suspension` blocker；真实工作全部 settle 后释放，屏幕仍允许熄灭。
 持久化 `RUNNING`、未来 scheduled、人工等待、窗口/SSE/Tray 本身均不是 Prevent Sleep 的依据。
 
+Phase 3 的 Electron Main provider 通过现有 `WorkSessionNotifier` 注入 Production，
+只接收真正的 `ALL_TASKS_COMPLETED`、结构化 `FAILED`、`SUSPENDED + humanRequired`；
+USER_PAUSED、普通 idle、future schedule 不触发人工介入通知。通知不来源于 activity、UI 或 SSE。
+Desktop COMPLETED 独立于 `email.notifyOnCompleted`，不会偷偷打开完成邮件；
+`Notification.isSupported()` 为 false 时不注册 DESKTOP，也不回落旧 Windows adapter。
+每次投递以原生 `show` 事件确认；`failed` 或 5 秒未确认进入既有最多一次渠道独立重试，
+EMAIL 已成功时不会重发。通知失败不改变业务结果，历史通知不会因打开 UI 被补发。
+Main 强引用最多 64 个通知、最长保留 15 分钟，退出 drain 后清理对象、listener 和 timer。
+
+通知文案只包含固定标题和说明；click 仅携带 session identity，Main 查询仍存活的
+Control mapping 并经原 exact origin registry 验证后 show/restore/focus；映射失效回 Launchpad。
+不会从通知读取 URL、路径或命令，也不会创建第二个 Host/Runtime。
+Windows centralized activation 已按固定 Electron API 注册，但其原始 arguments 没有文档化的
+Session identity 格式，因此不猜解析；超出对象保留期、持久 Action Center 和 cold-start 点击
+必须在 Phase 4 installer 中认证。集中身份配置在 `desktop/main/identity.mjs`；
+正式 AppUserModelID / ToastActivatorCLSID 尚未指定，不修改用户快捷方式或注册表。
+
 Electron 精确固定在 devDependencies；若首次安装尚未下载平台二进制，先执行
 `npx --no install-electron`。smoke 在缺少二进制时返回机器可读失败，不在门禁中隐式下载。
 每个 smoke Electron 进程限时 60 秒，超时只清理本次创建的进程树。stdout/stderr 和 JSON 结果
@@ -211,6 +229,8 @@ Electron 精确固定在 devDependencies；若首次安装尚未下载平台二�
 `DESKTOP_LAUNCHPAD_SMOKE` 门禁（含外部 runner 确认的 exit/cleanup），`result.json`
 汇总 UI、后台行为与兼容性结果；`strict-shutdown-result.json` 保存 `DESKTOP_STRICT_SHUTDOWN`，
 `background-runtime-result.json` 保存 `DESKTOP_BACKGROUND_RUNTIME`（含真正第二 Electron、renderer crash 和退出清理）。
+`native-notification-result.json` 保存 `DESKTOP_NATIVE_NOTIFICATION`；系统 Toast 视觉验收
+使用独立的 `WINDOWS_NATIVE_TOAST_VISUAL` 字段，原生事件和模拟点击路由不代表真人视觉/点击通过。
 关闭失败和退出后的临时目录清理失败分别记录。runner 的 60 秒只用于判定 smoke 失败，
 并非 Desktop 产品的退出超时；strict close 不通过 timeout 假报 drain 成功。
 Desktop JS 类型/unused、包边界、平台边界及资源检测回归均已纳入 `npm run check`。
@@ -221,9 +241,9 @@ Desktop 显式使用 `createNovaWingLaunchpad({ shutdownMode: 'strict' })`；
 已接纳 workflow 按现有 Runtime 语义完成，不新增取消 Task 或强制退出。
 当前仍只验证 Windows 开发环境与隔离 fake workload；真实 Codex 退出耗时、
 系统 shutdown/logoff、force kill、packaged 环境及 Git Bash discovery 尚未认证。
-Notification 留待 Phase 3 审查后实施。根 npm exports/files 保持原边界，
+Windows Toast 视觉/真人点击与 macOS 签名通知仍需 packaged real-host 验收。根 npm exports/files 保持原边界，
 Desktop 后续使用独立 packaging staging。本轮完整证据见
-[`Phase 2B Report`](docs/audit/NovaWing-v0.4.0-Phase-2B-Report.md)。
+[`Phase 3 Report`](docs/audit/NovaWing-v0.4.0-Phase-3-Report.md)。
 
 ## 当前切片假设
 

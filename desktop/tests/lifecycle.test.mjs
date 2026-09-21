@@ -185,7 +185,7 @@ test('Desktop Control wrapper closes admission synchronously and shares reentran
       },
     }) },
     async (options) => {
-      wrapped = await options.dependencies.createWorkSession({}, {})
+      wrapped = await options.dependencies.createWorkSession({ session: { id: 'control-reentrant' } }, {})
     },
   ))
   await host.start()
@@ -218,7 +218,7 @@ test('Desktop Control wrapper rejects first start after its close was admitted',
       start() { starts++; return Promise.resolve({ url: 'http://127.0.0.1:43119' }) },
       close: async () => {},
     }) },
-    async (options) => { wrapped = await options.dependencies.createWorkSession({}, {}) },
+    async (options) => { wrapped = await options.dependencies.createWorkSession({ session: { id: 'control-close-first' } }, {}) },
   ))
   await host.close()
   await assert.rejects(wrapped.start(), /closing/u)
@@ -326,4 +326,67 @@ test('Main coordinator publishes shared shutdown before owner close emits anothe
   await flushPromises()
   assert.equal(finalQuits, 1)
   assert.deepEqual(coordinator.observations, { quitRequests: 2, shutdownOperations: 1, finalQuitRequests: 1, failures: 0 })
+})
+
+test('Session registry resolves only live started controls and revokes synchronously without creating work', async () => {
+  const drain = Promise.withResolvers()
+  /** @type {(config: object, options: object) => Promise<{ start(): Promise<unknown>, close(): Promise<void> }>} */
+  let create = async (_config, _options) => { throw new Error('Factory not ready') }
+  let creations = 0
+  let live = true
+  const provider = { notificationChannel: 'DESKTOP' }
+  const host = await createDesktopHost({
+    ...fakeHostOptions({ start: async () => ({ url: 'http://127.0.0.1:43201' }), close: async () => {} }, {
+      async createWorkSession(_config, options) {
+        creations++
+        assert.equal(options.desktopNotifier, provider)
+        return {
+          start: async () => ({ url: `http://127.0.0.1:${43201 + creations}` }),
+          close: () => drain.promise,
+          isLive: () => live,
+        }
+      },
+    }, async (options) => { create = options.dependencies.createWorkSession }),
+    desktopNotifier: provider,
+  })
+  await host.start()
+  const control = await create({ session: { id: 'one' } }, {})
+  assert.equal(host.resolveSessionUrl('one'), undefined)
+  await control.start()
+  assert.equal(host.resolveSessionUrl('one'), 'http://127.0.0.1:43202')
+  for (const identity of ['missing', 'http://127.0.0.1:43202', 'file:///secret', '__proto__', {}, null]) {
+    assert.equal(host.resolveSessionUrl(identity), undefined)
+  }
+  live = false
+  assert.equal(host.resolveSessionUrl('one'), undefined)
+  live = true
+  const closing = control.close()
+  assert.equal(host.resolveSessionUrl('one'), undefined, 'A draining Control is no longer a click target')
+  assert.equal(creations, 1)
+  drain.resolve(undefined)
+  await closing
+  await host.close()
+  assert.equal(host.resolveSessionUrl('one'), undefined)
+})
+
+test('closing a replaced Session owner cannot remove the new live mapping', async () => {
+  /** @type {(config: object, options: object) => Promise<{ start(): Promise<unknown>, close(): Promise<void> }>} */
+  let create = async (_config, _options) => { throw new Error('Factory not ready') }
+  let count = 0
+  const host = await createDesktopHost(fakeHostOptions(
+    { start: async () => ({ url: 'http://127.0.0.1:43210' }), close: async () => {} },
+    { async createWorkSession() {
+      const url = `http://127.0.0.1:${43211 + count++}`
+      return { start: async () => ({ url }), close: async () => {} }
+    } }, async (options) => { create = options.dependencies.createWorkSession },
+  ))
+  await host.start()
+  const first = await create({ session: { id: 'same' } }, {})
+  const second = await create({ session: { id: 'same' } }, {})
+  await first.start()
+  await second.start()
+  await first.close()
+  assert.equal(host.resolveSessionUrl('same'), 'http://127.0.0.1:43212')
+  await second.close()
+  await host.close()
 })

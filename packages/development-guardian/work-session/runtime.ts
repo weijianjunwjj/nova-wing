@@ -48,6 +48,8 @@ import {
 export interface NotificationChannelEntry {
   channel: NotificationChannel
   notifier: WorkSessionNotifier
+  /** False excludes historical FAILED backfill; an existing durable attempt still resumes. */
+  notifyOnRestore?: boolean
 }
 
 /** A Task Contract repair performed by the Launchpad before this Session started. */
@@ -568,7 +570,9 @@ export class WorkSessionRuntime {
     this.pauseRequested = false
     this.stopAfterTaskRequested = hydratedState.stopAfterTaskRequested === true
     const durableState = this.convertWorkflowStateToDurableState(hydratedState)
-    if (durableState.state === 'FAILED') this.scheduleFailedNotification(durableState)
+    if (durableState.state === 'FAILED') {
+      this.scheduleFailedNotification(durableState, persisted.state.failureNotificationAttempted !== true)
+    }
     return durableState
   }
 
@@ -3178,9 +3182,9 @@ export class WorkSessionRuntime {
     })
   }
 
-  private scheduleFailedNotification(state: WorkSessionDurableState): void {
+  private scheduleFailedNotification(state: WorkSessionDurableState, restoredWithoutAttempt = false): void {
     if (
-      this.notificationChannelEntries('FAILED').length === 0 ||
+      this.notificationChannelEntries('FAILED', restoredWithoutAttempt).length === 0 ||
       state.state !== 'FAILED' ||
       state.failureStage === undefined ||
       state.failureCategory === undefined ||
@@ -3193,14 +3197,14 @@ export class WorkSessionRuntime {
     this.failureNotificationScheduled = true
     const previous = this.notificationPromise ?? Promise.resolve()
     this.notificationPromise = previous
-      .then(() => this.deliverFailedNotification())
+      .then(() => this.deliverFailedNotification(restoredWithoutAttempt))
       .catch(() => {
         // FAILED delivery is an alert side channel and cannot change FAILED.
       })
   }
 
-  private async deliverFailedNotification(): Promise<void> {
-    if (this.notificationChannelEntries('FAILED').length === 0) return
+  private async deliverFailedNotification(restoredWithoutAttempt = false): Promise<void> {
+    if (this.notificationChannelEntries('FAILED', restoredWithoutAttempt).length === 0) return
     const state = this.getDurableState()
     if (
       state === undefined ||
@@ -3220,7 +3224,7 @@ export class WorkSessionRuntime {
         : { analytics: this.analyticsSummaries.get(state.currentTaskId)! }),
       ...(localControlUrl === undefined ? {} : { reportUrl: localControlUrl }),
     })
-    const channels = await this.deliverToChannels('FAILED', notification)
+    const channels = await this.deliverToChannels('FAILED', notification, restoredWithoutAttempt)
     const overallStatus = overallNotificationStatus(channels)
     const sent = overallStatus !== 'ALL_FAILED'
     try {
@@ -3413,10 +3417,11 @@ export class WorkSessionRuntime {
   }
 
   /** The explicitly configured channels, or the legacy single-notifier channel. */
-  private notificationChannelEntries(kind: WorkSessionNotificationKind): readonly NotificationChannelEntry[] {
+  private notificationChannelEntries(kind: WorkSessionNotificationKind, restoredWithoutAttempt = false): readonly NotificationChannelEntry[] {
     const configured = this.config.notificationChannels
     if (configured !== undefined) {
-      return configured.filter((entry) => supportsNotificationKind(entry.notifier, kind))
+      return configured.filter((entry) =>
+        (!restoredWithoutAttempt || entry.notifyOnRestore !== false) && supportsNotificationKind(entry.notifier, kind))
     }
     const fallback = this.config.notifier ?? this.config.terminalNotifier
     if (fallback === undefined || !supportsNotificationKind(fallback, kind)) return []
@@ -3431,8 +3436,9 @@ export class WorkSessionRuntime {
   private async deliverToChannels(
     kind: WorkSessionNotificationKind,
     notification: WorkSessionNotificationPayload,
+    restoredWithoutAttempt = false,
   ): Promise<readonly NotificationChannelResult[]> {
-    const entries = this.notificationChannelEntries(kind)
+    const entries = this.notificationChannelEntries(kind, restoredWithoutAttempt)
     return await Promise.all(entries.map(async (entry) => await this.deliverToChannel(entry, kind, notification)))
   }
 

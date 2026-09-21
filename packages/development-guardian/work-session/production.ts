@@ -37,6 +37,7 @@ import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
 import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
+import type { WorkSessionNotifier } from './notifier.js'
 import { combineWorkSessionNotifiers, createDesktopTaskRunNotifier } from './task-run-notifier.js'
 import {
   WorkSessionRuntime,
@@ -463,6 +464,8 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 
 export interface ProductionWorkSessionDependencies {
   activityObserver?: WorkSessionActivityObserver
+  /** Explicit Desktop transport; null disables it, omission retains the CLI adapter. */
+  desktopNotifier?: WorkSessionNotifier | null
   /** Desktop opts into complete controller drain; existing CLI callers keep their default. */
   shutdownMode?: 'strict' | 'bounded'
   /** Scriptable recovery seam; normal production reuses the read-only repair model. */
@@ -580,7 +583,7 @@ export async function createProductionWorkSessionUi(
 ): Promise<ProductionWorkSessionUi> {
   const trusted = await validateTrustedWorkSessionConfig(config)
   const env = dependencies.env ?? process.env
-  const emailNotifier = trusted.notification?.email.enabled === true
+  const smtpNotifier = trusted.notification?.email.enabled === true
     ? createSmtpWorkSessionNotifierFromEnv({
         env,
         ...(dependencies.createSmtpTransport === undefined
@@ -588,17 +591,36 @@ export async function createProductionWorkSessionUi(
           : { createTransport: dependencies.createSmtpTransport }),
       })
     : undefined
-  const toastNotifier = dependencies.createRuntime === undefined
-    ? createDesktopTaskRunNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' }) : undefined
+  // An injected Desktop capability can enable completion independently. Remove
+  // COMPLETED from SMTP's capabilities unless the user explicitly opted in, so
+  // enabling the terminal path never silently enables completion email.
+  const emailNotifier: WorkSessionNotifier | undefined = smtpNotifier === undefined
+    ? undefined
+    : dependencies.desktopNotifier == null || trusted.notification?.email.notifyOnCompleted === true
+      ? smtpNotifier
+      : {
+          notificationChannel: 'EMAIL',
+          notificationKinds: ['HUMAN_REQUIRED', 'FAILED', 'RECOVERY_REQUIRED'],
+          notifyHumanRequired: smtpNotifier.notifyHumanRequired.bind(smtpNotifier),
+          notifyFailed: smtpNotifier.notifyFailed.bind(smtpNotifier),
+          notifyRecoveryRequired: smtpNotifier.notifyRecoveryRequired.bind(smtpNotifier),
+        }
+  const toastNotifier = dependencies.desktopNotifier !== undefined
+    ? dependencies.desktopNotifier ?? undefined
+    : dependencies.createRuntime === undefined
+      ? createDesktopTaskRunNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' }) : undefined
   const notifier = emailNotifier === undefined
     ? undefined
     : toastNotifier === undefined ? emailNotifier : combineWorkSessionNotifiers([emailNotifier, toastNotifier])
-  const terminalNotifier = emailNotifier === undefined ? toastNotifier : undefined
+  const terminalNotifier = emailNotifier === undefined || dependencies.desktopNotifier != null
+    ? toastNotifier : undefined
   // Explicit channel list: each channel reports its own delivery truth, so a
   // failed Windows toast can no longer mark an accepted email as failed.
   const notificationChannels: readonly NotificationChannelEntry[] = [
     ...(emailNotifier === undefined ? [] : [{ channel: 'EMAIL' as const, notifier: emailNotifier }]),
-    ...(toastNotifier === undefined ? [] : [{ channel: 'DESKTOP' as const, notifier: toastNotifier }]),
+    ...(toastNotifier === undefined ? [] : [{ channel: 'DESKTOP' as const, notifier: toastNotifier,
+      ...(dependencies.desktopNotifier == null ? {} : { notifyOnRestore: false }),
+    }]),
   ]
   const definition: WorkSessionDefinition = {
     id: trusted.session.id,
@@ -795,6 +817,8 @@ export async function createProductionWorkSessionUi(
           : new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
               directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
               ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
+        const repairNotifier = dependencies.runtimeRepair?.notifier ??
+          createDesktopRuntimeRepairNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' })
         const runtimeRepair: WorkSessionRuntimeRepairConfig = {
           engine: createRuntimeRepairEngine(),
           agents: () => v2Agents,
@@ -806,7 +830,14 @@ export async function createProductionWorkSessionUi(
             })),
           auditSink: dependencies.runtimeRepair?.auditSink ??
             createFileRuntimeRepairAuditSink({ path: defaultRuntimeRepairAuditPath(env) }),
-          notifier: dependencies.runtimeRepair?.notifier ?? createDesktopRuntimeRepairNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' }),
+          // Desktop task completion belongs solely to the durable terminal
+          // pipeline. Keep repair outcomes, but do not emit its legacy extra
+          // COMPLETED toast (which also accepts non-ALL_TASKS_COMPLETED states).
+          notifier: dependencies.desktopNotifier === undefined ? repairNotifier : {
+            async notify(notification) {
+              if (notification.kind !== 'COMPLETED') await repairNotifier.notify(notification)
+            },
+          },
         }
         let analyticsProjector: TaskRunAnalyticsProjector | undefined
         if (dependencies.createRuntime === undefined) {

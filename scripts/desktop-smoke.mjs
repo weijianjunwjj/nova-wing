@@ -151,6 +151,16 @@ async function runElectron(entry, prefix, root) {
       for (const name of ['guardian_import', 'node_sqlite', 'libsql', 'runtime_create', 'fake_task', 'runtime_close', 'runtime_reopen', 'resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing compatibility gate: ${name}`)
       }
+    } else if (prefix === 'DESKTOP_NATIVE_NOTIFICATION') {
+      for (const name of ['completed_generated', 'completed_desktop_delivery', 'failed_generated', 'failed_desktop_delivery',
+        'human_required_generated', 'human_required_desktop_delivery', 'user_paused_not_notified',
+        'desktop_independent_from_email_opt_in', 'channel_retry_isolated', 'duplicate_suppression',
+        'unsupported_not_registered', 'provider_failure_does_not_change_task', 'hidden_window_notification',
+        'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'notification_drain', 'cleanup']) {
+        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Native Notification gate: ${name}`)
+      }
+      // Automated Main routing/event evidence never claims OS visual/manual acceptance.
+      assert.equal(report.windowsNativeToastVisual, 'NEEDS_PACKAGED_VALIDATION')
     } else if (prefix === 'DESKTOP_BACKGROUND_RUNTIME') {
       assert.ok(secondary, 'External runner must start the real secondary Electron')
       assert.equal(secondary.result, 'PASS', JSON.stringify(secondary))
@@ -194,6 +204,7 @@ const result = { name: 'DESKTOP_COMPATIBILITY_SMOKE', timeoutMs, runs: [], clean
 let root
 let isolation
 let backgroundIsolation
+let notificationIsolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
@@ -205,11 +216,13 @@ try {
   result.runs.push(await runElectron('desktop/tests/runtime-compatibility.mjs', 'DESKTOP_COMPATIBILITY_RESULT', root))
   backgroundIsolation = await createDesktopIsolation()
   result.runs.push(await runElectron('desktop/tests/background-smoke.mjs', 'DESKTOP_BACKGROUND_RUNTIME', backgroundIsolation.root))
+  notificationIsolation = await createDesktopIsolation()
+  result.runs.push(await runElectron('desktop/tests/notification-smoke.mjs', 'DESKTOP_NATIVE_NOTIFICATION', notificationIsolation.root))
 } catch (error) {
   result.errors.push(String(error?.stack ?? error))
 } finally {
   const cleanupErrors = []
-  for (const ownedIsolation of [isolation, backgroundIsolation].filter(Boolean)) {
+  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation].filter(Boolean)) {
     try {
       await ownedIsolation.cleanup()
     } catch (error) {
@@ -218,10 +231,10 @@ try {
     }
   }
   if (root) result.cleanup = { status: cleanupErrors.length ? 'FAIL' : 'PASS', temporaryRoot: root,
-    backgroundRoot: backgroundIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
+    backgroundRoot: backgroundIsolation?.root, notificationRoot: notificationIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
       phase: 'temporary_directory_cleanup_after_electron_exit' } : {}) }
 }
-result.result = result.runs.length === 3 && result.runs.every((run) => run.result === 'PASS') &&
+result.result = result.runs.length === 4 && result.runs.every((run) => run.result === 'PASS') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
 const launchpadRun = result.runs.find((run) => run.entry === 'desktop/tests/launchpad-smoke.mjs')
 const launchpadReport = {
@@ -255,7 +268,18 @@ const backgroundReport = {
   },
   result: backgroundRun?.result === 'PASS' && result.cleanup.status === 'PASS' ? 'PASS' : 'FAIL',
 }
+const notificationRun = result.runs.find((run) => run.entry === 'desktop/tests/notification-smoke.mjs')
+const notificationReport = {
+  ...notificationRun?.report,
+  checks: { ...notificationRun?.report?.checks,
+    electron_exit: { status: notificationRun?.result === 'PASS' ? 'PASS' : 'FAIL',
+      detail: { exitCode: notificationRun?.exitCode, timedOut: notificationRun?.timedOut, errors: notificationRun?.errors } },
+    isolation_cleanup: result.cleanup,
+  },
+  result: notificationRun?.result === 'PASS' && result.cleanup.status === 'PASS' ? 'PASS' : 'FAIL',
+}
 try {
+  await writeFile(join(evidenceDirectory, 'native-notification-result.json'), `${JSON.stringify(notificationReport, null, 2)}\n`)
   await writeFile(join(evidenceDirectory, 'background-runtime-result.json'), `${JSON.stringify(backgroundReport, null, 2)}\n`)
   await writeFile(join(evidenceDirectory, 'launchpad-result.json'), `${JSON.stringify(launchpadReport, null, 2)}\n`)
   await writeFile(join(evidenceDirectory, 'strict-shutdown-result.json'), `${JSON.stringify(strictShutdownReport, null, 2)}\n`)
@@ -267,5 +291,7 @@ try {
 console.log(`DESKTOP_LAUNCHPAD_SMOKE ${JSON.stringify(launchpadReport)}`)
 console.log(`DESKTOP_STRICT_SHUTDOWN ${JSON.stringify(strictShutdownReport)}`)
 console.log(`DESKTOP_BACKGROUND_RUNTIME ${JSON.stringify(backgroundReport)}`)
+console.log(`DESKTOP_NATIVE_NOTIFICATION ${JSON.stringify(notificationReport)}`)
+console.log(`WINDOWS_NATIVE_TOAST_VISUAL ${notificationReport.windowsNativeToastVisual ?? 'NEEDS_PACKAGED_VALIDATION'}`)
 console.log(`DESKTOP_COMPATIBILITY_SMOKE ${JSON.stringify(result)}`)
 process.exitCode = result.result === 'PASS' ? 0 : 1

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import http, { type Server } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -185,6 +187,49 @@ test('strict Launchpad shares start and close promises and closes every app exac
   } finally {
     closeGate.resolve()
     await launchpad.close().catch(() => undefined)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('strict Launchpad drains owned apps without waiting for HTTP preconnections', { timeout: 10_000 }, async () => {
+  const directory = await fixture()
+  const closeGate = deferred()
+  const closeEntered = deferred()
+  const apps = fakeApps({ closeGate, closeEntered })
+  const launchpad = await create(directory, { createWorkSession: apps.create })
+  const address = await launchpad.start()
+  const response = await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
+  assert.equal(response.status, 202)
+  await response.text()
+  const server = inspect(launchpad).server
+  const connected = once(server, 'connection')
+  const empty = createConnection({ host: address.host, port: address.port })
+  await Promise.all([connected, once(empty, 'connect')])
+  const partialConnected = once(server, 'connection')
+  const partial = createConnection({ host: address.host, port: address.port })
+  const [[partialServerSocket]] = await Promise.all([partialConnected, once(partial, 'connect')])
+  const headersReceived = once(partialServerSocket, 'data')
+  partial.write('GET / HTTP/1.1\r\nHost:')
+  await headersReceived
+  try {
+    const closing = launchpad.close()
+    await closeEntered.promise
+    await pending(observe(closing))
+    assert.equal(apps.state.live, 1)
+    assert.equal(empty.destroyed, false)
+    assert.equal(partial.destroyed, false)
+    const httpClosed = once(server, 'close', { signal: AbortSignal.timeout(2_000) })
+    closeGate.resolve()
+    await httpClosed
+    await closing
+    assert.equal(apps.state.closed, 1)
+    assert.equal(apps.state.live, 0)
+    noResources(launchpad)
+  } finally {
+    empty.destroy()
+    partial.destroy()
+    closeGate.resolve()
+    await launchpad.close()
     await rm(directory, { recursive: true, force: true })
   }
 })
