@@ -11,6 +11,7 @@ import {
 } from '@mastra/core/workflows'
 import { LibSQLStore } from '@mastra/libsql'
 import { z } from 'zod'
+import { observeWorkSessionActivity, type WorkSessionActivityObserver } from './activity.js'
 import type {
   WorkSessionDefinition,
   WorkSessionDurableState,
@@ -572,11 +573,19 @@ export class WorkSessionRuntime {
   }
 
   async start(): Promise<WorkSessionDurableState> {
+    return this.startWithActivityObserver(undefined)
+  }
+
+  /** Hosts observe the actual execution after a scheduled claim, never durable
+   * RUNNING or a future schedule. The ordinary start() contract is unchanged. */
+  async startWithActivityObserver(observer: WorkSessionActivityObserver | undefined): Promise<WorkSessionDurableState> {
     this.assertOpen()
     if (this.startOperation !== undefined) return this.startOperation
-    const operation = this.startWhenDue()
-    this.startOperation = operation
-    try { return await operation } finally { this.startOperation = undefined }
+    const completion = Promise.withResolvers<WorkSessionDurableState>()
+    this.startOperation = completion.promise
+    // Publish ownership before a synchronous observer can reenter start/close.
+    void this.startWhenDue(observer).then(completion.resolve, completion.reject)
+    try { return await completion.promise } finally { this.startOperation = undefined }
   }
 
   private loadScheduledState(): WorkSessionDurableState | undefined {
@@ -591,7 +600,7 @@ export class WorkSessionRuntime {
     return this.convertWorkflowStateToDurableState(this.latestState)
   }
 
-  private async startWhenDue(): Promise<WorkSessionDurableState> {
+  private async startWhenDue(observer?: WorkSessionActivityObserver): Promise<WorkSessionDurableState> {
     this.assertOpen()
     if (this.scheduleStore !== undefined) {
       const persisted = await this.readPersistedWorkflowSnapshot()
@@ -603,7 +612,12 @@ export class WorkSessionRuntime {
       const waiting = this.loadScheduledState()!
       if (!this.scheduleStore.claim(this.config.definition.id, new Date(this.now()).toISOString())) return waiting
     }
-    try { return await this.startExecution() } catch (error) {
+    try {
+      return await observeWorkSessionActivity(observer, {
+        operation: this.scheduleStore === undefined ? 'execution' : 'scheduled-execution',
+        sessionId: this.config.definition.id,
+      }, () => this.startExecution())
+    } catch (error) {
       if (!this.executionStarted) {
         this.scheduleStore?.releaseUnstarted(this.config.definition.id)
         this.loadScheduledState()

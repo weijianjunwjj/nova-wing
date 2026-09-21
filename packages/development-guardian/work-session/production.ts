@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
 import { ProductionWorkSessionInitializationError } from './production-lifecycle-errors.js'
+import type { WorkSessionActivityObserver } from './activity.js'
 
 import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
@@ -461,6 +462,7 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  activityObserver?: WorkSessionActivityObserver
   /** Desktop opts into complete controller drain; existing CLI callers keep their default. */
   shutdownMode?: 'strict' | 'bounded'
   /** Scriptable recovery seam; normal production reuses the read-only repair model. */
@@ -640,11 +642,14 @@ export async function createProductionWorkSessionUi(
   let localControlUrl: string | undefined
 
   const controller = new WorkSessionControlController({
+    ...(dependencies.activityObserver === undefined ? {} : { activityObserver: dependencies.activityObserver }),
     ...(dependencies.shutdownMode === undefined ? {} : { shutdownMode: dependencies.shutdownMode }),
     ...(dependencies.taskEta !== undefined ? { taskEta: dependencies.taskEta }
       : dependencies.createExecutor === undefined && dependencies.createCodexExecutor === undefined &&
         dependencies.createRuntime === undefined && dependencies.createV2Dispatcher === undefined
-        ? { taskEta: createRuntimeTaskEtaService({ env }) } : {}),
+        ? { taskEta: createRuntimeTaskEtaService({ env,
+            ...(dependencies.activityObserver === undefined ? {} : { activityObserver: dependencies.activityObserver }),
+          }) } : {}),
     readCodingExecutions: () => trusted.tasks.map((task) => {
       const state = codingStore.read(taskKey(task.id))
       return { taskId: task.id, mode: taskModes.get(task.id)!,

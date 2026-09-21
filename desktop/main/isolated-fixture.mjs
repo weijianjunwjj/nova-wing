@@ -46,10 +46,13 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
     runtimeCloseAttemptCount: 0, taskRunCount: 0, forbiddenCapabilityAttempts: 0,
     gitBranchReadCount: 0, suppressedNotificationCount: 0,
   }
-  /** @type {Array<{ sessionId: string, storageUrl: string, runtime: WorkSessionRuntime, runner: FakeTaskRunner, app?: ProductionUi, runtimeCreateCount: number, runtimeCloseCount: number, runtimeCloseAttemptCount: number, taskRunCount: number }>} */
+  /** @type {Array<{ sessionId: string, storageUrl: string, runtime: WorkSessionRuntime, runner: FakeTaskRunner, app?: ProductionUi, runtimeCreateCount: number, runtimeCloseCount: number, runtimeCloseAttemptCount: number, taskRunCount: number, runtimeStartErrors: unknown[] }>} */
   const sessions = []
   let taskGate = Promise.withResolvers()
   let taskStarted = Promise.withResolvers()
+  /** @type {Map<string, {gate: PromiseWithResolvers<void>, started: PromiseWithResolvers<void>, behavior?: import('nova-wing/development-guardian').FakeTaskBehavior, error?: Error}>} */
+  const taskControls = new Map()
+  const allowedSchedules = new Set()
   if (!holdTasks) taskGate.resolve(undefined)
 
   /** @returns {never} */
@@ -66,9 +69,9 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
   async function assertFixtureConfig(config, controlPlane = 'v1') {
     await assertFixtureRepo(config.session.targetRepo)
     if (config.session.branch !== branch || config.session.controlPlane !== controlPlane ||
-        config.session.scheduledStartAt != null || config.gitCheckpoint.autoCommit ||
+        (config.session.scheduledStartAt != null && !allowedSchedules.has(config.session.scheduledStartAt)) || config.gitCheckpoint.autoCommit ||
         config.gitCheckpoint.autoPush || config.notification?.email.enabled) {
-      throw new Error('Desktop fixture permits only immediate offline tasks without Git mutations or email')
+      throw new Error('Desktop fixture permits only explicitly admitted offline tasks without Git mutations or email')
     }
     const storagePath = fileURLToPath(config.storageUrl ?? defaultStorageUrl(config.session.id, fixtureEnv))
     requireInside(dataDirectory, storagePath)
@@ -155,7 +158,11 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
               evidence.taskRunCount++
               owned.taskRunCount++
               taskStarted.resolve(undefined)
-              await taskGate.promise
+              const control = taskControls.get(args[0].id)
+              control?.started.resolve(undefined)
+              await (control?.gate.promise ?? taskGate.promise)
+              if (control?.error) throw control.error
+              if (control?.behavior) runner.setBehavior(args[0].id, control.behavior)
               return runner.run(...args)
             },
           }
@@ -163,9 +170,16 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
           const owned = {
             sessionId: runtimeConfig.definition.id, storageUrl: runtimeConfig.storageUrl, runtime, runner,
             runtimeCreateCount: 1, runtimeCloseCount: 0, runtimeCloseAttemptCount: 0, taskRunCount: 0,
+            runtimeStartErrors: [],
           }
           evidence.runtimeCreateCount++
           sessions.push(owned)
+          const startObserved = runtime.startWithActivityObserver.bind(runtime)
+          runtime.startWithActivityObserver = (...args) => {
+            const operation = startObserved(...args)
+            void operation.catch((error) => { owned.runtimeStartErrors.push(error) })
+            return operation
+          }
           const close = runtime.close.bind(runtime)
           runtime.close = async () => {
             evidence.runtimeCloseAttemptCount++
@@ -194,7 +208,22 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
   }
   return {
     root: fixtureRoot, env: fixtureEnv, configDirectory, dataDirectory, repoDirectory, branch, dependencies, evidence,
-    releaseTasks() { taskGate.resolve(undefined) },
+    releaseTasks() {
+      taskGate.resolve(undefined)
+      for (const control of taskControls.values()) control.gate.resolve(undefined)
+    },
+    /** Explicitly gate one fake task without changing any production scheduling. */
+    armTask(taskId, options = {}) {
+      if (taskControls.has(taskId)) throw new Error('A fixture task can only be armed once')
+      const control = { gate: Promise.withResolvers(), started: Promise.withResolvers(), ...options }
+      taskControls.set(taskId, control)
+      return { started: control.started.promise, release() { control.gate.resolve(undefined) } }
+    },
+    allowFutureSchedule(value) {
+      if (!Number.isFinite(Date.parse(value)) || Date.parse(value) <= Date.now()) throw new Error('Fixture schedule must be in the future')
+      allowedSchedules.add(value)
+    },
+    getSession(sessionId) { return sessions.find((entry) => entry.sessionId === sessionId) },
     holdNextTasks() {
       if (sessions.some(({ runtime }) => runtime.getDurableState()?.state !== 'COMPLETED')) {
         throw new Error('Only a settled isolated fixture can arm its next task gate')

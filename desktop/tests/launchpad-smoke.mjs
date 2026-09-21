@@ -388,14 +388,15 @@ async function runLaunchpadSmoke() {
     result.childPids = app.getAppMetrics().map(({ pid }) => pid).filter((pid) => pid !== process.pid)
 
     currentCheck = 'host_close'
-    const closed = once(window, 'closed')
-    const quitting = once(app, 'before-quit')
     window.close()
-    await closed
+    assert.equal(window.isVisible(), false, 'Ordinary close must hide the window')
+    assert.equal(window.isDestroyed(), false)
+    assert.equal(host.observations.closeCalls, 0, 'Window close must preserve the Host')
+    const quitting = once(app, 'before-quit')
+    app.quit()
     await quitting
-    // The production last-window -> app.quit path initiates close. Await the same
-    // promise; do not manually close Launchpad or Runtime to simulate that path.
-    assert.equal(host.observations.closeCalls, 1, 'Window close must initiate Host shutdown before the test awaits it')
+    // Explicit app quit enters the existing coordinator; background close never does.
+    assert.equal(host.observations.closeCalls, 1, 'Explicit Quit must initiate Host shutdown before the test awaits it')
     const shutdown = shutdownDesktop()
     let shutdownSettled = false
     void shutdown.then(() => { shutdownSettled = true })
@@ -440,7 +441,7 @@ async function runLaunchpadSmoke() {
     assert.equal(host.observations.closeCalls, 1)
     assert.equal(host.observations.pendingControlCloses, 0)
     assert.deepEqual(host.observations.errors, [])
-    pass('host_close', { trigger: 'last BrowserWindow closed', runtimeCloseCount: closedEvidence.runtimeCloseCount,
+    pass('host_close', { trigger: 'explicit app.quit after BrowserWindow close hid it', runtimeCloseCount: closedEvidence.runtimeCloseCount,
       closeCalls: host.observations.closeCalls })
     assert.equal(desktopShutdown.observations.finalQuitRequests, 1)
     pass('strict_repeated_quit', { ...desktopShutdown.observations, runtimeCloseAttemptCount: 2,

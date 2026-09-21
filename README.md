@@ -169,7 +169,7 @@ SQLite session URL 已写入可信 config 的继续沿用原位置。
 阻止 common runtime 再引入 OS 路径、工具、环境变量和 locale 硬编码。
 
 
-## Desktop Bootstrap / Strict Shutdown（v0.4.0 Phase 2A）
+## Desktop Background Runtime（v0.4.0 Phase 2B）
 
 ```powershell
 npm run desktop:dev
@@ -178,7 +178,9 @@ npm run desktop:smoke
 
 `desktop:dev` 先 build，再以全新临时 config/data/repo/home/profile 启动 Electron Main。
 Main 内的薄 Desktop Host 调用现有 Launchpad，BrowserWindow 加载它的真实 HTTP UI；
-关闭最后一个窗口会调用 Host → Launchpad strict close，等待已接纳工作和资源 drain 后再退出。
+普通关闭窗口只隐藏；Main、Tray、Host 与正在执行的 Runtime 保持存活。
+Tray 提供打开、当前活动状态、隐藏、退出；只有明确 Quit 才调用 Host → Launchpad strict close，
+等待已接纳工作和资源 drain，最后释放 Power、Tray、窗口并退出。
 重复 Quit 复用同一 shutdown Promise；关闭失败输出结构化错误并保持停止接纳状态。
 此入口只接受终端输出的临时 repo：Composer 的 branch 使用 `desktop-smoke-fixture`，
 allowed paths 使用 `fixture.txt`，关闭 auto commit、auto push 和 email。
@@ -194,12 +196,21 @@ fixture 显式使用 v1 协议；不运行真实模型、Git 写入或用户历�
 Phase 2A 还验证执行中的第二个 gated fake workload、重复 Quit、关闭后 mutation 拒绝、
 真实 SSE 结束及所有已登记资源归零。单元/集成门禁覆盖启动竞争、repair/recovery drain 与多错误传播。
 
+Phase 2B 在创建 fixture/Host/数据库前取得 Electron single-instance lock；第二实例只通知主实例显示窗口。
+打开、second-instance 与 activate 共用 show/restore/focus；被销毁的窗口重建时复用原 Host/Runtime。
+Renderer 的 `render-process-gone` 只恢复 UI，最多在 60 秒内自动尝试 3 次；
+恢复地址来自已提交且通过现有 exact owned-origin registry 的主页面导航，失效回 Launchpad。
+Power 由通用代码的进程内 operation activity observer 驱动，多 Session lease 共用一个
+`prevent-app-suspension` blocker；真实工作全部 settle 后释放，屏幕仍允许熄灭。
+持久化 `RUNNING`、未来 scheduled、人工等待、窗口/SSE/Tray 本身均不是 Prevent Sleep 的依据。
+
 Electron 精确固定在 devDependencies；若首次安装尚未下载平台二进制，先执行
 `npx --no install-electron`。smoke 在缺少二进制时返回机器可读失败，不在门禁中隐式下载。
 每个 smoke Electron 进程限时 60 秒，超时只清理本次创建的进程树。stdout/stderr 和 JSON 结果
 位于 `artifacts/desktop/bootstrap-smoke/`；`launchpad-result.json` 含完整
 `DESKTOP_LAUNCHPAD_SMOKE` 门禁（含外部 runner 确认的 exit/cleanup），`result.json`
-汇总 UI 与兼容性两轮结果；`strict-shutdown-result.json` 保存 `DESKTOP_STRICT_SHUTDOWN`。
+汇总 UI、后台行为与兼容性结果；`strict-shutdown-result.json` 保存 `DESKTOP_STRICT_SHUTDOWN`，
+`background-runtime-result.json` 保存 `DESKTOP_BACKGROUND_RUNTIME`（含真正第二 Electron、renderer crash 和退出清理）。
 关闭失败和退出后的临时目录清理失败分别记录。runner 的 60 秒只用于判定 smoke 失败，
 并非 Desktop 产品的退出超时；strict close 不通过 timeout 假报 drain 成功。
 Desktop JS 类型/unused、包边界、平台边界及资源检测回归均已纳入 `npm run check`。
@@ -210,9 +221,9 @@ Desktop 显式使用 `createNovaWingLaunchpad({ shutdownMode: 'strict' })`；
 已接纳 workflow 按现有 Runtime 语义完成，不新增取消 Task 或强制退出。
 当前仍只验证 Windows 开发环境与隔离 fake workload；真实 Codex 退出耗时、
 系统 shutdown/logoff、force kill、packaged 环境及 Git Bash discovery 尚未认证。
-Phase 2A 审查通过后才进入 Phase 2B 的后台模式与 Tray。根 npm exports/files 保持原边界，
+Notification 留待 Phase 3 审查后实施。根 npm exports/files 保持原边界，
 Desktop 后续使用独立 packaging staging。本轮完整证据见
-[`Phase 2A Report`](docs/audit/NovaWing-v0.4.0-Phase-2A-Report.md)。
+[`Phase 2B Report`](docs/audit/NovaWing-v0.4.0-Phase-2B-Report.md)。
 
 ## 当前切片假设
 

@@ -18,6 +18,7 @@ import {
   type TrustedWorkSessionConfig,
 } from '../production.js'
 import { ProductionWorkSessionInitializationError } from '../production-lifecycle-errors.js'
+import { observeWorkSessionActivity, type WorkSessionActivityObserver } from '../activity.js'
 import { WorkSessionRuntime, type PreflightRepairRecord } from '../runtime.js'
 import { normalizeScheduledStart, type ScheduleSource } from '../schedule-policy.js'
 import {
@@ -184,11 +185,12 @@ interface LiveWorkSessionApp {
 }
 
 export interface NovaWingLaunchpadDependencies {
+  activityObserver?: WorkSessionActivityObserver
   loadConfig?: (configPath: string) => Promise<TrustedWorkSessionConfig>
   resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
   createWorkSession?: (
     config: TrustedWorkSessionConfig,
-    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord; shutdownMode?: 'strict' | 'bounded' },
+    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord; shutdownMode?: 'strict' | 'bounded'; activityObserver?: WorkSessionActivityObserver },
   ) => Promise<ManagedWorkSessionApp>
   gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
@@ -495,6 +497,7 @@ export class NovaWingLaunchpad {
   private readonly preflight: NovaWingLaunchpadDependencies['preflight']
   private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
   private readonly repairAgent: RepairAgent
+  private readonly activityObserver: WorkSessionActivityObserver | undefined
   private readonly repairLlmAgent: RepairAgent
   private readonly repairProvider: RepairProviderIdentity
   private readonly repairAudit: RepairAuditSink
@@ -545,6 +548,7 @@ export class NovaWingLaunchpad {
     )
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
     this.shutdownMode = dependencies.shutdownMode ?? 'bounded'
+    this.activityObserver = dependencies.activityObserver
     this.gitProcessRunner = dependencies.gitProcessRunner
     this.readSessionStatus = dependencies.readSessionStatus ?? readProductionSessionStatus
     this.preflight = dependencies.preflight
@@ -1247,6 +1251,7 @@ export class NovaWingLaunchpad {
         env,
         serverPort: 0,
         shutdownMode: this.shutdownMode,
+        ...(this.activityObserver === undefined ? {} : { activityObserver: this.activityObserver }),
         ...(preflightRepair === undefined ? {} : { preflightRepair }),
       })
     } catch (error) {
@@ -1515,7 +1520,8 @@ export class NovaWingLaunchpad {
       try {
         outcome = agent === 'deterministic'
           ? await this.repairAgent.repair(context)
-          : await this.repairLlmAgent.repair(context)
+          : await observeWorkSessionActivity(this.activityObserver, { operation: 'model-repair' },
+              () => this.repairLlmAgent.repair(context))
       } catch (error) {
         failureReason = error instanceof Error ? `Repair Agent failed: ${error.message}` : 'Repair Agent failed'
       }

@@ -42,6 +42,7 @@ import { deriveUserActivities } from './activity-projection.js'
 import { deriveRuntimeOverview, projectTaskDiagnostics } from './runtime-overview.js'
 import { projectTaskEta, type TaskEtaService } from './task-eta.js'
 import { isAutonomousRecoveryCategory } from '../autonomous-diagnosis.js'
+import { observeWorkSessionActivity, type WorkSessionActivityObserver, type WorkSessionActivityOperation } from '../activity.js'
 
 /** runtime factory：控制面注入 createRuntime(eventSink)，测试注入 fake runtime。 */
 export type WorkSessionRuntimeFactory = (
@@ -50,6 +51,7 @@ export type WorkSessionRuntimeFactory = (
 ) => WorkSessionControlRuntime
 
 export interface WorkSessionControlControllerOptions {
+  activityObserver?: WorkSessionActivityObserver
   /** Hosts opt into draining admitted work; the CLI default remains bounded. */
   shutdownMode?: 'strict' | 'bounded'
   taskEta?: Pick<TaskEtaService, 'project' | 'close'> & Partial<Pick<TaskEtaService, 'settled' | 'drain'>>
@@ -107,6 +109,7 @@ export class WorkSessionControlController {
   private readonly clock: { now(): number } | undefined
   private readonly beforeResume: (() => Promise<void>) | undefined
   private readonly shutdownMode: 'strict' | 'bounded'
+  private readonly activityObserver: WorkSessionActivityObserver | undefined
 
   private started = false
   private scheduleCheckAt = 0
@@ -154,6 +157,7 @@ export class WorkSessionControlController {
     this.clock = options.clock
     this.beforeResume = options.beforeResume
     this.shutdownMode = options.shutdownMode ?? 'bounded'
+    this.activityObserver = options.activityObserver
     // Transport still uses the established progress value shape. Presentation
     // names V2 activity TASK_PHASE so the UI does not imply Guardian semantics.
     this.runtime = options.createRuntime(
@@ -234,13 +238,21 @@ export class WorkSessionControlController {
     // 明确持有 rejection：fake/真实 runtime 的 start() 失败不得产生 unhandled rejection。
     // 原始 error.message 可能包含 credential/provider payload，因此绝不进入 Web event。
     const due = scheduled && Date.parse(this.runtime.getDurableState()?.scheduledStartAt ?? '') <= (this.clock?.now() ?? Date.now())
-    const operation = due && this.beforeResume !== undefined
+    const startRuntime = () => this.runtime.startWithActivityObserver === undefined
+      ? this.runtime.start() : this.runtime.startWithActivityObserver(this.activityObserver)
+    const dispatch = () => due && this.beforeResume !== undefined
       ? Promise.resolve().then(() => this.beforeResume!()).then(() => {
           if (this.closed && this.shutdownMode !== 'strict') throw new Error('Controller closed before dispatch')
-          return this.runtime.start()
+          return startRuntime()
         })
-      : this.runtime.start()
-    this.startPromise = this.trackOperation(operation)
+      : startRuntime()
+    // Future schedules only persist/inspect their waiting state. A dispatched
+    // execution owns verification, checkpoint and finalization until settlement.
+    const scheduledAt = this.runtime.getDurableState()?.scheduledStartAt ?? this.runtime.getDefinition().scheduledStartAt
+    const waiting = scheduledAt != null && Date.parse(scheduledAt) > (this.clock?.now() ?? Date.now())
+    const operation = this.runtime.startWithActivityObserver !== undefined || waiting ? this.runOperation(dispatch)
+      : this.runActivity(scheduled || scheduledAt != null ? 'scheduled-execution' : 'execution', dispatch)
+    this.startPromise = operation
       .then(() => {
         // 状态变化由 polling 观察，无需在此处理。
       })
@@ -325,12 +337,12 @@ export class WorkSessionControlController {
       this.broadcastSnapshot()
       return this.runtime.resume(validated.input ?? {})
     }
-    const resumeOperation = this.beforeResume === undefined
+    const resumeOperation = this.runActivity('resume', () => this.beforeResume === undefined
       ? dispatchResume()
       : Promise.resolve()
           .then(() => this.beforeResume!())
-          .then(dispatchResume)
-    this.resumePromise = this.trackOperation(resumeOperation)
+          .then(dispatchResume))
+    this.resumePromise = resumeOperation
       .then(() => {})
       .catch(() => {
         this.emit({
@@ -382,12 +394,12 @@ export class WorkSessionControlController {
         }
         this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
         this.broadcastSnapshot()
-        const resumeOperation = this.beforeResume === undefined
-          ? this.runtime.resumeWithDurableVerificationApproval()
+        const resumeOperation = this.runActivity('verification', () => this.beforeResume === undefined
+          ? this.runtime.resumeWithDurableVerificationApproval!()
           : Promise.resolve()
               .then(() => this.beforeResume!())
-              .then(() => this.runtime.resumeWithDurableVerificationApproval!())
-        this.resumePromise = this.trackOperation(resumeOperation)
+              .then(() => this.runtime.resumeWithDurableVerificationApproval!()))
+        this.resumePromise = resumeOperation
           .then(() => {
             this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
             this.broadcastSnapshot()
@@ -412,12 +424,12 @@ export class WorkSessionControlController {
     this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
     this.broadcastSnapshot()
 
-    const resumeOperation = this.beforeResume === undefined
-      ? this.runtime.resumeInterrupted()
+    const resumeOperation = this.runActivity('resume', () => this.beforeResume === undefined
+      ? this.runtime.resumeInterrupted!()
       : Promise.resolve()
           .then(() => this.beforeResume!())
-          .then(() => this.runtime.resumeInterrupted!())
-    this.resumePromise = this.trackOperation(resumeOperation)
+          .then(() => this.runtime.resumeInterrupted!()))
+    this.resumePromise = resumeOperation
       .then(() => {
         this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
         this.broadcastSnapshot()
@@ -449,7 +461,7 @@ export class WorkSessionControlController {
     if (this.resumePromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
     const safeEventData = { taskId: pending.taskId, category: 'VERIFICATION_APPROVAL' }
     this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
-    this.resumePromise = this.trackOperation(this.runtime.approvePendingVerificationAndContinue())
+    this.resumePromise = this.runActivity('verification', () => this.runtime.approvePendingVerificationAndContinue!())
       .then(() => { this.emit({ type: 'SESSION_RESUMED', data: safeEventData }); this.broadcastSnapshot() })
       .catch(() => { this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } }); this.broadcastSnapshot() })
       .finally(() => { this.resumePromise = undefined })
@@ -494,7 +506,7 @@ export class WorkSessionControlController {
     const safeEventData = { taskId: state.currentTaskId, category: 'RUNTIME_REPAIR' }
     this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
     this.broadcastSnapshot()
-    this.resumePromise = this.trackOperation(this.runtime.repairRuntimeAndResume())
+    this.resumePromise = this.runActivity('runtime-repair', () => this.runtime.repairRuntimeAndResume!())
       .then(() => {
         this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
         this.broadcastSnapshot()
@@ -522,7 +534,7 @@ export class WorkSessionControlController {
     const data = { taskId: state.currentTaskId, kind: 'GIT_PUSH' }
     this.emit({ type: 'CHECKPOINT_RECOVERY_REQUESTED', data })
     this.broadcastSnapshot()
-    this.checkpointRecoveryPromise = this.trackOperation(this.runtime.recoverFailedGitCheckpoint())
+    this.checkpointRecoveryPromise = this.runActivity('checkpoint-recovery', () => this.runtime.recoverFailedGitCheckpoint!())
       .then(() => {
         this.emit({ type: 'CHECKPOINT_RECOVERY_COMPLETED', data })
         this.broadcastSnapshot()
@@ -786,6 +798,21 @@ export class WorkSessionControlController {
       () => { this.acceptedOperations.delete(operation) },
     )
     return operation
+  }
+
+  private runActivity<T>(operation: WorkSessionActivityOperation, dispatch: () => Promise<T>): Promise<T> {
+    return this.runOperation(() => observeWorkSessionActivity(this.activityObserver, {
+      operation, sessionId: this.runtime.getDefinition().id,
+    }, dispatch))
+  }
+
+  private runOperation<T>(dispatch: () => Promise<T>): Promise<T> {
+    // Publish drain ownership before the callback or dispatch can synchronously
+    // reenter close(). The lease is released before this promise settles.
+    const completion = Promise.withResolvers<T>()
+    this.trackOperation(completion.promise)
+    try { void dispatch().then(completion.resolve, completion.reject) } catch (error) { completion.reject(error) }
+    return completion.promise
   }
 
   private now(): number {

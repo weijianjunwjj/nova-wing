@@ -14,9 +14,10 @@ export function describeShutdownError(error, depth = 0) {
  * One owner for Main startup, repeated before-quit events and final app.quit.
  * A failure remains fail-closed: no final quit is authorized as graceful success.
  * @param {{ getStartup: () => Promise<unknown>, getHost: () => { close: () => Promise<void> } | undefined,
- *   requestFinalQuit: () => void, reportFailure: (error: unknown) => void }} options
+ *   requestFinalQuit: () => void, reportFailure: (error: unknown) => void,
+ *   afterDrain?: () => void | Promise<void> }} options
  */
-export function createShutdownCoordinator({ getStartup, getHost, requestFinalQuit, reportFailure }) {
+export function createShutdownCoordinator({ getStartup, getHost, requestFinalQuit, reportFailure, afterDrain = () => {} }) {
   let shutdownPromise
   let quitContinuationAttached = false
   let requested = false
@@ -39,6 +40,7 @@ export function createShutdownCoordinator({ getStartup, getHost, requestFinalQui
         try { await getStartup() } catch (error) { errors.push(error) }
         try { await (admittedClose ?? getHost()?.close()) } catch (error) { errors.push(error) }
         if (errors.length) throw new AggregateError(errors, 'Desktop strict shutdown failed')
+        await afterDrain()
         completed = true
       }).then(completion.resolve, completion.reject)
     }

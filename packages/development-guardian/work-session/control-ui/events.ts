@@ -238,6 +238,10 @@ export interface CodingExecutionView {
 export interface WorkSessionControlRuntime {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>
+  /** Optional exact execution boundary for runtimes that may wait/claim a
+   * schedule inside start(). Observe only after claim, through finalization;
+   * a future schedule/status-only start must never acquire an activity lease. */
+  startWithActivityObserver?(observer: import('../activity.js').WorkSessionActivityObserver | undefined): Promise<WorkSessionDurableState>
   resume(input: import('../runtime.js').ResumeInput): Promise<WorkSessionDurableState>
   /** Domain-owned query; the control layer must not reproduce approval validation. */
   canResumeWithDurableVerificationApproval?(): boolean
