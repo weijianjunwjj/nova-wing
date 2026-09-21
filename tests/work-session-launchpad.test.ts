@@ -262,7 +262,8 @@ tests/**
 
 禁止修改：
 package.json`)
-  assert.deepEqual(boundedPaths.fields.allowedPaths, ['docs/**', 'tests/**'])
+  assert.equal(boundedPaths.fields.allowedPaths, undefined, 'unlabelled prose inside a permission section requires confirmation')
+  assert.ok(boundedPaths.unresolvedFields?.includes('allowedPaths'))
   assert.deepEqual(boundedPaths.fields.forbiddenPaths, ['package.json'])
 
   const t034Audit = analyzeTaskBrief(`审计 NovaWing 在技术面试现场演示完整开发流程时可能出现的可靠性风险。
@@ -2191,7 +2192,7 @@ test('new Launchpad HTTP creation persists Golden default and production complet
   }
 })
 
-test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permission fields', async () => {
+test('DOGFOOD-001 Quick Fill preserves unrecognized policy fields and requires permission confirmation', async () => {
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
@@ -2202,8 +2203,8 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     assert.ok(start >= 0 && end > start)
     const targetRepo = { value: 'old-repo' }
     const branch = { value: 'old-branch' }
-    const taskId = { value: 'OLD' }
-    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old', removeAttribute() {} }]))
+    const taskId = { value: 'OLD', removeAttribute() {} }
+    const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old', removeAttribute() {}, setAttribute() {}, hasAttribute() { return true } }]))
     const briefResult = { textContent: '' }
     const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
       taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},
@@ -2213,14 +2214,15 @@ test('DOGFOOD-001 Quick Fill replaces or clears stale project, task and permissi
     assert.equal(targetRepo.value, 'new-repo')
     assert.equal(taskId.value, 'D01')
     assert.equal(elements.allowedPaths!.value, 'src/**')
-    assert.equal(branch.value, '')
+    assert.equal(branch.value, 'old-branch')
     vm.runInContext('apply({ fields: {} }, false)', context)
     assert.equal(targetRepo.value, 'new-repo', 'model advice alone does not modify fields')
     vm.runInContext('apply({ fields: {} }, true)', context)
-    assert.equal(targetRepo.value, '')
-    assert.equal(taskId.value, '')
-    for (const field of Object.values(elements)) assert.equal(field.value, '')
-    assert.match(briefResult.textContent, /已清空/)
+    assert.equal(targetRepo.value, 'new-repo')
+    assert.equal(taskId.value, 'D01')
+    assert.equal(elements.allowedPaths!.value, 'src/**')
+    for (const [name, field] of Object.entries(elements)) if (name !== 'allowedPaths') assert.equal(field.value, 'old')
+    assert.match(briefResult.textContent, /保留原值/)
     assert.match(script, /catch \(cause\) \{\s*applyBriefAnalysis\(\{ fields: \{\} \}, true\)/)
     assert.match(script, /TASK_CONTRACT_INVALID/)
     assert.match(script, /issue\.issueCode/)

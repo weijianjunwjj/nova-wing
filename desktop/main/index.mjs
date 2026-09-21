@@ -5,8 +5,14 @@ import { createDesktopPowerManager } from './power.mjs'
 import { createDesktopTray } from './tray.mjs'
 import { createDesktopNotificationProvider } from './notifications.mjs'
 import { DESKTOP_IDENTITY } from './identity.mjs'
+import { initializeDesktopPlatform } from './platform.mjs'
+import { createDesktopEvidence } from './evidence.mjs'
 
-const root = requireDesktopIsolation()
+app.setName(DESKTOP_IDENTITY.appName)
+// Windows-only calls are kept in the dedicated Desktop platform adapter.
+initializeDesktopPlatform(app)
+const root = process.env.NOVAWING_DESKTOP_SMOKE_ROOT ? requireDesktopIsolation() : undefined
+if (!app.isPackaged && !root) throw new Error('Development Desktop requires the isolated launcher')
 let fixture
 // userData is configured before requesting the lock; no fixture, package import,
 // Host, Launchpad or database may be created by a secondary process.
@@ -20,6 +26,7 @@ let windows
 let tray
 let power
 let notifications
+let record = (_event, _detail) => {}
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
 }
@@ -34,6 +41,7 @@ export const desktopShutdown = createShutdownCoordinator({
     power?.dispose()
     tray?.destroy()
     windows?.destroyWindowForQuit()
+    record('strict-quit-drained', { power: power?.snapshot() })
   },
   reportFailure(error) {
     process.exitCode = 1
@@ -54,6 +62,7 @@ if (desktopInstance.primary) {
   }
   app.on('second-instance', () => {
     desktopInstance.secondInstanceCount++
+    record('second-instance', { count: desktopInstance.secondInstanceCount })
     showWhenReady()
   })
   app.on('activate', showWhenReady)
@@ -64,24 +73,31 @@ if (desktopInstance.primary) {
 
 // End ESM evaluation before waiting for ready. This stage still uses isolated fake work.
 export const desktopReady = desktopInstance.primary ? app.whenReady().then(async () => {
-  const { createIsolatedLaunchpadFixture } = await import('./isolated-fixture.mjs')
   const { createDesktopHost } = await import('./host.mjs')
   const { createDesktopWindowLifecycle } = await import('./window.mjs')
+  const { platformPaths } = await import('nova-wing/development-guardian')
+  if (!root) record = createDesktopEvidence(platformPaths().data)
+  record('startup', { identity: DESKTOP_IDENTITY, packaged: app.isPackaged, appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath, execPath: process.execPath, cwd: process.cwd(),
+    userData: app.getPath('userData'), paths: platformPaths(), versions: process.versions })
   app.setName(DESKTOP_IDENTITY.appName)
   notifications = createDesktopNotificationProvider({
     Notification,
     isQuitRequested: () => desktopShutdown.requested,
     onSessionClick: (sessionId) => windows?.showSession(sessionId),
-    onDiagnostic: (detail) => console.error(`DESKTOP_NOTIFICATION_DIAGNOSTIC ${JSON.stringify(detail)}`),
+    onDiagnostic: (detail) => { record('notification', detail); console.error(`DESKTOP_NOTIFICATION_DIAGNOSTIC ${JSON.stringify(detail)}`) },
   })
   power = createDesktopPowerManager({ powerSaveBlocker, reportFailure: reportBackgroundFailure })
-  desktopInstance.fixtureCreateCount++
-  fixture = await createIsolatedLaunchpadFixture({
-    root, env: process.env, holdTasks: process.env.NOVAWING_DESKTOP_HOLD_TASKS === '1',
-  })
+  if (root) {
+    const { createIsolatedLaunchpadFixture } = await import('./isolated-fixture.mjs')
+    desktopInstance.fixtureCreateCount++
+    fixture = await createIsolatedLaunchpadFixture({
+      root, env: process.env, holdTasks: process.env.NOVAWING_DESKTOP_HOLD_TASKS === '1',
+    })
+  }
   desktopInstance.hostCreateCount++
-  host = await createDesktopHost({ configDirectory: fixture.configDirectory, env: process.env,
-    dependencies: { ...fixture.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
+  host = await createDesktopHost({ configDirectory: fixture?.configDirectory ?? platformPaths().trustedConfig, env: process.env,
+    dependencies: { ...fixture?.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
   desktopInstance.launchpadCreateCount++
   await host.start()
   // Startup was admitted before quit; let its owner settle without opening a
@@ -89,15 +105,18 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [] }
   windows = createDesktopWindowLifecycle(host, {
     isQuitRequested: () => desktopShutdown.requested,
-    reportDiagnostic: (diagnostic) => console.error(`DESKTOP_RENDERER_RECOVERY ${JSON.stringify(diagnostic)}`),
+    reportDiagnostic: (diagnostic) => { record('window-lifecycle', { ...diagnostic, phase: diagnostic.event, event: 'window-lifecycle' }); console.error(`DESKTOP_WINDOW_LIFECYCLE ${JSON.stringify(diagnostic)}`) },
   })
   tray = createDesktopTray({ Tray, Menu, nativeImage,
     showWindow: () => windows.showWindow(), hideWindow: () => windows.hideWindow(),
     requestQuit: () => app.quit(), reportFailure: reportBackgroundFailure,
   })
   power.subscribe((count) => tray.setActivity(count))
+  power.subscribe(() => record('power', power.snapshot()))
   await windows.showWindow()
-  console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
+  windows.window?.on('hide', () => record('window-hidden', { power: power.snapshot(), tray: !tray.tray.isDestroyed() }))
+  record('ready', { launchpadUrl: host.launchpadUrl, tray: !tray.tray.isDestroyed() })
+  if (fixture) console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
   return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications }
 }) : Promise.resolve(undefined)
 desktopReady.catch((error) => {

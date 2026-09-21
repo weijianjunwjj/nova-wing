@@ -5,6 +5,9 @@ import ts from 'typescript'
 
 /** Exact file allowlist: a new adapter requires a reviewed entry and rationale. */
 export const platformAdapters = {
+  'packages/development-guardian/platform/windows-git.ts': 'Verified Git for Windows installation discovery, registry and child PATH.',
+  'desktop/main/platform.mjs': 'Early Windows AUMID and stable Toast activator identity.',
+  'scripts/platform/windows-package.mjs': 'Windows x64 NSIS staging and native package content audit.',
   'packages/development-guardian/platform/shell.ts': 'Native Git Bash / POSIX Bash contract and fingerprint.',
   'packages/development-guardian/platform/paths.ts': 'OS config/data roots, path identity and CLI path conversion.',
   'packages/development-guardian/platform/executables.ts': 'Native executable names, legacy Python task parsing and child environment allowlist.',

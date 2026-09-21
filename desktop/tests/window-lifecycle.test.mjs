@@ -12,8 +12,16 @@ class FakeWindow extends EventEmitter {
   restores = 0
   loads = []
   calls = []
+  url = ''
+  loading = false
+  constructor() {
+    super()
+    this.webContents.on('did-navigate', (_event, url) => { this.url = url })
+  }
   load = async (_url) => {}
   webContents = Object.assign(new EventEmitter(), {
+    getURL: () => this.url,
+    isLoadingMainFrame: () => this.loading,
     setWindowOpenHandler: (handler) => { this.openHandler = handler },
     session: {
       setPermissionRequestHandler: (handler) => { this.permissionHandler = handler },
@@ -23,8 +31,19 @@ class FakeWindow extends EventEmitter {
   })
   async loadURL(url) {
     this.loads.push(url)
-    await this.load(url)
-    if (!this.destroyed) this.webContents.emit('did-navigate', {}, url)
+    this.loading = true
+    this.webContents.emit('did-start-loading')
+    try {
+      await this.load(url)
+      if (!this.destroyed) {
+        this.webContents.emit('did-navigate', {}, url)
+        this.webContents.emit('did-finish-load')
+        this.emit('ready-to-show')
+      }
+    } finally {
+      this.loading = false
+      this.webContents.emit('did-stop-loading')
+    }
   }
   setMenuBarVisibility(value) { this.menuVisible = value }
   isDestroyed() { return this.destroyed }
@@ -161,7 +180,7 @@ test('renderer recovery keeps a hidden window hidden and reloads the still-owned
   assert.equal(windows[0].loads.at(-1), controlUrl)
   assert.equal(lifecycle.observations.crashes, 1)
   assert.equal(lifecycle.observations.recovered, 1)
-  assert.deepEqual(diagnostics.map((item) => item.event), ['render-process-gone', 'recovered'])
+  assert.deepEqual(diagnostics.filter((item) => ['render-process-gone', 'recovered'].includes(item.event)).map((item) => item.event), ['render-process-gone', 'recovered'])
 })
 
 test('crash recovery falls back to Launchpad after Control revocation and preserves visible intent', async () => {
@@ -255,10 +274,12 @@ test('quit suppresses late show and recovery, while ordinary close then permits 
 
 test('destroyForQuit prevents recreation during a pending load and is idempotent', async () => {
   const gate = Promise.withResolvers()
+  const entered = Promise.withResolvers()
   const window = new FakeWindow()
-  window.load = () => gate.promise
+  window.load = () => { entered.resolve(); return gate.promise }
   const { lifecycle } = harness({ createWindow: () => window })
   const show = lifecycle.showWindow()
+  await entered.promise
   lifecycle.destroyWindowForQuit()
   lifecycle.destroyWindowForQuit()
   gate.reject(new Error('window destroyed during load'))
@@ -288,12 +309,14 @@ test('failed startup releases its unreturned window and a later show can retry',
 
 test('destroy and show while an older load is pending cannot let its cleanup destroy the replacement', async () => {
   const firstLoad = Promise.withResolvers()
+  const entered = Promise.withResolvers()
   const original = new FakeWindow()
   const replacement = new FakeWindow()
-  original.load = () => firstLoad.promise
+  original.load = () => { entered.resolve(); return firstLoad.promise }
   let attempts = 0
   const { lifecycle } = harness({ createWindow: () => ++attempts === 1 ? original : replacement })
   const pending = lifecycle.showWindow()
+  await entered.promise
   original.destroy()
   assert.equal(await lifecycle.showWindow(), replacement)
   assert.equal(replacement.visible, true)
@@ -410,4 +433,135 @@ test('Session revocation during navigation falls back even while its owned origi
   await click
   assert.equal(windows[0].loads.at(-1), launchpadUrl)
   assert.equal(windows[0].visible, true)
+})
+
+test('A/B: hidden healthy Control stays loaded across Tray show and repeated same-session clicks', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showSession('one')
+  const window = windows[0]
+  assert.deepEqual(window.loads, [controlUrl], 'initial Session routing skips Launchpad')
+  lifecycle.hideWindow()
+  await lifecycle.showWindow()
+  lifecycle.hideWindow()
+  await Promise.all([lifecycle.showSession('one'), lifecycle.showSession('one'), lifecycle.showWindow()])
+  assert.deepEqual(window.loads, [controlUrl])
+  assert.equal(window.visible, true)
+})
+
+test('C: different-session click loads once; concurrent Tray show cannot expose its pending document', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showWindow()
+  lifecycle.hideWindow()
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  windows[0].load = () => { entered.resolve(); return release.promise }
+  const click = lifecycle.showSession('one')
+  await entered.promise
+  const show = lifecycle.showWindow()
+  assert.equal(windows[0].visible, false)
+  release.resolve()
+  await Promise.all([show, click])
+  assert.equal(windows[0].loads.filter((url) => url === controlUrl).length, 1)
+  assert.equal(windows[0].visible, true)
+})
+
+test('D: destroyed-window click shares creation and displays only after target load finishes', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showWindow()
+  windows[0].destroy()
+  const created = lifecycle.showSession('one')
+  await created
+  assert.equal(windows.length, 2)
+  assert.deepEqual(windows[1].loads, [controlUrl])
+  assert.equal(windows[1].visible, true)
+})
+
+test('E: recovery in flight and same-session click share one navigation and do not show early', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showSession('one')
+  const window = windows[0]
+  lifecycle.hideWindow()
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  window.load = () => { entered.resolve(); return release.promise }
+  window.crash()
+  const recovery = lifecycle.pendingRecovery
+  await entered.promise
+  const click = lifecycle.showSession('one')
+  const show = lifecycle.showWindow()
+  assert.equal(window.visible, false)
+  release.resolve()
+  await Promise.all([recovery, click, show])
+  assert.deepEqual(window.loads, [controlUrl, controlUrl])
+  assert.equal(window.visible, true)
+})
+
+test('E reverse: crash during Session load queues recovery instead of concurrent loadURL', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showWindow()
+  const window = windows[0]
+  const entered = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  let active = 0
+  let maximum = 0
+  window.load = async () => {
+    maximum = Math.max(maximum, ++active)
+    if (window.loads.length === 2) { entered.resolve(); await release.promise }
+    active--
+  }
+  const click = lifecycle.showSession('one')
+  await entered.promise
+  window.crash()
+  const recovery = lifecycle.pendingRecovery
+  release.resolve()
+  await Promise.all([click, recovery])
+  assert.equal(maximum, 1)
+  assert.equal(window.url, controlUrl)
+  assert.equal(window.visible, true)
+})
+
+test('Electron ordering: resolved loadURL precedes did-stop-loading and cannot expose the window', async () => {
+  const { lifecycle, host, windows, controlUrl } = harness()
+  host.resolveSessionUrl = () => controlUrl
+  await lifecycle.showWindow()
+  lifecycle.hideWindow()
+  const window = windows[0]
+  const finished = Promise.withResolvers()
+  window.loadURL = async (url) => {
+    window.loading = true
+    window.webContents.emit('did-start-loading')
+    window.webContents.emit('did-navigate', {}, url)
+    window.webContents.emit('did-finish-load')
+    finished.resolve()
+  }
+  const click = lifecycle.showSession('one')
+  await finished.promise
+  assert.equal(window.visible, false)
+  window.loading = false
+  window.webContents.emit('did-stop-loading')
+  await click
+  assert.equal(window.visible, true)
+})
+
+test('new window waits for first paint as well as a finished document', async () => {
+  const attemptedPaint = Promise.withResolvers()
+  class PaintGatedWindow extends FakeWindow {
+    emit(name, ...args) {
+      if (name === 'ready-to-show') { attemptedPaint.resolve(); return true }
+      return super.emit(name, ...args)
+    }
+  }
+  const window = new PaintGatedWindow()
+  const { lifecycle } = harness({ createWindow: () => window })
+  const show = lifecycle.showWindow()
+  await attemptedPaint.promise
+  assert.equal(window.visible, false)
+  EventEmitter.prototype.emit.call(window, 'ready-to-show')
+  await show
+  assert.equal(window.visible, true)
 })

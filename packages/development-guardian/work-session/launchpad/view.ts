@@ -146,7 +146,7 @@ export function renderLaunchpadHtml(input: {
           <div><p class="eyebrow">TASK BRIEF / QUICK FILL</p><h3 id="task-brief-title">一次性描述任务</h3></div>
           <textarea data-task-brief data-task-brief-max="${MAX_TASK_BRIEF_CHARS}" rows="7" placeholder="粘贴完整任务描述、项目路径、限制、验证要求等；原始 Brief 会保留在此处，识别结果只会填入下方表单，仍需由你确认并创建。"></textarea>
           <div class="task-brief-actions"><button class="task-add" type="button" data-task-brief-fill>识别并填充</button><button class="task-add" type="button" data-smart-model>智能推荐模型</button></div>
-          <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务；重新填充会替换已填写字段，请核对后创建。</p>
+          <p class="field-hint task-brief-result" data-task-brief-result aria-live="polite">Quick Fill 不会自动创建或启动任务；仅替换已识别的策略字段，未识别的权限需编辑确认后创建。</p>
         </section>
         <label>项目目录<input name="targetRepo" type="text" autocomplete="off" placeholder="项目的绝对路径" required></label>
         <label>分支<input name="branch" type="text" autocomplete="off" value="填写项目目录后自动检测"><span class="field-hint">默认自动检测；Task Brief 指定的分支必须与项目当前 checkout 一致。</span></label>
@@ -538,6 +538,7 @@ export const LAUNCHPAD_APP_JS = `
     taskId.addEventListener('input', () => {
       taskIdEdited = true
       taskId.removeAttribute('aria-invalid')
+      taskId.removeAttribute('data-requires-confirmation')
       if (error.textContent.startsWith('请填写有效的 Task ID')) error.textContent = ''
     })
     goal.addEventListener('input', () => {
@@ -586,6 +587,7 @@ export const LAUNCHPAD_APP_JS = `
     updatePushRemote()
   })
   form.elements.allowedPaths.addEventListener('input', () => {
+    form.elements.allowedPaths.removeAttribute('data-requires-confirmation')
     form.elements.allowedPaths.removeAttribute('aria-invalid')
     if (error.textContent === '请填写至少一个允许修改路径。') error.textContent = ''
   })
@@ -612,8 +614,8 @@ export const LAUNCHPAD_APP_JS = `
   const applyBriefAnalysis = (result, fillFields) => {
     const fields = result.fields || {}
     if (fillFields) {
-      targetRepo.value = fields.targetRepo || ''
-      branch.value = fields.branch || ''
+      if (fields.targetRepo) targetRepo.value = fields.targetRepo
+      if (fields.branch) branch.value = fields.branch
       if (Array.isArray(fields.tasks) && fields.tasks.length > 10) throw new Error('最多可填充 10 个 Task，请拆分 Brief。')
       const briefTasks = Array.isArray(fields.tasks) && fields.tasks.length ? fields.tasks : [fields]
       if (Array.isArray(fields.tasks)) {
@@ -627,22 +629,34 @@ export const LAUNCHPAD_APP_JS = `
       }
       briefTasks.forEach((task, index) => {
         const row = taskRows()[index]
-        if (task.taskInstructions || Array.isArray(fields.tasks)) {
+        if (task.taskInstructions) {
           const goal = row.querySelector('[data-task-goal]')
           goal.value = task.taskInstructions || ''
           goal.dispatchEvent(new Event('input'))
         }
-        row.querySelector('[data-task-id]').value = task.taskId || ''
+        const id = row.querySelector('[data-task-id]')
+        if (task.taskId) id.value = task.taskId
+        if ((result.unresolvedFields || []).includes('taskId')) {
+          id.setAttribute('data-requires-confirmation', 'true')
+          id.setAttribute('aria-invalid', 'true')
+        } else if (task.taskId) {
+          id.removeAttribute('data-requires-confirmation')
+          id.removeAttribute('aria-invalid')
+        }
       })
-      form.elements.allowedPaths.value = (Array.isArray(fields.allowedPaths) ? fields.allowedPaths : []).join('\\n')
-      if (Array.isArray(result.unresolvedFields) && result.unresolvedFields.includes('allowedPaths')) {
+      const pathsRecognized = Array.isArray(fields.allowedPaths) && fields.allowedPaths.length > 0 && !(result.unresolvedFields || []).includes('allowedPaths')
+      if (pathsRecognized) form.elements.allowedPaths.value = fields.allowedPaths.join('\\n')
+      if (!pathsRecognized) {
         form.elements.allowedPaths.setAttribute('aria-invalid', 'true')
-      } else form.elements.allowedPaths.removeAttribute('aria-invalid')
-      form.elements.forbiddenPaths.value = (Array.isArray(fields.forbiddenPaths) ? fields.forbiddenPaths : []).join('\\n')
-      form.elements.constraints.value = (Array.isArray(fields.constraints) ? fields.constraints : []).join('\\n')
-      form.elements.acceptanceCriteria.value = (Array.isArray(fields.acceptanceCriteria) ? fields.acceptanceCriteria : []).join('\\n')
-      form.elements.acceptanceEvidenceBindings.value = (Array.isArray(fields.acceptanceEvidenceBindings) ? fields.acceptanceEvidenceBindings : []).flatMap((binding) => Array.isArray(binding.requiredEvidence) ? binding.requiredEvidence.map((evidence) => binding.criterion + ' => ' + evidence) : []).join('\\n')
-      form.elements.doNotDo.value = (Array.isArray(fields.doNotDo) ? fields.doNotDo : []).join('\\n')
+        form.elements.allowedPaths.setAttribute('data-requires-confirmation', 'true')
+      } else {
+        form.elements.allowedPaths.removeAttribute('aria-invalid')
+        form.elements.allowedPaths.removeAttribute('data-requires-confirmation')
+      }
+      for (const key of ['forbiddenPaths', 'constraints', 'acceptanceCriteria', 'doNotDo']) {
+        if (Array.isArray(fields[key]) && fields[key].length > 0) form.elements[key].value = fields[key].join('\\n')
+      }
+      if (Array.isArray(fields.acceptanceEvidenceBindings) && fields.acceptanceEvidenceBindings.length > 0) form.elements.acceptanceEvidenceBindings.value = fields.acceptanceEvidenceBindings.flatMap((binding) => Array.isArray(binding.requiredEvidence) ? binding.requiredEvidence.map((evidence) => binding.criterion + ' => ' + evidence) : []).join('\\n')
       if (fields.executorMode) form.elements.executorMode.value = fields.executorMode
       if (Number.isFinite(fields.softMinutes)) softMinutes.value = String(fields.softMinutes)
       if (Number.isFinite(fields.hardMinutes)) hardMinutes.value = String(fields.hardMinutes)
@@ -664,7 +678,7 @@ export const LAUNCHPAD_APP_JS = `
     }
     const recognized = Array.isArray(result.recognized) && result.recognized.length ? '已识别：' + result.recognized.join('、') + '。' : '未识别到可安全填充的字段。'
     const warnings = Array.isArray(result.warnings) && result.warnings.length ? ' ' + result.warnings.join(' ') : ''
-    briefResult.textContent = recognized + warnings + (fillFields ? ' 未识别的项目、分支、Task ID 和权限字段已清空，请核对后创建。' : '')
+    briefResult.textContent = recognized + warnings + (fillFields ? ' 未识别的字段保留原值。' + (form.elements.allowedPaths.hasAttribute('data-requires-confirmation') ? ' Allowed Paths 需要人工确认：请编辑允许修改路径后再创建。' : ' 请核对后创建。') : '')
   }
   briefFill.addEventListener('click', async () => {
     const brief = briefInput.value.trim()
@@ -674,7 +688,7 @@ export const LAUNCHPAD_APP_JS = `
     try { applyBriefAnalysis(await requestBriefAnalysis(brief), true) }
     catch (cause) {
       applyBriefAnalysis({ fields: {} }, true)
-      briefResult.textContent = (cause instanceof Error ? cause.message : 'Task Brief 无法识别。') + ' 项目、分支、Task ID 和权限字段已清空，请重新填写。'
+      briefResult.textContent = (cause instanceof Error ? cause.message : 'Task Brief 无法识别。') + ' 策略字段已保留，Allowed Paths 需要人工确认，请编辑允许修改路径后再创建。'
     }
     finally { briefFill.disabled = false }
   })
@@ -691,10 +705,21 @@ export const LAUNCHPAD_APP_JS = `
     event.preventDefault()
     const submit = form.querySelector('[data-composer-submit]')
     const allowedPaths = lines(form.elements.allowedPaths.value)
+    if (form.elements.allowedPaths.hasAttribute('data-requires-confirmation')) {
+      error.textContent = 'Allowed Paths 需要人工确认，请编辑允许修改路径后再创建。'
+      form.elements.allowedPaths.focus()
+      return
+    }
     const tasks = taskRows().map((row) => ({
       id: row.querySelector('[data-task-id]').value.trim(),
       goal: row.querySelector('[data-task-goal]').value,
     }))
+    const unconfirmedId = taskRows().find((row) => row.querySelector('[data-task-id]').hasAttribute('data-requires-confirmation'))
+    if (unconfirmedId) {
+      error.textContent = 'Task ID 需要人工确认，请编辑编号后再创建。'
+      unconfirmedId.querySelector('[data-task-id]').focus()
+      return
+    }
     const tooLongTask = tasks.find((task) => task.goal.length > 8000)
     if (tooLongTask) {
       error.textContent = 'Task 描述过长，最大 8000 字符。'

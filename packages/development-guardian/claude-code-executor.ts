@@ -1,3 +1,4 @@
+import { gitExecutable } from './platform/windows-git.js'
 import { commandEnvironment } from './platform/environment.js'
 import { SHELL_START_FAILURE } from './platform/shell.js'
 import { pythonRuntime } from './platform/executables.js'
@@ -566,7 +567,7 @@ export async function runStagedEquivalentDiffCheck(cwd: string, timeoutMs: numbe
   let stderr = ''
 
   const runGit = (args: readonly string[]): Promise<GuardianCommandResult> => new Promise((resolve) => {
-    const child = spawn('git', [...args], {
+    const child = spawn(gitExecutable(), [...args], {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],

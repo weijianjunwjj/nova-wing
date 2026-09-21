@@ -176,6 +176,7 @@ async function run() {
     const crashBlocker = samplePower().blockerId
     crashWindow.webContents.forcefullyCrashRenderer()
     const [, details] = await crashed
+    await windows.pendingRecovery
     assert.ok(['crashed', 'killed', 'oom', 'abnormal-exit'].includes(details.reason), JSON.stringify(details))
     assert.equal(host.observations.closeCalls, 0)
     assert.equal(fixture.getEvidence().runtimeCreateCount, 2)

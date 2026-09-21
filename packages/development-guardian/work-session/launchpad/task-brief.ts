@@ -64,11 +64,12 @@ interface BriefSection extends BriefHeading { index: number; lines: string[] }
 // Only a complete, labelled field can supply an ID; prose is never searched for tokens.
 const BRIEF_LABELS: ReadonlyArray<{ label: string; pattern: RegExp; field?: BriefField }> = [
   { label: 'Task ID', pattern: /^(?:task\s*id|任务\s*id|任务编号)$/iu, field: 'taskId' },
-  { label: 'Allowed Paths', pattern: /^(?:只允许(?:修改)?(?:路径)?|允许修改(?:路径)?|allowed\s*paths?)$/iu, field: 'allowedPaths' },
+  { label: 'Allowed Paths', pattern: /^(?:只允许(?:修改)?(?:路径)?|只能修改|允许修改(?:的文件|路径)?|allowed\s*(?:paths?|files))$/iu, field: 'allowedPaths' },
   { label: 'Forbidden Paths', pattern: /^(?:禁止(?:修改)?(?:路径)?|forbidden\s*paths?)$/iu, field: 'forbiddenPaths' },
-  { label: '目标', pattern: /^(?:目标|任务目标|task\s*(?:goal|instructions?))$/iu },
+  { label: '目标', pattern: /^(?:目标|任务目标|任务描述|task\s*(?:goal|instructions?))$/iu },
   { label: 'Workspace', pattern: /^(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)$/iu },
-  { label: 'Branch', pattern: /^(?:branch|分支)$/iu },
+  { label: 'Branch', pattern: /^(?:branch|分支|目标分支)$/iu },
+  { label: '邮件通知', pattern: /^邮件通知$/u },
   { label: 'Constraints', pattern: /^(?:constraints?|约束)$/iu },
   { label: 'Acceptance Criteria', pattern: /^(?:acceptance\s*criteria|验收(?:标准|条件)?|验证)$/iu },
   { label: 'Required Evidence', pattern: /^(?:required\s*evidence(?:\s*bindings?)?|所需证据|证据绑定)$/iu },
@@ -77,7 +78,7 @@ const BRIEF_LABELS: ReadonlyArray<{ label: string; pattern: RegExp; field?: Brie
 ]
 
 function briefHeading(rawLine: string): BriefHeading | undefined {
-  const raw = rawLine.trim()
+  const raw = rawLine.trim().replace(PATH_ENTRY_PREFIX, '')
   const markdownHeading = /^#{1,6}\s+/u.test(raw)
   const line = raw.replace(/^#{1,6}\s+/u, '')
   const bracket = /^【([^】]+)】\s*[:：]?\s*(.*)$/u.exec(line)
@@ -96,7 +97,7 @@ function briefHeading(rawLine: string): BriefHeading | undefined {
       if (entry !== undefined) return { field: entry.field ?? 'other', label: entry.label, value: line.slice(index).trim() }
     }
   }
-  if (bracket !== null || markdownHeading) return { field: 'other', label, value: bracket?.[2]?.trim() ?? '' }
+  if (bracket !== null || markdownHeading || /[:：]$/u.test(line)) return { field: 'other', label: label.replace(/[:：]$/u, ''), value: bracket?.[2]?.trim() ?? '' }
   return undefined
 }
 
@@ -136,7 +137,7 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   }
 
   const normalizedText = lines.join('\n')
-  const workspace = firstCapture(normalizedText, [
+  const workspace = explicitFieldValue(lines, /^(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)\s*[:：]\s*(.*)$/iu) ?? firstCapture(normalizedText, [
     /(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)\s*[:：]\s*([^\r\n]+)/iu,
     /(^|\s)((?:[A-Za-z]:[\\/][^\r\n]+|\/[A-Za-z0-9._~/-]+))(?:\s|$)/u,
   ])
@@ -145,7 +146,7 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
     mark('Workspace')
   }
 
-  const branch = firstCapture(normalizedText, [/(?:branch|分支)\s*[:：]\s*([^\s，。,；;]+)/iu, /(?:分支)\s+([^\s，。,；;]+)/u])
+  const branch = explicitFieldValue(lines, /^(?:branch|分支)\s*[:：]\s*(.*)$/iu)
   if (branch !== undefined && isSafeBranch(branch)) { fields.branch = branch; mark('Branch') }
 
   const taskId = sectionTaskId(sections)
@@ -175,9 +176,10 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   }
 
   const allowed = extractPathSections(sections, 'allowedPaths')
-  const allowedPaths = allowed.valid ? allowed.values : []
+  const unparsedPermission = sourceLines.some((line) => /只能修改|只允许修改|允许修改|allowed\s*(?:paths?|files)/iu.test(line) && briefHeading(line)?.field !== 'allowedPaths')
+  const allowedPaths = allowed.valid && !unparsedPermission ? allowed.values : []
   if (allowedPaths.length > 0) { fields.allowedPaths = allowedPaths; mark('Allowed Paths') }
-  else if (allowed.found) {
+  else if (allowed.found || /只能修改|只允许修改|允许修改|allowed\s*(?:paths?|files)/iu.test(text)) {
     unresolvedFields.push('allowedPaths')
     warnings.push('允许修改路径：未识别，请确认。请逐行填写有效的仓库相对路径；多个 Task 必须确认共用的修改范围。')
   }
@@ -188,14 +190,27 @@ export function analyzeTaskBrief(brief: string, now = new Date(), currentExecuto
   const constraints = extractTextSection(lines, /^(?:constraints?|约束)\s*[:：]?\s*(.*)$/iu)
   if (constraints.length > 0) { fields.constraints = constraints; mark('Constraints') }
   const acceptanceCriteria = extractTextSection(lines, /^(?:acceptance\s*criteria|验收(?:标准|条件)?|验证)\s*[:：]?\s*(.*)$/iu)
+  // Unlabelled result clauses use the same closed command grammar as labelled
+  // criteria. Never search inside prose or invent a shell command.
+  if (acceptanceCriteria.length === 0) {
+    for (const raw of sourceLines) {
+      const line = raw.trim().replace(PATH_ENTRY_PREFIX, '')
+      const candidate = line.replace(/^`([^`]+)`(?=\s|$)/u, '$1')
+      const extracted = extractAcceptanceVerifier(candidate)
+      if (extracted !== undefined && /(?:必须通过|(?:must\s+)?pass(?:es)?)[。.]*$/iu.test(candidate)) {
+        const criterion = `${extracted.command} passes.`
+        if (!acceptanceCriteria.includes(criterion)) acceptanceCriteria.push(criterion)
+      }
+    }
+  }
   const inlineAcceptance = acceptanceCriteria.map((criterion) => parseTaskContractBindingDsl(criterion))
-  const normalizedAcceptanceCriteria = acceptanceCriteria.map((criterion, index) => inlineAcceptance[index]?.criterionText || criterion)
+  const normalizedAcceptanceCriteria = acceptanceCriteria.map((criterion, index) => normalizeBriefCriterion(inlineAcceptance[index]?.criterionText || criterion))
   if (normalizedAcceptanceCriteria.length > 0) { fields.acceptanceCriteria = normalizedAcceptanceCriteria; mark('Acceptance Criteria') }
   const acceptanceEvidenceBindings = [
     ...extractEvidenceBindings(lines, normalizedAcceptanceCriteria),
     ...inlineAcceptance.flatMap((binding) => binding === undefined || binding.criterionText.length === 0 || binding.verifierCommand.length === 0
       ? []
-      : [{ criterion: binding.criterionText, requiredEvidence: [binding.verifierCommand] }]),
+      : [{ criterion: normalizeBriefCriterion(binding.criterionText), requiredEvidence: [unwrapBriefCode(binding.verifierCommand)] }]),
   ]
   for (const criterion of normalizedAcceptanceCriteria) {
     if (acceptanceEvidenceBindings.some((binding) => binding.criterion === criterion)) continue
@@ -289,11 +304,22 @@ function extractEvidenceBindings(lines: readonly string[], criteria: readonly st
 function parseEvidenceBindingLine(line: string, criteria: readonly string[], commands: Map<string, string[]>): void {
   const parsed = parseTaskContractBindingDsl(line)
   if (parsed === undefined) return
-  const { criterionText: criterion, verifierCommand: evidence } = parsed
+  const criterion = normalizeBriefCriterion(parsed.criterionText)
+  const evidence = unwrapBriefCode(parsed.verifierCommand)
   if (!criteria.includes(criterion) || evidence.length === 0 || evidence.length > 500) return
   const existing = commands.get(criterion) ?? []
   if (!existing.includes(evidence)) existing.push(evidence)
   commands.set(criterion, existing)
+}
+
+function unwrapBriefCode(value: string): string {
+  return value.trim().replace(/^`([^`]+)`$/u, '$1')
+}
+
+function normalizeBriefCriterion(value: string): string {
+  const extracted = extractAcceptanceVerifier(value)
+  return /^`[^`]+`\s+.*(?:通过|pass(?:es)?|succeeds?)[。.]*$/iu.test(value) && extracted !== undefined
+    ? `${extracted.command} passes.` : unwrapBriefCode(value)
 }
 
 function firstCapture(text: string, patterns: readonly RegExp[]): string | undefined {
@@ -315,8 +341,8 @@ function isSafeBranch(value: string): boolean {
 
 function isSafeGuardianPath(value: string): boolean {
   return value.length > 0 && value.length <= 500 &&
-    !/^[A-Za-z]:[\\/]|^\//u.test(value) &&
-    !value.split(/[\\/]/u).includes('..') &&
+    !/^[A-Za-z]:[\\/]|^[\\/]/u.test(value) &&
+    !value.split(/[\\/]/u).some((part) => part === '..' || part === '.') &&
     !/[\s:\u0000-\u001f]/u.test(value) &&
     /^[\w.@+*?{}[\],!()$=\\/-]+$/u.test(value)
 }
@@ -327,18 +353,19 @@ function extractPathSections(sections: readonly BriefSection[], field: 'allowedP
   let valid = true
   for (const section of matching) {
     const values: string[] = []
-    let blank = false
     for (const raw of [section.value, ...section.lines]) {
       const line = raw.trim()
-      if (line.length === 0) { blank = true; continue }
-      const path = line.replace(PATH_ENTRY_PREFIX, '').trim()
-      if (!isSafeGuardianPath(path)) {
-        // An unlabelled prose paragraph after a complete list ends that list.
-        if (!(blank && values.length > 0 && /\s|\p{Script=Han}/u.test(path))) valid = false
+      if (line.length === 0) continue
+      if (values.length > 0 && (/^不得/u.test(line.replace(PATH_ENTRY_PREFIX, '')) || extractAcceptanceVerifier(line) !== undefined)) break
+      const path = line.replace(PATH_ENTRY_PREFIX, '').trim().replace(/。$/u, '')
+      // Split only explicit list separators, preserving commas in glob braces.
+      const paths = path.split(/(?:[，、]|\s+和\s+|\s+and\s+|,(?![^{}]*\}))/iu)
+        .map((item) => item.trim().replace(/^`([^`]+)`$/u, '$1'))
+      if (!paths.every(isSafeGuardianPath)) {
+        valid = false
         break
       }
-      blank = false
-      if (!values.includes(path)) values.push(path)
+      for (const entry of paths) if (!values.includes(entry)) values.push(entry)
     }
     if (values.length === 0) valid = false
     groups.push(values)
@@ -361,7 +388,7 @@ function extractTextSection(lines: readonly string[], header: RegExp): string[] 
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
       const line = lines[cursor]!.trim()
       if (line.length === 0) { if (values.length > 0) break; continue }
-      if (PATH_SECTION_END.test(line)) break
+      if (PATH_SECTION_END.test(line) || briefHeading(line) !== undefined) break
       add(line)
     }
     break
@@ -491,6 +518,9 @@ function explicitFieldValue(lines: readonly string[], header: RegExp): string | 
 }
 
 function explicitEmailNotification(lines: readonly string[]): boolean | undefined {
+  const assigned = explicitFieldValue(lines, /^(?:邮件通知|email(?:\s*notification)?)\s*[:：]\s*(.*)$/iu)
+  if (assigned !== undefined && /^(?:关闭|off|false|no)$/iu.test(assigned)) return false
+  if (assigned !== undefined && /^(?:开启|on|true|yes)$/iu.test(assigned)) return true
   const text = lines.join('\n')
   const terms = ['email(?:\\s*notification)?', '邮件通知', '通知我']
   for (const term of terms) {
@@ -506,6 +536,7 @@ function taskInstructionsFromBrief(_text: string, lines: readonly string[]): str
   const core: string[] = []
   let skipNextValue = false
   let skipBlock = false
+  let skipPathBlock = false
   for (const rawLine of lines) {
     const line = rawLine.trim()
     if (line.length === 0) {
@@ -518,8 +549,9 @@ function taskInstructionsFromBrief(_text: string, lines: readonly string[]): str
       else { skipNextValue = false; continue }
     }
     if (skipBlock) {
-      if (kind === undefined) continue
+      if (kind === undefined && (!skipPathBlock || isSafeGuardianPath(unwrapBriefCode(line.replace(PATH_ENTRY_PREFIX, ''))))) continue
       skipBlock = false
+      skipPathBlock = false
     }
     if (kind === 'goal') {
       const goal = /^(?:目标|任务目标|task\s*(?:goal|instructions?))\s*[:：]\s*(.*)$/iu.exec(line)?.[1]?.trim()
@@ -532,6 +564,7 @@ function taskInstructionsFromBrief(_text: string, lines: readonly string[]): str
     }
     if (kind === 'block') {
       skipBlock = true
+      skipPathBlock = /^allowed\s*paths?\s*:/iu.test(line)
       continue
     }
     core.push(line)
@@ -543,6 +576,7 @@ function taskInstructionsFromBrief(_text: string, lines: readonly string[]): str
 
 /** Identifies source-contract fields which belong in Composer controls, not Task. */
 function taskBriefLineKind(line: string): 'goal' | 'scalar' | 'block' | undefined {
+  if (/^邮件通知\s*[:：]/u.test(line)) return 'scalar'
   if (/^(?:目标|任务目标|task\s*(?:goal|instructions?))\s*[:：]/iu.test(line)) return 'goal'
   if (/^(?:只允许(?:修改)?|允许修改|allowed\s*paths?|禁止(?:修改)?|forbidden\s*paths?|constraints?|约束|acceptance\s*criteria|验收(?:标准|条件)?|验证|required\s*evidence(?:\s*bindings?)?|所需证据|证据绑定|do\s*not\s*do|不要做|禁止事项)\s*(?::|：|$)/iu.test(line)) return 'block'
   if (/^(?:项目(?:目录|路径)?|workspace|project\s*(?:directory|path)?)\s*(?::|：|=|(?:[A-Za-z]:[\\/]|\/)|$)/iu.test(line)) return 'scalar'

@@ -1,11 +1,10 @@
 /**
- * Desktop identity has one owner. Phase 4 must select the packaged identities
- * here and use the same values in the installer / electron-builder config.
- * No development electron.exe path is a production AppUserModelID, and Phase 3
- * does not create Start Menu shortcuts, registry entries, or COM registrations.
+ * Stable Desktop identity: Main and NSIS share these committed values.
+ * Root npm kernel version remains independent of this product version.
  */
 export const DESKTOP_IDENTITY = Object.freeze({
   appName: 'NovaWing',
-  appUserModelId: null,
-  toastActivatorCLSID: null,
+  version: '0.4.0',
+  appUserModelId: 'io.github.weijianjunwjj.novawing',
+  toastActivatorCLSID: '5F5D220B-E789-5710-A023-D7CA6AD8E382',
 })

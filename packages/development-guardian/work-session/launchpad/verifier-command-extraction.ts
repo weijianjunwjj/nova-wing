@@ -49,6 +49,7 @@ function completeCommand(command: string): boolean {
   const args = argumentsOf(command)
   if (args === undefined) return false
   if (assessVerificationCommand(normalizeSpacing(command)).status === 'ALLOWED') return true
+  if (args.length === 2 && args[0] === 'node' && args[1] === '--test') return true
   if (/^(?:npm|pnpm|yarn)$/u.test(args[0]!)) {
     const scriptIndex = args[1] === 'run' ? 2 : 1
     const script = args[scriptIndex]
@@ -88,6 +89,7 @@ export function extractAcceptanceVerifier(sourceText: string): { command: string
   if (text.length === 0 || text.length > 500 || /[\r\n\u0000-\u001f]/u.test(text)) return undefined
   // An imperative must be at the start; never search inside conditional prose.
   const body = text.replace(/^(?:(?:运行|执行)\s*|run\s+)/iu, '')
+    .replace(/^`([^`]+)`(?=\s|$)/u, '$1')
   let command: string | undefined
   if (completeCommand(body)) command = body
   else {

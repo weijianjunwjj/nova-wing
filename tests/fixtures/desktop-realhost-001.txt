@@ -1,0 +1,70 @@
+任务 ID：DESKTOP-REALHOST-001
+
+项目目录：
+C:\Users\Administrator\AppData\Local\NovaWingAcceptance\desktop-realhost-20260921-151419
+
+目标分支：
+desktop-realhost-smoke
+
+执行器：
+Codex
+
+模型：
+Auto
+
+推理强度：
+High
+
+Auto Commit：
+开启
+
+Auto Push：
+关闭
+
+邮件通知：
+关闭
+
+允许修改的文件：
+- src/sum.mjs
+- test/sum.test.mjs
+
+任务描述：
+
+在当前测试仓库中完成一个最小 sum 函数及其测试。
+
+具体要求：
+
+1. 新增 `src/sum.mjs`
+2. 导出 `sum(a, b)` 函数
+3. 新增 `test/sum.test.mjs`
+4. 使用 Node.js 内置 `node:test`
+5. 测试至少覆盖：
+   - 两个正数相加
+   - 包含负数的相加
+   - 与 0 相加
+6. 执行 `npm test` 并确保测试全部通过
+7. 只能修改：
+   - `src/sum.mjs`
+   - `test/sum.test.mjs`
+8. 不得修改 `package.json`
+9. 不得修改其他文件
+10. 不得 push 到远程仓库
+11. 完成后按现有 NovaWing 流程执行独立验证、Evidence 校验及 Git checkpoint
+
+Acceptance Criteria：
+
+`npm test` 必须通过。
+
+Required Evidence：
+
+`npm test passes.` => `npm test`
+
+最终成功条件：
+
+- `src/sum.mjs` 存在并正确导出 `sum(a, b)`
+- `test/sum.test.mjs` 覆盖正数、负数、0 三类情况
+- `npm test` PASS
+- 修改范围没有超出允许文件
+- 自动产生合法 checkpoint commit
+- 不执行 push
+- NovaWing 最终进入 COMPLETED

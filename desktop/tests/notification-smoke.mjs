@@ -8,13 +8,14 @@ import { SmtpWorkSessionNotifier, WorkSessionRuntime } from 'nova-wing/developme
 import { desktopInstance, desktopReady, desktopShutdown, shutdownDesktop } from '../main/index.mjs'
 import { createDesktopNotificationProvider } from '../main/notifications.mjs'
 import { createResourceTracker } from './resource-tracker.mjs'
+import { windowNavigationRegression } from './window-navigation-regression.mjs'
 
 const names = [
   'completed_generated', 'completed_desktop_delivery', 'failed_generated', 'failed_desktop_delivery',
   'human_required_generated', 'human_required_desktop_delivery', 'user_paused_not_notified',
   'desktop_independent_from_email_opt_in', 'channel_retry_isolated', 'duplicate_suppression',
   'unsupported_not_registered', 'provider_failure_does_not_change_task', 'hidden_window_notification',
-  'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'notification_drain', 'cleanup',
+  'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'window_navigation_regression', 'notification_drain', 'cleanup',
 ]
 /** @type {Record<string, {status: string, detail?: unknown}>} */
 const checks = Object.fromEntries(names.map((name) => [name, { status: 'FAIL', detail: 'Not run' }]))
@@ -220,6 +221,9 @@ async function run() {
     pass('click_show_restore_focus', { allVisibleAndFocused: true, minimizedWindowRestored: true })
     pass('click_no_duplicate_runtime', { clicks, allCountsUnchanged: true })
 
+    current = 'window_navigation_regression'
+    pass(current, await windowNavigationRegression(desktop, completed, failed))
+
     current = 'user_paused_not_notified'
     const quietBefore = notifications.snapshot().counts.created
     const pauseGate = fixture.armTask('NOTIFICATION-PAUSE')
@@ -268,6 +272,7 @@ async function run() {
     const crashed = once(desktop.window.webContents, 'render-process-gone')
     desktop.window.webContents.forcefullyCrashRenderer()
     await crashed
+    await windows.pendingRecovery
     await eventually('renderer crash recovery retained completed session', async () => {
       if (!desktop.window || desktop.window.isDestroyed() || desktop.window.webContents.isLoadingMainFrame()) return false
       try { return (await evaluate(desktop.window, 'fetch("/api/status").then(response => response.json())')).configuredSession.id === completed.sessionId }

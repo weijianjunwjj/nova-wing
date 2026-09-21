@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { win32 } from 'node:path'
+import { resolveWindowsGitInstallation } from './windows-git.js'
 
 /**
  * Windows Guardian commands must use a native Git for Windows Bash executable.
@@ -59,6 +60,12 @@ export function resolveWindowsGitBashExecutable(options: GuardianShellContractOp
   }
 
   const pathExists = options.pathExists ?? existsSync
+  // Production discovery validates the complete installation and fingerprints.
+  // The legacy pathExists seam remains a deterministic path-only unit seam.
+  if (!options.pathExists) {
+    try { return resolveWindowsGitInstallation({ env }).bash }
+    catch { throw new NativeGitBashUnavailableError() }
+  }
   const roots = [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA ? win32.join(env.LOCALAPPDATA, 'Programs') : undefined]
     .filter((root): root is string => typeof root === 'string' && root.length > 0)
   const candidate = roots

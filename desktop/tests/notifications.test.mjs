@@ -327,8 +327,10 @@ test('cleanup tolerates native close failure and non-Windows needs no activation
   assert.equal(provider.snapshot().timerCount, 0)
 })
 
-test('identity config reserves production identities for packaging without a machine path', () => {
+test('identity config pins the immutable product and notification identities', () => {
   assert.equal(DESKTOP_IDENTITY.appName, 'NovaWing')
-  assert.equal(DESKTOP_IDENTITY.appUserModelId, null)
-  assert.equal(DESKTOP_IDENTITY.toastActivatorCLSID, null)
+  assert.equal(DESKTOP_IDENTITY.version, '0.4.0')
+  assert.equal(DESKTOP_IDENTITY.appUserModelId, 'io.github.weijianjunwjj.novawing')
+  assert.equal(DESKTOP_IDENTITY.toastActivatorCLSID, '5F5D220B-E789-5710-A023-D7CA6AD8E382')
+  assert.equal(Object.isFrozen(DESKTOP_IDENTITY), true)
 })

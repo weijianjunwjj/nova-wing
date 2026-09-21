@@ -1,3 +1,4 @@
+import { gitExecutable } from '../platform/windows-git.js'
 import { workspacePathKey } from '../platform/paths.js'
 import { platformPaths } from '../platform/paths.js'
 import { createHash } from 'node:crypto'
@@ -385,7 +386,7 @@ function defaultGitProcessRunner(
   cwd: string,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolveRun) => {
-    const child = spawn(executable, [...args], {
+    const child = spawn(executable === 'git' ? gitExecutable() : executable, [...args], {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],

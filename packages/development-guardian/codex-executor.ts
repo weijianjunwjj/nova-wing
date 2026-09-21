@@ -1,4 +1,5 @@
 import { codexChatGptEnvironment } from './platform/executables.js'
+import { gitEnvironment } from './platform/windows-git.js'
 export { codexChatGptEnvironment } from './platform/executables.js'
 export * from './platform/codex-development-runtime.js'
 import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@openai/codex-sdk'
@@ -194,7 +195,8 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
     let terminalNetworkFailure: unknown
     try {
       const config = codexEffectiveConfiguration(this.options, runtime.executable, bridge.url, runtime.mcpNames)
-      const codex = this.options.createCodex?.(config.runtime) ?? new Codex(config.runtime)
+      const codex = this.options.createCodex?.(config.runtime) ?? new Codex({ ...config.runtime,
+        env: codexChatGptEnvironment(gitEnvironment(this.options.env ?? process.env)) })
       const probe = codex.startThread(config.thread)
       const { events } = await probe.runStreamed([
         'NovaWing executor preflight only. Do not modify or delete files.',
@@ -267,7 +269,8 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
       workspace = await CodexWorkspaceTools.create(this.options.cwd, input.task)
       bridge = await workspace.listen()
       const config = codexEffectiveConfiguration(this.options, preflight.executable, bridge.url, preflight.mcpNames)
-      const codex = this.options.createCodex?.(config.runtime) ?? new Codex(config.runtime)
+      const codex = this.options.createCodex?.(config.runtime) ?? new Codex({ ...config.runtime,
+        env: codexChatGptEnvironment(gitEnvironment(this.options.env ?? process.env)) })
       const resumed = this.threadId !== undefined
       // Rebind scoped tools for every turn, but always resume the SAME durable thread identity.
       this.thread = this.threadId === undefined ? codex.startThread(config.thread) : codex.resumeThread(this.threadId, config.thread)

@@ -280,7 +280,7 @@ export const s12: CertificationScenario = {
 
 export const s15: CertificationScenario = {
   id: 'S15',
-  title: 'Quick Fill clears stale project/branch/task fields and never silently carries Task A permissions',
+  title: 'Quick Fill preserves unrecognized fields and requires confirmation of retained permissions',
   group: 'control',
   async run(ctx) {
     const h = ctx.h
@@ -294,8 +294,8 @@ export const s15: CertificationScenario = {
       h.check(start >= 0 && end > start, 'launchpad serves the Quick Fill apply function')
       const targetRepo = { value: 'old-repo' }
       const branch = { value: 'old-branch' }
-      const taskId = { value: 'OLD' }
-      const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old' }]))
+      const taskId = { value: 'OLD', removeAttribute() {} }
+      const elements = Object.fromEntries(['allowedPaths', 'forbiddenPaths', 'constraints', 'acceptanceCriteria', 'acceptanceEvidenceBindings', 'doNotDo'].map((key) => [key, { value: 'old', removeAttribute() {}, setAttribute() {}, hasAttribute() { return true } }]))
       const briefResult = { textContent: '' }
       const context = vm.createContext({ targetRepo, branch, form: { elements }, briefResult,
         taskRows: () => [{ querySelector: () => taskId }], discoverTargetRepo() {}, updatePushRemote() {}, updateSchedule() {},
@@ -305,16 +305,18 @@ export const s15: CertificationScenario = {
       h.check(targetRepo.value === 'new-repo', 'recognized target repo replaces the old value')
       h.check(taskId.value === 'D01', 'recognized task id replaces the old value')
       h.check(elements.allowedPaths!.value === 'src/**', 'recognized allowed paths replace old Task A permissions')
-      h.check(branch.value === '', 'unrecognized branch is cleared instead of silently reusing Task A')
+      h.check(branch.value === 'old-branch', 'partial recognition preserves the existing branch')
 
-      // A failed analysis must clear the previously auto-filled fields (DOGFOOD-001).
+      // Failed analysis preserves policy values but requires renewed confirmation.
       vm.runInContext('apply({ fields: {} }, false)', context)
       h.check(targetRepo.value === 'new-repo', 'model-only advice does not alter form fields')
       vm.runInContext('apply({ fields: {} }, true)', context)
-      h.check(targetRepo.value === '', 'stale auto-detected target repo cleared on failed analysis')
-      h.check(taskId.value === '', 'stale task id cleared on failed analysis')
-      for (const field of Object.values(elements)) h.check(field.value === '', 'stale permission/policy fields cleared on failed analysis')
-      h.check(/已清空/u.test(briefResult.textContent), 'cleared fields are explained to the user')
+      h.check(targetRepo.value === 'new-repo', 'existing target repo preserved on failed analysis')
+      h.check(taskId.value === 'D01', 'existing task id preserved on failed analysis')
+      h.check(elements.allowedPaths!.value === 'src/**', 'existing permissions preserved for manual confirmation')
+      for (const [name, field] of Object.entries(elements)) if (name !== 'allowedPaths') h.check(field.value === 'old', 'unrecognized policy values preserved')
+      h.check(/需要人工确认/u.test(briefResult.textContent), 'manual permission confirmation is explicit')
+      h.check(/保留原值/u.test(briefResult.textContent), 'preserved fields are explained to the user')
     } finally {
       await launchpad.close().catch(() => undefined)
       await rm(directory, { recursive: true, force: true }).catch(() => undefined)

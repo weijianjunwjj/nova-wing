@@ -7,7 +7,16 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { detachedSmokeProcess, smokeEnvironment, terminateOwnedElectron } from './platform/desktop-smoke-environment.mjs'
 import { createDesktopIsolation, installedElectronBinary, repositoryRoot } from './desktop-isolation.mjs'
 
-const evidenceDirectory = join(repositoryRoot, 'artifacts', 'desktop', 'bootstrap-smoke')
+const packagedRoot = process.env.NOVAWING_PACKAGED_SMOKE_APP_ROOT
+const evidenceDirectory = join(repositoryRoot, 'artifacts', 'desktop', packagedRoot ? 'package-smoke' : 'bootstrap-smoke')
+async function entryArgs(entry, root) {
+  if (packagedRoot) {
+    const manifest = JSON.parse(process.env.NOVAWING_PACKAGED_SMOKE_MANIFEST)
+    await writeFile(join(packagedRoot, 'package.json'), JSON.stringify({ ...manifest, main: entry }))
+    return [`--user-data-dir=${join(root, 'electron-user-data')}`]
+  }
+  return [join(repositoryRoot, entry), `--user-data-dir=${join(root, 'electron-user-data')}`]
+}
 const timeoutMs = 60_000
 let electronPath
 let expectedVersion
@@ -29,8 +38,8 @@ async function databaseSnapshot(root) {
 /** The external Node parent starts and verifies a real secondary Electron process. */
 async function runSecondary(root) {
   const before = await databaseSnapshot(root)
-  const entry = join(repositoryRoot, 'desktop/tests/background-smoke.mjs')
-  const child = spawn(String(electronPath), [entry, `--user-data-dir=${join(root, 'electron-user-data')}`], {
+  const entry = 'desktop/tests/background-smoke.mjs'
+  const child = spawn(String(electronPath), await entryArgs(entry, root), {
     cwd: join(root, 'repo'), env: { ...smokeEnvironment(root), NOVAWING_DESKTOP_HOLD_TASKS: '1' },
     shell: false, windowsHide: true, detached: detachedSmokeProcess, stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -83,8 +92,10 @@ async function runSecondary(root) {
 }
 
 async function runElectron(entry, prefix, root) {
-  const child = spawn(String(electronPath), [join(repositoryRoot, entry), `--user-data-dir=${join(root, 'electron-user-data')}`], {
-    cwd: join(root, 'repo'), env: { ...smokeEnvironment(root), NOVAWING_DESKTOP_HOLD_TASKS: '1' }, shell: false,
+  const env = { ...smokeEnvironment(root), NOVAWING_DESKTOP_HOLD_TASKS: '1' }
+  if (prefix === 'DESKTOP_PACKAGED_PRODUCTION') delete env.NOVAWING_DESKTOP_SMOKE_ROOT
+  const child = spawn(String(electronPath), await entryArgs(entry, root), {
+    cwd: join(root, 'repo'), env, shell: false,
     windowsHide: prefix === 'DESKTOP_COMPATIBILITY_RESULT', detached: detachedSmokeProcess, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''
@@ -147,7 +158,14 @@ async function runElectron(entry, prefix, root) {
     assert.equal(timedOut, false, 'Electron timed out')
     assert.equal(errors.length, 0)
     assert.equal(report.environment?.electron, expectedVersion, 'Smoke must use the pinned Electron binary')
-    if (prefix === 'DESKTOP_COMPATIBILITY_RESULT') {
+    if (prefix === 'DESKTOP_PACKAGED_PRODUCTION') {
+      assert.equal(report.checks?.production_start?.status, 'PASS')
+      assert.equal(report.checks?.production_strict_quit?.status, 'PASS')
+    } else if (prefix === 'DESKTOP_COMPATIBILITY_RESULT') {
+      if (packagedRoot) {
+        assert.equal(report.environment.packaged, true)
+        assert.equal(report.checks?.packaged_dependencies?.status, 'PASS')
+      }
       for (const name of ['guardian_import', 'node_sqlite', 'libsql', 'runtime_create', 'fake_task', 'runtime_close', 'runtime_reopen', 'resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing compatibility gate: ${name}`)
       }
@@ -156,7 +174,7 @@ async function runElectron(entry, prefix, root) {
         'human_required_generated', 'human_required_desktop_delivery', 'user_paused_not_notified',
         'desktop_independent_from_email_opt_in', 'channel_retry_isolated', 'duplicate_suppression',
         'unsupported_not_registered', 'provider_failure_does_not_change_task', 'hidden_window_notification',
-        'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'notification_drain', 'cleanup']) {
+        'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'window_navigation_regression', 'notification_drain', 'cleanup']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Native Notification gate: ${name}`)
       }
       // Automated Main routing/event evidence never claims OS visual/manual acceptance.
@@ -200,15 +218,17 @@ async function runElectron(entry, prefix, root) {
   return { entry, ...exited, timedOut, report, errors, result: errors.length === 0 ? 'PASS' : 'FAIL' }
 }
 
-const result = { name: 'DESKTOP_COMPATIBILITY_SMOKE', timeoutMs, runs: [], cleanup: {}, errors: [], result: 'FAIL' }
+const result = { name: 'DESKTOP_COMPATIBILITY_SMOKE', timeoutMs,
+  packageSha256: process.env.NOVAWING_PACKAGED_SMOKE_SHA256, runs: [], cleanup: {}, errors: [], result: 'FAIL' }
 let root
 let isolation
 let backgroundIsolation
 let notificationIsolation
+let productionIsolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
-  electronPath = await installedElectronBinary()
+  electronPath = packagedRoot ? (await import('./platform/windows-package.mjs')).packagedExecutable(packagedRoot) : await installedElectronBinary()
   expectedVersion = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')).devDependencies.electron
   isolation = await createDesktopIsolation()
   root = isolation.root
@@ -218,11 +238,15 @@ try {
   result.runs.push(await runElectron('desktop/tests/background-smoke.mjs', 'DESKTOP_BACKGROUND_RUNTIME', backgroundIsolation.root))
   notificationIsolation = await createDesktopIsolation()
   result.runs.push(await runElectron('desktop/tests/notification-smoke.mjs', 'DESKTOP_NATIVE_NOTIFICATION', notificationIsolation.root))
+  if (packagedRoot) {
+    productionIsolation = await createDesktopIsolation()
+    result.runs.push(await runElectron('desktop/tests/production-smoke.mjs', 'DESKTOP_PACKAGED_PRODUCTION', productionIsolation.root))
+  }
 } catch (error) {
   result.errors.push(String(error?.stack ?? error))
 } finally {
   const cleanupErrors = []
-  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation].filter(Boolean)) {
+  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation, productionIsolation].filter(Boolean)) {
     try {
       await ownedIsolation.cleanup()
     } catch (error) {
@@ -234,7 +258,7 @@ try {
     backgroundRoot: backgroundIsolation?.root, notificationRoot: notificationIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
       phase: 'temporary_directory_cleanup_after_electron_exit' } : {}) }
 }
-result.result = result.runs.length === 4 && result.runs.every((run) => run.result === 'PASS') &&
+result.result = result.runs.length === (packagedRoot ? 5 : 4) && result.runs.every((run) => run.result === 'PASS') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
 const launchpadRun = result.runs.find((run) => run.entry === 'desktop/tests/launchpad-smoke.mjs')
 const launchpadReport = {

@@ -1,3 +1,4 @@
+import { gitExecutable } from '../platform/windows-git.js'
 /**
  * W003 Legacy Recovery Adoption
  *
@@ -71,7 +72,7 @@ function createDefaultGitRunner(repoPath: string): LegacyRecoveryGitRunner {
     }
     const args = parts.slice(1)
     return new Promise<LegacyRecoveryGitResult>((resolve) => {
-      const child = spawn('git', args, {
+      const child = spawn(gitExecutable(), args, {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -1,3 +1,4 @@
+import { gitExecutable } from '../platform/windows-git.js'
 /**
  * W004-A Safe Git Checkpoint
  *
@@ -16,7 +17,7 @@
  * - staged 集合 === 允许提交的 Task changed files 集合。
  *
  * Git finalization 归 WorkSession Runtime / 本组件所有。这里只通过
- * `spawn('git', args, ...)` 直接调用 git executable + argv，绝不给 Claude
+ * `spawn(gitExecutable(), args, ...)` 直接调用 git executable + argv，绝不给 Claude
  * generic Git Bash 权限，也不使用 shell 拼接命令。
  */
 
@@ -148,7 +149,7 @@ function isUntrackedRuntimeArtifact(status: string, path: string): boolean {
 function createDefaultCommandRunner(repoPath: string): GitCheckpointCommandRunner {
   return (args: readonly string[]): Promise<GitCheckpointCommandResult> => {
     return new Promise<GitCheckpointCommandResult>((resolve) => {
-      const child = spawn('git', [...args], {
+      const child = spawn(gitExecutable(), [...args], {
         cwd: repoPath,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],

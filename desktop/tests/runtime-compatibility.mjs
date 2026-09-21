@@ -20,6 +20,7 @@ const errors = []
 /** @type {OwnedResource[]} */
 const resources = []
 const environment = {
+  packaged: app.isPackaged,
   electron: process.versions.electron ?? null,
   node: process.versions.node,
   chrome: process.versions.chrome ?? null,
@@ -185,6 +186,10 @@ async function runCompatibility() {
         assert.equal(row?.value, 'electron-native')
         await closeOwned(owner)
         pass('libsql', { module: requireClient.resolve('libsql'), initialize: true, insert: true, select: true, closed: true })
+        if (app.isPackaged) {
+          const { packagedProbe } = await import('./packaged-probe.mjs')
+          pass('packaged_dependencies', await packagedProbe())
+        }
       } catch (error) { fail('libsql', error) }
 
       if (guardian !== undefined && checks.guardian_import?.status === 'PASS'

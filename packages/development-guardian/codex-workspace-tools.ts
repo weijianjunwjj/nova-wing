@@ -1,3 +1,4 @@
+import { gitExecutable } from './platform/windows-git.js'
 import { workspacePathKey } from './platform/paths.js'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -35,7 +36,7 @@ export function readWorkspaceGit(cwd: string, kind: 'status' | 'diff' | 'branch'
     branch: ['branch', '--show-current'], head: ['rev-parse', 'HEAD'],
   }[kind]
   return new Promise((resolveRun, reject) => {
-    const child = spawn('git', args, { cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(gitExecutable(), args, { cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     const timer = setTimeout(() => child.kill(), 30_000)
     child.stdout.on('data', (chunk: Buffer) => { output += chunk; if (output.length > 2_000_000) child.kill() })

@@ -234,16 +234,40 @@ Electron 精确固定在 devDependencies；若首次安装尚未下载平台二�
 关闭失败和退出后的临时目录清理失败分别记录。runner 的 60 秒只用于判定 smoke 失败，
 并非 Desktop 产品的退出超时；strict close 不通过 timeout 假报 drain 成功。
 Desktop JS 类型/unused、包边界、平台边界及资源检测回归均已纳入 `npm run check`。
-Windows 的完整测试仍需配置有效的 `NOVAWING_GIT_BASH_PATH`（见上文）。
+Windows Git discovery 会验证官方安装信息、PATH 中的 Git installation 及标准目录；
+支持显式 `NOVAWING_GIT_BASH_PATH`，不要求 Start Menu 用户预先设置它，不使用 WSL Bash。
 
 Desktop 显式使用 `createNovaWingLaunchpad({ shutdownMode: 'strict' })`；
 现有 CLI/default close 保留 bounded 兼容语义。strict 的新接纳在 close 调用时停止，
 已接纳 workflow 按现有 Runtime 语义完成，不新增取消 Task 或强制退出。
-当前仍只验证 Windows 开发环境与隔离 fake workload；真实 Codex 退出耗时、
-系统 shutdown/logoff、force kill、packaged 环境及 Git Bash discovery 尚未认证。
-Windows Toast 视觉/真人点击与 macOS 签名通知仍需 packaged real-host 验收。根 npm exports/files 保持原边界，
-Desktop 后续使用独立 packaging staging。本轮完整证据见
-[`Phase 3 Report`](docs/audit/NovaWing-v0.4.0-Phase-3-Report.md)。
+Windows unpacked app 已有独立 smoke，安装版真实 Codex / 真人 Toast / 卸载等仍须
+real-host 验收。系统 shutdown/logoff、force kill 和 macOS 签名通知不在当前自动证明范围。
+
+### Windows packaging（Phase 4）
+
+```text
+npm run desktop:package:dir
+npm run desktop:package:smoke
+npm run desktop:build:win
+```
+
+固定 Electron 44.4.3 / electron-builder 26.15.3，NSIS x64，`asar=false`。
+独立 `artifacts/desktop/staging/package.json` 表达产品 0.4.0；根 kernel 仍为 0.1.0。
+staging 保留 self-reference/exports，仅复制 Desktop Main/assets、dist 与 lockfile production
+依赖；排除 fixture/tests/docs/secrets/user DB/dev artifacts。不运行根依赖 rebuild。
+
+package smoke 将 win-unpacked 复制到源码之外的临时目录，在验证副本加入离线 harness，
+由外部 Node 启动其中的 NovaWing executable；不会让源码 node_modules 成为祖先搜索路径。
+交付的 unpacked/installer 不含 harness。另测真正 Production Main（无 fixture）的启动/退出。
+NSIS 生成前必须有匹配当前包内容 SHA256 的 package smoke PASS。
+
+安装包为 `artifacts/desktop/NovaWing Setup 0.4.0.exe`；所有产物与本机证据保持 Git ignored。
+正式包直接加载现有 Production Launchpad；业务数据继续使用 Platform Adapter，默认 Windows
+`LOCALAPPDATA/NovaWing`，保留显式绝对路径 overrides。Desktop 诊断在 data root 的
+`desktop/events.jsonl`，只记录身份、路径、生命周期和通知路由，不记录 prompt/token。
+
+完整状态见 [Phase 4 Report](docs/audit/NovaWing-v0.4.0-Phase-4-Report.md)，
+操作见 [安装版人工验收](docs/audit/NovaWing-v0.4.0-Phase-4-Manual-Acceptance.md)。
 
 ## 当前切片假设
 
