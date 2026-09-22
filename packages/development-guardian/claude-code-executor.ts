@@ -1,5 +1,6 @@
 import { gitExecutable } from './platform/windows-git.js'
 import { commandEnvironment } from './platform/environment.js'
+import { missingVerifierExecutable, resolveDesktopToolchainEnvironment } from './platform/posix-toolchain.js'
 import { SHELL_START_FAILURE } from './platform/shell.js'
 import { pythonRuntime } from './platform/executables.js'
 import { sep } from 'node:path'
@@ -120,6 +121,8 @@ export interface ClaudeCodeExecutorOptions {
   gitBashPath?: string
   /** Internal platform seam; production defaults to process.platform. */
   platform?: NodeJS.Platform
+  /** Internal child-environment seam; production resolves the Desktop toolchain. */
+  environment?: NodeJS.ProcessEnv
   onTiming?: (event: ClaudeCodeTimingEvent) => void
   onVerification?: (result: {
     command: string
@@ -625,6 +628,17 @@ export async function runStagedEquivalentDiffCheck(cwd: string, timeoutMs: numbe
   }
 }
 
+/**
+ * Resolve the Desktop child toolchain once per process. Discovery shells out to a login
+ * shell, so it must never run per command. A Finder-launched macOS app otherwise has no
+ * node/npm on PATH and every `npm` verifier dies with exit 127.
+ */
+let cachedDesktopEnvironment: NodeJS.ProcessEnv | undefined
+function desktopChildEnvironment(): NodeJS.ProcessEnv {
+  cachedDesktopEnvironment ??= resolveDesktopToolchainEnvironment().env
+  return cachedDesktopEnvironment
+}
+
 export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
   private executionOwnershipReleased = true
   hasReleasedExecutionOwnership(): boolean { return this.executionOwnershipReleased }
@@ -688,8 +702,13 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     }
   }
 
+  /** The resolved child environment shared by Bash, Git, the verifier and the provider CLI. */
+  private ambientEnvironment(): NodeJS.ProcessEnv {
+    return commandEnvironment(this.options.environment ?? desktopChildEnvironment(), this.options.platform)
+  }
+
   private commandEnvironment(executable: string, nativeGitBash?: true): NodeJS.ProcessEnv {
-    const ambient = commandEnvironment(process.env, this.options.platform)
+    const ambient = this.ambientEnvironment()
     if (nativeGitBash !== true) return ambient
     return {
       ...ambient,
@@ -1005,6 +1024,20 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
         // Consume before spawning the verifier. Provider retries/revise loops
         // cannot turn one durable approval into repeated command execution.
         this.approvedVerificationCommandAvailable = false
+      }
+      // Never spawn a verifier whose own executable cannot resolve: a bare exit 127 from
+      // the shell surfaces as UNKNOWN and hides a missing toolchain behind a generic error.
+      // An injected command runner is the unit-test seam, where the host environment is
+      // deliberately irrelevant.
+      const missingTool = this.options.commandRunner === undefined
+        ? missingVerifierExecutable(command, this.ambientEnvironment(), this.options.platform)
+        : undefined
+      if (missingTool !== undefined) {
+        const reason = `Required verifier tool is unavailable: ${missingTool} (verifier ${step.stepId}, command: ${command})`
+        results.push({ name: command, ...(scoped ? { stepId: step.stepId, command, cwd: step.cwd, admission: admission.status } : {}),
+          status: 'skipped', details: reason, classification: 'ENVIRONMENT_FAILURE' })
+        blockers.push(`verification step ${step.stepId} was not started: ${reason}`)
+        continue
       }
       commandsRun.push(command)
       this.options.onVerification?.({ command, status: 'running', iteration: task.iteration, index })

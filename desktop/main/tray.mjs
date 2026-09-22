@@ -1,11 +1,14 @@
 import { fileURLToPath } from 'node:url'
+import { resolveTrayImage } from './tray-icon.mjs'
 
 /** A small native entry point; it owns no Runtime or task state machine. */
 export function createDesktopTray({ Tray, Menu, nativeImage, showWindow, hideWindow, requestQuit,
   reportFailure = (_error) => {} }) {
-  const icon = nativeImage.createFromPath(fileURLToPath(new URL('../assets/tray.png', import.meta.url)))
-  if (icon.isEmpty()) throw new Error('Desktop tray icon could not be loaded')
-  const tray = new Tray(icon)
+  const { image, diagnostics } = resolveTrayImage({
+    nativeImage, assetsDirectory: fileURLToPath(new URL('../assets/', import.meta.url)),
+  })
+  if (image.isEmpty()) throw new Error(`Desktop tray icon could not be loaded: ${diagnostics.asset}`)
+  const tray = new Tray(image)
   let menu
   let lastActive
   const invoke = (action) => {
@@ -29,7 +32,7 @@ export function createDesktopTray({ Tray, Menu, nativeImage, showWindow, hideWin
   try {
     setActivity(0)
     tray.on('click', () => invoke(showWindow))
-    return { tray, get menu() { return menu }, setActivity,
+    return { tray, get menu() { return menu }, setActivity, diagnostics,
       destroy() { if (!tray.isDestroyed()) tray.destroy() },
     }
   } catch (error) {

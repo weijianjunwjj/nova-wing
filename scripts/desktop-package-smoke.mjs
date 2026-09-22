@@ -3,17 +3,17 @@ import { cp, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { auditPackage, unpacked } from './platform/windows-package.mjs'
+import { desktopPackaging } from './platform/desktop-package-resolver.mjs'
 import { repositoryRoot } from './desktop-isolation.mjs'
 
 // Disposable validation overlay outside the source tree. The shipped tree is
 // audited before copying and never contains these offline test/fixture files.
-const audit = await auditPackage(join(unpacked, 'resources', 'app'))
+const packaged = await desktopPackaging()
+const audit = await packaged.auditPackage(packaged.packagedAppRoot)
 const parent = await realpath(tmpdir())
 const root = await mkdtemp(join(parent, 'novawing-desktop-package-'))
 try {
-  await cp(unpacked, root, { recursive: true })
-  const appRoot = join(root, 'resources', 'app')
+  const appRoot = await packaged.stagePackagedSmokeCopy(root)
   for (const path of ['desktop/tests', 'desktop/main/isolated-fixture.mjs', 'scripts/platform/desktop-smoke-environment.mjs']) {
     await cp(join(repositoryRoot, path), join(appRoot, path), { recursive: true })
   }

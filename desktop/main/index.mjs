@@ -115,7 +115,7 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   power.subscribe(() => record('power', power.snapshot()))
   await windows.showWindow()
   windows.window?.on('hide', () => record('window-hidden', { power: power.snapshot(), tray: !tray.tray.isDestroyed() }))
-  record('ready', { launchpadUrl: host.launchpadUrl, tray: !tray.tray.isDestroyed() })
+  record('ready', { launchpadUrl: host.launchpadUrl, tray: !tray.tray.isDestroyed(), trayImage: tray.diagnostics })
   if (fixture) console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
   return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications }
 }) : Promise.resolve(undefined)

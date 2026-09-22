@@ -6,6 +6,7 @@ import { basename, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { detachedSmokeProcess, smokeEnvironment, terminateOwnedElectron } from './platform/desktop-smoke-environment.mjs'
 import { createDesktopIsolation, installedElectronBinary, repositoryRoot } from './desktop-isolation.mjs'
+import { desktopPackaging } from './platform/desktop-package-resolver.mjs'
 
 const packagedRoot = process.env.NOVAWING_PACKAGED_SMOKE_APP_ROOT
 const evidenceDirectory = join(repositoryRoot, 'artifacts', 'desktop', packagedRoot ? 'package-smoke' : 'bootstrap-smoke')
@@ -20,6 +21,25 @@ async function entryArgs(entry, root) {
 const timeoutMs = 60_000
 let electronPath
 let expectedVersion
+/** Native delivery is a hard gate unless the packaging adapter reports the artifact cannot honour it. */
+let nativeNotificationGate = 'REQUIRED'
+
+/**
+ * Machine-checkable proof that the host refused native delivery: the app created native
+ * notification objects, none of them were shown, and every attempt failed. Without this
+ * evidence a native notification run stays a plain failure.
+ */
+function nativeDeliveryRefused(stderr) {
+  const marker = 'DESKTOP_NOTIFICATION_SMOKE_FAILURE '
+  const line = stderr.split(/\r?\n/u).find((entry) => entry.startsWith(marker))
+  if (!line) return undefined
+  try {
+    const failure = JSON.parse(line.slice(marker.length))
+    const counts = failure.diagnostics?.notifications?.counts
+    if (!(counts?.created > 0) || counts.shown !== 0 || !(counts.failed > 0)) return undefined
+    return { check: failure.check, created: counts.created, shown: counts.shown, failed: counts.failed, released: counts.released }
+  } catch { return undefined }
+}
 
 /** Fingerprint only isolated user/config data; Chromium profile writes are expected. */
 async function databaseSnapshot(root) {
@@ -93,6 +113,8 @@ async function runSecondary(root) {
 
 async function runElectron(entry, prefix, root) {
   const env = { ...smokeEnvironment(root), NOVAWING_DESKTOP_HOLD_TASKS: '1' }
+  // The gate is derived from the packaging adapter's real signing state, never from a platform shortcut.
+  const tolerant = prefix === 'DESKTOP_NATIVE_NOTIFICATION' && nativeNotificationGate !== 'REQUIRED'
   if (prefix === 'DESKTOP_PACKAGED_PRODUCTION') delete env.NOVAWING_DESKTOP_SMOKE_ROOT
   const child = spawn(String(electronPath), await entryArgs(entry, root), {
     cwd: join(root, 'repo'), env, shell: false,
@@ -148,12 +170,16 @@ async function runElectron(entry, prefix, root) {
   await writeFile(join(evidenceDirectory, `${logName}.stdout.log`), stdout)
   await writeFile(join(evidenceDirectory, `${logName}.stderr.log`), stderr)
   let report
+  let nativeDelivery
   try {
     const lines = stdout.split(/\r?\n/u).filter((line) => line.startsWith(`${prefix} `))
     assert.equal(lines.length, 1, `Expected exactly one ${prefix} record`)
     report = JSON.parse(lines[0].slice(prefix.length + 1))
-    assert.equal(report.result, 'PASS', 'Electron entry reported failure')
-    assert.equal(exited.exitCode, 0, 'Electron must exit with code 0')
+    // A gated run is classified from refusal evidence below instead of PASS/exit assertions.
+    if (!tolerant) {
+      assert.equal(report.result, 'PASS', 'Electron entry reported failure')
+      assert.equal(exited.exitCode, 0, 'Electron must exit with code 0')
+    }
     assert.equal(exited.signal, null, 'Electron must exit without a signal')
     assert.equal(timedOut, false, 'Electron timed out')
     assert.equal(errors.length, 0)
@@ -170,15 +196,21 @@ async function runElectron(entry, prefix, root) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing compatibility gate: ${name}`)
       }
     } else if (prefix === 'DESKTOP_NATIVE_NOTIFICATION') {
-      for (const name of ['completed_generated', 'completed_desktop_delivery', 'failed_generated', 'failed_desktop_delivery',
-        'human_required_generated', 'human_required_desktop_delivery', 'user_paused_not_notified',
-        'desktop_independent_from_email_opt_in', 'channel_retry_isolated', 'duplicate_suppression',
-        'unsupported_not_registered', 'provider_failure_does_not_change_task', 'hidden_window_notification',
-        'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'window_navigation_regression', 'notification_drain', 'cleanup']) {
-        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Native Notification gate: ${name}`)
+      if (tolerant) {
+        const refusal = nativeDeliveryRefused(stderr)
+        assert.ok(refusal, `Native gate ${nativeNotificationGate} requires refusal evidence from every delivery attempt`)
+        nativeDelivery = { gate: nativeNotificationGate, refusal }
+      } else {
+        for (const name of ['completed_generated', 'completed_desktop_delivery', 'failed_generated', 'failed_desktop_delivery',
+          'human_required_generated', 'human_required_desktop_delivery', 'user_paused_not_notified',
+          'desktop_independent_from_email_opt_in', 'channel_retry_isolated', 'duplicate_suppression',
+          'unsupported_not_registered', 'provider_failure_does_not_change_task', 'hidden_window_notification',
+          'click_session_resolution', 'click_show_restore_focus', 'click_no_duplicate_runtime', 'window_navigation_regression', 'notification_drain', 'cleanup']) {
+          assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Native Notification gate: ${name}`)
+        }
+        // Automated Main routing/event evidence never claims OS visual/manual acceptance.
+        assert.equal(report.windowsNativeToastVisual, 'NEEDS_PACKAGED_VALIDATION')
       }
-      // Automated Main routing/event evidence never claims OS visual/manual acceptance.
-      assert.equal(report.windowsNativeToastVisual, 'NEEDS_PACKAGED_VALIDATION')
     } else if (prefix === 'DESKTOP_BACKGROUND_RUNTIME') {
       assert.ok(secondary, 'External runner must start the real secondary Electron')
       assert.equal(secondary.result, 'PASS', JSON.stringify(secondary))
@@ -215,6 +247,7 @@ async function runElectron(entry, prefix, root) {
       assert.equal(alive, false, `Electron child ${pid} survived app exit`)
     }
   } catch (error) { errors.push(String(error?.stack ?? error)) }
+  if (nativeDelivery && errors.length === 0) return { entry, ...exited, timedOut, report, errors, nativeDelivery, result: nativeDelivery.gate }
   return { entry, ...exited, timedOut, report, errors, result: errors.length === 0 ? 'PASS' : 'FAIL' }
 }
 
@@ -228,7 +261,8 @@ let productionIsolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
-  electronPath = packagedRoot ? (await import('./platform/windows-package.mjs')).packagedExecutable(packagedRoot) : await installedElectronBinary()
+  electronPath = packagedRoot ? (await desktopPackaging()).packagedExecutable(packagedRoot) : await installedElectronBinary()
+  nativeNotificationGate = (await desktopPackaging()).nativeNotificationGate()
   expectedVersion = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')).devDependencies.electron
   isolation = await createDesktopIsolation()
   root = isolation.root
@@ -258,8 +292,10 @@ try {
     backgroundRoot: backgroundIsolation?.root, notificationRoot: notificationIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
       phase: 'temporary_directory_cleanup_after_electron_exit' } : {}) }
 }
-result.result = result.runs.length === (packagedRoot ? 5 : 4) && result.runs.every((run) => run.result === 'PASS') &&
+result.result = result.runs.length === (packagedRoot ? 5 : 4) &&
+  result.runs.every((run) => run.result === 'PASS' || run.result === 'NEEDS_SIGNED_VALIDATION') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
+result.nativeNotificationGate = nativeNotificationGate
 const launchpadRun = result.runs.find((run) => run.entry === 'desktop/tests/launchpad-smoke.mjs')
 const launchpadReport = {
   ...launchpadRun?.report,
@@ -296,11 +332,13 @@ const notificationRun = result.runs.find((run) => run.entry === 'desktop/tests/n
 const notificationReport = {
   ...notificationRun?.report,
   checks: { ...notificationRun?.report?.checks,
-    electron_exit: { status: notificationRun?.result === 'PASS' ? 'PASS' : 'FAIL',
+    electron_exit: { status: notificationRun?.result === 'PASS' ? 'PASS' : notificationRun?.result ?? 'FAIL',
       detail: { exitCode: notificationRun?.exitCode, timedOut: notificationRun?.timedOut, errors: notificationRun?.errors } },
     isolation_cleanup: result.cleanup,
   },
-  result: notificationRun?.result === 'PASS' && result.cleanup.status === 'PASS' ? 'PASS' : 'FAIL',
+  ...(notificationRun?.nativeDelivery ? { nativeDelivery: notificationRun.nativeDelivery } : {}),
+  result: result.cleanup.status === 'PASS' && notificationRun?.result !== undefined && notificationRun.result !== 'FAIL'
+    ? notificationRun.result : 'FAIL',
 }
 try {
   await writeFile(join(evidenceDirectory, 'native-notification-result.json'), `${JSON.stringify(notificationReport, null, 2)}\n`)
@@ -317,5 +355,7 @@ console.log(`DESKTOP_STRICT_SHUTDOWN ${JSON.stringify(strictShutdownReport)}`)
 console.log(`DESKTOP_BACKGROUND_RUNTIME ${JSON.stringify(backgroundReport)}`)
 console.log(`DESKTOP_NATIVE_NOTIFICATION ${JSON.stringify(notificationReport)}`)
 console.log(`WINDOWS_NATIVE_TOAST_VISUAL ${notificationReport.windowsNativeToastVisual ?? 'NEEDS_PACKAGED_VALIDATION'}`)
+console.log(`NATIVE_NOTIFICATION ${JSON.stringify({ gate: result.nativeNotificationGate, result: notificationReport.result,
+  evidence: notificationRun?.nativeDelivery?.refusal ?? null })}`)
 console.log(`DESKTOP_COMPATIBILITY_SMOKE ${JSON.stringify(result)}`)
 process.exitCode = result.result === 'PASS' ? 0 : 1

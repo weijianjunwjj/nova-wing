@@ -153,7 +153,7 @@ export function classifyVerificationFailure(
   if (venvTargetMissing && !hostPythonUnavailable) return 'VERIFIER_CONFIGURATION_FAILURE'
   if (
     /(?:command not found|is not recognized|no such file or directory|\bENOENT\b|the system cannot find the file specified)/iu.test(text) &&
-    /(?:executable|interpreter|python3?(?:\.exe)?|node(?:\.exe)?|docker(?:\.exe)?|runtime)/iu.test(text)
+    /(?:executable|interpreter|python3?(?:\.exe)?|node(?:\.exe)?|npm|npx|pnpm|yarn|docker(?:\.exe)?|runtime)/iu.test(text)
   ) {
     return 'ENVIRONMENT_FAILURE'
   }

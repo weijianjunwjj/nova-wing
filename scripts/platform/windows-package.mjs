@@ -11,6 +11,10 @@ export const root = resolve(import.meta.dirname, '../..')
 export const output = join(root, 'artifacts', 'desktop')
 export const packagedExecutable = (appRoot) => join(appRoot, '..', '..', 'NovaWing.exe')
 export const unpacked = join(output, 'win-unpacked')
+export const packagedBundleRoot = unpacked
+export const packagedAppRoot = join(unpacked, 'resources', 'app')
+/** Windows toasts deliver without a signing identity; the native delivery gate stays strict. */
+export const nativeNotificationGate = () => 'REQUIRED'
 const stage = join(output, 'staging')
 const denied = /(?:^|\/)(?:tests?|__tests__|docs?|\.git|\.github|artifacts|logs?|fixtures?|examples?|coverage|\.cache|\.bin)(?:\/|$)|(?:^|\/)\.env(?:\.|$)|\.(?:db|sqlite(?:-wal|-shm|-journal)?|log|pem|key|pfx|map)$/iu
 
@@ -60,6 +64,12 @@ export async function auditPackage(appDirectory) {
   await writeFile(join(output, 'packaged-content-audit.json'), JSON.stringify(report, null, 2))
   console.log(`PACKAGED_CONTENT_AUDIT PASS (${files.length} files)`)
   return report
+}
+
+/** Copy the unpacked bundle into a disposable root and return the packaged app root. */
+export async function stagePackagedSmokeCopy(disposableRoot) {
+  await cp(unpacked, disposableRoot, { recursive: true })
+  return join(disposableRoot, 'resources', 'app')
 }
 
 export async function prepareStage() {

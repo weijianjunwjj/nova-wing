@@ -96,7 +96,13 @@ function trayFixture(actions) {
     setToolTip(tooltip) { this.tooltip = tooltip }
   }
   const Menu = { buildFromTemplate(items) { return { items, getMenuItemById(id) { return items.find((item) => item.id === id) } } } }
-  const nativeImage = { createFromPath(path) { assert.ok(isAbsolute(path)); assert.match(path, /[\\/]desktop[\\/]assets[\\/]tray\.png$/u); return { isEmpty: () => false } } }
+  const nativeImage = { createFromPath(path) {
+    assert.ok(isAbsolute(path))
+    // The host decides which status-bar asset is correct; this fixture only proves the
+    // shared lifecycle loads an asset from the packaged assets directory.
+    assert.match(path, /[\\/]desktop[\\/]assets[\\/]tray(?:Template)?\.png$/u)
+    return { isEmpty: () => false, getSize: () => ({ width: 18, height: 18 }), setTemplateImage() {}, isTemplateImage: () => true }
+  } }
   return createDesktopTray({ Tray, Menu, nativeImage, ...actions })
 }
 

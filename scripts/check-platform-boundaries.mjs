@@ -7,7 +7,10 @@ import ts from 'typescript'
 export const platformAdapters = {
   'packages/development-guardian/platform/windows-git.ts': 'Verified Git for Windows installation discovery, registry and child PATH.',
   'desktop/main/platform.mjs': 'Early Windows AUMID and stable Toast activator identity.',
+  'desktop/main/tray-icon.mjs': 'Host status-bar image selection and macOS template-image behaviour.',
   'scripts/platform/windows-package.mjs': 'Windows x64 NSIS staging and native package content audit.',
+  'scripts/platform/macos-package.mjs': 'macOS arm64 .app staging, bundle identity and native package content audit.',
+  'scripts/platform/desktop-package-resolver.mjs': 'Single reviewed host-to-packaging-adapter selection.',
   'packages/development-guardian/platform/shell.ts': 'Native Git Bash / POSIX Bash contract and fingerprint.',
   'packages/development-guardian/platform/paths.ts': 'OS config/data roots, path identity and CLI path conversion.',
   'packages/development-guardian/platform/executables.ts': 'Native executable names, legacy Python task parsing and child environment allowlist.',
@@ -16,6 +19,7 @@ export const platformAdapters = {
   'packages/development-guardian/platform/secret-protection.ts': 'Windows protected ACL / POSIX private modes, fail closed.',
   'packages/development-guardian/platform/process.ts': 'Owned child process cleanup, guarded Windows tree kill.',
   'packages/development-guardian/platform/environment.ts': 'Host locale compatibility and verifier test context isolation.',
+  'packages/development-guardian/platform/posix-toolchain.ts': 'Bounded host toolchain discovery and verifier executable preflight.',
   'packages/development-guardian/platform/browser.ts': 'Optional browser discovery/opening for each host.',
   'packages/development-guardian/platform/windows-repair-notifier.ts': 'Guarded optional Windows toast adapter.',
   'packages/development-guardian/platform/windows-runtime-repair-notifier.ts': 'Guarded optional Windows toast adapter.',

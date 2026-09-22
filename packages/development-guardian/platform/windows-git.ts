@@ -86,3 +86,22 @@ export function gitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.Pro
   const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH'
   return { ...env, [key]: `${win32.dirname(installation.git)};${win32.join(installation.root, 'bin')};${env[key] ?? ''}` }
 }
+
+export interface NativeGitContract {
+  /** The executable the product spawns on this host. */
+  readonly git: string
+  readonly environment: NodeJS.ProcessEnv
+  /** Native Git Bash, present only where the product verifies a shell-level contract. */
+  readonly shell?: string
+}
+
+/**
+ * Host-native Git contract, delegating to the same resolution the runtime uses.
+ * Windows verifies through its own installation and native Git Bash; other hosts
+ * use the PATH `git` the documented remediation requires.
+ */
+export function nativeGitContract(env: NodeJS.ProcessEnv = process.env): NativeGitContract {
+  if (process.platform !== 'win32') return { git: gitExecutable(env), environment: gitEnvironment(env) }
+  const installation = resolveWindowsGitInstallation({ env })
+  return { git: installation.git, environment: gitEnvironment(env), shell: installation.bash }
+}
