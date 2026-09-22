@@ -121,8 +121,11 @@ export function shellProbeContract(options: GuardianShellContractOptions = {}) {
     args: ['--noprofile', '--norc', '-c', native
       ? 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"'
       : 'printf "%s" "$BASH_VERSION"'],
+    // MSYS2, which Git for Windows derives its Bash from, reports `cygwin` for the shell's own
+    // OSTYPE, so both spellings are the native identity. An MINGW MSYSTEM is still required, and
+    // a WSL relay is still refused, so this never admits a plain Cygwin shell.
     valid: (stdout: string, stderr: string) => native
-      ? /^[^|]+\|MINGW(?:32|64|ARM64)\|msys$/u.test(stdout.trim()) && !/wsl|relay/iu.test(`${stdout}\n${stderr}`)
+      ? /^[^|]+\|MINGW(?:32|64|ARM64)\|(?:msys|cygwin)$/u.test(stdout.trim()) && !/wsl|relay/iu.test(`${stdout}\n${stderr}`)
       : /^\d+\.\d+(?:\.\d+)?(?:\([^)]*\))?[^|]*$/u.test(stdout.trim()),
   }
 }
