@@ -22,12 +22,27 @@ function registryRoots(env: NodeJS.ProcessEnv): string[] {
   })
 }
 
+/**
+ * Native Git Bash identity. MSYS2, which Git for Windows derives its Bash from, changed the
+ * shell's own `OSTYPE` from `msys` to `cygwin`, so both spellings are the native identity.
+ * A plain Cygwin shell is still refused: it does not report an MINGW `MSYSTEM`, has no
+ * `msys-2.0.dll`, ships no `cmd/git.exe`, and its Git is not a `.windows.` build.
+ */
+export function isNativeGitBashIdentity(output: string): boolean {
+  return /^[^|]+\|MINGW(?:32|64|ARM64)\|(?:msys|cygwin)$/u.test(output)
+}
+
+/** Native Git for Windows version banner; a plain Cygwin Git never carries the `.windows.` token. */
+export function isGitForWindowsVersion(output: string): boolean {
+  return /^git version [\d.]+\.windows\.\d+/u.test(output)
+}
+
 function fingerprint(bash: string, git: string): boolean {
   const options = { encoding: 'utf8' as const, windowsHide: true, shell: false, timeout: 3000 }
   const shell = spawnSync(bash, ['--noprofile', '--norc', '-c', 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"'], options)
   const version = spawnSync(git, ['--version'], options)
-  return shell.status === 0 && /^[^|]+\|MINGW(?:32|64|ARM64)\|msys$/u.test(shell.stdout.trim()) &&
-    version.status === 0 && /^git version [\d.]+\.windows\.\d+/u.test(version.stdout.trim())
+  return shell.status === 0 && isNativeGitBashIdentity(shell.stdout.trim()) &&
+    version.status === 0 && isGitForWindowsVersion(version.stdout.trim())
 }
 
 const cache = new Map<string, { root: string; bash: string; git: string; source: string }>()

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { resolveWindowsGitInstallation } from '../packages/development-guardian/platform/windows-git.js'
+import {
+  isGitForWindowsVersion,
+  isNativeGitBashIdentity,
+  resolveWindowsGitInstallation,
+} from '../packages/development-guardian/platform/windows-git.js'
 
 const install = 'D:\\Tools\\Git'
 const files = new Set([`${install}\\bin\\bash.exe`, `${install}\\cmd\\git.exe`, `${install}\\usr\\bin\\msys-2.0.dll`])
@@ -30,4 +34,73 @@ test('Environment override precedes trusted config and automatic discovery', () 
   const result = resolveWindowsGitInstallation({ ...base, env: { NOVAWING_GIT_BASH_PATH: `${install}\\bin\\bash.exe` },
     gitBashPath: 'Z:\\Git\\bin\\bash.exe', registryRoots: () => { assert.fail('must not consult registry') } })
   assert.equal(result.source, 'explicit')
+})
+
+// The resolver's real contract predicates, driven by fixed shell output, so these cases exercise
+// the shipped gate end to end without spawning a process. MSYS2 changed the shell's own OSTYPE
+// from `msys` to `cygwin`; both are the native identity, and neither admits a plain Cygwin shell.
+const identityProbe = (shell: string, version: string) =>
+  ((_: string, __: string) => isNativeGitBashIdentity(shell) && isGitForWindowsVersion(version))
+
+test('Native Git Bash identity accepts the legacy msys and the current cygwin OSTYPE', () => {
+  assert.equal(isNativeGitBashIdentity('5.2.9(1)-release|MINGW64|msys'), true)
+  assert.equal(isNativeGitBashIdentity('5.1.0(1)-release|MINGW32|msys'), true)
+  assert.equal(isNativeGitBashIdentity('5.3.15(2)-release|MINGW64|cygwin'), true)
+})
+
+test('Native Git Bash identity still refuses a plain Cygwin shell and unknown MSYSTEM', () => {
+  for (const output of [
+    '5.3.15(2)-release|CYGWIN|cygwin',
+    '5.3.15(2)-release||cygwin',
+    '5.3.15(2)-release|UCRT64|msys',
+    '5.3.15(2)-release|CLANG64|cygwin',
+    '5.3.15(2)-release|MINGW64|gnu',
+    '5.3.15(2)-release|MINGW64|cygwin|extra',
+  ]) assert.equal(isNativeGitBashIdentity(output), false, output)
+})
+
+test('Git version gate still requires a native Git for Windows build', () => {
+  assert.equal(isGitForWindowsVersion('git version 2.55.0.windows.5'), true)
+  assert.equal(isGitForWindowsVersion('git version 2.43.0'), false)
+  assert.equal(isGitForWindowsVersion('git version 2.43.0.msys'), false)
+})
+
+test('Legacy Git for Windows installation keeps resolving', () => {
+  const result = resolveWindowsGitInstallation({ ...base, registryRoots: () => [install],
+    probe: identityProbe('5.2.9(1)-release|MINGW64|msys', 'git version 2.43.0.windows.1') })
+  assert.equal(result.root, install)
+  assert.equal(result.git, `${install}\\cmd\\git.exe`)
+})
+
+test('Current Git for Windows installation resolves on the hosted-runner identity', () => {
+  const result = resolveWindowsGitInstallation({ ...base, registryRoots: () => [install],
+    probe: identityProbe('5.3.15(2)-release|MINGW64|cygwin', 'git version 2.55.0.windows.5') })
+  assert.equal(result.root, install)
+  assert.equal(result.git, `${install}\\cmd\\git.exe`)
+})
+
+test('A cygwin OSTYPE alone never admits a plain Cygwin installation', () => {
+  const cygwinLayout = new Set([`${install}\\bin\\bash.exe`, `${install}\\cmd\\git.exe`, `${install}\\usr\\bin\\cygwin1.dll`])
+  const identity = identityProbe('5.3.15(2)-release|MINGW64|cygwin', 'git version 2.55.0.windows.5')
+  // Cygwin layout: no msys-2.0.dll.
+  assert.throws(() => resolveWindowsGitInstallation({ ...base, registryRoots: () => [install],
+    exists: (path) => cygwinLayout.has(path), probe: identity }))
+  // Complete layout, but a non-Windows Git build.
+  assert.throws(() => resolveWindowsGitInstallation({ ...base, registryRoots: () => [install],
+    probe: identityProbe('5.3.15(2)-release|MINGW64|cygwin', 'git version 2.43.0') }))
+  // Complete layout and Git build, but a Cygwin shell identity.
+  assert.throws(() => resolveWindowsGitInstallation({ ...base, registryRoots: () => [install],
+    probe: identityProbe('5.3.15(2)-release|CYGWIN|cygwin', 'git version 2.55.0.windows.5') }))
+})
+
+test('Explicit override is not a fingerprint bypass', () => {
+  for (const shell of ['5.3.15(2)-release|CYGWIN|cygwin', '5.3.15(2)-release||cygwin', '5.3.15(2)-release|MINGW64|gnu']) {
+    assert.throws(() => resolveWindowsGitInstallation({ ...base,
+      env: { NOVAWING_GIT_BASH_PATH: `${install}\\bin\\bash.exe` }, registryRoots: () => [install],
+      probe: identityProbe(shell, 'git version 2.55.0.windows.5') }), shell)
+  }
+  const accepted = resolveWindowsGitInstallation({ ...base,
+    env: { NOVAWING_GIT_BASH_PATH: `${install}\\bin\\bash.exe` }, registryRoots: () => [install],
+    probe: identityProbe('5.3.15(2)-release|MINGW64|cygwin', 'git version 2.55.0.windows.5') })
+  assert.equal(accepted.source, 'explicit')
 })
