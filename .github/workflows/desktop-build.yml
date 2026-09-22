@@ -97,11 +97,12 @@ jobs:
           }
           Write-Host "Electron runtime ready: $binary"
 
-      # NovaWing requires a real native Git for Windows installation and fails closed without one.
-      # This step reproduces that contract exactly and, only when every check passes, points the
-      # product's own documented override at the detected bash.exe. The contract is never relaxed.
-      - name: Prepare native Git for Windows
-        id: nativegit
+      # Informational only. The product's own resolveWindowsGitInstallation(), exercised by
+      # `npm run check` and the packaged smoke, is the single Git contract gate. This step records
+      # host facts for the report: it decides nothing, never fails the job, and never injects an
+      # override. A second copy of the fingerprint rule here would only drift from the product.
+      - name: Record native Git for Windows diagnostics
+        id: gitdiag
         shell: pwsh
         run: |
           if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
@@ -130,24 +131,27 @@ jobs:
           }
 
           Note '# NovaWing Phase 6A - Windows native Git diagnostics'
+          Note '# Informational only. The product resolver is the gate; this step decides nothing.'
           Note "github_sha=$env:GITHUB_SHA"
           Note "os=$([Environment]::OSVersion.VersionString)"
           Note "arch=$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
 
           $command = Get-Command git -ErrorAction SilentlyContinue
-          Note "Get-Command git = $($command.Source)"
+          Note "git_command=$($command.Source)"
           $whereOut = @(& where.exe git 2>&1)
-          Note 'where.exe git:'
-          foreach ($entry in $whereOut) { Note "  $([string]$entry)" }
+          $whereText = ($whereOut | ForEach-Object { [string]$_ }) -join ','
+          Note "git_where=$whereText"
           $gitVersion = ((& git --version 2>&1) -join ' ').Trim()
-          Note "git --version = $gitVersion"
+          Note "git_version=$gitVersion"
 
           foreach ($hive in @('HKLM:\SOFTWARE\GitForWindows', 'HKCU:\SOFTWARE\GitForWindows')) {
+            $label = if ($hive -like 'HKLM*') { 'HKLM' } else { 'HKCU' }
             if (Test-Path $hive) {
               $installPath = (Get-ItemProperty -Path $hive -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
-              Note "registry $hive = present, InstallPath=$installPath"
+              Note "registry_${label}=present"
+              Note "registry_${label}_install_path=$installPath"
             } else {
-              Note "registry $hive = absent"
+              Note "registry_${label}=absent"
             }
           }
 
@@ -159,12 +163,10 @@ jobs:
           foreach ($base in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, 'C:\Program Files', $env:LOCALAPPDATA)) {
             if ($base) { Add-Candidate (Join-Path $base 'Git') }
           }
+          Note "candidate_roots=$(($candidates | ForEach-Object { $_ }) -join ',')"
 
-          Note 'candidate roots:'
-          foreach ($entry in $candidates) { Note "  $entry" }
-
-          $bashPath = $null
-          $acceptedGit = $null
+          # Probe the first complete layout and record its raw identity. No verdict is recorded here.
+          $probed = $false
           foreach ($root in $candidates) {
             $bash = Join-Path $root 'bin\bash.exe'
             $git = Join-Path $root 'cmd\git.exe'
@@ -173,39 +175,17 @@ jobs:
             $gitOk = Test-Path -LiteralPath $git
             $msysOk = Test-Path -LiteralPath $msys
             Note "candidate $root : bin/bash.exe=$bashOk cmd/git.exe=$gitOk usr/bin/msys-2.0.dll=$msysOk"
-            if (-not ($bashOk -and $gitOk -and $msysOk)) { continue }
+            if ($probed -or -not ($bashOk -and $gitOk -and $msysOk)) { continue }
+            $probed = $true
             $probeText = ((& $bash --noprofile --norc -c 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"' 2>&1) -join ' ').Trim()
             $probeGit = ((& $git --version 2>&1) -join ' ').Trim()
-            Note "  bash fingerprint = $probeText"
-            Note "  cmd/git --version = $probeGit"
-            if ($probeText -notmatch '^[^|]+\|MINGW(?:32|64|ARM64)\|msys$') {
-              Note '  REJECTED: bash fingerprint does not satisfy the NovaWing contract'
-              continue
-            }
-            if ($probeGit -notmatch '^git version [\d.]+\.windows\.\d+') {
-              Note '  REJECTED: git version is not a native Git for Windows version'
-              continue
-            }
-            $bashPath = $bash
-            $acceptedGit = $git
-            break
+            Note "bash_probe_path=$bash"
+            Note "bash_fingerprint=$probeText"
+            Note "cmd_git_version=$probeGit"
           }
+          if (-not $probed) { Note 'bash_fingerprint=(no candidate had bash.exe, cmd/git.exe and msys-2.0.dll)' }
 
-          if ($bashPath) {
-            Note "ACCEPTED root bash = $bashPath"
-            Note "ACCEPTED root git  = $acceptedGit"
-          } else {
-            Note 'ACCEPTED root = none'
-          }
           $lines | Set-Content -LiteralPath 'artifacts/ci/windows-git-diagnostics.txt' -Encoding utf8
-
-          if (-not $bashPath) {
-            Write-Host 'HOSTED_WINDOWS_NATIVE_GIT_CONTRACT_UNAVAILABLE'
-            Write-Host '::error::HOSTED_WINDOWS_NATIVE_GIT_CONTRACT_UNAVAILABLE'
-            exit 1
-          }
-          "NOVAWING_GIT_BASH_PATH=$bashPath" | Add-Content -Path $env:GITHUB_ENV
-          Write-Host "NOVAWING_GIT_BASH_PATH injected = $bashPath"
 
       - name: Validate source, build and host gates
         id: check
@@ -257,12 +237,12 @@ jobs:
           CHECK_OUTCOME: ${{ steps.check.outcome }}
           PACKAGE_OUTCOME: ${{ steps.packagedir.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
-          NATIVEGIT_OUTCOME: ${{ steps.nativegit.outcome }}
         run: |
           $gate = 'NOT_AVAILABLE'
           $native = 'NOT_AVAILABLE'
           $branch = 'NOT_AVAILABLE'
-          $gitBash = 'NOT_AVAILABLE'
+          $gitBashIdentity = 'NOT_AVAILABLE'
+          $gitVersionText = 'NOT_AVAILABLE'
           try {
             if (Test-Path 'artifacts/desktop/package-smoke/result.json') {
               $gate = (Get-Content 'artifacts/desktop/package-smoke/result.json' -Raw | ConvertFrom-Json).nativeNotificationGate
@@ -279,7 +259,14 @@ jobs:
               if ($match) { $branch = $match.Matches[0].Groups[1].Value }
             }
           } catch { $branch = 'NOT_AVAILABLE' }
-          if ($env:NOVAWING_GIT_BASH_PATH) { $gitBash = $env:NOVAWING_GIT_BASH_PATH }
+          try {
+            if (Test-Path 'artifacts/ci/windows-git-diagnostics.txt') {
+              $identity = Select-String -Path 'artifacts/ci/windows-git-diagnostics.txt' -Pattern '^bash_fingerprint=(.*)$' | Select-Object -First 1
+              if ($identity) { $gitBashIdentity = $identity.Matches[0].Groups[1].Value }
+              $version = Select-String -Path 'artifacts/ci/windows-git-diagnostics.txt' -Pattern '^git_version=(.*)$' | Select-Object -First 1
+              if ($version) { $gitVersionText = $version.Matches[0].Groups[1].Value }
+            }
+          } catch { }
           @(
             '## NovaWing Phase 6A - windows-probe',
             '',
@@ -287,8 +274,8 @@ jobs:
             '| --- | --- |',
             '| Runner | windows-2022 / x64 (Windows Server SKU) |',
             ('| Named branch | ' + $branch + ' |'),
-            ('| Native Git for Windows | ' + $env:NATIVEGIT_OUTCOME + ' |'),
-            ('| NOVAWING_GIT_BASH_PATH | ' + $gitBash + ' |'),
+            ('| Git version | ' + $gitVersionText + ' |'),
+            ('| Git bash identity | ' + $gitBashIdentity + ' |'),
             ('| `npm run check` | ' + $env:CHECK_OUTCOME + ' |'),
             ('| `desktop:package:dir` | ' + $env:PACKAGE_OUTCOME + ' |'),
             ('| `desktop:package:smoke` | ' + $env:SMOKE_OUTCOME + ' |'),
@@ -297,7 +284,8 @@ jobs:
             '',
             'A failure here is a **hosted runner probe** result, not a regression of the Phase 4',
             'Windows 11 real-host acceptance. The strict Native Toast gate is unchanged and was',
-            'not weakened, skipped or mocked.'
+            'not weakened, skipped or mocked. Git validity is decided by the product resolver,',
+            'not by this workflow.'
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
   macos-probe:
