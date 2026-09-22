@@ -14,6 +14,16 @@ import {
 /** The exact PATH a Finder/Dock launch gives a macOS GUI app. */
 const GUI_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
 
+/**
+ * The resolver's macOS path parses and joins with host `node:path` APIs (`delimiter`, `join`)
+ * and slices discovered executables on `/`, so simulating a Finder launch is only meaningful
+ * on a POSIX host: on Windows `GUI_PATH` is a single `;`-delimited entry and the `/` slice
+ * cannot split a path. Windows semantics get their own cases at the end of this file instead.
+ */
+const posixHostOnly = process.platform === 'win32'
+  ? { skip: 'darwin toolchain simulation requires a POSIX host' }
+  : {}
+
 const temporary: string[] = []
 after(async () => {
   for (const directory of temporary) await rm(directory, { recursive: true, force: true })
@@ -48,7 +58,7 @@ function fakeProbe(script: ProbeScript): ToolchainProbe {
 }
 
 // A. Finder-like minimal PATH: shell discovery supplies a verified toolchain directory.
-test('A: Finder-like PATH is augmented with the discovered toolchain directory', async () => {
+test('A: Finder-like PATH is augmented with the discovered toolchain directory', posixHostOnly, async () => {
   const node = await toolDirectory(['node', 'npm', 'npx', 'git'], 'toolchain-a')
   const resolved = resolveDesktopToolchainEnvironment({
     platform: 'darwin', env: { PATH: GUI_PATH }, home: '/nonexistent-home',
@@ -64,7 +74,7 @@ test('A: Finder-like PATH is augmented with the discovered toolchain directory',
 })
 
 // B. A working PATH is left exactly as it is.
-test('B: an already working PATH is never rewritten', async () => {
+test('B: an already working PATH is never rewritten', posixHostOnly, async () => {
   const node = await toolDirectory(['node', 'npm', 'npx', 'git'], 'toolchain-b')
   const env = { PATH: `${node}:${GUI_PATH}` }
   let shellCalls = 0
@@ -95,7 +105,7 @@ test('C: a timing-out shell probe fails closed and never hangs', async () => {
 })
 
 // D. Only sentinel lines are trusted; banners, prompts and aliases are discarded.
-test('D: noisy shell output cannot inject PATH entries', async () => {
+test('D: noisy shell output cannot inject PATH entries', posixHostOnly, async () => {
   const node = await toolDirectory(['node', 'npm', 'npx'], 'toolchain-d')
   const noise = [
     'Welcome to your shell!',
@@ -127,7 +137,7 @@ test('E: an invalid candidate directory is rejected', async () => {
 })
 
 // F. An explicit, valid override is honoured.
-test('F: a valid NOVAWING_TOOLCHAIN_PATH override is used', async () => {
+test('F: a valid NOVAWING_TOOLCHAIN_PATH override is used', posixHostOnly, async () => {
   const node = await toolDirectory(['node', 'npm', 'npx'], 'toolchain-f')
   const resolved = resolveDesktopToolchainEnvironment({
     platform: 'darwin', env: { PATH: GUI_PATH, NOVAWING_TOOLCHAIN_PATH: node }, home: '/nonexistent-home',
@@ -162,29 +172,29 @@ test('override rejects shell expansion and relative entries', async () => {
 })
 
 // H. The verifier preflight that replaces exit 127 -> UNKNOWN with ENVIRONMENT_REQUIRED.
-test('H: a verifier whose tool is missing is detected before it is spawned', () => {
+test('H: a verifier whose tool is missing is detected before it is spawned', posixHostOnly, () => {
   const gui = { PATH: GUI_PATH }
-  assert.equal(missingVerifierExecutable('npm test', gui), 'npm')
-  assert.equal(missingVerifierExecutable('node --test test/sum.test.mjs', gui), 'node')
-  assert.equal(missingVerifierExecutable('git diff --check', gui), undefined, 'git lives in /usr/bin')
+  assert.equal(missingVerifierExecutable('npm test', gui, 'darwin'), 'npm')
+  assert.equal(missingVerifierExecutable('node --test test/sum.test.mjs', gui, 'darwin'), 'node')
+  assert.equal(missingVerifierExecutable('git diff --check', gui, 'darwin'), undefined, 'git lives in /usr/bin')
   // A repo-local path is resolved by the shell against the verifier cwd; a venv may
   // legitimately not exist until bootstrap creates it, so it is never a missing toolchain.
-  assert.equal(missingVerifierExecutable('.venv/bin/python -m pytest', gui), undefined)
-  assert.equal(missingVerifierExecutable('./tools/check.sh', gui), undefined)
+  assert.equal(missingVerifierExecutable('.venv/bin/python -m pytest', gui, 'darwin'), undefined)
+  assert.equal(missingVerifierExecutable('./tools/check.sh', gui, 'darwin'), undefined)
 })
 
-test('I: once the toolchain is resolved the verifier executable is available', async () => {
+test('I: once the toolchain is resolved the verifier executable is available', posixHostOnly, async () => {
   const node = await toolDirectory(['node', 'npm', 'npx'], 'toolchain-i')
   const resolved = resolveDesktopToolchainEnvironment({
     platform: 'darwin', env: { PATH: GUI_PATH }, home: '/nonexistent-home',
     probe: fakeProbe({ shell: () => ({ status: 0, stdout: sentinel(node), stderr: '' }), version: (executable) => executable.startsWith(node) }),
   })
-  assert.equal(missingVerifierExecutable('npm test', resolved.env), undefined)
-  assert.equal(executableAvailable('npm', resolved.env), true)
+  assert.equal(missingVerifierExecutable('npm test', resolved.env, 'darwin'), undefined)
+  assert.equal(executableAvailable('npm', resolved.env, 'darwin'), true)
 })
 
 // J. Git keeps resolving exactly as the real Finder real-host proved.
-test('J: git continues to resolve after augmentation', async () => {
+test('J: git continues to resolve after augmentation', posixHostOnly, async () => {
   const resolved = resolveDesktopToolchainEnvironment({
     platform: 'darwin', env: { PATH: GUI_PATH }, home: '/nonexistent-home',
     probe: fakeProbe({ version: (executable) => executable === '/usr/bin/git' || executable.startsWith('/usr/bin') }),
@@ -223,4 +233,58 @@ test('executableAvailable understands Windows PATHEXT resolution', async () => {
   await writeFile(join(directory, 'npm.cmd'), '', 'utf8')
   assert.equal(executableAvailable('npm', { PATH: directory }, 'win32'), true)
   assert.equal(executableAvailable('npm', { PATH: directory }, 'darwin'), false, 'POSIX never resolves a bare name to .cmd')
+})
+
+// ---------------------------------------------------------------------------
+// Windows semantics. The platform is injected and the fixtures are real directories,
+// so Windows verifier resolution is proven on a POSIX runner too.
+// ---------------------------------------------------------------------------
+
+test('Windows: bare names resolve through the documented extension set', async () => {
+  const directory = await toolDirectory(['node.exe', 'npm.cmd', 'npx.cmd', 'git.exe'], 'toolchain-win')
+  const env = { PATH: `${directory};C:\\Windows\\System32` }
+  assert.equal(executableAvailable('node', env, 'win32'), true)
+  assert.equal(executableAvailable('npm', env, 'win32'), true)
+  assert.equal(executableAvailable('npx', env, 'win32'), true)
+  assert.equal(executableAvailable('git', env, 'win32'), true)
+})
+
+test('Windows: the verifier preflight resolves the commands a Golden path uses', async () => {
+  const directory = await toolDirectory(['node.exe', 'npm.cmd', 'npx.cmd', 'git.exe'], 'toolchain-win-verifier')
+  const env = { PATH: `${directory};C:\\Windows\\System32` }
+  assert.equal(missingVerifierExecutable('npm test', env, 'win32'), undefined)
+  assert.equal(missingVerifierExecutable('node --test tests/filter.test.js', env, 'win32'), undefined)
+  assert.equal(missingVerifierExecutable('git diff --check', env, 'win32'), undefined)
+})
+
+test('Windows: a genuinely absent tool is still reported', async () => {
+  const directory = await toolDirectory(['node.exe', 'npx.cmd', 'git.exe'], 'toolchain-win-missing')
+  const env = { PATH: `${directory};C:\\Windows\\System32` }
+  assert.equal(executableAvailable('npm', env, 'win32'), false)
+  assert.equal(missingVerifierExecutable('npm test', env, 'win32'), 'npm')
+  assert.equal(missingVerifierExecutable('pnpm run build', env, 'win32'), 'pnpm')
+})
+
+/** Reports the effective Windows resolution so a failing runner can be read from its log. */
+test('Windows: targeted verifier toolchain diagnostics', async () => {
+  const directory = await toolDirectory(['node.exe', 'npm.cmd', 'npx.cmd', 'git.exe'], 'toolchain-win-diag')
+  const env = { PATH: `${directory};C:\\Windows\\System32` }
+  const report = {
+    platform: 'win32',
+    pathExt: '.EXE;.CMD;.BAT',
+    pathEntryCount: env.PATH.split(';').length,
+    executable: {
+      node: executableAvailable('node', env, 'win32'),
+      npm: executableAvailable('npm', env, 'win32'),
+      git: executableAvailable('git', env, 'win32'),
+    },
+    verifier: {
+      executable: verifierExecutable('npm test') ?? null,
+      missing: missingVerifierExecutable('npm test', env, 'win32') ?? null,
+    },
+  }
+  console.log(`WINDOWS_TOOLCHAIN_DIAGNOSTICS ${JSON.stringify(report)}`)
+  assert.equal(report.pathEntryCount, 2, 'the Windows PATH shape is ;-separated')
+  assert.deepEqual(report.executable, { node: true, npm: true, git: true })
+  assert.deepEqual(report.verifier, { executable: 'npm', missing: null })
 })
