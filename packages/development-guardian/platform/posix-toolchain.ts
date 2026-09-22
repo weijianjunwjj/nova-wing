@@ -90,6 +90,19 @@ function pathEntries(value: string | undefined): string[] {
   return (value ?? '').split(delimiter).filter((entry) => entry.length > 0)
 }
 
+/**
+ * Windows spells the variable `Path`. `process.env` resolves either casing, but the child
+ * environment this module builds is a plain object snapshot, which does not: reading
+ * `env.PATH` there yields nothing on Windows and every managed tool looks missing.
+ */
+function pathKey(env: NodeJS.ProcessEnv): string {
+  return Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH'
+}
+
+function envPath(env: NodeJS.ProcessEnv): string {
+  return Object.entries(env).find(([name]) => name.toUpperCase() === 'PATH')?.[1] ?? ''
+}
+
 function which(tool: string, directories: readonly string[], probe: ToolchainProbe, env: NodeJS.ProcessEnv, timeoutMs: number): string | undefined {
   for (const directory of directories) {
     const found = verifiedExecutable(directory, tool, probe, env, timeoutMs)
@@ -138,7 +151,7 @@ function validateOverride(override: string, probe: ToolchainProbe, env: NodeJS.P
       continue
     }
     // npm/npx are node scripts; they only answer --version when node is already reachable.
-    const candidateEnv = { ...env, PATH: [trimmed, ...pathEntries(env.PATH)].join(delimiter) }
+    const candidateEnv = { ...env, PATH: [trimmed, ...pathEntries(envPath(env))].join(delimiter) }
     const node = verifiedExecutable(trimmed, 'node', probe, candidateEnv, timeoutMs)
     if (node === undefined) {
       issues.push(`NOVAWING_TOOLCHAIN_PATH entry has no working node: ${trimmed.slice(0, 120)}`)
@@ -159,7 +172,7 @@ export function resolveDesktopToolchainEnvironment(options: ToolchainOptions = {
   const home = options.home ?? env.HOME ?? ''
   const probe = options.probe ?? defaultProbe
   const timeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
-  const currentPath = env.PATH ?? ''
+  const currentPath = envPath(env)
   const currentDirectories = pathEntries(currentPath)
   const issues: string[] = []
 
@@ -198,7 +211,7 @@ export function resolveDesktopToolchainEnvironment(options: ToolchainOptions = {
     if (currentDirectories.includes(directory) || additions.includes(directory)) continue
     // Probe with the candidate directory already on PATH: npm and npx are node scripts, so
     // their `--version` only succeeds once node is reachable the way a real shell sees it.
-    const candidateEnv = { ...env, PATH: [directory, ...currentDirectories].join(delimiter) }
+    const candidateEnv = { ...env, [pathKey(env)]: [directory, ...currentDirectories].join(delimiter) }
     const supplies = MANAGED_TOOLS.some((tool) => missing.includes(tool) && verifiedExecutable(directory, tool, probe, candidateEnv, timeoutMs) !== undefined)
     if (!supplies) continue
     additions.push(directory)
@@ -206,7 +219,7 @@ export function resolveDesktopToolchainEnvironment(options: ToolchainOptions = {
   if (additions.length === 0) return resolved
 
   const path = [...additions, ...currentDirectories].join(delimiter)
-  const nextEnv = { ...env, PATH: path }
+  const nextEnv = { ...env, [pathKey(env)]: path }
   const nextTools: ToolchainTools = {}
   for (const tool of MANAGED_TOOLS) {
     const found = which(tool, additions, probe, nextEnv, timeoutMs) ?? tools[tool]
@@ -245,7 +258,7 @@ export function executableAvailable(executable: string, env: NodeJS.ProcessEnv, 
       try { return statSync(candidate).isFile() } catch { return false }
     })
   }
-  const directories = (env.PATH ?? '').split(platform === 'win32' ? ';' : delimiter).filter((entry) => entry.length > 0)
+  const directories = envPath(env).split(platform === 'win32' ? ';' : delimiter).filter((entry) => entry.length > 0)
   for (const candidate of candidates) {
     for (const directory of directories) {
       try { if (statSync(join(directory, candidate)).isFile()) return true } catch { /* keep scanning */ }

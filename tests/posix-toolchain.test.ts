@@ -288,3 +288,18 @@ test('Windows: targeted verifier toolchain diagnostics', async () => {
   assert.deepEqual(report.executable, { node: true, npm: true, git: true })
   assert.deepEqual(report.verifier, { executable: 'npm', missing: null })
 })
+
+test('Windows: the child environment keeps the host spelling of Path', async () => {
+  const directory = await toolDirectory(['node.exe', 'npm.cmd', 'git.exe'], 'toolchain-win-pathcase')
+  // A `{ ...process.env }` snapshot on Windows carries `Path`, not `PATH`, and a plain object
+  // is not case-insensitive the way `process.env` is. The verifier preflight must still resolve.
+  const env = { Path: `${directory};C:\\Windows\\System32`, TEMP: 'C:\\Temp' }
+  assert.equal(executableAvailable('npm', env, 'win32'), true)
+  assert.equal(executableAvailable('node', env, 'win32'), true)
+  assert.equal(missingVerifierExecutable('npm test', env, 'win32'), undefined)
+
+  const resolved = resolveDesktopToolchainEnvironment({ platform: 'win32', env })
+  assert.equal(resolved.path, env.Path)
+  assert.equal(resolved.augmented, false, 'a non-darwin host keeps its PATH verbatim')
+  assert.equal(Object.keys(resolved.env).includes('PATH'), false, 'no duplicate PATH key is introduced')
+})
