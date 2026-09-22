@@ -74,6 +74,7 @@
     "check:platform": "node scripts/check-platform-boundaries.mjs",
     "desktop:package:dir": "npm run build && node scripts/platform/windows-package.mjs",
     "desktop:package:mac": "npm run build && node scripts/platform/macos-package.mjs",
+    "desktop:package:mac:dist": "npm run build && node scripts/platform/macos-package.mjs --dist",
     "desktop:package:smoke": "node scripts/desktop-package-smoke.mjs",
     "desktop:build:win": "node scripts/platform/windows-package.mjs --installer"
   },

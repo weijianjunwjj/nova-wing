@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { cp, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -174,6 +174,62 @@ export async function packageMac() {
   return { bundle: packagedBundle, executable: packagedExecutable(packagedAppRoot), sha256: audit.sha256 }
 }
 
+/**
+ * Distribution artifacts (dmg + zip). The `dir` target stays the Phase 5 Core acceptance
+ * entry point and is deliberately unchanged; only the targets and their packaging options
+ * differ here.
+ *
+ * No Developer ID identity exists on this host, so the bundle is shipped unsigned. That is
+ * a real distribution limitation, not a passing distribution signature.
+ */
+export async function packageMacDistribution(targets = ['dmg', 'zip']) {
+  const { electron } = await prepareStage()
+  // Never reuse a stale artifact: a previous run's file would otherwise be reported as this one.
+  for (const name of await readdir(output)) if (/\.(?:dmg|zip)$/u.test(name)) await rm(join(output, name), { force: true })
+  await build({
+    targets: Platform.MAC.createTarget(targets, Arch.arm64), publish: 'never',
+    config: {
+      appId: DESKTOP_IDENTITY.appUserModelId, productName: appName,
+      directories: { app: stage, output, buildResources: join(root, 'desktop', 'assets') },
+      electronVersion: electron.version,
+      electronDist: join(root, 'node_modules', 'electron', 'dist'),
+      asar: false, npmRebuild: false, nodeGypRebuild: false,
+      files: ['**/*'],
+      mac: { target: targets.map((target) => ({ target, arch: ['arm64'] })),
+        category: 'public.app-category.developer-tools', identity: null },
+      dmg: {
+        artifactName: '${productName}-${version}-${arch}.${ext}',
+        contents: [
+          { x: 140, y: 200, type: 'file' },
+          { x: 400, y: 200, type: 'link', path: '/Applications' },
+        ],
+      },
+      // The zip target has no config section of its own; it keeps electron-builder's default
+      // `<productName>-<version>-<arch>-mac.zip` naming.
+    },
+  })
+  const produced = (await readdir(output)).filter((name) => /\.(?:dmg|zip)$/u.test(name)).sort()
+  assert.ok(produced.some((name) => name.endsWith('.dmg')), 'DMG artifact was not produced')
+  assert.ok(produced.some((name) => name.endsWith('.zip')), 'ZIP artifact was not produced')
+  const artifacts = {}
+  for (const name of produced) {
+    const path = join(output, name)
+    artifacts[name.endsWith('.dmg') ? 'dmg' : 'zip'] = {
+      filename: name, path, size: (await lstat(path)).size,
+      sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    }
+  }
+  const audit = await auditPackage(packagedAppRoot)
+  await writeFile(join(output, 'macos-distribution.json'), JSON.stringify({
+    appName, version: DESKTOP_IDENTITY.version, arch: 'arm64', CFBundleIdentifier: DESKTOP_IDENTITY.appUserModelId,
+    bundle: packagedBundle, bundleContentSha256: audit.sha256, identity: null,
+    signing: bundleSigningState(), nativeNotificationGate: nativeNotificationGate(), ...artifacts,
+  }, null, 2))
+  console.log(`MACOS_DISTRIBUTION PASS: ${Object.values(artifacts).map((entry) => entry.filename).join(', ')}`)
+  return artifacts
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await packageMac()
+  if (process.argv.includes('--dist')) await packageMacDistribution()
+  else await packageMac()
 }
