@@ -27,6 +27,37 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      # `ref: ${{ github.sha }}` deliberately checks out a detached HEAD. NovaWing inspects the
+      # working copy as a normal repository, so the same exact commit is re-attached to a named
+      # branch. No commit, tree or index content changes, and nothing is pushed.
+      - name: Normalize checkout to a named branch
+        shell: pwsh
+        run: |
+          if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
+          New-Item -ItemType Directory -Force -Path 'artifacts/ci' | Out-Null
+          $headBefore = (git rev-parse HEAD).Trim()
+          $refBefore = (git rev-parse --abbrev-ref HEAD).Trim()
+          $dirtyBefore = @(git status --porcelain).Count
+          git checkout -B "$env:GITHUB_REF_NAME" "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { Write-Error 'git checkout -B failed'; exit 1 }
+          $headAfter = (git rev-parse HEAD).Trim()
+          $branchAfter = (git branch --show-current).Trim()
+          $dirtyAfter = @(git status --porcelain).Count
+          @(
+            "trigger_ref=$env:GITHUB_REF",
+            "trigger_ref_name=$env:GITHUB_REF_NAME",
+            "github_sha=$env:GITHUB_SHA",
+            "head_before=$headBefore",
+            "head_after=$headAfter",
+            "symbolic_ref_before=$refBefore",
+            "branch_after=$branchAfter",
+            "dirty_files_before=$dirtyBefore",
+            "dirty_files_after=$dirtyAfter"
+          ) | Tee-Object -FilePath 'artifacts/ci/checkout-state.txt'
+          if ($headAfter -ne $env:GITHUB_SHA) { Write-Error 'HEAD does not equal GITHUB_SHA'; exit 1 }
+          if ($branchAfter -ne $env:GITHUB_REF_NAME) { Write-Error 'branch does not equal GITHUB_REF_NAME'; exit 1 }
+          if ($dirtyAfter -ne 0) { Write-Error 'worktree is not clean after normalization'; exit 1 }
+
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
@@ -66,6 +97,116 @@ jobs:
           }
           Write-Host "Electron runtime ready: $binary"
 
+      # NovaWing requires a real native Git for Windows installation and fails closed without one.
+      # This step reproduces that contract exactly and, only when every check passes, points the
+      # product's own documented override at the detected bash.exe. The contract is never relaxed.
+      - name: Prepare native Git for Windows
+        id: nativegit
+        shell: pwsh
+        run: |
+          if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
+          New-Item -ItemType Directory -Force -Path 'artifacts/ci' | Out-Null
+          $lines = [System.Collections.Generic.List[string]]::new()
+          function Note([string]$text) { $lines.Add($text); Write-Host $text }
+
+          function Get-CandidateRoot([string]$gitExe) {
+            if ([string]::IsNullOrWhiteSpace($gitExe)) { return $null }
+            $resolved = $gitExe.Trim()
+            if ($resolved -notmatch '(?i)^[a-z]:[\\/]') { return $null }
+            $directory = Split-Path -Parent $resolved
+            if ([string]::IsNullOrWhiteSpace($directory)) { return $null }
+            $leaf = Split-Path -Leaf $directory
+            if ($leaf -ieq 'cmd' -or $leaf -ieq 'bin') { return (Split-Path -Parent $directory) }
+            if ($leaf -ieq 'mingw64' -or $leaf -ieq 'mingw32') { return (Split-Path -Parent (Split-Path -Parent $directory)) }
+            return (Split-Path -Parent $directory)
+          }
+
+          $candidates = [System.Collections.Generic.List[string]]::new()
+          function Add-Candidate([string]$root) {
+            if ([string]::IsNullOrWhiteSpace($root)) { return }
+            try { $full = [System.IO.Path]::GetFullPath($root).TrimEnd([char]'\') } catch { return }
+            if ([string]::IsNullOrWhiteSpace($full) -or $full -match '^[a-z]:$') { return }
+            if (-not $candidates.Contains($full)) { [void]$candidates.Add($full) }
+          }
+
+          Note '# NovaWing Phase 6A - Windows native Git diagnostics'
+          Note "github_sha=$env:GITHUB_SHA"
+          Note "os=$([Environment]::OSVersion.VersionString)"
+          Note "arch=$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+
+          $command = Get-Command git -ErrorAction SilentlyContinue
+          Note "Get-Command git = $($command.Source)"
+          $whereOut = @(& where.exe git 2>&1)
+          Note 'where.exe git:'
+          foreach ($entry in $whereOut) { Note "  $([string]$entry)" }
+          $gitVersion = ((& git --version 2>&1) -join ' ').Trim()
+          Note "git --version = $gitVersion"
+
+          foreach ($hive in @('HKLM:\SOFTWARE\GitForWindows', 'HKCU:\SOFTWARE\GitForWindows')) {
+            if (Test-Path $hive) {
+              $installPath = (Get-ItemProperty -Path $hive -Name InstallPath -ErrorAction SilentlyContinue).InstallPath
+              Note "registry $hive = present, InstallPath=$installPath"
+            } else {
+              Note "registry $hive = absent"
+            }
+          }
+
+          Add-Candidate (Get-CandidateRoot $command.Source)
+          foreach ($entry in $whereOut) { Add-Candidate (Get-CandidateRoot ([string]$entry)) }
+          foreach ($hive in @('HKLM:\SOFTWARE\GitForWindows', 'HKCU:\SOFTWARE\GitForWindows')) {
+            if (Test-Path $hive) { Add-Candidate ((Get-ItemProperty -Path $hive -Name InstallPath -ErrorAction SilentlyContinue).InstallPath) }
+          }
+          foreach ($base in @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, 'C:\Program Files', $env:LOCALAPPDATA)) {
+            if ($base) { Add-Candidate (Join-Path $base 'Git') }
+          }
+
+          Note 'candidate roots:'
+          foreach ($entry in $candidates) { Note "  $entry" }
+
+          $bashPath = $null
+          $acceptedGit = $null
+          foreach ($root in $candidates) {
+            $bash = Join-Path $root 'bin\bash.exe'
+            $git = Join-Path $root 'cmd\git.exe'
+            $msys = Join-Path $root 'usr\bin\msys-2.0.dll'
+            $bashOk = Test-Path -LiteralPath $bash
+            $gitOk = Test-Path -LiteralPath $git
+            $msysOk = Test-Path -LiteralPath $msys
+            Note "candidate $root : bin/bash.exe=$bashOk cmd/git.exe=$gitOk usr/bin/msys-2.0.dll=$msysOk"
+            if (-not ($bashOk -and $gitOk -and $msysOk)) { continue }
+            $probeText = ((& $bash --noprofile --norc -c 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"' 2>&1) -join ' ').Trim()
+            $probeGit = ((& $git --version 2>&1) -join ' ').Trim()
+            Note "  bash fingerprint = $probeText"
+            Note "  cmd/git --version = $probeGit"
+            if ($probeText -notmatch '^[^|]+\|MINGW(?:32|64|ARM64)\|msys$') {
+              Note '  REJECTED: bash fingerprint does not satisfy the NovaWing contract'
+              continue
+            }
+            if ($probeGit -notmatch '^git version [\d.]+\.windows\.\d+') {
+              Note '  REJECTED: git version is not a native Git for Windows version'
+              continue
+            }
+            $bashPath = $bash
+            $acceptedGit = $git
+            break
+          }
+
+          if ($bashPath) {
+            Note "ACCEPTED root bash = $bashPath"
+            Note "ACCEPTED root git  = $acceptedGit"
+          } else {
+            Note 'ACCEPTED root = none'
+          }
+          $lines | Set-Content -LiteralPath 'artifacts/ci/windows-git-diagnostics.txt' -Encoding utf8
+
+          if (-not $bashPath) {
+            Write-Host 'HOSTED_WINDOWS_NATIVE_GIT_CONTRACT_UNAVAILABLE'
+            Write-Host '::error::HOSTED_WINDOWS_NATIVE_GIT_CONTRACT_UNAVAILABLE'
+            exit 1
+          }
+          "NOVAWING_GIT_BASH_PATH=$bashPath" | Add-Content -Path $env:GITHUB_ENV
+          Write-Host "NOVAWING_GIT_BASH_PATH injected = $bashPath"
+
       - name: Validate source, build and host gates
         id: check
         run: npm run check
@@ -84,13 +225,15 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if (-not (Test-Path 'artifacts/desktop')) { Write-Host 'artifacts/desktop absent'; exit 0 }
-          Write-Host '--- artifacts/desktop/*.json ---'
-          Get-ChildItem -File 'artifacts/desktop/*.json' -ErrorAction SilentlyContinue |
-            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
-          Write-Host '--- artifacts/desktop/package-smoke ---'
-          Get-ChildItem -File 'artifacts/desktop/package-smoke' -ErrorAction SilentlyContinue |
-            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+          foreach ($relative in @('artifacts/ci', 'artifacts/desktop', 'artifacts/desktop/package-smoke')) {
+            Write-Host "--- $relative ---"
+            if (Test-Path $relative) {
+              Get-ChildItem -File $relative -ErrorAction SilentlyContinue |
+                ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+            } else {
+              Write-Host '(absent)'
+            }
+          }
 
       # Small evidence only. The unpacked package is multi-hundred-MB and is not an output of
       # this probe, so it is never uploaded.
@@ -102,6 +245,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
+            artifacts/ci/**
             artifacts/desktop/package-smoke/**
             artifacts/desktop/packaged-content-audit.json
             artifacts/desktop/installer.json
@@ -113,9 +257,12 @@ jobs:
           CHECK_OUTCOME: ${{ steps.check.outcome }}
           PACKAGE_OUTCOME: ${{ steps.packagedir.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          NATIVEGIT_OUTCOME: ${{ steps.nativegit.outcome }}
         run: |
           $gate = 'NOT_AVAILABLE'
           $native = 'NOT_AVAILABLE'
+          $branch = 'NOT_AVAILABLE'
+          $gitBash = 'NOT_AVAILABLE'
           try {
             if (Test-Path 'artifacts/desktop/package-smoke/result.json') {
               $gate = (Get-Content 'artifacts/desktop/package-smoke/result.json' -Raw | ConvertFrom-Json).nativeNotificationGate
@@ -126,12 +273,22 @@ jobs:
               $native = (Get-Content 'artifacts/desktop/package-smoke/native-notification-result.json' -Raw | ConvertFrom-Json).result
             }
           } catch { $native = 'NOT_AVAILABLE' }
+          try {
+            if (Test-Path 'artifacts/ci/checkout-state.txt') {
+              $match = Select-String -Path 'artifacts/ci/checkout-state.txt' -Pattern '^branch_after=(.*)$' | Select-Object -First 1
+              if ($match) { $branch = $match.Matches[0].Groups[1].Value }
+            }
+          } catch { $branch = 'NOT_AVAILABLE' }
+          if ($env:NOVAWING_GIT_BASH_PATH) { $gitBash = $env:NOVAWING_GIT_BASH_PATH }
           @(
             '## NovaWing Phase 6A - windows-probe',
             '',
             '| Item | Result |',
             '| --- | --- |',
             '| Runner | windows-2022 / x64 (Windows Server SKU) |',
+            ('| Named branch | ' + $branch + ' |'),
+            ('| Native Git for Windows | ' + $env:NATIVEGIT_OUTCOME + ' |'),
+            ('| NOVAWING_GIT_BASH_PATH | ' + $gitBash + ' |'),
             ('| `npm run check` | ' + $env:CHECK_OUTCOME + ' |'),
             ('| `desktop:package:dir` | ' + $env:PACKAGE_OUTCOME + ' |'),
             ('| `desktop:package:smoke` | ' + $env:SMOKE_OUTCOME + ' |'),
@@ -153,6 +310,41 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      # `ref: ${{ github.sha }}` deliberately checks out a detached HEAD. NovaWing inspects the
+      # working copy as a normal repository, so the same exact commit is re-attached to a named
+      # branch. No commit, tree or index content changes, and nothing is pushed.
+      - name: Normalize checkout to a named branch
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          head_before="$(git rev-parse HEAD)"
+          ref_before="$(git rev-parse --abbrev-ref HEAD)"
+          dirty_before="$(git status --porcelain | wc -l | tr -d ' ')"
+          git checkout -B "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          head_after="$(git rev-parse HEAD)"
+          branch_after="$(git branch --show-current)"
+          dirty_after="$(git status --porcelain | wc -l | tr -d ' ')"
+          {
+            echo "trigger_ref=$GITHUB_REF"
+            echo "trigger_ref_name=$GITHUB_REF_NAME"
+            echo "github_sha=$GITHUB_SHA"
+            echo "head_before=$head_before"
+            echo "head_after=$head_after"
+            echo "symbolic_ref_before=$ref_before"
+            echo "branch_after=$branch_after"
+            echo "dirty_files_before=$dirty_before"
+            echo "dirty_files_after=$dirty_after"
+          } | tee artifacts/ci/checkout-state.txt
+          if [ "$head_after" != "$GITHUB_SHA" ]; then
+            echo "::error::HEAD does not equal GITHUB_SHA"; exit 1
+          fi
+          if [ "$branch_after" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::branch does not equal GITHUB_REF_NAME"; exit 1
+          fi
+          if [ "$dirty_after" != "0" ]; then
+            echo "::error::worktree is not clean after normalization"; exit 1
+          fi
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
@@ -221,11 +413,14 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ ! -d artifacts/desktop ]; then echo 'artifacts/desktop absent'; exit 0; fi
-          echo '--- artifacts/desktop/*.json ---'
-          find artifacts/desktop -maxdepth 1 -name '*.json' -type f -exec ls -l {} \; 2>/dev/null || true
-          echo '--- artifacts/desktop/package-smoke ---'
-          find artifacts/desktop/package-smoke -maxdepth 1 -type f -exec ls -l {} \; 2>/dev/null || true
+          for relative in artifacts/ci artifacts/desktop artifacts/desktop/package-smoke; do
+            echo "--- $relative ---"
+            if [ -d "$relative" ]; then
+              find "$relative" -maxdepth 1 -type f -exec ls -l {} \; 2>/dev/null || true
+            else
+              echo '(absent)'
+            fi
+          done
 
       # No DMG/ZIP in this round: the probe only has to answer whether the hosted runner can run
       # the packaged GUI smoke at all.
@@ -237,6 +432,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
+            artifacts/ci/**
             artifacts/desktop/package-smoke/**
             artifacts/desktop/macos-package.json
             artifacts/desktop/macos-packaged-content-audit.json
@@ -263,6 +459,11 @@ jobs:
           authority="$(json_field artifacts/desktop/macos-package.json signing.authority)"
           adhoc="$(json_field artifacts/desktop/macos-package.json signing.adhoc)"
           native="$(json_field artifacts/desktop/package-smoke/native-notification-result.json result)"
+          branch_after='NOT_AVAILABLE'
+          if [ -f artifacts/ci/checkout-state.txt ]; then
+            found="$(sed -n 's/^branch_after=//p' artifacts/ci/checkout-state.txt | head -1)"
+            if [ -n "$found" ]; then branch_after="$found"; fi
+          fi
 
           {
             echo '## NovaWing Phase 6A - macos-probe'
@@ -270,6 +471,7 @@ jobs:
             echo '| Item | Result |'
             echo '| --- | --- |'
             echo '| Runner | macos-15 / arm64 |'
+            printf '| Named branch | %s |\n' "$branch_after"
             printf '| `npm run check` | %s |\n' "$CHECK_OUTCOME"
             printf '| `desktop:package:mac` | %s |\n' "$PACKAGE_OUTCOME"
             printf '| `desktop:package:smoke` | %s |\n' "$SMOKE_OUTCOME"
