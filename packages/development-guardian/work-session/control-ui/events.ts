@@ -126,6 +126,18 @@ export interface WorkSessionControlSnapshot {
     activeElapsedMs?: number
     completionReason?: string
     humanRequired?: { category: string; reason: string }
+    /**
+     * v0.4.0: present only for a task-/generation-bound business decision. Its
+     * presence is what entitles the UI to offer an answer; a permission-class
+     * suspension never carries one.
+     */
+    pendingHumanAction?: {
+      type: 'BUSINESS_DECISION'
+      taskId: string
+      generation: number
+      prompt: string
+      options?: readonly string[]
+    }
     humanRequiredGeneration?: number
     recoveryInProgress?: boolean
     autonomousRecovery?: { available: boolean; exhausted: boolean }

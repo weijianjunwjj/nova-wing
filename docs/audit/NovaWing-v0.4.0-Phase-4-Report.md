@@ -1,181 +1,253 @@
 # NovaWing v0.4.0 Phase 4 Report
 
-日期：2026-09-21。当前结论 **BLOCKED（等待 installed/manual real-host）**。自动测试、Windows 包、安装版真人证据严格分开；未完成项不记作 PASS。
+日期：2026-09-22。分支 `feat/v0.4-desktop`。
 
-当前优先阻塞项：安装版 Tray/Toast 唤醒短暂白屏。其他人工 Gate 暂停；窗口修复、新安装包及等待点见 [白屏修复报告](NovaWing-v0.4.0-Window-White-Screen-Blocker.md)。下面 Quick Fill 安装包与早期 Phase 4 记录均为历史证据，当前 installer 以白屏报告为准。
+## 0. 结论
 
-最新更新：用户已确认旧包安装/开始菜单启动、close→hide、真实 Codex COMPLETED、Verification/Evidence/Checkpoint（`888a2e5`）及系统通知出现。现暂停其余人工验收，优先处理 Quick Fill Release Blocker。新包与本轮门禁见 [Quick Fill 修复报告](NovaWing-v0.4.0-Quick-Fill-Blocker.md)；旧 installer obsolete。下面第 1–17 节是此前自动化交接快照，其中“尚未安装/没有 checkpoint”等表述为历史状态，不覆盖此更新。
+```text
+Phase 4: PASS
+```
 
-## 1. Changes
+Windows Package & Real-host 的人工验收已完成并确认。自动门禁与 installed real-host 证据分开记录，人工确认项一律标记为 **MANUAL / REAL-HOST PASS**，不以自动化结果冒充。
 
-- 正式 packaged Main 接入原 Production Launchpad/Work Session；开发/smoke 保持隔离 fake fixture。未重设计 Phase 1–3 生命周期、Runtime 或 HTTP/SSE。
-- 固定产品身份，Main 极早设置 Windows AUMID/Toast CLSID。
-- Windows Git installation resolver：注册表、自定义盘符、可验证的 PATH installation、标准目录；直接 Git 调用统一为绝对 executable，SDK 的实际子进程使用同安装的 PATH。
-- 独立 staging、production dependency graph、package 内容审计、外部 Node 驱动的 packaged smoke、NSIS 构建和 SHA256 记录。
-- 正式 GUI 启动留下安全的本地生命周期诊断；预备独立真实任务 repo，尚未代写任务目标文件。
+本文件是 Phase 4 的最终报告；早期 BLOCKED 快照、Quick Fill blocker、窗口白屏 blocker 作为历史过程记录保留，其 installer SHA 均已 OBSOLETE。
 
-## 2. Packaging Architecture
+## 1. Phase 4 Scope
 
-`artifacts/desktop/staging/` 包含独立 package.json、desktop/main/assets、dist/packages 与 production node_modules。manifest 保留 `name=nova-wing`、`type=module`、原 exports/dependencies，支持 `nova-wing/development-guardian` self-reference。产品版本 0.4.0，根 npm kernel 0.1.0 未变；原 exports/files/production dependencies 未变。
+让 NovaWing 以 Windows 桌面产品形态交付，并在真实安装主机上端到端可用：
 
-依赖复制以 lockfile production graph 和目标 win32/x64 为依据；无 root rebuild，`npmRebuild=false`、`nodeGypRebuild=false`。真实库加载通过后不再引入 rebuild 变量。`asar=false`。打包使用已固定且实际存在的 Electron distribution，不隐式选择新版 Electron。
+- Windows x64 NSIS 打包与安装，Start Menu 启动，Electron Main 承载 Desktop Runtime。
+- 打包运行时的 Codex / Git / SQLite / node:sqlite 可用性与解析隔离。
+- 后台 Runtime、单实例、Tray、close→hide、严格退出生命周期。
+- Windows 原生 Toast 通知与点击恢复。
+- Launchpad 的 Quick Fill（Task Brief 结构化解析）在无 lossy parsing 的前提下可用。
+- Session 内 HUMAN_REQUIRED / BUSINESS_DECISION 的真实闭环（用户回答 → resume → 恢复执行 → 完成）。
+- 独立 Reviewer 在 installed production 配置下真实接线可用（Codex executor + DeepSeek reviewer）。
+- Completion evidence 身份一致性：Execution command 与 Completion evidence 的命名空间必须可分。
 
-package smoke 在系统 Temp 下创建完整 package 副本，物理位置位于源码之外，清除 NODE_PATH 等继承覆盖；仅验证副本加入测试入口、临时修改 main 来运行既有 harness。每个子进程仍由真正 NovaWing executable 启动，`app.isPackaged=true`，模块与 native binary 位于副本 resources/app。交付树不含 harness/fixture。独立 production smoke 使用原 Main 的无 fixture 分支，检查真实 Launchpad、Window、Tray、strict close。
+不在本轮范围：macOS 打包、Auto Update、代码签名、GitHub Actions、uninstall/reinstall 之外的发布工程。
 
-NSIS 前核对 package smoke PASS 及完整 app 内容 SHA256；防止旧证据认证新包。
+## 2. Windows Packaging
 
-## 3. Product Identity
+最终交付为 NSIS per-user installer，产物身份如下（`artifacts/desktop/installer.json`，ignored）：
 
 | 字段 | 值 |
 | --- | --- |
-| productName | NovaWing |
-| Desktop version | 0.4.0 |
-| root npm version | 0.1.0 |
+| filename | NovaWing Setup 0.4.0.exe |
+| size | 218,047,037 bytes |
+| SHA256 | `09f830ba3d99ad10b29a59052e87659bc0a65c2b59e2d608b6b99b40e9808445` |
+| productName / version | NovaWing / 0.4.0 |
 | appId / AUMID | io.github.weijianjunwjj.novawing |
 | ToastActivatorCLSID | {5F5D220B-E789-5710-A023-D7CA6AD8E382} |
 | Electron / embedded Node | 44.4.3 / 24.21.0 |
 | build host Node | 24.14.1 |
-| electron-builder | 26.15.3（npm registry 当前 stable，精确锁定） |
+| electron-builder | 26.15.3（精确锁定） |
 | target / arch | NSIS / x64 |
+| signature | NotSigned（Authenticode 实测） |
 
-Main 和 builder 共用 committed identity。NSIS 模板实际调用 `WinShell::SetLnkAUMI` 写相同 APP_ID。CLSID API 在 Main lock、BrowserWindow、Tray、Notification 前执行；[Electron API](https://www.electronjs.org/docs/latest/api/app#appsettoastactivatorclsidid-windows) 要求早期设定，但这不是 installed shortcut/真人点击已经成功的证据。配置依据 [electron-builder v26](https://www.electron.build/v26/docs/configuration/)。
+**此 SHA256 是 Phase 4 的唯一最终 installer artifact identity。** 早期 `b8c777bd…`、`2ec3f06a…`、`def42c52…` 三个包分别对应 Phase 4 初版、Quick Fill 修复版和窗口白屏修复版，均已被本包取代，不得作为最终验收版本引用。
 
-## 4. Package Contents
+打包结构：独立 staging（自带 package.json、desktop/main/assets、dist/packages、production node_modules），保留 `name=nova-wing`、`type=module` 与原 exports/dependencies，支持 `nova-wing/development-guardian` self-reference。依赖按 lockfile production graph 与 win32/x64 目标复制，`npmRebuild=false`、`nodeGypRebuild=false`、`asar=false`。staging 8436 files → 最终 resources/app 5309 files。Package smoke 在源码之外的系统 Temp 完整副本内运行，`app.isPackaged=true`，交付树不含 harness/fixture。
 
-`PACKAGED_CONTENT_AUDIT: PASS`；staging 8436 files，最终 resources/app 5309 files（builder 继续过滤 dependency 开发元数据）。机器清单：`artifacts/desktop/packaged-content-audit.json`。
+不含源码 tests/docs/.git/.env、业务 DB、日志、临时 repo、Desktop fixture、Electron/builder/TypeScript 开发依赖。
 
-检查 Main、ICO/Tray PNG、runtime dist、SDK→CLI→win32-x64 vendor、codex.exe、code-mode-host、rg、command-runner、sandbox-setup、codex-package manifest、libSQL `.node`。原始 production dependency version/integrity 与 HEAD lockfile 比较无变化。
-
-不含源码 tests/docs/.git/.env、业务 DB、日志、临时 repo、Desktop fixture、Electron/builder/TypeScript 开发依赖。第三方依赖运行时代码/许可证和原有 runtime exports 保留。
-
-## 5. Git / Bash Discovery
-
-自动 packaged probe 在无 `NOVAWING_GIT_BASH_PATH`、无 NODE_PATH、外部 cwd 下：
+### 打包运行时可用性（automated）
 
 ```text
-source: registry
-root: D:\Git
-bash: D:\Git\bin\bash.exe
-git: D:\Git\cmd\git.exe
-direct git / bash git: git version 2.47.1.windows.1
+PACKAGED_CONTENT_AUDIT: PASS
+codex_packaged_resolver: PASS   (codex-cli 0.151.0，来自包内 vendor)
+Git/Bash discovery: PASS        (registry → D:\Git\bin\bash.exe，fingerprint 校验)
+node:sqlite create/insert/select/close: PASS
+libSQL win32-x64 native 加载: PASS
+Runtime create/ledger/snapshot/close/reopen: PASS
 ```
 
-必须存在 Bash、cmd/git 和 MSYS DLL，并通过原生 MINGW/msys 与 Git for Windows version fingerprint。拒绝 WSL/System32/WindowsApps、裸 bash、缺失 installation、错误 fingerprint；显式无效 override 不退回其他来源。缓存按 discovery 输入区分，仅进程内生效，不写系统 env。
+拒绝 WSL/System32/WindowsApps、裸 bash、缺失 installation 与错误 fingerprint；显式无效 override 不退回其他来源；无全局 Codex/PATH fallback。
 
-preflight/verifier Bash 复用 Platform shell contract；production/checkpoint/MCP/legacy recovery/executor checkpoint 的直接 Git 使用同 resolver。Codex SDK 子进程 PATH 只在真实实例创建处准备，纯配置/环境过滤函数保持可测试的无宿主副作用契约。
+## 3. Installed Real-host — Windows 安装与桌面 Runtime
 
-**Start Menu installed discovery：待人工启动及后续读回，未认证。**
+**MANUAL / REAL-HOST PASS。** 由操作者在真实安装主机上确认：
 
-## 6. Codex Packaged Runtime
+- Windows x64 installer 可安装，可从 **Start Menu** 启动。
+- Electron Main 承载 Desktop Runtime，Launchpad 正常。
+- Tray 正常；关闭窗口后隐藏到后台正常；Desktop background runtime 正常。
+- packaged Codex 可用；Git discovery 可用；SQLite / node:sqlite packaged smoke 可用。
+- Windows Native Toast 可真实显示。
+- Notification click / window restore 的白屏问题已修复并人工复验 PASS。
 
-`codex_packaged_resolver: PASS`，`codex --version: codex-cli 0.151.0`。真实路径位于外部 Temp package 副本的 `resources/app/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe`。
+## 4. Quick Fill
 
-没有全局 Codex/PATH fallback。全部 vendor helpers/resources 保留；CLI、libSQL 解析路径与实际加载 native modules 检查必须处于 package 内。未重命名或破坏源码 node_modules；利用独立物理祖先路径证明解析隔离。
+曾发现两个缺陷：Allowed Paths 解析缺失，以及 acceptance / verification binding 存在 lossy parsing。
 
-## 7. SQLite / libSQL
+已修复并 **MANUAL / REAL-HOST PASS**，覆盖：
 
-unpacked：node:sqlite create/insert/select/close PASS；真实 `@libsql/win32-x64-msvc/index.node` 位于 package 内，SQL create/insert/select/close PASS；原 Runtime create、fake task、ledger/snapshot、close、reopen、无重复执行、资源归零 PASS。
+- 中英文 Allowed Paths。
+- bullets / comma / 顿号 / backticks 等列表形态。
+- ambiguous permission fail closed。
+- partial parsing 不覆盖已有 allowedPaths。
+- Acceptance Criteria / Required Evidence 正确绑定。
 
-installed：仍待真实安装后验证，不能用 unpacked 结果替代。
+## 5. Window White-screen Recovery
 
-## 8. Windows Installer
+**MANUAL / REAL-HOST PASS。**
+
+白屏根因：同一健康 Session 也被无条件 `loadURL()`；Session 导航与 renderer recovery 分属不同 promise，`showWindow()` 未等待恢复完成；`loadURL()` resolve / `did-finish-load` 可以早于 `did-stop-loading`。
+
+修复：规范化 URL 比较后直接 restore/show/focus；每个 BrowserWindow 共用串行 navigation tail，同地址在队列执行时再次判断，最多一个 Main loadURL 在途；切换 URL 时保持 visible intent 但加载期间隐藏内容窗口，事件驱动等待 `did-stop-loading` / `ready-to-show`（不使用固定 sleep，不关闭背景节流）；destroyed window 的 Session 点击直接创建到目标 Control URL。
+
+原有 live owned-origin 验证、映射撤销后的 Launchpad fallback、最后已提交可信 URL、安全窗口配置与严格退出语义保持不变。
+
+## 6. Native Toast
+
+**MANUAL / REAL-HOST PASS。**
+
+Main 极早设置 AUMID / ToastActivatorCLSID；通知图标与产品名正确；通知点击可恢复窗口并打开对应 Session（白屏修复后复验通过）。
+
+对象保留窗口为 15 分钟；超出保留期或退出后的 cold-start persisted click 未实现可靠 Session 关联，记为 DEFERRED（见第 12 节）。
+
+## 7. HUMAN_REQUIRED / BUSINESS_DECISION
+
+**MANUAL / REAL-HOST PASS。** 最终成功任务：
 
 ```text
-filename: NovaWing Setup 0.4.0.exe
-path: D:\VSCode\nova-wing\artifacts\desktop\NovaWing Setup 0.4.0.exe
-size: 218039664 bytes
-SHA256: b8c777bde5c14592b9b76c2df6a88bc96cdb0c2ed4fed525ea1136b99bdcd1b2
-signature: NotSigned（Get-AuthenticodeSignature 实测）
-install path: NOT_OBSERVED
-Start Menu launch: NEEDS_MANUAL_VALIDATION
-uninstall/reinstall: NEEDS_MANUAL_VALIDATION
-SmartScreen: EXPECTED / NOT_OBSERVED
+Task:    DESKTOP-BUSINESS-DECISION-004
+Session: desktop-business-decision-001-202609220448-3f4d96
+checkpoint: 74324c695e18afa3040c38643a529661e3b7a787
 ```
 
-oneClick、per-user、Start Menu + Desktop shortcuts、正确 app ICO；没有目录向导、服务、开机启动、updater 或 publish。卸载配置不删除业务 data。builder 日志出现 signing 阶段标签不代表已签名；以上以实际 Authenticode 结果为准。
-
-## 9. Native Notification Real-host
+事件链：
 
 ```text
-native provider / Main routing (automated): PASS
-visible Toast (installed human): NOT_OBSERVED
-human click: NOT_OBSERVED
-correct Session (human click): NOT_OBSERVED
-Action Center (running installed app): NOT_OBSERVED
-cold-start activation: DEFERRED
+BUSINESS_DECISION
+→ HUMAN_REQUIRED
+→ Desktop notification
+→ 用户输入 staging
+→ submitHumanDecision
+→ resume
+→ autonomous diagnosis / recovery
+→ Executor 重新执行
+→ git diff --check PASS
+→ npm test PASS
+→ checkpoint
+→ COMPLETED
+→ Desktop completion notification
 ```
 
-仍需 COMPLETED 和 HUMAN_REQUIRED 的真人视觉/点击；FAILED 建议补测。现有对象保留最长 15 分钟，超出生命周期或 cold start 的 Session 关联未实现，不伪报。
+该链证明：PendingHumanAction durable；BUSINESS_DECISION UI 可用；AnsweredHumanAction 为 typed；human decision consumption 生效；resume 后不会再次重复 BUSINESS_DECISION；Executor 可重新执行；verification / checkpoint / completion 正常。
 
-## 10. Real Codex Task
+实现约束（不因本轮验收放宽）：
 
-专用 repo：`C:\Users\Administrator\AppData\Local\NovaWingAcceptance\desktop-realhost-20260921-151419`。
+- `PendingHumanActionType` 刻意只覆盖 `BUSINESS_DECISION`。命令授权、凭据、修改范围扩张等权限类操作永不生成 pending action。
+- `submitHumanDecision` 与通用 `resume()` 分离；`RECOVERY_REQUIRES_AUTHORIZATION` 在通用 resume 路径被显式拒绝，只有真正存在 pendingHumanAction 时才可由专用控件消费。
+- 身份（sessionId / taskId / generation）由 Runtime 落库补齐并经 Control UI 对 durable state 校验，过期页面、重复提交、replayed generation 都无法启动第二次恢复。
+- 诊断重复索要同一 generation 内已回答的 BUSINESS_DECISION 时 fail closed 为 `RECOVERY_BLOCKED` + `ANSWERED_BUSINESS_DECISION_REPEATED`，不再铸造同型 pending action 形成同页循环。
+- 已回答的业务决定不为其他权限条目背书：剩余权限类条目仍独立阻塞恢复。
+
+## 8. DeepSeek Independent Reviewer
+
+**MANUAL / REAL-HOST PASS。** 最终成功任务：
 
 ```text
-branch: desktop-realhost-smoke
-base commit: 43c77bb504edc601a9cc56aa9dfa0310f18437b9
-task: src/sum.mjs + test/sum.test.mjs, node:test positive/negative/zero
-allowed paths: those two files only
-autoCommit: true
-autoPush: false
-remote: none
-real Codex result / verification / evidence / checkpoint: NOT_RUN
+Task:    DESKTOP-DEEPSEEK-REVIEW-003
+Session: desktop-review-001-202609220836-7398d3
+checkpoint: f414ac7dc0f55909432f70471d246c6b5aa66412
 ```
 
-只创建了测试仓库与 package.json，未代写任务实现/测试。需 installed GUI 启动后通过现有 Composer，保留当前 V2/Golden production 配置。参数保存在 ignored `artifacts/desktop/realhost-task.json`。
+真实 installed real-host 事件链：
 
-## 11. Background Runtime Real-host
+```text
+Codex EXECUTE
+→ VERIFY
+→ git diff --check PASS
+→ npm test PASS
+→ CONTROLLER_DECIDED REVIEW
+→ REVIEW_REQUIRED
+→ REVIEW_STARTED        agent=deepseek-reviewer provider=deepseek
+→ AGENT_DISPATCHED      action=REVIEW agent=deepseek-reviewer provider=deepseek
+→ REVIEW_PASSED
+→ CONTROLLER_DECIDED    action=COMPLETE reasonCode=COMPLETION_CRITERIA_SATISFIED
+→ checkpoint
+→ TASK_COMPLETED
+→ SESSION_COMPLETED     completionReason=ALL_TASKS_COMPLETED
+→ Desktop COMPLETED notification
+```
 
-unpacked automated：close→hide、Tray、真正第二实例、renderer recovery、HTTP/SSE、powerSaveBlocker、strict Quit、Runtime reopen 均 PASS。
+该链证明：Codex 为 Executor、DeepSeek 为独立 Reviewer；installed production reviewer wiring 正常；provider isolation 正常；deterministic Verification 正常；Review PASS 正常；Review 后 completion gate 正常收敛；不再出现重复 `EVIDENCE_MISSING`；Evidence 使用 step identity 正常；Git checkpoint 正常；Session 最终 COMPLETED。
 
-installed actual task 的后台持续执行、Prevent Sleep、strict quit/restart、无重复 task/checkpoint/notification：待真人步骤及 durable evidence，未认证。
+实现要点：Composer 声明的能力 profile 现在显式包含 executor 与独立 reviewer；reviewer profile 仅在其真实 provider 路由（DeepSeek）刚被确认时才声明，探测缺失或抛错一律 fail closed 为「本机没有 reviewer」，不猜测能力存在。Reviewer 不可用时的原因文本保留稳定的 `no available agent for REVIEW` token（Runtime Repair 依赖该 token 推导 NO_AVAILABLE_AGENT_FOR_REVIEW），操作者可读说明只作追加，不替换机器 token。
 
-## 12. Test Results
+## 9. Evidence Identity Blocker 与修复
+
+早前真实失败链：
+
+```text
+REVIEW_PASSED
+→ VERIFY:EVIDENCE_MISSING
+→ repeated VERIFY
+→ CYCLIC_NO_PROGRESS
+```
+
+根因：`binding.requiredEvidence` 使用 **command identity**（`git diff --check`、`npm test`），而实际 completion evidence 使用 **step identity**（`verify-1`、`verify-2`）。两者命名空间不同，completion gate 永远无法匹配 evidence.type。
+
+修复为：V2 / Controller completion truth 统一使用 step identity，并与 execution command 身份分离。
+
+- Golden → Controller handoff 使用 `identity: 'step'`。
+- DIRECT / Controller trusted bindings 使用 step identity。
+- 新增 `verificationCommandsForEvidence`，提供 stepId → 可执行 command 映射。
+- production Executor packet 使用真实 shell command，step id 绝不进入 packet 或 shell。
+- completion gate 安全标准未放宽；legacy `bindingsFromVerificationPlan` 的默认 command identity 行为未全局改变。
+
+最终 installed real-host DESKTOP-DEEPSEEK-REVIEW-003 证明该修复有效。
+
+## 10. Automated Validation
 
 | 命令 | 结果 |
 | --- | --- |
-| `npm run desktop:package:dir` | PASS |
-| targeted shell 8 cases | PASS |
-| targeted Codex + Git discovery 28 cases | PASS |
-| `npm run desktop:smoke` | PASS，四个 Electron entry + secondary + cleanup |
-| `npm run desktop:package:smoke` | PASS，五个 packaged entry + secondary + cleanup |
-| `npm run desktop:build:win` | PASS，NSIS generated |
-| `npm run check`（仅完整运行一次） | exit 1：业务 1097/1097、全部静态门禁 PASS；Desktop 62/63，唯一失败为旧 Phase 3 identity=null 断言 |
-| `npm run check:desktop`（精确身份断言更新后） | PASS，63/63；Desktop checkJs/unused、platform 也再次 PASS |
-| `npm run pack:check` | PASS，240 个确定性构建文件 / 242 个 tarball 文件 |
-| `npm run consumer:selftest` | PASS，独立 tarball consumer 全部契约通过 |
-| `git diff --check` | PASS |
+| `npm run check` | **PASS**；1133 / 1133 tests，desktop 70 / 70 |
+| `git diff --check` | **PASS** |
+| `npm run desktop:package:dir` | **PASS** |
+| `npm run desktop:package:smoke` | **PASS** |
+| `npm run desktop:build:win` | **PASS** |
 
-没有为小修改反复运行完整 check。最终 check 不设置 Git Bash override。原始日志均在 ignored `artifacts/desktop/phase4-*.log`。完整命令的原始 exit 1 不改写为 exit 0；最小修复仅更新既有 identity test 为精确 appId/CLSID/version 和 Object.isFrozen 断言，产品代码与已验收包均未变化，故只复跑 Desktop tests/typecheck/platform。
+## 11. Installed Real-host Validation
 
-失败定位与修复：npm 首次安装只有 electron-winstaller tgz 请求 EIDLETIMEOUT；从同一官方 registry 下载该 tgz 填充 cache，随后 offline install 成功，未增加 timeout。初版把宿主 Git discovery 放入纯 Codex env 过滤函数，专项测试暴露无宿主环境 fixture 的失败；移到真实 SDK 创建边界，28 targeted PASS。首轮 package smoke 新探针错误使用 CommonJS resolve 解析 ESM-only SDK（ERR_PACKAGE_PATH_NOT_EXPORTED）；产品 resolver/Codex version 已通过，修正探针为 import.meta.resolve，仅重跑 package gate，五 entry 全 PASS。保留首轮失败 JSON，不计为 PASS。
+| 项目 | 方式 | 结果 |
+| --- | --- | --- |
+| Windows 安装 / Start Menu 启动 | 人工 | MANUAL / REAL-HOST PASS |
+| Launchpad / Tray / close→hide / background runtime | 人工 | MANUAL / REAL-HOST PASS |
+| Native Toast 显示与点击恢复 | 人工 | MANUAL / REAL-HOST PASS |
+| Quick Fill（中英文 / 列表 / 失败闭合 / 绑定） | 人工 | MANUAL / REAL-HOST PASS |
+| HUMAN_REQUIRED → BUSINESS_DECISION → resume → COMPLETED | 人工 + 账本 | MANUAL / REAL-HOST PASS |
+| Codex Executor + DeepSeek Independent Reviewer → COMPLETED | 人工 + 账本 | MANUAL / REAL-HOST PASS |
+| Evidence identity 修复 | 人工 real-host 复现验证 | MANUAL / REAL-HOST PASS |
+| packaged Codex / Git / SQLite | 自动 packaged probe | PASS |
 
-## 13. Security
+## 12. Known Non-blocking Observations
 
-沿用 sandbox、context isolation、无 Node Renderer、无 preload/业务 IPC、exact owned origins、既有 token/Origin/Host/CSP。staging 只复制允许的生产树；机器拒绝 tests/docs/secrets/data/logs/symlink。源码依赖不会被 native rebuild 覆盖。任务 repo 无 remote，不 push。包装/日志/安装包全部 ignored。
+1. **DESKTOP-DEEPSEEK-REVIEW-002 transient no-op。** 曾出现一次 `NO_OP_EXECUTION: Codex completed without workspace inspection; execution evidence is missing`。该 Session 在 EXECUTE 阶段即 fail closed，未进入 VERIFY / REVIEW。随后同一版本 installer、同一 fixture 下的 DESKTOP-DEEPSEEK-REVIEW-003 完整成功。记录为一次 observed transient Codex no-op；NovaWing 对其正确 fail closed 到 HUMAN_REQUIRED，不计为 Phase 4 blocker，不据此继续修改 Runtime。
+2. **`verificationCommandsForEvidence` 通过 package barrel `export *` 暴露。** `work-session/index.ts` 使用 `export * from './verification-plan.js'`，该 helper 因此成为 `nova-wing/development-guardian` 公共 API（`check-package-exports` 已同步登记）。隐藏它需要重构模块边界或把 `export *` 改为显式命名导出，属于超出本阶段收口范围的结构性改动。保持现状，记为本条 **non-blocking cleanup candidate**。
+3. **Notification cold-start / 超出 15 分钟保留期。** 退出后或超出对象保留期的 persisted click 尚无可靠 Session 关联，记为 DEFERRED，未伪报支持。
+4. **installer 未签名。** SmartScreen 可能告警；Authenticode 实测 NotSigned。
+5. **macOS / Auto Update / CI** 未实现，属后续 Phase。
 
-## 14. Remaining Risks
-
-Windows unsigned/SmartScreen；未验证 installed Toast identity、真人 click 和真实 Codex 链；系统 shutdown/force kill/断电；macOS；GitHub Actions；Auto Update。没有实现后四项，也没有用自动化替代人工证据。
-
-## 15. Git
+## 13. Git
 
 ```text
 branch: feat/v0.4-desktop
-HEAD before: 1ce8111065051a7256d73a2d61d1551ea4fccf37
-HEAD after: 1ce8111065051a7256d73a2d61d1551ea4fccf37
-commit: NOT_CREATED (all-gates condition not met)
-working tree: Phase 4 implementation/report remain uncommitted
+Phase 4 final fix commit: 见本轮 commit（保持独立 final-fix commit，不 amend 03d328e）
+push / merge / tag: NOT_DONE
 ```
 
-原有未跟踪 Survey 保留原样，不纳入本轮实现。未 push、merge、tag。用户要求全部通过后才 commit；人工硬门禁未完成，故当前不能提交指定 feat commit。
+安装包二进制、dist/、release artifacts、acceptance fixture repo、临时日志与数据库副本均未纳入提交（`artifacts/`、`dist/` 已在 `.gitignore` 中）。
 
-## 16. Verdict
+## 14. Verdict
 
-**BLOCKED**：已推进到需要实际安装、Start Menu 和真人 Toast 的位置；不宣称 Phase 4 PASS。
+```text
+Phase 4: PASS
 
-自动子门禁在上述定向修复后均已满足；完整 check 原始失败及最小复跑范围保留。安装器已生成并核验 unsigned 状态，尚未观察实际安装、真人通知点击或 installed real Codex，不存在 checkpoint SHA 可报告。
+NovaWing v0.4.0 Phase 4 — Windows Package & Real-host: PASS
+```
 
-## 17. Next Step
+自动门禁全绿；Windows 安装、桌面 Runtime、Quick Fill、白屏恢复、Native Toast、HUMAN_REQUIRED / BUSINESS_DECISION 闭环、DeepSeek 独立 Reviewer 与 Evidence identity 修复均已在真实安装主机上人工确认。
 
-按 [最少人工操作及等待点](NovaWing-v0.4.0-Phase-4-Manual-Acceptance.md) 完成安装并从 Start Menu 启动，再收集真实 Task、Toast、restart 和 uninstall 证据。全 Gate 通过后才提交 `feat(desktop): package Windows desktop app`；不开始 Phase 5。
+Ready for Phase 5 — macOS Package & Real-host。

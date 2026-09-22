@@ -351,6 +351,26 @@ export function bindingsFromVerificationPlan(
   }))
 }
 
+/**
+ * Completion truth addresses a planned step by its step id; executing a verifier
+ * still needs the planned shell command. A step id must never reach a shell, so
+ * every binding-to-execution handoff goes through this mapping. Command-identity
+ * bindings (no plan) and unknown entries pass through unchanged.
+ */
+export function verificationCommandsForEvidence(
+  plan: VerificationPlan | undefined,
+  requiredEvidence: readonly string[],
+): string[] {
+  if (plan === undefined) return [...new Set(requiredEvidence)]
+  const commands = new Map<string, string>()
+  for (const step of plan.steps) {
+    commands.set(step.id, step.command)
+    commands.set(step.command, step.command)
+    if (step.originalCommand !== undefined) commands.set(step.originalCommand, step.command)
+  }
+  return [...new Set(requiredEvidence.map((evidence) => commands.get(evidence) ?? evidence))]
+}
+
 /** One runtime-owned exact command can satisfy at most one non-allowed plan step. */
 export function verificationPlanApprovalSatisfied(plan: VerificationPlan, approvedCommand: string | undefined): boolean {
   const blocked = plan.steps.filter((step) => step.admission !== undefined && step.admission !== 'ALLOWED')

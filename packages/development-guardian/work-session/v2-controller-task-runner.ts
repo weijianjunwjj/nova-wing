@@ -86,6 +86,18 @@ export const NO_OP_AUTO_RETRY: NoOpExecutionRetry = {
   instruction: 'Automatic no-op retry: before deciding whether work is needed, use the workspace tools to inspect git status and the relevant repository files. A verbal claim that the task is already satisfied is not evidence. If no edit is needed, still inspect repository reality; deterministic verification runs separately.',
 }
 
+/**
+ * REVIEW keeps the stable `no available agent for REVIEW` token: Runtime Repair
+ * derives NO_AVAILABLE_AGENT_FOR_REVIEW from exactly this text. The operator-facing
+ * explanation is appended, it never replaces the machine-readable token.
+ */
+const REVIEWER_UNAVAILABLE_REASON =
+  'no available agent for REVIEW — Independent reviewer unavailable / 未配置独立 Reviewer（本机没有可用的独立 reviewer provider 路由）。'
+
+function noAvailableAgentReason(action: TaskAction): string {
+  return action === 'REVIEW' ? REVIEWER_UNAVAILABLE_REASON : `no available agent for ${action}`
+}
+
 export function isConfirmedNoOp(result: TaskActionResult, repositoryChanged: boolean): boolean {
   return !repositoryChanged && result.status !== 'SUCCESS' &&
     result.blockers?.some((blocker) => blocker.startsWith('NO_OP_EXECUTION:')) === true
@@ -240,7 +252,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     const initial = reconcileTaskState(state, start)
     state = initial.state
     const plan = await planVerification({ repositoryRoot: this.options.directPath!.repositoryRoot, task, risk: assessRisk(state).level, ...(task.allowedPaths === undefined ? {} : { changedAreaHint: task.allowedPaths }) })
-    state = { ...state, verificationPlan: plan, completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+    state = { ...state, verificationPlan: plan, completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
       execution: { path: 'DIRECT', escalated: false, startCheckpoint: { ...state.gitState } }, updatedAt: new Date().toISOString() }
     note({ type: 'VERIFICATION_PLANNED', ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command), metadata: { planId: plan.planId, fingerprint: plan.fingerprint, confidence: plan.confidence, scope: plan.estimatedScope } })
     await context?.persistTaskStateV2?.(state)
@@ -330,8 +342,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       state = context?.taskStateV2 === undefined ? createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task) : loadTaskStateV2(context.taskStateV2)
       if (state.identity.taskId !== task.id || state.identity.sessionId !== this.options.sessionId) throw new Error('task identity mismatch')
       const configured = createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task)
+      // 只要存在可信 VerificationPlan，VERIFY 证据就以 plan step id 为身份；binding 必须
+      // 使用同一命名空间，否则 completionGate 永远无法匹配 evidence.type。恢复阶段无关。
       const trustedBindings = state.verificationPlan !== undefined && verificationPlanFingerprintValid(state.verificationPlan)
-        ? bindingsFromVerificationPlan(state.verificationPlan, state.autonomousRecovery?.phase === 'ADVANCED' ? { identity: 'step' } : {}) : configured.completion.bindings
+        ? bindingsFromVerificationPlan(state.verificationPlan, { identity: 'step' }) : configured.completion.bindings
       if (JSON.stringify([state.goal, state.constraints, state.acceptanceCriteria, state.permissions, state.completion.bindings]) !==
           JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, trustedBindings])) throw new Error('persisted task policy does not match trusted definition')
     } catch {
@@ -515,7 +529,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       }
       if (agent === undefined) {
         note({ type: 'TASK_SUSPENDED', action: decision.action, reasonCode: 'NO_AVAILABLE_AGENT', ...repositoryFacts(state), explanation: explanation('NO_AVAILABLE_AGENT', decision.action, {}, [], []) })
-        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: `no available agent for ${decision.action}` }, taskStateV2: { ...state, status: 'SUSPENDED' } }
+        return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'ENVIRONMENT_REQUIRED', reason: noAvailableAgentReason(decision.action) }, taskStateV2: { ...state, status: 'SUSPENDED' } }
       }
       const selectedAgent = agent.id
       const selectedProvider = providerOf(agent)

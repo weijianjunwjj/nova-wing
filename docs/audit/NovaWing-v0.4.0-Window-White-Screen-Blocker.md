@@ -1,5 +1,7 @@
 # v0.4.0 窗口唤醒白屏 Release Blocker
 
+**最终状态（2026-09-22）：RESOLVED。** 白屏修复已在 installed real-host 上人工复验 PASS，见 [Phase 4 Report](NovaWing-v0.4.0-Phase-4-Report.md) 第 5 节。本文件保留为历史过程记录，其 installer SHA 已 OBSOLETE。
+
 日期：2026-09-21。分支 `feat/v0.4-desktop`，HEAD `1ce8111065051a7256d73a2d61d1551ea4fccf37`。Phase 4 仍 **BLOCKED / installed manual pending**。本轮暂停其他人工 Gate，不安装、不执行真实任务、不 commit / push / merge / tag。
 
 ## 已读取的安装版证据

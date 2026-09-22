@@ -78,6 +78,54 @@ export interface HumanRequired {
   reason: string
 }
 
+/**
+ * v0.4.0: 唯一允许在 Session 内闭环的人类动作类型。
+ *
+ * 刻意只覆盖纯业务决定。命令授权、凭据、修改范围扩张等权限类操作永远不会
+ * 生成 pending action，因此不能借道同一个输入框获得授权。
+ */
+export type PendingHumanActionType = 'BUSINESS_DECISION'
+
+/**
+ * TaskRunner 侧的待处理人类动作请求。Runtime 在落库时补齐 sessionId /
+ * taskId / generation 形成 [[PendingHumanAction]]，Runner 不自行编号。
+ */
+export interface PendingHumanActionRequest {
+  type: PendingHumanActionType
+  prompt: string
+  /** 存在时 decision 必须精确等于其中一个选项；否则为自由文本。 */
+  options?: readonly string[]
+}
+
+/**
+ * 一个 task-/generation 绑定的结构化人类决定请求。
+ *
+ * generation 与 humanRequiredGeneration 必须一致，任何旧页面、重复提交或
+ * 过期决定都会在授权层被拒绝，不会启动第二次恢复。
+ */
+export interface PendingHumanAction extends PendingHumanActionRequest {
+  sessionId: string
+  taskId: string
+  generation: number
+}
+
+/**
+ * v0.4.0: 一个已经由操作者在 Session 内回答、并与 task/generation 绑定的结构化
+ * 人类动作。
+ *
+ * 它只从 Runtime 落库的 [[PendingHumanAction]] 派生 —— taskId/generation 已经由
+ * Control UI 的提交路径校验过。因此诊断可以把它当作「已经成立的业务事实」，而
+ * 不像 recovery instruction 字符串那样只是一条无从分辨来源的自由文本。
+ */
+export interface AnsweredHumanAction {
+  type: PendingHumanActionType
+  sessionId: string
+  taskId: string
+  generation: number
+  /** 操作者提交的原值；Runtime 不做大小写或同义词归一化。 */
+  decision: string
+}
+
 /** A durable, task-bound, exact-command approval request owned by the runtime. */
 export interface PendingVerificationApproval {
   sessionId: string
@@ -127,12 +175,14 @@ export interface WorkSessionDurableState {
   /** V2 last-known Provider Health projection (per provider). Real observations override it. */
   providerHealth?: Record<string, import('./task-observability.js').ProviderHealthObservation>
   humanRequired?: HumanRequired
+  /** v0.4.0: 结构化待处理人类动作；只有 BUSINESS_DECISION 会生成。 */
+  pendingHumanAction?: PendingHumanAction
   pendingVerificationApproval?: PendingVerificationApproval
   /** v0.2.4: durable Runtime Repair record (chosen reviewer + audit facts). */
   runtimeRepair?: RuntimeRepairRecord
   /** Brain did not produce a verdict; distinct from a true human decision. */
   brainFailure?: GuardianBrainFailure
-  /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。 */
+  /** W006: 每次 autonomous execution 新进入 HUMAN_REQUIRED 时递增。pendingHumanAction.generation 绑定此值。 */
   humanRequiredGeneration?: number
   /** W006: 已执行过 bounded delivery attempt 的 generation（成功或失败）。 */
   lastNotificationAttemptGeneration?: number

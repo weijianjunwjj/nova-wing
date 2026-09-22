@@ -212,6 +212,15 @@ const WorkflowStateSchema = z.object({
     category: z.string(),
     reason: z.string(),
   }).optional(),
+  // v0.4.0: the only human action the Runtime closes inside the Session. It never
+  // represents a permission escalation, so an absent value means "handle manually".
+  pendingHumanAction: z.object({
+    type: z.literal('BUSINESS_DECISION'),
+    sessionId: z.string(), taskId: z.string(),
+    generation: z.number().int().nonnegative(),
+    prompt: z.string().min(1).max(2_000),
+    options: z.array(z.string().min(1).max(200)).max(8).optional(),
+  }).optional(),
   pendingVerificationApproval: z.object({
     sessionId: z.string(), taskId: z.string(), command: z.string(),
     commandFingerprint: z.string(), generation: z.number().int().positive(),
@@ -1466,6 +1475,7 @@ export class WorkSessionRuntime {
       ...state,
       state: 'RUNNING',
       humanRequired: undefined,
+      pendingHumanAction: undefined,
       brainFailure: undefined,
       suspensionReason: undefined,
       pendingVerificationApproval: undefined,
@@ -1600,6 +1610,19 @@ export class WorkSessionRuntime {
         // 使用本地变量追踪最新状态
         let currentState = state
         const resumedTaskId = currentState.currentTaskId
+        // v0.4.0: 本轮 resume 正在回答的结构化人类动作。它在 pendingHumanAction 被清空
+        // 之前捕获，身份字段直接取自 Runtime 落库、且 Control UI 已校验过 task/generation
+        // 的那条请求，因此诊断可以把它当成已成立的业务事实而不是自由文本。
+        const pendingHumanAction = currentState.pendingHumanAction
+        const resumedDecision = typeof resumeData === 'object' && resumeData !== null &&
+          typeof (resumeData as { decision?: unknown }).decision === 'string'
+          ? (resumeData as { decision: string }).decision.trim() : ''
+        const answeredHumanAction = resumedDecision.length === 0 || currentState.currentTaskId === null ||
+            pendingHumanAction === undefined || pendingHumanAction.taskId !== currentState.currentTaskId ||
+            pendingHumanAction.generation !== currentState.humanRequiredGeneration
+          ? undefined
+          : { type: pendingHumanAction.type, sessionId: currentState.sessionId, taskId: pendingHumanAction.taskId,
+              generation: pendingHumanAction.generation, decision: resumedDecision }
         if (currentState.currentTaskId !== null && (resumeData?.decision !== undefined || resumeData?.approval !== undefined || resumeData?.recovery !== undefined)) {
           const resumedTaskId = currentState.currentTaskId
           const log = new TaskEventLogV2(currentState.taskEventLogs?.[resumedTaskId])
@@ -1619,6 +1642,7 @@ export class WorkSessionRuntime {
                 instruction, recordedAt: new Date().toISOString(),
               }],
             } } : {}),
+            pendingHumanAction: undefined,
             taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [resumedTaskId]: [...log.events] }, updatedAt: new Date().toISOString() }
           await setState(currentState)
           self.latestState = currentState
@@ -1632,6 +1656,7 @@ export class WorkSessionRuntime {
             ...currentState,
             state: 'RUNNING',
             humanRequired: undefined,
+            pendingHumanAction: undefined,
             brainFailure: undefined,
             verificationFailure: undefined,
             suspensionReason: undefined,
@@ -1832,6 +1857,7 @@ export class WorkSessionRuntime {
             recoveryInstructions: (currentState.taskRecoveryInstructions?.[task.id] ?? [])
               .filter((entry) => entry.sessionId === currentState.sessionId && entry.taskId === task.id)
               .map((entry) => entry.instruction),
+            ...(answeredHumanAction === undefined || task.id !== resumedTaskId ? {} : { answeredHumanAction }),
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
             shouldPauseAutonomousWork: () => self.pauseRequested,
             onProgress: (event) => self.recordGuardianProgress(task.id, event),
@@ -2190,6 +2216,18 @@ export class WorkSessionRuntime {
           if (result.status === 'HUMAN_REQUIRED') {
             // 需要人工介入，suspend workflow
             const nextGeneration = (currentState.humanRequiredGeneration ?? 0) + 1
+            // Only a pure business decision carries a structured request; the Runtime
+            // stamps the identity so a stale page or duplicated submit cannot reuse it.
+            const pendingHumanAction = result.pendingHumanAction === undefined ? undefined : {
+              type: result.pendingHumanAction.type,
+              sessionId: currentState.sessionId,
+              taskId: task.id,
+              generation: nextGeneration,
+              prompt: result.pendingHumanAction.prompt,
+              ...(result.pendingHumanAction.options === undefined
+                ? {}
+                : { options: [...result.pendingHumanAction.options] }),
+            }
             const requestedCommand = result.pendingVerificationCommand
             const newVerificationApproval =
               requestedCommand !== undefined &&
@@ -2235,6 +2273,7 @@ export class WorkSessionRuntime {
                 : { taskEventLogs: { ...(currentState.taskEventLogs ?? {}), [task.id]: [...taskEventLog.events] } }),
               state: 'SUSPENDED',
               humanRequired: result.humanRequired,
+              pendingHumanAction,
               brainFailure: undefined,
               humanRequiredGeneration: nextGeneration,
               pendingVerificationApproval,
@@ -2379,6 +2418,13 @@ export class WorkSessionRuntime {
     }
     if (wfState.humanRequired) {
       result.humanRequired = wfState.humanRequired
+    }
+    if (wfState.pendingHumanAction !== undefined) {
+      const { type, sessionId, taskId, generation, prompt, options } = wfState.pendingHumanAction
+      result.pendingHumanAction = {
+        type, sessionId, taskId, generation, prompt,
+        ...(options === undefined ? {} : { options }),
+      }
     }
     if (wfState.taskRecoveryInstructions !== undefined) {
       result.taskRecoveryInstructions = wfState.taskRecoveryInstructions

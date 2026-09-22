@@ -8,6 +8,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
+import { verificationCommandsForEvidence } from './verification-planner.js'
 import { ProductionWorkSessionInitializationError } from './production-lifecycle-errors.js'
 import type { WorkSessionActivityObserver } from './activity.js'
 
@@ -753,6 +754,9 @@ export async function createProductionWorkSessionUi(
             router.setRecoveryCheckpoint({ repoPath: definition.targetRepo, branch: taskState.gitState.branch!, headSha: taskState.gitState.headSha!,
               changedFiles: taskState.gitState.changedFiles, worktreeFingerprint: await computeWorktreeFingerprint(definition.targetRepo, entries) })
             const requiredEvidence = verifierEvidenceFromBindings(taskState.completion.bindings)
+            // Binding requiredEvidence 是 completion truth（plan step id）；Executor packet
+            // 需要的是可执行 shell command。step id 绝不能直接进入 packet 或 shell。
+            const verificationCommands = verificationCommandsForEvidence(taskState.verificationPlan, requiredEvidence)
             const goldenImplementationOnly = action === 'EXECUTE' &&
               (taskState.execution?.path === 'GOLDEN' || taskState.autonomousRecovery?.phase === 'ADVANCED')
             const transportTask: GuardianTask = { id: taskState.identity.taskId, goal: taskState.goal, state: 'EXECUTING', iteration: 0,
@@ -788,7 +792,7 @@ export async function createProductionWorkSessionUi(
                 instructions: [action, ...(recoveryInstructions ?? []), ...(retry === undefined ? [] : [retry.instruction]), ...(goldenImplementationOnly
                   ? ['Implement only: inspect the repository and edit the scoped files. Do not execute verification commands; NovaWing runs deterministic verification separately after implementation.']
                   : [])],
-                constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : requiredEvidence,
+                constraints: taskState.constraints, verification: goldenImplementationOnly ? [] : verificationCommands,
                 ...(goldenImplementationOnly ? { deferVerification: true } : {}), doNotDo: taskState.permissions.forbiddenPaths } })
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],

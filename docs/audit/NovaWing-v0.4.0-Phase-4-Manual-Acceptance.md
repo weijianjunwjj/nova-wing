@@ -1,73 +1,117 @@
 # Phase 4：安装版人工验收
 
-**当前暂停全部人工 Gate**：新发现 Tray/COMPLETED Toast 唤醒白屏。先完成 [窗口修复及新安装包](NovaWing-v0.4.0-Window-White-Screen-Blocker.md)，本轮自动工作结束后停止；之后由用户验证新安装版窗口唤醒，再恢复下面尚未完成的清单。Quick Fill 修复包已被窗口修复包替代，勿使用旧 installer。
+日期：2026-09-22。分支 `feat/v0.4-desktop`。
 
-自动化结果与人工结果分开保存。2026-09-21 用户已确认旧安装包安装、开始菜单启动、close→hide、真实 Codex Task COMPLETED、Verification / Evidence / Checkpoint 通过（checkpoint `888a2e5`）及 Windows Desktop Notification 出现。下文原流程保留作为清单；不要重新执行已完成的付费任务。
+最终 installer：`artifacts/desktop/NovaWing Setup 0.4.0.exe`
+size 218,047,037 bytes，SHA256 `09f830ba3d99ad10b29a59052e87659bc0a65c2b59e2d608b6b99b40e9808445`。
 
-## 当前等待点：新安装包 Quick Fill 人工验证
-
-Phase 4 仍为 **BLOCKED**。本轮只修复 Quick Fill 并重建 0.4.0 安装包，停止 HUMAN_REQUIRED / uninstall / reinstall 等后续验收。旧安装包 obsolete，历史人工结果不等于新安装包结果；新 SHA 和自动门禁见 [Quick Fill 修复报告](NovaWing-v0.4.0-Quick-Fill-Blocker.md)。
-
-用户后续安装新包后，首先只验证 Quick Fill，不创建或启动任务：
-
-1. 将 [用户提供的完整原文 fixture](../../tests/fixtures/desktop-realhost-001.txt) 粘贴到 Task Brief 并点击 Quick Fill。
-2. 确认 Workspace、Branch、Task ID、Codex、Auto Commit 开启、Auto Push 关闭、Reasoning High、邮件通知关闭。
-3. 确认 Allowed Paths 实际为两行 `src/sum.mjs` / `test/sum.test.mjs`。
-4. 确认 Acceptance Criteria 为 `npm test passes.`，现有 Required Evidence bindings 输入框为 `npm test passes. => npm test`（Verification Command 为 `npm test`）。
-5. 只有这一项人工 PASS 后，才恢复下面尚未完成的 real-host 验收。当前不宣称新安装版人工 PASS。
-
-## 1. 安装与真正 GUI 启动（历史流程）
-
-1. 在 Explorer 双击 `D:\VSCode\nova-wing\artifacts\desktop\NovaWing Setup 0.4.0.exe`，完成安装。安装包未签名；记录 SmartScreen 是否出现，不关闭 Windows 安全功能。
-2. 关闭开发 Electron、VS Code 和用于开发的 PowerShell/npm 窗口。在 Windows **开始菜单**点击 **NovaWing**。不设置 Git Bash 环境变量。
-3. 确认 Launchpad 显示、托盘图标存在。回复“已从开始菜单启动”，或报告错误文字。此时先不要创建重复任务。
-
-本轮在 Codex 中运行的门禁可能仍需几分钟；等报告确认自动门禁结束后再关闭终端。
-
-## 2. 单次真实 Codex Task
-
-已创建专用仓库；本机完整参数见 `artifacts/desktop/realhost-task.json`。仓库没有 remote，初始提交仅包含 package.json。
-
-在 Launchpad 新建 Work Session：
-
-- 项目目录：`C:\Users\Administrator\AppData\Local\NovaWingAcceptance\desktop-realhost-20260921-151419`
-- 分支：`desktop-realhost-smoke`
-- Task ID：`DESKTOP-REALHOST-001`
-- Executor：Codex；使用产品默认 Auto 模型/High；保留当前 V2/Golden Path。
-- Auto Commit：开；Auto Push：关；邮件通知：关。
-- 允许修改路径（每行一条）：`src/sum.mjs`、`test/sum.test.mjs`。
-- Acceptance criteria：`npm test passes.`
-- Required evidence bindings：`npm test passes. => npm test`
-
-任务原文：
+本文件记录 **Windows installed real-host 人工验收的最终结果**。所有自动门禁见 [Phase 4 Report](NovaWing-v0.4.0-Phase-4-Report.md)；自动结果与人工结果分开，人工确认项一律标记 MANUAL / REAL-HOST PASS，不以自动化代替。
 
 ```text
-在当前测试仓库新增 src/sum.mjs，导出 sum(a, b)。
-新增 test/sum.test.mjs，使用 node:test，覆盖正数、负数和 0。
-运行 node --test。
-只能修改 src/sum.mjs 和 test/sum.test.mjs。
-不得修改 package.json，不得 push。
+Phase 4 installed real-host manual acceptance: PASS
 ```
 
-点击“创建并启动”后，确认 RUNNING，立即点窗口 X，让任务在后台继续。等待 COMPLETED 系统 Toast，亲眼检查 NovaWing 名称/图标，**真人点击 Toast**。确认窗口恢复并打开该 Session 的 COMPLETED 状态。不要用测试脚本 click handler 代替此步骤。
+## 1. 安装与桌面 Runtime — MANUAL / REAL-HOST PASS
 
-后续由代理读取 installed 诊断、执行账本、V2 Evidence、checkpoint SHA、git status/log/changed files，验证执行与提交次数、限定路径及 no push。用户无需手抄全部数据。
+- Windows x64 installer 可安装；可从 **Start Menu** 启动。
+- Electron Main 承载 Desktop Runtime；Launchpad 正常。
+- Tray 正常；关闭窗口后隐藏到后台正常；Desktop background runtime 正常。
+- packaged Codex 可用；Git discovery 可用；SQLite / node:sqlite packaged smoke 可用。
+- Windows Native Toast 可真实显示。
 
-## 3. 其余人工硬门禁
+## 2. Quick Fill — MANUAL / REAL-HOST PASS
 
-- 安装版保持运行，将通知留在 Windows 通知中心后真人点击，验证对应 Session（当前对象保留窗口为 15 分钟）。
-- HUMAN_REQUIRED 的真实业务通知仍需单独验收；不能用 USER_PAUSED 冒充，也不能把自动化 fake 通知结果记成人工 PASS。FAILED 为建议附加项。
-- 再点击开始菜单 NovaWing，确认恢复原窗口，只有一个托盘/Runtime。
-- 托盘 → 退出；从开始菜单重新打开，确认同一 Session 恢复，没有再次执行、checkpoint 或完成通知。
-- Windows 设置中卸载 NovaWing，确认安装目录/快捷方式清理；再次运行同一安装器并从开始菜单启动，确认快捷方式正常、业务数据保留。
+曾发现 allowed paths 解析缺失与 acceptance / verification binding 的 lossy parsing；修复后在安装版确认：
 
-运行中通知中心点击是硬门禁。超出对象保留期及退出后 cold-start persisted click 尚未支持可靠 Session 关联，记录 DEFERRED。
+- 中英文 Allowed Paths 正确解析。
+- bullets / comma / 顿号 / backticks 等列表形态正确。
+- ambiguous permission fail closed。
+- partial parsing 不覆盖已有 allowedPaths。
+- Acceptance Criteria / Required Evidence 正确绑定。
 
-## 自动取证位置
+## 3. 窗口唤醒白屏恢复 — MANUAL / REAL-HOST PASS
 
-- 安装版本地事件：`%LOCALAPPDATA%\NovaWing\desktop\events.jsonl`（显式 data override 时在该目录下）。
-- 自动 package smoke：`artifacts/desktop/package-smoke/result.json`。
-- 安装包 size/SHA256/版本：`artifacts/desktop/installer.json`。
-- 真实任务参数：`artifacts/desktop/realhost-task.json`。
+Notification click / window restore 的白屏问题已修复，并在安装版人工复验通过：点击 Toast 后窗口恢复、无白屏、进入正确 Session。
 
-只有安装、开始菜单、真人 Toast、真实 Codex、checkpoint、恢复及卸载等全部证据齐全后，Phase 4 才能 PASS 并提交；不 push、merge 或 tag。
+修复细节（同健康 URL 不重复 `loadURL`、串行 navigation tail、事件驱动等待 `did-stop-loading` / `ready-to-show`、destroyed window 直达目标 Control URL）见 [白屏修复报告](NovaWing-v0.4.0-Window-White-Screen-Blocker.md) 与 Phase 4 Report 第 5 节。
+
+## 4. HUMAN_REQUIRED / BUSINESS_DECISION — MANUAL / REAL-HOST PASS
+
+```text
+Task:    DESKTOP-BUSINESS-DECISION-004
+Session: desktop-business-decision-001-202609220448-3f4d96
+checkpoint: 74324c695e18afa3040c38643a529661e3b7a787
+```
+
+真实事件链：
+
+```text
+BUSINESS_DECISION
+→ HUMAN_REQUIRED
+→ Desktop notification
+→ 用户输入 staging
+→ submitHumanDecision
+→ resume
+→ autonomous diagnosis / recovery
+→ Executor 重新执行
+→ git diff --check PASS
+→ npm test PASS
+→ checkpoint
+→ COMPLETED
+→ Desktop completion notification
+```
+
+证明：PendingHumanAction durable；BUSINESS_DECISION UI 可用；AnsweredHumanAction 为 typed；human decision consumption 生效；resume 后不会再次重复 BUSINESS_DECISION；Executor 可重新执行；verification / checkpoint / completion 正常。
+
+## 5. DeepSeek Independent Reviewer — MANUAL / REAL-HOST PASS
+
+```text
+Task:    DESKTOP-DEEPSEEK-REVIEW-003
+Session: desktop-review-001-202609220836-7398d3
+checkpoint: f414ac7dc0f55909432f70471d246c6b5aa66412
+```
+
+真实事件链：
+
+```text
+Codex EXECUTE
+→ VERIFY
+→ git diff --check PASS
+→ npm test PASS
+→ CONTROLLER_DECIDED REVIEW
+→ REVIEW_REQUIRED
+→ REVIEW_STARTED     agent=deepseek-reviewer provider=deepseek
+→ AGENT_DISPATCHED   action=REVIEW agent=deepseek-reviewer provider=deepseek
+→ REVIEW_PASSED
+→ CONTROLLER_DECIDED  action=COMPLETE reasonCode=COMPLETION_CRITERIA_SATISFIED
+→ checkpoint
+→ TASK_COMPLETED
+→ SESSION_COMPLETED   completionReason=ALL_TASKS_COMPLETED
+→ Desktop COMPLETED notification
+```
+
+证明：Codex 为 Executor、DeepSeek 为独立 Reviewer；installed production reviewer wiring 正常；provider isolation 正常；deterministic Verification 正常；Review PASS 正常；Review 后 completion gate 正常收敛；不再出现重复 `EVIDENCE_MISSING`；Evidence 使用 step identity 正常；Git checkpoint 正常；Session 最终 COMPLETED。
+
+## 6. Evidence Identity 修复 — MANUAL / REAL-HOST PASS
+
+早前真实失败链 `REVIEW_PASSED → VERIFY:EVIDENCE_MISSING → repeated VERIFY → CYCLIC_NO_PROGRESS` 的根因为 binding 使用 command identity 而 completion evidence 使用 step identity。修复后由第 5 节的真实任务验证收敛。细节见 Phase 4 Report 第 9 节。
+
+## 7. Observed transient（非 blocker）
+
+`NO_OP_EXECUTION: Codex completed without workspace inspection; execution evidence is missing` 曾在 DESKTOP-DEEPSEEK-REVIEW-002 出现一次，该 Session 在 EXECUTE 阶段即 fail closed，未进入 VERIFY / REVIEW。同一 installer、同一 fixture 下的 DESKTOP-DEEPSEEK-REVIEW-003 完整成功。不计为 Phase 4 blocker，不据此继续修改 Runtime。
+
+## 8. 未完成 / DEFERRED（不伪报）
+
+- 超出 15 分钟通知对象保留期或退出后的 persisted click，尚无可靠 Session 关联 —— DEFERRED。
+- installer 未签名，SmartScreen 可能告警 —— 已知非阻塞。
+- macOS、Auto Update、CI —— 属后续 Phase，本轮未实现。
+
+## 9. 自动取证位置
+
+- 安装版本地事件：`%LOCALAPPDATA%\NovaWing\desktop\events.jsonl`
+- package smoke：`artifacts/desktop/package-smoke/result.json`
+- installer size/SHA256/版本：`artifacts/desktop/installer.json`
+- 真实任务参数：`artifacts/desktop/realhost-task.json`
+- 历史明细：`window-final-gates.json`、`quick-fill-final-gates.json`、`WINDOWS_PACKAGED_REALHOST.json`
+
+以上 artifacts 均为 ignored，不纳入提交。

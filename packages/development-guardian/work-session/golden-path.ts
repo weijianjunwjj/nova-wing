@@ -13,7 +13,7 @@ import {
   type VerificationPlan,
 } from './verification-planner.js'
 import { assessDirectPathEligibility, concreteRuntimeProvider } from './direct-path.js'
-import type { WorkSessionTask } from './model.js'
+import type { WorkSessionTask, PendingHumanActionRequest } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import {
@@ -26,7 +26,7 @@ import {
   type V2ActionDispatcher,
 } from './v2-controller-task-runner.js'
 import { providerOf, repositoryFacts, type TaskEventV2 } from './task-observability.js'
-import { isAutonomousRecoveryCategory, RECOVERY_ACTION_BUDGET, validateAutonomousDiagnosis, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
+import { isAutonomousRecoveryCategory, authoritiesAfterAnsweredHumanAction, ANSWERED_BUSINESS_DECISION_REPEATED, derivePendingHumanAction, RECOVERY_ACTION_BUDGET, validateAutonomousDiagnosis, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
 
 /**
  * v0.3.0 Golden Path.
@@ -356,8 +356,15 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     checkpoint?: GuardianTaskRecoveryCheckpoint, context?: WorkSessionTaskRunContext,
   ): Promise<WorkSessionTaskResult> {
     const recovery = this.options.autonomousRecovery
+    // A pure business decision is not autonomous work, so it stays manual until the
+    // human answers it. That answer is only an instruction: re-entry still passes the
+    // full authority/path/command validation, so it can never grant permission.
+    const answeredBusinessDecision = result.humanRequired?.category === 'RECOVERY_REQUIRES_AUTHORIZATION' &&
+      typeof resumeData === 'object' && resumeData !== null &&
+      typeof (resumeData as { decision?: unknown }).decision === 'string'
     if (recovery === undefined || result.status !== 'HUMAN_REQUIRED' || result.humanRequired === undefined || result.taskStateV2 === undefined ||
-        !isAutonomousRecoveryCategory(result.humanRequired.category) || result.pendingVerificationCommand !== undefined) return result
+        (!isAutonomousRecoveryCategory(result.humanRequired.category) && !answeredBusinessDecision) ||
+        result.pendingVerificationCommand !== undefined) return result
     let state: TaskStateV2
     try {
       state = loadTaskStateV2(result.taskStateV2)
@@ -371,8 +378,9 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     state = { ...state, autonomousRecovery: { ...(state.autonomousRecovery ?? {
       phase: 'GOLDEN', goldenExecuteCount: 2, goldenVerifyCount: 2, executorHistory: [], verificationHistory: [state.verificationState.results],
     }), triggerCategory: result.humanRequired.category, triggerReason: result.humanRequired.reason } }
-    const stop = async (category: string, reason: string): Promise<WorkSessionTaskResult> => this.finishRecovery({
+    const stop = async (category: string, reason: string, pendingHumanAction?: PendingHumanActionRequest): Promise<WorkSessionTaskResult> => this.finishRecovery({
       status: 'HUMAN_REQUIRED', humanRequired: { category, reason }, taskStateV2: state,
+      ...(pendingHumanAction === undefined ? {} : { pendingHumanAction }),
     }, context)
     const existingBudget = state.actionBudget ?? createTaskStateV2({ id: this.options.sessionId, branch: this.options.branch }, task).actionBudget!
     if (existingBudget.recoveryExhausted || existingBudget.recoveryConsumed >= Math.min(existingBudget.recoveryLimit, RECOVERY_ACTION_BUDGET)) {
@@ -413,12 +421,30 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       })))
       decision = await recovery.diagnose({ task: structuredClone(state), category: result.humanRequired.category,
         reason: result.humanRequired.reason, currentPath: state.execution?.path === 'GOLDEN' ? 'GOLDEN' : 'CONTROLLER',
-        diff: await recovery.inspectDiff(), verifierOutputs, recoveryInstructions: context?.recoveryInstructions ?? [] })
+        diff: await recovery.inspectDiff(), verifierOutputs, recoveryInstructions: context?.recoveryInstructions ?? [],
+        ...(context?.answeredHumanAction === undefined ? {} : { answeredHumanAction: context.answeredHumanAction }) })
     } catch {
       return stop(result.humanRequired.category, '自动诊断未取得有效的结构化结果，请检查模型连接或补充失败信息后重试。')
     }
+    const answeredHumanAction = context?.answeredHumanAction
     const validation = validateAutonomousDiagnosis(decision, state, context?.approvedVerificationCommand)
-    if (!validation.ok) return stop(validation.category ?? result.humanRequired.category, validation.reason)
+    if (!validation.ok) {
+      // v0.4.0: 本轮 resume 刚刚回答过的 BUSINESS_DECISION 不能被再次索要。该条目在
+      // 授权判定之前被扣除 —— 扣完之后剩下的才是真正未决的人类请求。
+      //
+      // 只在诊断确实重新列出 BUSINESS_DECISION 时才接管：RECOVERY_REQUIRES_AUTHORIZATION
+      // 同样覆盖越权路径与未授权命令，那些原因必须原样保留给操作者。
+      if (validation.category === 'RECOVERY_REQUIRES_AUTHORIZATION' && answeredHumanAction !== undefined &&
+          decision.requiredAuthority.includes('BUSINESS_DECISION')) {
+        const remaining = authoritiesAfterAnsweredHumanAction(decision, answeredHumanAction)
+        // 只剩刚刚回答过的那一条：没有任何未决请求，这是诊断协议违规，不是新的业务问题。
+        if (remaining.length === 0) return stop('RECOVERY_BLOCKED', ANSWERED_BUSINESS_DECISION_REPEATED)
+        return stop(validation.category, `恢复需要你的决定或授权：${remaining.join(', ')}`,
+          derivePendingHumanAction({ ...decision, requiredAuthority: [...remaining] }))
+      }
+      return stop(validation.category ?? result.humanRequired.category, validation.reason,
+        validation.category === 'RECOVERY_REQUIRES_AUTHORIZATION' ? derivePendingHumanAction(decision) : undefined)
+    }
     state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, diagnosis: validation.decision } }
     // Diagnosis is read-only. Never treat a changed repository as its own checkpoint.
     if (!reconcileTaskState(state, await this.options.dispatcher.inspectRepository()).reconciled) return stop('REPO_DRIFT', '诊断期间仓库发生变化，请先核对修改。')
@@ -533,7 +559,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     })
     if (!eligibility.eligible) {
       state = { ...state,
-        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
         execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
       note({ type: 'DIRECT_PATH_ESCALATED', ...repositoryFacts(state), metadata: { stage: 'ELIGIBILITY', reasons: eligibility.reasons } })
       await context?.persistTaskStateV2?.(state)
@@ -543,7 +569,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     const agent = selectAgent('EXECUTE', this.options.agents)
     if (agent === undefined) {
       state = { ...state,
-        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan) },
+        completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
         execution: { ...state.execution!, path: 'CONTROLLER', escalated: true } }
       return this.options.fallbackRunner.run(task, resumeData, checkpoint, { ...context, taskStateV2: state })
     }

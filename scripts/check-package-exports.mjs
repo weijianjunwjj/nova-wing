@@ -232,6 +232,7 @@ const expectedRuntimeExports = {
     'resumeTargetForFailure',
     'resumeTargetForRuntimeFailure',
     'validateVerificationPlanAfterExecution',
+    'verificationCommandsForEvidence',
     'verificationPlanApprovalSatisfied',
     'verificationPlanFingerprintValid',
     // v0.3.0 Golden Path

@@ -8,7 +8,7 @@ import { GoldenPathTaskRunner } from '../packages/development-guardian/work-sess
 import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { TaskEventLogV2 } from '../packages/development-guardian/work-session/task-observability.js'
 import { loadTaskStateV2, type TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
-import type { WorkSessionTask } from '../packages/development-guardian/work-session/model.js'
+import type { AnsweredHumanAction, WorkSessionTask } from '../packages/development-guardian/work-session/model.js'
 import type { WorkSessionTaskRunContext } from '../packages/development-guardian/work-session/task-runner.js'
 
 const safeDecision = (overrides: Partial<AutonomousDiagnosisDecision> = {}): AutonomousDiagnosisDecision => ({
@@ -17,7 +17,21 @@ const safeDecision = (overrides: Partial<AutonomousDiagnosisDecision> = {}): Aut
   humanReason: null, requiredAuthority: [], paths: ['src/counter.js'], commands: [], ...overrides,
 })
 
-async function fixture(options: { failRecovery?: boolean; invalidEvidence?: boolean; wrongCwd?: boolean; noPlan?: boolean; decision?: AutonomousDiagnosisDecision; failDiagnosis?: boolean; failFirstDiagnosis?: boolean; goldenFixMakesProgress?: boolean; noOpAttempts?: number; taskOverrides?: Partial<WorkSessionTask> } = {}) {
+/** A diagnosis that stops on the operator's business decision instead of proposing work. */
+const asksForBusinessDecision = (humanReason = 'Which release channel?') => safeDecision({
+  recoverable: false, strategy: 'NONE', requiresHuman: true, humanReason, paths: [], commands: [],
+  requiredAuthority: ['BUSINESS_DECISION'],
+})
+
+const answeredStaging = (taskId: string, generation: number, decision = 'staging'): AnsweredHumanAction =>
+  ({ type: 'BUSINESS_DECISION', sessionId: 'S-auto', taskId, generation, decision })
+
+/** The resume that answers the pending business decision exactly like the runtime path does. */
+const answerWith = (f: Awaited<ReturnType<typeof fixture>>, answered: AnsweredHumanAction) => f.runner.run(
+  f.task, { decision: answered.decision, taskId: answered.taskId, generation: answered.generation }, undefined,
+  { ...f.context, taskStateV2: f.snapshot(), recoveryInstructions: [...(f.context.recoveryInstructions ?? []), answered.decision], answeredHumanAction: answered })
+
+async function fixture(options: { failRecovery?: boolean; invalidEvidence?: boolean; wrongCwd?: boolean; noPlan?: boolean; decision?: AutonomousDiagnosisDecision; decisionSequence?: readonly AutonomousDiagnosisDecision[]; failDiagnosis?: boolean; failFirstDiagnosis?: boolean; goldenFixMakesProgress?: boolean; noOpAttempts?: number; taskOverrides?: Partial<WorkSessionTask> } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'novawing-autonomy-'))
   await mkdir(join(root, 'src'))
   await mkdir(join(root, 'tests'))
@@ -53,7 +67,8 @@ async function fixture(options: { failRecovery?: boolean; invalidEvidence?: bool
   const recovery: AutonomousRecoveryOptions = {
     inspectDiff: async () => 'diff --git a/src/counter.js b/src/counter.js\n-?\n+X / ?',
     readVerificationOutput: async () => '[stdout]\nrun counter test\n[stderr]\nassertion failed: X / Y',
-    diagnose: async (evidence) => { diagnosed.push(evidence); if (options.failDiagnosis || (options.failFirstDiagnosis && diagnosed.length === 1)) throw new Error('offline'); return options.decision ?? safeDecision() },
+    diagnose: async (evidence) => { diagnosed.push(evidence); if (options.failDiagnosis || (options.failFirstDiagnosis && diagnosed.length === 1)) throw new Error('offline')
+      return options.decisionSequence?.[Math.min(diagnosed.length - 1, options.decisionSequence.length - 1)] ?? options.decision ?? safeDecision() },
   }
   const runner = new GoldenPathTaskRunner({ sessionId: 'S-auto', branch: 'main', agents, dispatcher, repositoryRoot: root, autonomousRecovery: recovery,
     fallbackRunner: new V2ControllerTaskRunner({ sessionId: 'S-auto', branch: 'main', agents, dispatcher }) })
@@ -260,5 +275,129 @@ test('v0.3.1 exact verifier approval resumes a suspended pre-execution Golden bo
     assert.equal(resumed.status, 'COMPLETED', JSON.stringify(resumed.humanRequired))
     assert.equal(f.actions.filter((item) => item.path === 'GOLDEN' && item.action === 'EXECUTE').length, 2)
     assert.equal(f.diagnosed.length, 1, 'the only diagnosis is after Golden exhaustion, never for the pending approval')
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+test('v0.4.0 a business decision yields a structured pending action while authority requests stay manual', async () => {
+  const business = await fixture({ decision: safeDecision({ requiredAuthority: ['BUSINESS_DECISION'] }) })
+  try {
+    const result = await business.runner.run(business.task, undefined, undefined, business.context)
+    assert.equal(result.status, 'HUMAN_REQUIRED')
+    assert.equal(result.humanRequired?.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+    assert.deepEqual(result.pendingHumanAction, { type: 'BUSINESS_DECISION', prompt: safeDecision().diagnosis })
+    assert.equal(business.actions.filter((item) => item.path === 'CONTROLLER').length, 0)
+  } finally { await rm(business.root, { recursive: true, force: true }) }
+  for (const decision of [
+    safeDecision({ requiredAuthority: ['EXPAND_ALLOWED_PATHS'], paths: ['docs/counter.md'] }),
+    safeDecision({ requiredAuthority: ['COMMAND_APPROVAL'], commands: ['npm install'] }),
+  ]) {
+    const scoped = await fixture({ decision })
+    try {
+      const result = await scoped.runner.run(scoped.task, undefined, undefined, scoped.context)
+      assert.equal(result.humanRequired?.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+      assert.equal(result.pendingHumanAction, undefined)
+    } finally { await rm(scoped.root, { recursive: true, force: true }) }
+  }
+})
+
+test('v0.4.0 an answered business decision is consumed by diagnosis and reaches the executor', async () => {
+  const f = await fixture({ decisionSequence: [asksForBusinessDecision(), safeDecision()] })
+  try {
+    const first = await f.runner.run(f.task, undefined, undefined, f.context)
+    assert.equal(first.humanRequired?.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+    assert.equal(first.pendingHumanAction?.type, 'BUSINESS_DECISION')
+    assert.equal(f.diagnosed[0]!.answeredHumanAction, undefined, 'nothing was answered yet')
+
+    const answered = answeredStaging(f.task.id, 1)
+    const resumed = await answerWith(f, answered)
+
+    // A: the answer is asked again? No — it becomes typed, identity-bound evidence
+    // before the diagnosis runs, and the diagnosis is expected to act on it.
+    assert.deepEqual(f.diagnosed[1]!.answeredHumanAction, answered)
+    assert.equal(f.diagnosed[1]!.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+    // A: the recovery is consumed instead of minting a second identical page.
+    assert.equal(resumed.status, 'COMPLETED', JSON.stringify(resumed.humanRequired))
+    assert.equal(resumed.pendingHumanAction, undefined)
+    assert.equal(resumed.taskStateV2?.autonomousRecovery?.phase, 'COMPLETED')
+
+    // B: the Executor really ran again, and it really received the operator's answer.
+    const advanced = f.actions.filter((item) => item.path === 'CONTROLLER' && item.action === 'EXECUTE')
+    assert.equal(advanced.length, 1)
+    assert.ok(advanced[0]!.instructions.includes('staging'), JSON.stringify(advanced[0]!.instructions))
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+test('v0.4.0 a repeated BUSINESS_DECISION after the operator answered fails closed instead of looping', async () => {
+  const f = await fixture({ decisionSequence: [asksForBusinessDecision(), asksForBusinessDecision()] })
+  try {
+    await f.runner.run(f.task, undefined, undefined, f.context)
+    const resumed = await answerWith(f, answeredStaging(f.task.id, 1))
+
+    assert.equal(resumed.status, 'HUMAN_REQUIRED')
+    assert.equal(resumed.humanRequired?.category, 'RECOVERY_BLOCKED')
+    assert.match(resumed.humanRequired!.reason, /diagnosis requested an already answered BUSINESS_DECISION/u)
+    // No same-type pending action, so the Runtime never renders the decision page again.
+    assert.equal(resumed.pendingHumanAction, undefined)
+    assert.equal(f.actions.filter((item) => item.path === 'CONTROLLER').length, 0)
+
+    // The blocked state cannot be walked back into diagnosis by answering again.
+    const again = await answerWith(f, answeredStaging(f.task.id, 1, 'production'))
+    assert.equal(f.diagnosed.length, 2)
+    assert.equal(again.humanRequired?.category, 'RECOVERY_BLOCKED')
+    assert.equal(again.pendingHumanAction, undefined)
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+test('v0.4.0 an answered business decision never re-opens itself while other authorities still block', async () => {
+  const f = await fixture({ decisionSequence: [
+    asksForBusinessDecision(),
+    safeDecision({ requiredAuthority: ['BUSINESS_DECISION', 'EXPAND_ALLOWED_PATHS'], paths: ['docs/counter.md'] }),
+  ] })
+  try {
+    await f.runner.run(f.task, undefined, undefined, f.context)
+    const answered = answeredStaging(f.task.id, 1)
+    const resumed = await answerWith(f, answered)
+
+    // The already answered decision is not asked again ...
+    assert.equal(resumed.pendingHumanAction, undefined)
+    assert.equal(resumed.humanRequired?.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+    assert.doesNotMatch(resumed.humanRequired!.reason, /BUSINESS_DECISION/u)
+    // ... but EXPAND_ALLOWED_PATHS is still an independent authority blocker.
+    assert.match(resumed.humanRequired!.reason, /EXPAND_ALLOWED_PATHS/u)
+    // Answering the business decision never hands over the other permission.
+    assert.equal(f.actions.filter((item) => item.path === 'CONTROLLER').length, 0)
+    assert.deepEqual(resumed.taskStateV2?.permissions.allowedPaths, ['src/**'])
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+test('v0.4.0 an unrelated authority failure after an answered decision keeps its own reason', async () => {
+  const f = await fixture({ decisionSequence: [asksForBusinessDecision(), safeDecision({ paths: ['tests/counter.test.js'] })] })
+  try {
+    await f.runner.run(f.task, undefined, undefined, f.context)
+    const resumed = await answerWith(f, answeredStaging(f.task.id, 1))
+
+    // The diagnosis never re-asked the business decision, so the guard must not claim it did.
+    assert.equal(resumed.humanRequired?.category, 'RECOVERY_REQUIRES_AUTHORIZATION')
+    assert.match(resumed.humanRequired!.reason, /超出当前路径授权/u)
+    assert.doesNotMatch(resumed.humanRequired!.reason, /already answered/u)
+    assert.equal(resumed.pendingHumanAction, undefined)
+    assert.deepEqual(resumed.taskStateV2?.permissions.allowedPaths, ['src/**'])
+  } finally { await rm(f.root, { recursive: true, force: true }) }
+})
+
+test('v0.4.0 the diagnosis request carries the typed answered business decision as settled fact', async () => {
+  const f = await fixture()
+  try {
+    await f.runner.run(f.task, undefined, undefined, f.context)
+    const requests: { system: string; user: string }[] = []
+    const diagnose = createAutonomousDiagnosisRunner({ runner: async (request) => {
+      requests.push({ system: request.system, user: request.user })
+      return { text: JSON.stringify(safeDecision()) }
+    } })
+    await diagnose({ ...f.diagnosed[0]!, answeredHumanAction: answeredStaging(f.task.id, 1) })
+
+    assert.match(requests[0]!.user, /"answeredHumanAction":\{"type":"BUSINESS_DECISION"/u)
+    assert.match(requests[0]!.user, /"decision":"staging"/u)
+    assert.match(requests[0]!.system, /never put BUSINESS_DECISION into requiredAuthority again/u)
   } finally { await rm(f.root, { recursive: true, force: true }) }
 })

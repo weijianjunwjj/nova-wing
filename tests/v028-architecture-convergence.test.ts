@@ -152,7 +152,8 @@ async function directRun(root: string, options: ScriptOptions = {}) {
       if (action === 'VERIFY') {
         verificationCount += 1
         const fail = options.verify !== undefined && options.verify !== 'pass' && !(options.fixAfterFailure && fixed)
-        return { status: 'SUCCESS' as const, verificationResults: state.verificationPlan!.steps.map((step) => ({ name: step.command, status: fail ? 'failed' as const : 'passed' as const,
+        return { status: 'SUCCESS' as const, verificationResults: state.verificationPlan!.steps.map((step) => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd,
+          status: fail ? 'failed' as const : 'passed' as const,
           ...(fail ? { classification: options.verify === 'environment' ? 'ENVIRONMENT_FAILURE' as const : 'CODE_FAILURE' as const } : {}) })) }
       }
       if (action === 'REVIEW') {

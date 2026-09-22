@@ -405,9 +405,15 @@ export async function runArchitectureBenchmark(spec: ArchitectureBenchmarkSpec, 
         async inspectRepository() { repoInspectionCount += 1; gitProcessCount += 4; return reality() },
         async dispatch({ action, task: state, agent }) {
           if (action === 'EXECUTE') { executeCount += 1; modelProviderCallCount += 1; changed = true; return { status: 'SUCCESS' as const, changedFiles: [...spec.changedFiles], providerHistory: ['codex'], ...(executeCount > 1 ? { implementationEvidenceAdded: true } : {}) } }
-          if (action === 'VERIFY') { verifyCount += 1; const evidence = state.verificationPlan?.steps.map((step) => step.command) ?? state.completion.bindings.flatMap((binding) => binding.requiredEvidence); verifierProcessCount += evidence.length
+          if (action === 'VERIFY') { verifyCount += 1
+            // 真实 verifier 在计划存在时以 plan step id 作为结果身份；命令仍是 step.command。
+            const planned = state.verificationPlan?.steps
+            const evidence = planned === undefined
+              ? [...new Set(state.completion.bindings.flatMap((binding) => binding.requiredEvidence))].map((name) => ({ name }))
+              : planned.map((step) => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd }))
+            verifierProcessCount += evidence.length
             const failed = spec.firstVerificationFails === true && verifyCount === 1
-            return { status: 'SUCCESS' as const, verificationResults: [...new Set(evidence)].map((name) => ({ name, status: failed ? 'failed' as const : 'passed' as const, ...(failed ? { classification: 'CODE_FAILURE' as const } : {}) })) } }
+            return { status: 'SUCCESS' as const, verificationResults: evidence.map((item) => ({ ...item, status: failed ? 'failed' as const : 'passed' as const, ...(failed ? { classification: 'CODE_FAILURE' as const } : {}) })) } }
           if (action === 'REVIEW') { modelProviderCallCount += 1; const reviewer = agent.identity!; return { status: 'SUCCESS' as const, review: { passed: true, findings: [], blockingFindings: [], severity: 'HIGH' as const, reviewer,
             implementer: state.implementer!, reviewedRepository: state.gitState.repositoryIdentity!, reviewedBranch: state.gitState.branch!, reviewedCommit: state.gitState.headSha!, reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } } }
           return { status: 'SUCCESS' as const }

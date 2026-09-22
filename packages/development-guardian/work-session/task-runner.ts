@@ -3,7 +3,7 @@
  * 允许 Work Session 注入不同的任务执行器（Fake 或真实 Guardian Adapter）
  */
 
-import type { WorkSessionTask, HumanRequired } from './model.js'
+import type { WorkSessionTask, HumanRequired, PendingHumanActionRequest, AnsweredHumanAction } from './model.js'
 import type { GuardianTaskRecoveryCheckpoint } from './checkpoint.js'
 import type {
   DelegationVerdict,
@@ -55,6 +55,11 @@ export interface WorkSessionTaskResult {
   status: WorkSessionTaskResultStatus
   summary?: string
   humanRequired?: HumanRequired
+  /**
+   * v0.4.0: 只有纯业务决定才会提供；Runtime 补齐 sessionId/taskId/generation 后
+   * 持久化。权限类 suspension 永远不携带此字段。
+   */
+  pendingHumanAction?: PendingHumanActionRequest
   /** Runtime validates and persists this exact command before it can be approved. */
   pendingVerificationCommand?: string
   brainFailure?: GuardianBrainFailure
@@ -78,6 +83,12 @@ export interface WorkSessionTaskResult {
 export interface WorkSessionTaskRunContext {
   /** Durable supplemental instructions for this exact Session and Task only. */
   recoveryInstructions?: readonly string[]
+  /**
+   * v0.4.0: 本轮 resume 正在回答的结构化人类动作（Runtime 落库的
+   * pendingHumanAction）。它与 recoveryInstructions 分开，因为诊断必须能区分
+   * 「已经被操作者回答的业务决定」和普通收窄指令。
+   */
+  answeredHumanAction?: AnsweredHumanAction
   /** hard deadline 绝对时间（clock 帧内毫秒）；超过后不得启动新的 Reviewer/Executor iteration */
   hardDeadlineAtMs?: number
   /** W005-B: checked only at Guardian safe autonomous boundaries. */

@@ -1,5 +1,7 @@
 # v0.4.0 Quick Fill Release Blocker
 
+**最终状态（2026-09-22）：RESOLVED。** Quick Fill 修复已在 installed real-host 上人工验证 PASS，见 [Phase 4 Report](NovaWing-v0.4.0-Phase-4-Report.md) 第 4 节。本文件保留为历史过程记录，其 installer SHA 已 OBSOLETE。
+
 后续更新：本报告安装包为 Quick Fill 修复时的历史版本，已由 [窗口白屏修复报告](NovaWing-v0.4.0-Window-White-Screen-Blocker.md) 的新版 0.4.0 替代。这里的自动门禁记录继续保留，但 installer SHA 不代表最新包。
 
 日期：2026-09-21。分支 `feat/v0.4-desktop`，HEAD `1ce8111065051a7256d73a2d61d1551ea4fccf37`。本轮不 commit / push / merge / tag，不继续 HUMAN_REQUIRED / uninstall / reinstall 人工验收。

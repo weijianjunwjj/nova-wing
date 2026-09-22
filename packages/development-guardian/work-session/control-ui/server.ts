@@ -13,7 +13,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { WorkSessionControlController } from './controller.js'
-import type { ControlResumeInput } from './controller.js'
+import type { ControlHumanDecisionInput, ControlResumeInput } from './controller.js'
 import { renderHtml, APP_JS, STYLES_CSS } from './view.js'
 import type { ControlEvent } from './events.js'
 import { trackHttpPreconnections } from '../http-preconnections.js'
@@ -184,6 +184,9 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/resume') {
       return this.serveResume(req, res)
     }
+    if (method === 'POST' && path === '/api/session/human-decision') {
+      return this.serveHumanDecision(req, res)
+    }
     if (method === 'POST' && path === '/api/session/resume-recoverable') {
       return this.serveResumeRecoverable(req, res)
     }
@@ -215,6 +218,7 @@ export class WorkSessionControlServer {
       '/api/session/pause',
       '/api/session/stop-after-task',
       '/api/session/resume',
+      '/api/session/human-decision',
       '/api/session/resume-recoverable',
       '/api/session/approve-verification',
       '/api/session/reject-verification',
@@ -347,6 +351,30 @@ export class WorkSessionControlServer {
         this.respondJson(res, 202, { accepted: true })
       } else {
         this.respondJson(res, 409, { error: result.reason ?? 'resume rejected' })
+      }
+    })
+  }
+
+  private serveHumanDecision(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorizeMutation(req, res)) return
+    const contentType = req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== 'application/json') {
+      this.respondJson(res, 415, { error: 'content type must be application/json' })
+      return
+    }
+    this.readBodyWithLimit(req, res, (body) => {
+      const parsed = parseHumanDecisionBody(body)
+      if (!parsed.ok) {
+        this.respondJson(res, 400, { error: parsed.error })
+        return
+      }
+      // The controller authorizes against durable state; the browser supplies no
+      // category and cannot reuse this endpoint for a permission-class question.
+      const result = this.controller.submitHumanDecision(parsed.input)
+      if (result.accepted) {
+        this.respondJson(res, 202, { accepted: true })
+      } else {
+        this.respondJson(res, 409, { error: result.reason ?? 'human decision rejected' })
       }
     })
   }
@@ -633,4 +661,40 @@ function parseResumeBody(body: string):
     return { ok: true, input: { ...scope, approval: record.approval } }
   }
   return { ok: true, input: scope }
+}
+
+/**
+ * The business-decision body is exact: identity plus one answer. It cannot express
+ * approvals, recoveries or any other authorization, so the endpoint stays narrow.
+ */
+function parseHumanDecisionBody(body: string):
+  | { ok: true; input: ControlHumanDecisionInput }
+  | { ok: false; error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body) as unknown
+  } catch {
+    return { ok: false, error: 'malformed JSON' }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'human decision body must be an object' }
+  }
+  const record = parsed as Record<string, unknown>
+  if (Object.keys(record).some((key) => !['taskId', 'generation', 'decision'].includes(key))) {
+    return { ok: false, error: 'human decision body contains unknown fields' }
+  }
+  if (typeof record.taskId !== 'string' || !record.taskId.trim()) {
+    return { ok: false, error: 'taskId must be a nonempty string' }
+  }
+  if (typeof record.generation !== 'number' || !Number.isSafeInteger(record.generation) || record.generation < 0) {
+    return { ok: false, error: 'generation must be a nonnegative integer' }
+  }
+  if (typeof record.decision !== 'string') {
+    return { ok: false, error: 'decision must be a string' }
+  }
+  const decision = record.decision.trim()
+  if (decision.length < 1 || decision.length > 2_000) {
+    return { ok: false, error: 'decision must be 1..2000 characters' }
+  }
+  return { ok: true, input: { taskId: record.taskId, generation: record.generation, decision } }
 }

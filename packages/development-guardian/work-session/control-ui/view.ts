@@ -73,6 +73,8 @@ export function renderHtml(bootstrap: ViewBootstrap): string {
       <p id="decision-changes" class="note" hidden></p>
     </div>
     <p id="decision-guidance" class="note"></p>
+    <div id="business-decision-options" class="row" hidden></div>
+    <button id="submit-human-decision-btn" type="button" class="primary" hidden>提交并继续</button>
     <button id="diagnose-continue-btn" type="button" class="primary" hidden>✨ AI 诊断并继续</button>
     <label id="decision-input-label" for="decision-input" hidden>补充指令</label>
     <textarea id="decision-input" aria-label="补充指令" placeholder="例如：只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。" maxlength="2000" rows="4" hidden></textarea>
@@ -305,6 +307,7 @@ function displayValue(value, labels) {
 var renderedRuntime
 var renderedSnapshot
 var decisionScope = ''
+var businessOptionsKey = ''
 var decisionRequestPending = false
 
 function render(snapshot) {
@@ -605,6 +608,22 @@ function renderDecisionEvidence(snapshot, engineering) {
   if (evidence) evidence.hidden = !engineering
 }
 
+function renderBusinessOptions(container, pending) {
+  var key = (pending.taskId || '') + ':' + (pending.generation || 0) + ':' + pending.options.join('|')
+  if (key === businessOptionsKey) return
+  businessOptionsKey = key
+  container.textContent = ''
+  container.hidden = false
+  pending.options.forEach(function (option) {
+    var button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'primary'
+    button.textContent = option
+    button.addEventListener('click', function () { return submitHumanDecision(option) })
+    container.appendChild(button)
+  })
+}
+
 function renderDecision(rt, snapshot) {
   var card = el('decision-card')
   if (!card) return
@@ -621,6 +640,12 @@ function renderDecision(rt, snapshot) {
   // not maintain a second browser-side failure policy or infer it from prose.
   var engineering = !!rt.autonomousRecovery
   var authorizationRequired = category === 'RECOVERY_REQUIRES_AUTHORIZATION'
+  // A structured business decision is the only human action answerable in-Session.
+  // Permission-class suspensions never carry one, so this control can never be
+  // reused for command authorization, credentials or scope expansion.
+  var pendingHumanAction = rt.pendingHumanAction
+  var businessDecision = !!pendingHumanAction && rt.state === 'SUSPENDED' && !userPaused &&
+    !verificationApproval && !checkpointRecovery && !brainUnavailable && !engineering
   var recovering = !['COMPLETED', 'FAILED', 'CANCELLED'].includes(rt.state) &&
     (rt.recoveryInProgress === true || decisionRequestPending)
   var scope = (snapshot.configuredSession.id || '') + ':' + (rt.currentTaskId || '') + ':' + (rt.humanRequiredGeneration || 0)
@@ -643,13 +668,17 @@ function renderDecision(rt, snapshot) {
       : brainUnavailable
       ? 'Brain 暂时不可用'
       : (userPaused ? '已由你暂停' : '需要你的决定'))
-    setText('decision-category', verificationApproval ? '验证授权' : checkpointRecovery
+    setText('decision-category', verificationApproval ? '验证授权' : businessDecision
+      ? '业务决定'
+      : checkpointRecovery
       ? 'Git Push'
       : brainUnavailable
       ? 'Brain Review · ' + displayValue(brainFailure.category)
       : HUMAN_REQUIRED_LABELS[userPaused ? 'USER_PAUSED' : category] || '需要确认下一步')
     setText('decision-reason', verificationApproval
       ? 'Task: ' + verificationApproval.taskId + '；验证命令：' + verificationApproval.command
+      : businessDecision
+      ? pendingHumanAction.prompt
       : checkpointRecovery
       ? '当前 Task 已产生本地 checkpoint commit，但远端推送未确认。'
       : brainUnavailable
@@ -676,9 +705,27 @@ function renderDecision(rt, snapshot) {
     var resolvedAck = category === 'ENVIRONMENT_REQUIRED' || category === 'CREDENTIAL_REQUIRED' || category === 'EXECUTOR_RETRY_REQUIRED'
     var repair = rt.runtimeRepair
     var autonomous = rt.autonomousRecovery
-    if (input) { input.hidden = !needsDecision; input.disabled = recovering }
-    if (inputLabel) inputLabel.hidden = !needsDecision
+    // With a closed option set the buttons themselves are the answer; otherwise the
+    // user states the decision in the same input used by ordinary instructions.
+    var needsBusinessDecision = businessDecision && !pendingHumanAction.options
+    var businessOptions = el('business-decision-options')
+    var businessBtn = el('submit-human-decision-btn')
+    if (businessOptions) {
+      if (businessDecision && pendingHumanAction.options) {
+        renderBusinessOptions(businessOptions, pendingHumanAction)
+      } else {
+        businessOptions.hidden = true
+        businessOptions.textContent = ''
+        businessOptionsKey = ''
+      }
+    }
+    if (input) { input.hidden = !(needsDecision || needsBusinessDecision); input.disabled = recovering }
+    if (inputLabel) {
+      inputLabel.hidden = !(needsDecision || needsBusinessDecision)
+      inputLabel.textContent = needsBusinessDecision ? '输入你的决定' : '补充指令'
+    }
     if (decisionBtn) { decisionBtn.hidden = !needsDecision; decisionBtn.disabled = recovering }
+    if (businessBtn) { businessBtn.hidden = !needsBusinessDecision; businessBtn.disabled = recovering }
     if (approvalBtn) { approvalBtn.hidden = !verificationApproval; approvalBtn.disabled = !!approvalRejected || recovering }
     if (rejectBtn) { rejectBtn.hidden = !verificationApproval; rejectBtn.disabled = !!approvalRejected || recovering }
     if (diagnoseBtn) {
@@ -710,6 +757,8 @@ function renderDecision(rt, snapshot) {
       setText('decision-guidance', '正在诊断 → 检查 Provider → 寻找独立 Reviewer → 修复成功 → 恢复 Session')
     } else if (repairFailure) {
       setText('decision-guidance', 'AI 修复失败：' + (repair.lastOutcome.reason || repair.lastOutcome.classification) + '。可修复后重试，或手动处理。')
+    } else if (businessDecision) {
+      setText('decision-guidance', 'NovaWing 不会替你选择业务方案，也不会因这次回答扩大修改范围、命令授权或费用额度。')
     } else if (verificationApproval) {
       setText('decision-guidance', approvalRejected ? '已拒绝此验证授权。任务保持暂停，原验证证据已保留。'
         : '授权仅对当前 Task 的这一条验证命令生效；拒绝后保留执行证据并保持暂停。')
@@ -832,6 +881,38 @@ async function resumeSession(payload) {
   }
 }
 
+async function submitHumanDecision(decision) {
+  var note = el('resume-note')
+  if (decisionRequestPending) return
+  var pending = renderedRuntime && renderedRuntime.pendingHumanAction
+  if (!pending) return
+  if (!decision || decision.length === 0) { setText('resume-note', '请先填写你的决定。'); return }
+  decisionRequestPending = true
+  if (renderedSnapshot) renderDecision(renderedRuntime, renderedSnapshot)
+  if (note) note.textContent = '正在提交你的决定…'
+  try {
+    var res = await fetch('/api/session/human-decision', {
+      method: 'POST',
+      headers: {
+        'X-NovaWing-Control-Token': controlToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ taskId: pending.taskId, generation: pending.generation, decision: decision })
+    })
+    if (note) note.textContent = res.status === 202 ? '已提交，正在恢复当前任务' : '决定未被接受，请确认当前任务状态后重试。'
+    if (res.status === 202) {
+      var input = el('decision-input')
+      if (input) input.value = ''
+    }
+  } catch (error) {
+    if (note) note.textContent = '暂时无法提交，请检查连接后重试。'
+  } finally {
+    decisionRequestPending = false
+    if (renderedSnapshot) renderDecision(renderedRuntime, renderedSnapshot)
+    refresh()
+  }
+}
+
 function scopedRecoveryPayload(payload) {
   if (renderedRuntime && renderedRuntime.currentTaskId) {
     payload.taskId = renderedRuntime.currentTaskId
@@ -873,6 +954,11 @@ if (resumeDecisionBtn) resumeDecisionBtn.addEventListener('click', async functio
   var decision = input ? input.value.trim() : ''
   if (decision.length > 0) await resumeSession(scopedRecoveryPayload({ decision: decision }))
   else setText('resume-note', '请先填写补充指令。')
+})
+var submitHumanDecisionBtn = el('submit-human-decision-btn')
+if (submitHumanDecisionBtn) submitHumanDecisionBtn.addEventListener('click', async function () {
+  var input = el('decision-input')
+  await submitHumanDecision(input ? input.value.trim() : '')
 })
 var diagnoseContinueBtn = el('diagnose-continue-btn')
 if (diagnoseContinueBtn) diagnoseContinueBtn.addEventListener('click', async function () {

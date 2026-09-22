@@ -28,6 +28,7 @@ import {
   resolvePersistedCodexConfiguration,
   type ExecutorMode,
 } from '../../coding-executor-config.js'
+import { hasDeepSeekRoute } from '../../deepseek-executor.js'
 import {
   CodingExecutionStore,
   defaultCodingExecutionStorePath,
@@ -203,6 +204,12 @@ export interface NovaWingLaunchpadDependencies {
   preflight?: (targetRepo?: string, controlPlane?: 'v1' | 'v2') => Promise<DependencyHealthReport>
   /** Existing local Codex quota observation; failures intentionally remain unknown. */
   readCodexAvailability?: () => CodexAvailability | Promise<CodexAvailability>
+  /**
+   * Real review-capability probe for a target repository. Production resolves the
+   * DeepSeek reviewer route; a missing or failing probe must fail closed (no
+   * reviewer profile is declared), never guess that a reviewer exists.
+   */
+  resolveReviewerRouteAvailable?: (targetRepo: string) => Promise<boolean>
   /** AI Repair & Retry: deterministic agent, optional LLM agent, audit sink, notifier. */
   repairAgent?: RepairAgent
   repairLlmAgent?: RepairAgent
@@ -403,6 +410,37 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
   }
 }
 
+/**
+ * Capability profiles the Composer declares for a new V2 Session.
+ *
+ * The executor profile mirrors the legacy single-agent fallback, so EXECUTE/VERIFY
+ * behavior is unchanged. The independent reviewer is declared only when its real
+ * provider route was just confirmed: declaring it speculatively would claim a
+ * capability this machine does not have, and reviewer independence forbids the
+ * Codex executor from reviewing its own work.
+ */
+const COMPOSER_EXECUTOR_AGENT_ID = 'executor-router'
+const COMPOSER_REVIEWER_AGENT_ID = 'deepseek-reviewer'
+
+function composerAgentProfiles(
+  sessionId: string,
+  reviewerRouteAvailable: boolean,
+): NonNullable<TrustedWorkSessionConfig['agents']> {
+  const executor = {
+    id: COMPOSER_EXECUTOR_AGENT_ID,
+    provider: 'codex-or-deepseek',
+    runtimeIdentity: `session:${sessionId}:${COMPOSER_EXECUTOR_AGENT_ID}`,
+    capabilities: { coding: true, reasoning: true, verification: true, review: false },
+  }
+  if (!reviewerRouteAvailable) return [executor]
+  return [executor, {
+    id: COMPOSER_REVIEWER_AGENT_ID,
+    provider: 'deepseek',
+    runtimeIdentity: `session:${sessionId}:${COMPOSER_REVIEWER_AGENT_ID}`,
+    capabilities: { review: true, reasoning: true },
+  }]
+}
+
 export function defaultTrustedConfigDirectory(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
@@ -497,6 +535,7 @@ export class NovaWingLaunchpad {
   private readonly readSessionStatus: (config: TrustedWorkSessionConfig) => Promise<WorkSessionDisplayState>
   private readonly preflight: NovaWingLaunchpadDependencies['preflight']
   private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
+  private readonly resolveReviewerRouteAvailable: (targetRepo: string) => Promise<boolean>
   private readonly repairAgent: RepairAgent
   private readonly activityObserver: WorkSessionActivityObserver | undefined
   private readonly repairLlmAgent: RepairAgent
@@ -556,6 +595,8 @@ export class NovaWingLaunchpad {
     this.preflight = dependencies.preflight
     this.readCodexAvailability = dependencies.readCodexAvailability ?? (() =>
       new CodingExecutionStore(defaultCodingExecutionStorePath()).availability())
+    this.resolveReviewerRouteAvailable = dependencies.resolveReviewerRouteAvailable ??
+      ((targetRepo) => hasDeepSeekRoute(targetRepo))
     this.repairAgent = dependencies.repairAgent ?? createDeterministicRepairAgent()
     this.repairLlmAgent = dependencies.repairLlmAgent ?? createLlmRepairAgent()
     this.repairProvider = dependencies.repairProvider ?? {
@@ -1397,6 +1438,11 @@ export class NovaWingLaunchpad {
     contract: TaskContractSuccess,
   ): Promise<TrustedWorkSessionConfig> {
     const sessionId = createSessionId(targetRepo)
+    // Fail closed: a missing or throwing probe declares no reviewer at all rather
+    // than claiming a review capability this machine cannot actually serve.
+    const reviewerRouteAvailable = await Promise.resolve()
+      .then(() => this.resolveReviewerRouteAvailable(targetRepo))
+      .catch(() => false)
     return validateTrustedWorkSessionConfig({
       session: {
         id: sessionId,
@@ -1411,6 +1457,9 @@ export class NovaWingLaunchpad {
         createdAt: new Date().toISOString(),
         limits: { softMinutes: input.softMinutes, hardMinutes: input.hardMinutes, maxTasks: input.tasks.length },
       },
+      // A production Session must carry its real capability profiles; relying on the
+      // implicit single-agent fallback leaves REVIEW with no eligible candidate.
+      agents: composerAgentProfiles(sessionId, reviewerRouteAvailable),
       tasks: input.tasks.map((task) => ({
         id: task.id,
         goal: task.goal,
@@ -1914,6 +1963,8 @@ export async function createNovaWingLaunchpad(options: {
     resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
       new CodingExecutionStore(defaultCodingExecutionStorePath(options.env)).availability()),
+    resolveReviewerRouteAvailable: dependencies?.resolveReviewerRouteAvailable ??
+      ((targetRepo) => hasDeepSeekRoute(targetRepo, options.env)),
   }
   return new NovaWingLaunchpad(discovered, configDirectory, launchpadDependencies)
 }

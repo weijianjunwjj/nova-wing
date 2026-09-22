@@ -102,7 +102,7 @@ export const s111: CertificationScenario = {
                 await repoWrite(repo, 'apps/web/src/ticket-count.ts', 'export const ticketCount = true\n')
                 return { status: 'SUCCESS', providerHistory: ['codex'] }
               }
-              if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: state.verificationPlan!.steps.map((step) => ({ name: step.command, status: 'passed' as const })) }
+              if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: state.verificationPlan!.steps.map((step) => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd, status: 'passed' as const })) }
               return { status: 'BLOCKED', blockers: [`unexpected action ${action}`] }
             },
           }),

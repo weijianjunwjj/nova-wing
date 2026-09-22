@@ -92,6 +92,13 @@ function effectiveHumanRequired(state: WorkSessionDurableState): HumanRequired |
 
 export type ControlResumeInput = import('../runtime.js').ResumeInput
 
+/** v0.4.0: the browser supplies only the answer; identity comes from durable state. */
+export interface ControlHumanDecisionInput {
+  taskId: string
+  generation: number
+  decision: string
+}
+
 /** Guardian phase 快照：只保留结构化字段，绝不携带 raw detail / provider payload。 */
 interface GuardianPhaseSnapshot {
   phase: string
@@ -327,15 +334,65 @@ export class WorkSessionControlController {
     if (validated.input?.decision !== undefined && state.currentTaskId !== null) {
       this.resumeInputRedactionTaskId = state.currentTaskId
     }
-    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
-    this.broadcastSnapshot()
-
     // W005-B: resume is background-owned just like start. The user's decision is
     // passed only to the runtime/provider path and never copied into events/status.
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.broadcastSnapshot()
+    return this.startResume(validated.input ?? {}, safeEventData)
+  }
+
+  /**
+   * v0.4.0: the only in-Session path that answers a pending BUSINESS_DECISION.
+   *
+   * Deliberately separate from resume(): the generic resume still refuses this
+   * suspension category, so a permission-class question (command authorization,
+   * credentials, scope expansion, …) can never be answered through this control.
+   * Every field is validated against durable state, so a stale page, a duplicate
+   * submit or a replayed generation cannot start a second recovery.
+   */
+  submitHumanDecision(input: ControlHumanDecisionInput): { accepted: boolean; reason?: string } {
+    if (this.closed) return { accepted: false, reason: 'Controller is closing' }
+    const state = this.runtime.getDurableState()
+    if (state?.state !== 'SUSPENDED') {
+      return { accepted: false, reason: 'session is not suspended' }
+    }
+    const pending = state.pendingHumanAction
+    if (
+      pending === undefined || pending.type !== 'BUSINESS_DECISION' ||
+      state.humanRequired?.category !== 'RECOVERY_REQUIRES_AUTHORIZATION' ||
+      pending.sessionId !== state.sessionId ||
+      pending.taskId !== state.currentTaskId || pending.generation !== state.humanRequiredGeneration ||
+      input.taskId !== state.currentTaskId || input.generation !== state.humanRequiredGeneration
+    ) {
+      return { accepted: false, reason: 'this suspension does not accept a business decision' }
+    }
+    const decision = typeof input.decision === 'string' ? input.decision.trim() : ''
+    if (decision.length < 1 || decision.length > 2_000) {
+      return { accepted: false, reason: 'a business decision is required' }
+    }
+    if (pending.options !== undefined && !pending.options.includes(decision)) {
+      return { accepted: false, reason: 'the decision must be one of the offered options' }
+    }
+    if (this.resumePromise !== undefined) {
+      return { accepted: false, reason: 'resume already in progress' }
+    }
+
+    const safeEventData = { taskId: pending.taskId, category: 'BUSINESS_DECISION' }
+    this.resumeInputRedactionTaskId = pending.taskId
+    this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
+    this.broadcastSnapshot()
+    return this.startResume({ decision, taskId: pending.taskId, generation: pending.generation }, safeEventData)
+  }
+
+  /** Background-owned resume dispatch shared by every user-authorized resume path. */
+  private startResume(
+    input: ControlResumeInput,
+    safeEventData: Record<string, unknown>,
+  ): { accepted: boolean } {
     const dispatchResume = (): Promise<WorkSessionDurableState> => {
       this.emit({ type: 'SESSION_RESUMED', data: safeEventData })
       this.broadcastSnapshot()
-      return this.runtime.resume(validated.input ?? {})
+      return this.runtime.resume(input)
     }
     const resumeOperation = this.runActivity('resume', () => this.beforeResume === undefined
       ? dispatchResume()
@@ -647,6 +704,19 @@ export class WorkSessionControlController {
                 ? { humanRequired: this.safeHumanRequired(state) }
                 : {}),
               ...(state.humanRequiredGeneration === undefined ? {} : { humanRequiredGeneration: state.humanRequiredGeneration }),
+              ...(state.pendingHumanAction === undefined || state.state !== 'SUSPENDED' ||
+                state.pendingHumanAction.generation !== state.humanRequiredGeneration ||
+                state.pendingHumanAction.taskId !== state.currentTaskId
+                ? {}
+                : { pendingHumanAction: {
+                    type: state.pendingHumanAction.type,
+                    taskId: state.pendingHumanAction.taskId,
+                    generation: state.pendingHumanAction.generation,
+                    prompt: state.pendingHumanAction.prompt,
+                    ...(state.pendingHumanAction.options === undefined
+                      ? {}
+                      : { options: state.pendingHumanAction.options }),
+                  } }),
               recoveryInProgress: this.resumePromise !== undefined,
               ...(state.humanRequired === undefined || (!isAutonomousRecoveryCategory(state.humanRequired.category) &&
                 !(state.humanRequired.category === 'ACTION_BUDGET_EXHAUSTED' && autonomousTask !== undefined)) ? {} : {
@@ -1298,6 +1368,11 @@ function validateResumeForState(
     }
     case 'REVIEWER_PROTOCOL_FAILURE':
       return { accepted: false, reason: 'reviewer protocol failure requires a new session' }
+    case 'RECOVERY_REQUIRES_AUTHORIZATION':
+      // A permission-class suspension is never answered through the generic resume,
+      // even when it happens to look like a decision. Only submitHumanDecision may
+      // consume a pending BUSINESS_DECISION, and only when one actually exists.
+      return { accepted: false, reason: 'this suspension requires its dedicated human decision control' }
     default:
       return { accepted: false, reason: 'unsupported suspension category' }
   }
