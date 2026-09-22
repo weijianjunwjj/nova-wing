@@ -1,0 +1,288 @@
+name: Desktop Build
+
+# Phase 6A probe only. This workflow answers whether GitHub-hosted runners can run the
+# packaged desktop smoke as it already exists. It builds no installer and creates no release.
+on:
+  push:
+    branches:
+      - feat/v0.4-desktop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-probe:
+    name: windows-probe (Windows Server 2022 / x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact workflow commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Report environment fingerprint
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          git --version
+          [Environment]::OSVersion
+          [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      # npm 11 may skip Electron's postinstall, and the packaged smoke fails closed without a
+      # real runtime. Bounded retry with an explicit non-zero exit; no third-party action.
+      - name: Install the pinned Electron runtime
+        shell: pwsh
+        run: |
+          $ok = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            node node_modules/electron/install.js
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Write-Warning "electron install attempt $attempt of 3 failed (exit $LASTEXITCODE)"
+            if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+          }
+          if (-not $ok) { Write-Error 'Electron runtime install failed after 3 attempts'; exit 1 }
+          $pathFile = 'node_modules/electron/path.txt'
+          if (-not (Test-Path $pathFile)) { Write-Error "Electron runtime is not installed: $pathFile missing"; exit 1 }
+          $binary = (Get-Content $pathFile -Raw).Trim()
+          if (-not (Test-Path (Join-Path 'node_modules/electron/dist' $binary))) {
+            Write-Error "Electron runtime dist is incomplete: $binary missing"; exit 1
+          }
+          Write-Host "Electron runtime ready: $binary"
+
+      - name: Validate source, build and host gates
+        id: check
+        run: npm run check
+
+      - name: Build the Windows unpacked package
+        id: packagedir
+        run: npm run desktop:package:dir
+
+      # The strict Native Toast gate is deliberately untouched: this probe finds out whether a
+      # Windows Server runner can satisfy it, rather than weakening it to make the job green.
+      - name: Run the packaged Electron smoke
+        id: smoke
+        run: npm run desktop:package:smoke
+
+      - name: Evidence inventory
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'artifacts/desktop')) { Write-Host 'artifacts/desktop absent'; exit 0 }
+          Write-Host '--- artifacts/desktop/*.json ---'
+          Get-ChildItem -File 'artifacts/desktop/*.json' -ErrorAction SilentlyContinue |
+            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+          Write-Host '--- artifacts/desktop/package-smoke ---'
+          Get-ChildItem -File 'artifacts/desktop/package-smoke' -ErrorAction SilentlyContinue |
+            ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+
+      # Small evidence only. The unpacked package is multi-hundred-MB and is not an output of
+      # this probe, so it is never uploaded.
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-windows-x64-probe-evidence
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            artifacts/desktop/package-smoke/**
+            artifacts/desktop/packaged-content-audit.json
+            artifacts/desktop/installer.json
+
+      - name: Job summary
+        if: always()
+        shell: pwsh
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.packagedir.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          $gate = 'NOT_AVAILABLE'
+          $native = 'NOT_AVAILABLE'
+          try {
+            if (Test-Path 'artifacts/desktop/package-smoke/result.json') {
+              $gate = (Get-Content 'artifacts/desktop/package-smoke/result.json' -Raw | ConvertFrom-Json).nativeNotificationGate
+            }
+          } catch { $gate = 'NOT_AVAILABLE' }
+          try {
+            if (Test-Path 'artifacts/desktop/package-smoke/native-notification-result.json') {
+              $native = (Get-Content 'artifacts/desktop/package-smoke/native-notification-result.json' -Raw | ConvertFrom-Json).result
+            }
+          } catch { $native = 'NOT_AVAILABLE' }
+          @(
+            '## NovaWing Phase 6A - windows-probe',
+            '',
+            '| Item | Result |',
+            '| --- | --- |',
+            '| Runner | windows-2022 / x64 (Windows Server SKU) |',
+            ('| `npm run check` | ' + $env:CHECK_OUTCOME + ' |'),
+            ('| `desktop:package:dir` | ' + $env:PACKAGE_OUTCOME + ' |'),
+            ('| `desktop:package:smoke` | ' + $env:SMOKE_OUTCOME + ' |'),
+            ('| Native Notification gate | ' + $gate + ' |'),
+            ('| Native Notification run | ' + $native + ' |'),
+            '',
+            'A failure here is a **hosted runner probe** result, not a regression of the Phase 4',
+            'Windows 11 real-host acceptance. The strict Native Toast gate is unchanged and was',
+            'not weakened, skipped or mocked.'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+  macos-probe:
+    name: macos-probe (macOS 15 / arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact workflow commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # The packaging adapter asserts arm64 and audits for darwin-arm64 Codex and libSQL, so an
+      # Intel runner is not an equivalent substitute. Refuse it before spending build time.
+      - name: Report environment fingerprint
+        shell: bash
+        run: |
+          sw_vers
+          uname -m
+          node --version
+          npm --version
+          git --version
+          arch="$(uname -m)"
+          if [ "$arch" != "arm64" ]; then
+            echo "::error::Expected an arm64 host, got $arch"
+            exit 1
+          fi
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install the pinned Electron runtime
+        shell: bash
+        run: |
+          ok=0
+          for attempt in 1 2 3; do
+            if node node_modules/electron/install.js; then ok=1; break; fi
+            echo "::warning::electron install attempt $attempt of 3 failed"
+            if [ "$attempt" -lt 3 ]; then sleep 15; fi
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Electron runtime install failed after 3 attempts"
+            exit 1
+          fi
+          if [ ! -f node_modules/electron/path.txt ]; then
+            echo "::error::Electron runtime is not installed: node_modules/electron/path.txt missing"
+            exit 1
+          fi
+          binary="$(cat node_modules/electron/path.txt)"
+          if [ ! -e "node_modules/electron/dist/$binary" ]; then
+            echo "::error::Electron runtime dist is incomplete: $binary missing"
+            exit 1
+          fi
+          echo "Electron runtime ready: $binary"
+
+      - name: Validate source, build and host gates
+        id: check
+        run: npm run check
+
+      - name: Build the macOS application bundle
+        id: apppackage
+        run: npm run desktop:package:mac
+
+      # No Developer ID identity exists, so the adapter reports NEEDS_SIGNED_VALIDATION and the
+      # smoke classifies that run from refusal evidence. Every other gate runs for real.
+      - name: Run the packaged Electron smoke
+        id: smoke
+        run: npm run desktop:package:smoke
+
+      - name: Evidence inventory
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -d artifacts/desktop ]; then echo 'artifacts/desktop absent'; exit 0; fi
+          echo '--- artifacts/desktop/*.json ---'
+          find artifacts/desktop -maxdepth 1 -name '*.json' -type f -exec ls -l {} \; 2>/dev/null || true
+          echo '--- artifacts/desktop/package-smoke ---'
+          find artifacts/desktop/package-smoke -maxdepth 1 -type f -exec ls -l {} \; 2>/dev/null || true
+
+      # No DMG/ZIP in this round: the probe only has to answer whether the hosted runner can run
+      # the packaged GUI smoke at all.
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-macos-arm64-probe-evidence
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            artifacts/desktop/package-smoke/**
+            artifacts/desktop/macos-package.json
+            artifacts/desktop/macos-packaged-content-audit.json
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.apppackage.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          json_field() {
+            node --input-type=commonjs -e "
+              const fs = require('fs')
+              try {
+                const doc = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'))
+                const value = process.argv[2].split('.').reduce((a, k) => (a == null ? a : a[k]), doc)
+                process.stdout.write(value == null ? 'NOT_AVAILABLE' : String(value))
+              } catch { process.stdout.write('NOT_AVAILABLE') }
+            " "$1" "$2"
+          }
+          gate="$(json_field artifacts/desktop/macos-package.json nativeNotificationGate)"
+          authority="$(json_field artifacts/desktop/macos-package.json signing.authority)"
+          adhoc="$(json_field artifacts/desktop/macos-package.json signing.adhoc)"
+          native="$(json_field artifacts/desktop/package-smoke/native-notification-result.json result)"
+
+          {
+            echo '## NovaWing Phase 6A - macos-probe'
+            echo
+            echo '| Item | Result |'
+            echo '| --- | --- |'
+            echo '| Runner | macos-15 / arm64 |'
+            printf '| `npm run check` | %s |\n' "$CHECK_OUTCOME"
+            printf '| `desktop:package:mac` | %s |\n' "$PACKAGE_OUTCOME"
+            printf '| `desktop:package:smoke` | %s |\n' "$SMOKE_OUTCOME"
+            printf '| Native Notification gate | %s |\n' "$gate"
+            printf '| Native Notification run | %s |\n' "$native"
+            printf '| Signing authority | %s |\n' "$authority"
+            printf '| Ad-hoc signature | %s |\n' "$adhoc"
+            echo
+            echo 'Developer ID signing: NOT AVAILABLE'
+            echo
+            echo 'Notarization: NOT PERFORMED'
+            echo
+            echo 'This artifact is unsigned/ad-hoc. It is not a signed release, not notarized and'
+            echo 'not production-signed. A failure here is a hosted runner probe result, not a'
+            echo 'regression of the Phase 5 real-host acceptance.'
+          } >> "$GITHUB_STEP_SUMMARY"
