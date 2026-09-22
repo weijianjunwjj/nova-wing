@@ -11,3 +11,8 @@ artifacts/
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite-journal
+
+# CodeGraph local index (personal dev tooling)
+.codegraph/
+
+.mcp.json
