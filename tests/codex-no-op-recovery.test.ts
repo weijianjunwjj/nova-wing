@@ -20,7 +20,7 @@ function task(overrides: Partial<GuardianTask> = {}): GuardianTask {
 test('coding task with zero files and zero inspection evidence requires Executor retry', async () => {
   const root = await codexTestRepo()
   try {
-    const executor = new ClaudeCodeExecutor({ cwd: root, platform: 'darwin', gitBashPath: 'D:\\Git\\bin\\bash.exe',
+    const executor = new ClaudeCodeExecutor({ cwd: root,
       codingRuntime: { label: 'Codex Local', run: async () => ({ summary: 'no tools', commandsRun: [],
         blockers: ['NO_OP_EXECUTION: workspace inspection missing'] }) } })
     const report = await executor.execute({ task: task(), packet })
@@ -35,7 +35,7 @@ test('coding task with zero files and zero inspection evidence requires Executor
 test('real changed files survive missing evidence transport and proceed to verification recovery', async () => {
   const root = await codexTestRepo()
   try {
-    const executor = new ClaudeCodeExecutor({ cwd: root, platform: 'darwin', gitBashPath: 'D:\\Git\\bin\\bash.exe',
+    const executor = new ClaudeCodeExecutor({ cwd: root,
       codingRuntime: { label: 'Codex Local', run: async () => {
         await writeFile(join(root, 'src/a.ts'), 'export const value = 2\n', 'utf8')
         return { summary: 'transport lost after write', commandsRun: [],
