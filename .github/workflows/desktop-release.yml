@@ -1,0 +1,702 @@
+name: Desktop Release
+
+# Phase 6C. This workflow never builds anything. It consumes the artifacts of one
+# already-successful Desktop Build run, re-derives their identity from the files themselves,
+# and - only in publish mode, with an exact confirmation string - creates a GitHub Release
+# for a tag that already exists and already points at the verified commit.
+#
+# Build artifacts are retained for 14 days. Validation and publishing must happen before the
+# source run's artifacts expire; the run validation below fails closed once they have.
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Desktop Build run id whose artifacts are validated or released'
+        required: true
+        type: string
+      tag:
+        description: 'Existing release tag, e.g. v0.4.0. Must equal v<artifact version>.'
+        required: true
+        type: string
+      mode:
+        description: 'validate = dry run (never creates a tag or release); publish = create the release'
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - publish
+      confirmation:
+        description: 'publish only: the exact string RELEASE <tag>'
+        required: false
+        default: ''
+        type: string
+
+# Read-only by default. Only the publish job widens this, and only for itself; the validation
+# job never receives write access.
+permissions:
+  contents: read
+  actions: read
+
+# Serialize per tag so two publish runs cannot race to create the same release. A publish run
+# is never cancelled in flight.
+concurrency:
+  group: desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate (${{ inputs.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The run must be a completed, successful Desktop Build, the required artifacts must be
+      # present and unexpired, and the commit must be resolvable in this repository. Nothing
+      # here trusts the caller's run id beyond using it as a lookup key.
+      - name: Validate the source build run
+        id: buildrun
+        uses: actions/github-script@v7
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          MODE: ${{ inputs.mode }}
+          TAG: ${{ inputs.tag }}
+        with:
+          script: |
+            const fs = require('node:fs')
+            const { owner, repo } = context.repo
+            const raw = (process.env.BUILD_RUN_ID ?? '').trim()
+            const runId = Number(raw)
+            if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(runId) || runId <= 0) {
+              core.setFailed(`build_run_id must be a positive integer, received '${raw}'`)
+              return
+            }
+
+            const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })
+
+            const problems = []
+            if (run.name !== 'Desktop Build') problems.push(`workflow name is '${run.name}', expected 'Desktop Build'`)
+            if (run.status !== 'completed') problems.push(`run status is '${run.status}', expected 'completed'`)
+            if (run.conclusion === 'cancelled') problems.push('run was cancelled')
+            if (run.conclusion !== 'success') problems.push(`run conclusion is '${run.conclusion}', expected 'success'`)
+            if (typeof run.head_sha !== 'string' || run.head_sha.trim() === '') problems.push('run records no head_sha')
+            if (problems.length > 0) {
+              core.setFailed(`Refusing to release from run ${runId}: ${problems.join('; ')}`)
+              return
+            }
+
+            const required = [
+              'novawing-windows-x64-nsis',
+              'novawing-windows-x64-evidence',
+              'novawing-macos-arm64-dmg',
+              'novawing-macos-arm64-zip',
+              'novawing-macos-arm64-evidence',
+            ]
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner, repo, run_id: runId, per_page: 100,
+            })
+            const missing = required.filter((name) => !artifacts.some((artifact) => artifact.name === name))
+            if (missing.length > 0) {
+              core.setFailed(`Run ${runId} is missing required artifacts: ${missing.join(', ')}`)
+              return
+            }
+            const expired = required.filter((name) => artifacts.find((artifact) => artifact.name === name).expired)
+            if (expired.length > 0) {
+              core.setFailed(`These artifacts have expired and the build must be re-run: ${expired.join(', ')}`)
+              return
+            }
+
+            let commit
+            try {
+              ({ data: commit } = await github.rest.repos.getCommit({ owner, repo, ref: run.head_sha }))
+            } catch (error) {
+              core.setFailed(`Cannot resolve ${run.head_sha} in ${owner}/${repo}: ${error.message}`)
+              return
+            }
+
+            const record = {
+              buildRunId: run.id,
+              buildCommitSha: run.head_sha,
+              workflowName: run.name,
+              workflowId: run.workflow_id,
+              workflowPath: run.path ?? null,
+              event: run.event,
+              status: run.status,
+              conclusion: run.conclusion,
+              createdAt: run.created_at,
+              updatedAt: run.updated_at,
+              headBranch: run.head_branch,
+              headRepository: run.head_repository?.full_name ?? null,
+              runUrl: run.html_url,
+              commitDate: commit.commit.committer?.date ?? null,
+              commitMessage: (commit.commit.message ?? '').split('\n')[0],
+              requestedTag: process.env.TAG ?? '',
+              requestedMode: process.env.MODE ?? '',
+              artifacts: required.map((name) => {
+                const found = artifacts.find((artifact) => artifact.name === name)
+                return { name, id: found.id, sizeInBytes: found.size_in_bytes, expired: found.expired, createdAt: found.created_at }
+              }),
+            }
+            fs.mkdirSync('artifacts/release', { recursive: true })
+            fs.writeFileSync('artifacts/release/build-run.json', `${JSON.stringify(record, null, 2)}\n`)
+
+            await core.summary
+              .addHeading('Source build run', 3)
+              .addTable([
+                [{ data: 'Field', header: true }, { data: 'Value', header: true }],
+                ['Run id', String(run.id)],
+                ['Workflow', `${run.name} (${run.path ?? 'path unknown'})`],
+                ['Commit', run.head_sha],
+                ['Event', String(run.event)],
+                ['Created at', String(run.created_at)],
+                ['Conclusion', String(run.conclusion)],
+              ])
+              .write()
+            core.notice(`Build run ${runId} at ${run.head_sha} is a completed, successful Desktop Build`)
+
+      # Exact artifacts from the exact run. No "latest", no guessing a nearby run, no rebuild.
+      - name: Download the Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-windows-x64-nsis
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input/windows-nsis
+
+      - name: Download the Windows evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-windows-x64-evidence
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input/windows-evidence
+
+      - name: Download the macOS DMG artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-macos-arm64-dmg
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input/macos-dmg
+
+      - name: Download the macOS ZIP artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-macos-arm64-zip
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input/macos-zip
+
+      - name: Download the macOS evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-macos-arm64-evidence
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input/macos-evidence
+
+      # An artifact's internal directory layout is an implementation detail of the build
+      # workflow. Each file is located by name and required to be unique, so a layout change
+      # cannot silently hand a release the wrong bytes.
+      - name: Resolve the downloaded artifact layout
+        shell: bash
+        run: |
+          require_one() {
+            hits="$(find "$1" -type f -name "$2" | sort)"
+            count="$(printf '%s' "$hits" | grep -c . || true)"
+            if [ "$count" -ne 1 ]; then
+              echo "Expected exactly one '$2' under '$1', found $count" >&2
+              printf '%s\n' "$hits" >&2
+              return 1
+            fi
+            printf '%s' "$hits"
+          }
+          require_one_into() {
+            value="$(require_one "$2" "$3")" || {
+              echo "::error::$1 could not be resolved uniquely under $2"
+              exit 1
+            }
+            printf '%s=%s\n' "$1" "$value" >> "$GITHUB_ENV"
+            echo "$1=$value"
+          }
+          require_one_into NOVAWING_WINDOWS_EXE release-input/windows-nsis '*.exe'
+          require_one_into NOVAWING_WINDOWS_INSTALLER_RECORD release-input/windows-nsis 'installer.json'
+          require_one_into NOVAWING_WINDOWS_CONTENT_AUDIT release-input/windows-nsis 'packaged-content-audit.json'
+          require_one_into NOVAWING_WINDOWS_SMOKE release-input/windows-evidence 'result.json'
+          require_one_into NOVAWING_WINDOWS_CHECKOUT release-input/windows-evidence 'checkout-state.txt'
+          require_one_into NOVAWING_MACOS_DMG release-input/macos-dmg '*.dmg'
+          require_one_into NOVAWING_MACOS_DMG_RECORD release-input/macos-dmg 'macos-distribution.json'
+          require_one_into NOVAWING_MACOS_ZIP release-input/macos-zip '*-mac.zip'
+          require_one_into NOVAWING_MACOS_ZIP_RECORD release-input/macos-zip 'macos-distribution.json'
+          require_one_into NOVAWING_MACOS_SMOKE release-input/macos-evidence 'result.json'
+          require_one_into NOVAWING_MACOS_CHECKOUT release-input/macos-evidence 'checkout-state.txt'
+
+      # Recomputes size and SHA256 from the installer itself and checks them, the recorded
+      # identity and the packaged-content audit against the smoke evidence for this run.
+      - name: Validate the Windows artifacts
+        id: windows
+        shell: bash
+        run: |
+          cat > /tmp/validate-windows.cjs <<'EOF'
+          const fs = require("node:fs")
+          const path = require("node:path")
+          const assert = require("node:assert/strict")
+          const { createHash } = require("node:crypto")
+
+          const build = JSON.parse(fs.readFileSync("artifacts/release/build-run.json", "utf8"))
+          const installer = JSON.parse(fs.readFileSync(process.env.NOVAWING_WINDOWS_INSTALLER_RECORD, "utf8"))
+          const audit = JSON.parse(fs.readFileSync(process.env.NOVAWING_WINDOWS_CONTENT_AUDIT, "utf8"))
+          const smoke = JSON.parse(fs.readFileSync(process.env.NOVAWING_WINDOWS_SMOKE, "utf8"))
+          const checkout = fs.readFileSync(process.env.NOVAWING_WINDOWS_CHECKOUT, "utf8")
+
+          const exe = process.env.NOVAWING_WINDOWS_EXE
+          const stat = fs.statSync(exe)
+          const sha256 = createHash("sha256").update(fs.readFileSync(exe)).digest("hex")
+
+          assert.equal(installer.appName, "NovaWing", `installer.json appName is '${installer.appName}'`)
+          assert.equal(installer.arch, "x64", `installer.json arch is '${installer.arch}'`)
+          assert.equal(installer.signed, false, `installer.json claims signed=${installer.signed}`)
+          assert.equal(installer.size, stat.size, `installer.json size ${installer.size} does not match the installer file (${stat.size})`)
+          assert.equal(installer.sha256, sha256, "installer.json sha256 does not match the installer file")
+          assert.equal(path.basename(exe), `NovaWing Setup ${installer.version}.exe`,
+            `unexpected installer filename '${path.basename(exe)}' for version ${installer.version}`)
+          assert.equal(audit.result, "PASS", `packaged-content-audit result is ${audit.result}`)
+          assert.equal(smoke.result, "PASS", `package-smoke result is ${smoke.result}`)
+          assert.equal(audit.sha256, smoke.packageSha256,
+            `packaged content sha256 ${audit.sha256} does not match the smoke evidence ${smoke.packageSha256}`)
+
+          const checkoutSha = (/^github_sha=(.+)$/m.exec(checkout) ?? [])[1]?.trim()
+          assert.equal(checkoutSha, build.buildCommitSha,
+            `evidence records github_sha=${checkoutSha} but the build run is ${build.buildCommitSha}`)
+
+          const identity = {
+            filename: path.basename(exe),
+            size: stat.size,
+            sha256,
+            signed: installer.signed,
+            appName: installer.appName,
+            version: installer.version,
+            arch: installer.arch,
+            electron: installer.electron,
+            builder: installer.builder,
+            packageContentSha256: audit.sha256,
+            packageSmokeResult: smoke.result,
+            nativeNotificationGate: smoke.nativeNotificationGate,
+            buildRunId: build.buildRunId,
+            buildCommitSha: build.buildCommitSha,
+          }
+          fs.writeFileSync("artifacts/release/windows-identity.json", `${JSON.stringify(identity, null, 2)}\n`)
+          console.log(JSON.stringify(identity, null, 2))
+          EOF
+          node /tmp/validate-windows.cjs
+
+      # Recomputes size and SHA256 from both containers, checks them against the distribution
+      # record, and binds the record to the smoke evidence and to the build commit. An unsigned
+      # bundle must not claim a signed or validated delivery gate.
+      - name: Validate the macOS artifacts
+        id: macos
+        shell: bash
+        run: |
+          cat > /tmp/validate-macos.cjs <<'EOF'
+          const fs = require("node:fs")
+          const path = require("node:path")
+          const assert = require("node:assert/strict")
+          const { createHash } = require("node:crypto")
+
+          const build = JSON.parse(fs.readFileSync("artifacts/release/build-run.json", "utf8"))
+          const fromDmg = fs.readFileSync(process.env.NOVAWING_MACOS_DMG_RECORD, "utf8")
+          const fromZip = fs.readFileSync(process.env.NOVAWING_MACOS_ZIP_RECORD, "utf8")
+          const record = JSON.parse(fromDmg)
+          const smoke = JSON.parse(fs.readFileSync(process.env.NOVAWING_MACOS_SMOKE, "utf8"))
+          const checkout = fs.readFileSync(process.env.NOVAWING_MACOS_CHECKOUT, "utf8")
+
+          assert.equal(fromZip, fromDmg, "the DMG and ZIP artifacts carry different macos-distribution.json records")
+          assert.equal(record.appName, "NovaWing", `macos-distribution.json appName is '${record.appName}'`)
+          assert.equal(record.arch, "arm64", `macos-distribution.json arch is '${record.arch}'`)
+          assert.equal(record.identity, null, `macos-distribution.json was built with signing identity '${record.identity}'`)
+          assert.equal(record.signing.signedForDistribution, false,
+            `macos-distribution.json claims signedForDistribution=${record.signing.signedForDistribution}`)
+          assert.equal(record.signing.authority, null, `unexpected signing authority '${record.signing.authority}'`)
+          assert.equal(record.nativeNotificationGate, "NEEDS_SIGNED_VALIDATION",
+            `an unsigned bundle must not claim a delivery gate: ${record.nativeNotificationGate}`)
+          assert.equal(record.nativeNotificationGate, smoke.nativeNotificationGate,
+            "the distribution record and the smoke evidence disagree about the delivery gate")
+          assert.equal(smoke.result, "PASS", `package-smoke result is ${smoke.result}`)
+          assert.equal(record.bundleContentSha256, smoke.packageSha256,
+            `bundle content ${record.bundleContentSha256} is not the package the smoke validated (${smoke.packageSha256})`)
+          assert.equal(record.dmg.filename, `NovaWing-${record.version}-arm64.dmg`,
+            `unexpected DMG filename '${record.dmg.filename}' for version ${record.version}`)
+          assert.equal(record.zip.filename, `NovaWing-${record.version}-arm64-mac.zip`,
+            `unexpected ZIP filename '${record.zip.filename}' for version ${record.version}`)
+
+          const containers = {
+            dmg: { file: process.env.NOVAWING_MACOS_DMG, entry: record.dmg },
+            zip: { file: process.env.NOVAWING_MACOS_ZIP, entry: record.zip },
+          }
+          for (const [label, { file, entry }] of Object.entries(containers)) {
+            const stat = fs.statSync(file)
+            const sha256 = createHash("sha256").update(fs.readFileSync(file)).digest("hex")
+            assert.equal(path.basename(file), entry.filename, `${label} filename '${path.basename(file)}' does not match the record`)
+            assert.equal(entry.size, stat.size, `${label} record size ${entry.size} does not match the file (${stat.size})`)
+            assert.equal(entry.sha256, sha256, `${label} record sha256 does not match the file`)
+          }
+
+          const checkoutSha = (/^github_sha=(.+)$/m.exec(checkout) ?? [])[1]?.trim()
+          assert.equal(checkoutSha, build.buildCommitSha,
+            `evidence records github_sha=${checkoutSha} but the build run is ${build.buildCommitSha}`)
+
+          const identity = {
+            appName: record.appName,
+            version: record.version,
+            arch: record.arch,
+            bundleIdentifier: record.CFBundleIdentifier,
+            bundleContentSha256: record.bundleContentSha256,
+            dmg: { filename: record.dmg.filename, size: record.dmg.size, sha256: record.dmg.sha256 },
+            zip: { filename: record.zip.filename, size: record.zip.size, sha256: record.zip.sha256 },
+            signedForDistribution: record.signing.signedForDistribution,
+            adHocSigned: record.signing.adhoc,
+            signingAuthority: record.signing.authority,
+            notarized: false,
+            nativeNotificationGate: record.nativeNotificationGate,
+            packageSmokeResult: smoke.result,
+            buildRunId: build.buildRunId,
+            buildCommitSha: build.buildCommitSha,
+          }
+          fs.writeFileSync("artifacts/release/macos-identity.json", `${JSON.stringify(identity, null, 2)}\n`)
+          console.log(JSON.stringify(identity, null, 2))
+          EOF
+          node /tmp/validate-macos.cjs
+
+      # One manifest, bound to one run id and one commit, with the tag and the version cross
+      # checked. The release notes are generated here so that publish ships exactly the notes
+      # that were validated.
+      - name: Build the release manifest
+        id: manifest
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          cat > /tmp/build-manifest.cjs <<'EOF'
+          const fs = require("node:fs")
+          const assert = require("node:assert/strict")
+
+          const build = JSON.parse(fs.readFileSync("artifacts/release/build-run.json", "utf8"))
+          const windows = JSON.parse(fs.readFileSync("artifacts/release/windows-identity.json", "utf8"))
+          const macos = JSON.parse(fs.readFileSync("artifacts/release/macos-identity.json", "utf8"))
+          const tag = process.env.TAG
+          const mode = process.env.MODE
+
+          assert.equal(windows.buildRunId, build.buildRunId, "the Windows identity came from a different build run")
+          assert.equal(macos.buildRunId, build.buildRunId, "the macOS identity came from a different build run")
+          assert.equal(windows.buildCommitSha, build.buildCommitSha, "the Windows identity came from a different commit")
+          assert.equal(macos.buildCommitSha, build.buildCommitSha, "the macOS identity came from a different commit")
+          assert.equal(windows.version, macos.version,
+            `the Windows and macOS artifacts report different versions (${windows.version} vs ${macos.version})`)
+          assert.equal(tag, `v${windows.version}`,
+            `tag '${tag}' does not match the validated artifact version '${windows.version}' (expected 'v${windows.version}')`)
+
+          const limitations = [
+            "Windows installer is unsigned (signed=false). Authenticode signing was not performed, so Windows SmartScreen may warn that the publisher is unknown.",
+            "macOS bundles are unsigned. Developer ID signing: NOT AVAILABLE.",
+            "macOS Notarization: NOT PERFORMED. Gatekeeper may block or warn on the downloaded artifact because it is not Developer-ID signed and not notarized.",
+            "macOS Native Notification: NEEDS_SIGNED_VALIDATION. Native delivery requires a distribution-signed bundle and was not validated for these artifacts.",
+            "Gatekeeper trusted distribution: NOT CLAIMED.",
+          ]
+
+          const manifest = {
+            name: "NOVAWING_RELEASE_MANIFEST",
+            version: windows.version,
+            tag,
+            mode,
+            buildRunId: build.buildRunId,
+            buildCommitSha: build.buildCommitSha,
+            build: {
+              workflowName: build.workflowName,
+              workflowPath: build.workflowPath,
+              event: build.event,
+              status: build.status,
+              conclusion: build.conclusion,
+              createdAt: build.createdAt,
+              runUrl: build.runUrl,
+            },
+            windows,
+            macos,
+            limitations,
+          }
+          fs.writeFileSync("artifacts/release/release-manifest.json", `${JSON.stringify(manifest, null, 2)}\n`)
+
+          const row = (file, size, sha256) => `| ${file} | ${size} | \`${sha256}\` |`
+          const notes = [
+            `# NovaWing ${tag}`,
+            "",
+            "These artifacts were built once by the Desktop Build workflow and are published",
+            "without rebuilding. Nothing in this release was compiled by the release workflow.",
+            "",
+            `- Source commit: \`${build.buildCommitSha}\``,
+            `- Source run: [#${build.buildRunId}](${build.runUrl}) (${build.event}, ${build.conclusion}, created ${build.createdAt})`,
+            `- Version: \`${windows.version}\``,
+            "",
+            "## Artifacts",
+            "",
+            "| File | Size (bytes) | SHA256 |",
+            "| --- | --- | --- |",
+            row(windows.filename, windows.size, windows.sha256),
+            row(macos.dmg.filename, macos.dmg.size, macos.dmg.sha256),
+            row(macos.zip.filename, macos.zip.size, macos.zip.sha256),
+            "",
+            "## Signing, notarization and trust",
+            "",
+            "**This release is unsigned and not notarized.**",
+            "",
+            `- **Windows** - the installer is **unsigned** (signed=false). Authenticode signing was`,
+            "  not performed, so Windows SmartScreen may warn that the publisher is unknown.",
+            "- **macOS** - Developer ID signing: **NOT AVAILABLE**. Notarization: **NOT PERFORMED**.",
+            "  **Gatekeeper may block or warn on the downloaded artifact** because it is not",
+            "  Developer-ID signed and not notarized.",
+            "- **Native Notification** - macOS reports **NEEDS_SIGNED_VALIDATION**: the bundle is not",
+            "  signed for distribution, so native delivery was not validated on this artifact.",
+            "- Gatekeeper trusted distribution: **NOT CLAIMED**.",
+            "",
+            "## Verified identity",
+            "",
+            `- Windows package content SHA256: \`${windows.packageContentSha256}\` (equal to the packaged smoke evidence)`,
+            `- macOS bundle content SHA256: \`${macos.bundleContentSha256}\` (equal to the packaged smoke evidence)`,
+            `- Packaged smoke - Windows: \`${windows.packageSmokeResult}\` (Native Toast gate \`${windows.nativeNotificationGate}\`), macOS: \`${macos.packageSmokeResult}\` (gate \`${macos.nativeNotificationGate}\`)`,
+            "",
+            "The container hashes (NSIS, DMG, ZIP) are expected to differ between builds. The payload",
+            "identity above is what binds these files to the validated build.",
+            "",
+          ]
+          fs.writeFileSync("artifacts/release/release-notes.md", notes.join("\n"))
+
+          const summary = [
+            `## NovaWing release ${mode} - ${tag}`,
+            "",
+            "| Item | Result |",
+            "| --- | --- |",
+            `| Source build run | #${build.buildRunId} |`,
+            `| Source commit | \`${build.buildCommitSha}\` |`,
+            `| Version | \`${windows.version}\` |`,
+            `| Windows installer | \`${windows.filename}\` (${windows.size} bytes) |`,
+            `| Windows SHA256 | \`${windows.sha256}\` |`,
+            `| Windows signed | ${windows.signed} |`,
+            `| macOS DMG | \`${macos.dmg.filename}\` (${macos.dmg.size} bytes) |`,
+            `| macOS DMG SHA256 | \`${macos.dmg.sha256}\` |`,
+            `| macOS ZIP | \`${macos.zip.filename}\` (${macos.zip.size} bytes) |`,
+            `| macOS ZIP SHA256 | \`${macos.zip.sha256}\` |`,
+            `| macOS signedForDistribution | ${macos.signedForDistribution} |`,
+            `| macOS notarized | ${macos.notarized} |`,
+            `| Native Notification gate | Windows \`${windows.nativeNotificationGate}\`, macOS \`${macos.nativeNotificationGate}\` |`,
+            "",
+            "Signing: NOT AVAILABLE. Notarization: NOT PERFORMED. Gatekeeper trusted distribution: NOT CLAIMED.",
+            "",
+            mode === "validate"
+              ? "validate mode is a dry run: no tag was created, no release was created and no release asset was uploaded."
+              : "publish mode requested: the publish job still requires the exact confirmation string, an existing tag pointing at the verified commit, and no pre-existing release.",
+            "",
+            "Build artifacts are retained for 14 days. Validate and publish before they expire; this run fails closed once they have.",
+            "",
+          ]
+          if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n"))
+          console.log(JSON.stringify(manifest, null, 2))
+          EOF
+          node /tmp/build-manifest.cjs
+
+      # The whole release gate is read-only evidence: the manifest, the notes, the source run
+      # record and the two identity records. No container is re-uploaded here.
+      - name: Upload the validation bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-release-validation
+          retention-days: 14
+          if-no-files-found: warn
+          path: artifacts/release/**
+
+  # Only reached in publish mode, and only after validate has passed. This is the only job in
+  # the workflow that can write to the repository, and it still refuses to create a tag.
+  publish:
+    name: publish (${{ inputs.tag }})
+    needs: validate
+    if: ${{ inputs.mode == 'publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download the validated release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-release-validation
+          path: release-validation
+
+      - name: Resolve the validated release bundle
+        shell: bash
+        run: |
+          require_one() {
+            hits="$(find "$1" -type f -name "$2" | sort)"
+            count="$(printf '%s' "$hits" | grep -c . || true)"
+            if [ "$count" -ne 1 ]; then
+              echo "Expected exactly one '$2' under '$1', found $count" >&2
+              printf '%s\n' "$hits" >&2
+              return 1
+            fi
+            printf '%s' "$hits"
+          }
+          resolve_into() {
+            value="$(require_one "$2" "$3")" || {
+              echo "::error::$1 could not be resolved uniquely under $2"
+              exit 1
+            }
+            printf '%s=%s\n' "$1" "$value" >> "$GITHUB_ENV"
+            echo "$1=$value"
+          }
+          resolve_into NOVAWING_RELEASE_MANIFEST release-validation 'release-manifest.json'
+          resolve_into NOVAWING_RELEASE_NOTES release-validation 'release-notes.md'
+
+      # Fails closed on every precondition before anything is created: the confirmation string,
+      # the tag existing at all, the tag pointing at the exact verified commit, the tag agreeing
+      # with the validated version, and no release already existing for that tag.
+      - name: Verify the tag, the confirmation and the release preconditions
+        id: preconditions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          expected="RELEASE $TAG"
+          if [ "$CONFIRMATION" != "$expected" ]; then
+            echo "::error::confirmation must be exactly '$expected' for publish"
+            exit 1
+          fi
+
+          read_manifest() {
+            node -e "process.stdout.write(String(JSON.parse(require('node:fs').readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, 'utf8'))$1))"
+          }
+          version="$(read_manifest '.version')"
+          build_sha="$(read_manifest '.buildCommitSha')"
+
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag '$TAG' does not match the validated version '$version'"
+            exit 1
+          fi
+
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha' 2>/dev/null || true)"
+          if [ -z "$tag_sha" ]; then
+            echo "::error::tag '$TAG' does not exist. This workflow never creates or moves a tag."
+            exit 1
+          fi
+          if [ "$tag_sha" != "$build_sha" ]; then
+            echo "::error::tag '$TAG' points at $tag_sha but the validated artifacts came from $build_sha"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::a release for '$TAG' already exists. This workflow never overwrites a release."
+            exit 1
+          fi
+          echo "::notice::All publish preconditions hold: tag $TAG -> $tag_sha, version $version"
+
+      # The containers are fetched from the pinned build run, never rebuilt.
+      - name: Download the Windows installer from the pinned build run
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-windows-x64-nsis
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets/windows
+
+      - name: Download the macOS DMG from the pinned build run
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-macos-arm64-dmg
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets/macos-dmg
+
+      - name: Download the macOS ZIP from the pinned build run
+        uses: actions/download-artifact@v4
+        with:
+          name: novawing-macos-arm64-zip
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets/macos-zip
+
+      # Publishing exactly the validated bytes: every asset is re-hashed against the manifest
+      # before the release is created, so a mixed or substituted artifact cannot be shipped.
+      - name: Verify the release assets against the manifest
+        id: assets
+        shell: bash
+        run: |
+          require_one() {
+            hits="$(find "$1" -type f -name "$2" | sort)"
+            count="$(printf '%s' "$hits" | grep -c . || true)"
+            if [ "$count" -ne 1 ]; then
+              echo "Expected exactly one '$2' under '$1', found $count" >&2
+              printf '%s\n' "$hits" >&2
+              return 1
+            fi
+            printf '%s' "$hits"
+          }
+          value="$(require_one release-assets/windows '*.exe')" || { echo "::error::Windows installer could not be resolved"; exit 1; }
+          printf 'NOVAWING_RELEASE_EXE=%s\n' "$value" >> "$GITHUB_ENV"
+          value="$(require_one release-assets/macos-dmg '*.dmg')" || { echo "::error::macOS DMG could not be resolved"; exit 1; }
+          printf 'NOVAWING_RELEASE_DMG=%s\n' "$value" >> "$GITHUB_ENV"
+          value="$(require_one release-assets/macos-zip '*-mac.zip')" || { echo "::error::macOS ZIP could not be resolved"; exit 1; }
+          printf 'NOVAWING_RELEASE_ZIP=%s\n' "$value" >> "$GITHUB_ENV"
+
+          cat > /tmp/verify-release-assets.cjs <<'EOF'
+          const fs = require("node:fs")
+          const assert = require("node:assert/strict")
+          const { createHash } = require("node:crypto")
+
+          const manifest = JSON.parse(fs.readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, "utf8"))
+          const expected = [
+            ["Windows installer", process.env.NOVAWING_RELEASE_EXE, manifest.windows],
+            ["macOS DMG", process.env.NOVAWING_RELEASE_DMG, manifest.macos.dmg],
+            ["macOS ZIP", process.env.NOVAWING_RELEASE_ZIP, manifest.macos.zip],
+          ]
+          for (const [label, file, entry] of expected) {
+            const stat = fs.statSync(file)
+            const sha256 = createHash("sha256").update(fs.readFileSync(file)).digest("hex")
+            assert.equal(stat.size, entry.size, `${label}: size ${stat.size} does not match the manifest (${entry.size})`)
+            assert.equal(sha256, entry.sha256, `${label}: sha256 does not match the manifest`)
+            console.log(`${label} verified: ${entry.filename} ${sha256}`)
+          }
+          EOF
+          node /tmp/verify-release-assets.cjs
+
+      # The tag already exists and --verify-tag guarantees this cannot create one. Assets are
+      # uploaded by name without --clobber, so an existing asset fails the step rather than
+      # being replaced.
+      - name: Create the GitHub Release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "$NOVAWING_RELEASE_EXE" \
+            "$NOVAWING_RELEASE_DMG" \
+            "$NOVAWING_RELEASE_ZIP" \
+            "$NOVAWING_RELEASE_MANIFEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "NovaWing $TAG" \
+            --notes-file "$NOVAWING_RELEASE_NOTES" \
+            --verify-tag
+          echo "::notice::Released $TAG from the artifacts of build run $BUILD_RUN_ID"
