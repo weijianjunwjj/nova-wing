@@ -221,15 +221,24 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
-          $installer = Get-Content -LiteralPath 'artifacts/desktop/installer.json' -Raw | ConvertFrom-Json
-          foreach ($required in @('artifacts/desktop/latest.yml', "artifacts/desktop/$($installer.path)")) {
+          $installerRecord = Get-Content -LiteralPath 'artifacts/desktop/installer.json' -Raw | ConvertFrom-Json
+          # The record carries the absolute path of the packaging workspace. A CI runner directory
+          # is not a product identity, so only the leaf name is taken from it, via the path API
+          # rather than hand-rolled separator handling.
+          $installerName = [System.IO.Path]::GetFileName($installerRecord.path)
+          $expectedName = "NovaWing-Setup-$($installerRecord.version)-$($installerRecord.arch).exe"
+          if ($installerName -ne $expectedName) {
+            Write-Error "installer.json names '$installerName', expected the version-driven name '$expectedName'"; exit 1
+          }
+          $metadataPath = Join-Path 'artifacts/desktop' 'latest.yml'
+          $installerPath = Join-Path 'artifacts/desktop' $installerName
+          $blockmapPath = Join-Path 'artifacts/desktop' "$installerName.blockmap"
+          foreach ($required in @($metadataPath, $installerPath, $blockmapPath)) {
             if (-not (Test-Path -LiteralPath $required)) { Write-Error "Missing update metadata input: $required"; exit 1 }
           }
-          node scripts/platform/verify-update-metadata.mjs --metadata 'artifacts/desktop/latest.yml' --files-dir 'artifacts/desktop' --expect-version $installer.version --expect-path $installer.path
+          node scripts/platform/verify-update-metadata.mjs --metadata $metadataPath --files-dir 'artifacts/desktop' --expect-version $installerRecord.version --expect-path $installerName
           if ($LASTEXITCODE -ne 0) { Write-Error 'latest.yml does not match the artifacts this job produced'; exit 1 }
-          $blockmap = "artifacts/desktop/$($installer.path).blockmap"
-          if (-not (Test-Path -LiteralPath $blockmap)) { Write-Error "Missing installer blockmap: $blockmap"; exit 1 }
-          Write-Host "UPDATE_METADATA OK $($installer.path)"
+          Write-Host "UPDATE_METADATA OK $installerName"
 
       - name: Verify the installer artifact identity
         id: installeridentity
