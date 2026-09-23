@@ -536,37 +536,103 @@ jobs:
         run: |
           cat > /tmp/validate-update-metadata.cjs <<'EOF'
           const fs = require("node:fs")
+          const path = require("node:path")
           const assert = require("node:assert/strict")
           const { createHash } = require("node:crypto")
-          const load = require("js-yaml").load
+
+          // Strict parser for electron-builder update metadata. It understands exactly the structure that
+          // is produced — a version, a list of files and a primary path — and rejects anything else rather
+          // than guessing. Other top-level keys are ignored; nothing inside the file list may be missing.
+
+          function parseUpdateMetadata(text) {
+            const top = new Map()
+            const files = []
+            let current = null
+            let inFiles = false
+            const lines = text.split(/\r?\n/)
+
+            for (let index = 0; index < lines.length; index += 1) {
+              const raw = lines[index]
+              if (raw.includes("\t")) throw new Error(`line ${index + 1} uses a tab for indentation`)
+              const line = raw.trim()
+              if (line === "" || line.startsWith("#")) continue
+              const indent = raw.length - raw.trimStart().length
+              const key = /^([A-Za-z][A-Za-z0-9_]*):(?:\s+(.*))?$/.exec(line)
+
+              if (indent === 0) {
+                if (key === null) throw new Error(`line ${index + 1} is not a top-level key: ${line}`)
+                inFiles = key[1] === "files"
+                if (inFiles) {
+                  if (key[2] !== undefined && key[2] !== "") throw new Error(`line ${index + 1}: files must be a list`)
+                  continue
+                }
+                top.set(key[1], key[2] === undefined ? "" : key[2].trim())
+                continue
+              }
+
+              if (!inFiles) throw new Error(`line ${index + 1} is indented below a key that is not a list`)
+              if (line.startsWith("- ")) {
+                current = new Map()
+                files.push(current)
+                const rest = line.slice(2).trim()
+                if (rest === "") continue
+                const field = /^([A-Za-z][A-Za-z0-9_]*):\s+(.+)$/.exec(rest)
+                if (field === null) throw new Error(`line ${index + 1} is not a file entry: ${line}`)
+                current.set(field[1], field[2].trim())
+                continue
+              }
+              if (current === null) throw new Error(`line ${index + 1} does not belong to a file entry: ${line}`)
+              if (key === null) throw new Error(`line ${index + 1} is not a file field: ${line}`)
+              current.set(key[1], key[2] === undefined ? "" : key[2].trim())
+            }
+
+            const version = top.get("version")
+            if (typeof version !== "string" || version === "") throw new Error("metadata has no version")
+            const primary = top.get("path")
+            if (typeof primary !== "string" || primary === "") throw new Error("metadata has no path")
+            if (files.length === 0) throw new Error("metadata lists no files")
+            const parsed = files.map((entry, index) => {
+              const url = entry.get("url")
+              if (typeof url !== "string" || url === "") throw new Error(`file ${index + 1} has no url`)
+              const sha512 = entry.get("sha512")
+              if (typeof sha512 !== "string" || sha512 === "") throw new Error(`file ${index + 1} has no sha512`)
+              const size = entry.get("size")
+              if (typeof size !== "string" || !/^\d+$/.test(size)) throw new Error(`file ${index + 1} has no non-negative integer size`)
+              return { url, sha512, size: Number(size) }
+            })
+            if (primary !== parsed[0].url) throw new Error(`path ${primary} is not the first listed file ${parsed[0].url}`)
+            return { version, path: primary, files: parsed }
+          }
 
           const manifest = JSON.parse(fs.readFileSync("artifacts/release/release-manifest.json", "utf8"))
+          // Each platform's metadata may only name artifacts this release actually carries, and
+          // macOS lists two: the ZIP and the DMG, which are downloaded into separate directories.
           const cases = [
-            { label: "windows", metadata: process.env.NOVAWING_WINDOWS_LATEST, entry: manifest.windows,
-              artifact: process.env.NOVAWING_WINDOWS_EXE, blockmap: process.env.NOVAWING_WINDOWS_BLOCKMAP },
-            { label: "macos", metadata: process.env.NOVAWING_MACOS_LATEST, entry: manifest.macos.zip,
-              artifact: process.env.NOVAWING_MACOS_ZIP, blockmap: process.env.NOVAWING_MACOS_ZIP_BLOCKMAP },
+            { label: "windows", metadata: process.env.NOVAWING_WINDOWS_LATEST, primary: manifest.windows.filename,
+              directories: ["release-input/windows-nsis"], blockmap: process.env.NOVAWING_WINDOWS_BLOCKMAP },
+            { label: "macos", metadata: process.env.NOVAWING_MACOS_LATEST, primary: manifest.macos.zip.filename,
+              directories: ["release-input/macos-zip", "release-input/macos-dmg"],
+              blockmap: process.env.NOVAWING_MACOS_ZIP_BLOCKMAP },
           ]
           for (const item of cases) {
-            const document = load(fs.readFileSync(item.metadata, "utf8"))
-            assert.equal(document.version, item.entry.version ?? manifest.version,
+            const document = parseUpdateMetadata(fs.readFileSync(item.metadata, "utf8"))
+            assert.equal(document.version, manifest.version,
               `${item.label}: metadata version ${document.version} does not match the manifest`)
-            assert.ok(Array.isArray(document.files) && document.files.length > 0, `${item.label}: metadata names no files`)
-            assert.equal(document.path, document.files[0].url, `${item.label}: primary path is not the first listed file`)
-            const named = document.files[0]
-            assert.equal(named.url, item.entry.filename,
-              `${item.label}: metadata names ${named.url} but the manifest validated ${item.entry.filename}`)
-            const bytes = fs.readFileSync(item.artifact)
-            assert.equal(named.size, bytes.length, `${item.label}: metadata size does not match the artifact`)
-            assert.equal(named.sha512, createHash("sha512").update(bytes).digest("base64"),
-              `${item.label}: metadata sha512 does not match the artifact`)
-            // The metadata must never point at an asset this release does not carry.
+            assert.equal(document.path, item.primary,
+              `${item.label}: metadata primary path ${document.path} is not the manifest's ${item.primary}`)
+            // Every listed file is checked, not just the primary one, and against the real bytes.
             for (const file of document.files) {
-              const present = fs.existsSync(`${item.label === "windows" ? "release-input/windows-nsis" : "release-input/macos-zip"}/${file.url}`)
-              assert.ok(present, `${item.label}: metadata references ${file.url}, which this release does not carry`)
+              const located = item.directories.map((directory) => path.join(directory, file.url))
+                .find((candidate) => fs.existsSync(candidate))
+              assert.ok(located, `${item.label}: metadata references ${file.url}, which this release does not carry`)
+              const bytes = fs.readFileSync(located)
+              assert.equal(file.size, bytes.length,
+                `${item.label}: metadata size for ${file.url} does not match the artifact`)
+              assert.equal(file.sha512, createHash("sha512").update(bytes).digest("base64"),
+                `${item.label}: metadata sha512 for ${file.url} does not match the artifact`)
             }
             assert.ok(fs.existsSync(item.blockmap), `${item.label}: blockmap is missing`)
-            console.log(`${item.label} update metadata verified: ${named.url}`)
+            console.log(`${item.label} update metadata verified: ${document.files.map((file) => file.url).join(", ")}`)
           }
           EOF
           node /tmp/validate-update-metadata.cjs
