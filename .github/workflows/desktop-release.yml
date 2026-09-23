@@ -2,8 +2,18 @@ name: Desktop Release
 
 # Phase 6C. This workflow never builds anything. It consumes the artifacts of one
 # already-successful Desktop Build run, re-derives their identity from the files themselves,
-# and - only in publish mode, with an exact confirmation string - creates a GitHub Release
-# for a tag that already exists and already points at the verified commit.
+# and - only in publish mode, with an exact confirmation string - publishes them.
+#
+# Two authorities are deliberately kept apart, and never mixed:
+#
+#   SOURCE TAG, in this private repository. It exists only to prove which commit the artifacts
+#   came from, and must already point at the validated build commit. This workflow never creates
+#   or moves a source tag.
+#
+#   FEED RELEASE, in a separate public binary repository. It is the version a client resolves,
+#   and it carries no provenance of its own: the source tag, the build run and
+#   release-manifest.json already carry that. Publishing may create the version tag there,
+#   because that repository has no source tag to verify against.
 #
 # Build artifacts are retained for 14 days. Validation and publishing must happen before the
 # source run's artifacts expire; the run validation below fails closed once they have.
@@ -15,11 +25,11 @@ on:
         required: true
         type: string
       tag:
-        description: 'Existing release tag, e.g. v0.4.0. Must equal v<artifact version>.'
+        description: 'Source tag in this repository, e.g. v0.4.1. Must already exist, must point at the validated build commit, and must equal v<artifact version>.'
         required: true
         type: string
       mode:
-        description: 'validate = dry run (never creates a tag or release); publish = create the release'
+        description: 'validate = dry run (never creates a tag or release anywhere); publish = publish to the feed repository'
         required: true
         default: validate
         type: choice
@@ -619,10 +629,10 @@ jobs:
           resolve_into NOVAWING_RELEASE_MANIFEST release-validation 'release-manifest.json'
           resolve_into NOVAWING_RELEASE_NOTES release-validation 'release-notes.md'
 
-      # Fails closed on every precondition before anything is created: the confirmation string,
-      # the tag existing at all, the tag pointing at the exact verified commit, the tag agreeing
-      # with the validated version, and no release already existing for that tag.
-      - name: Verify the tag, the confirmation and the release preconditions
+      # Fails closed on every precondition before anything is fetched or uploaded. The
+      # confirmation string, the version agreement and the source tag are checked here; the feed
+      # repository is a separate authority and is checked in its own step below.
+      - name: Verify the confirmation and the source tag
         id: preconditions
         shell: bash
         env:
@@ -648,20 +658,74 @@ jobs:
             exit 1
           fi
 
+          # Source tag authority: it is the provenance record for these artifacts, so it must
+          # exist in this repository and bind the exact build commit.
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha' 2>/dev/null || true)"
           if [ -z "$tag_sha" ]; then
-            echo "::error::tag '$TAG' does not exist. This workflow never creates or moves a tag."
+            echo "::error::source tag '$TAG' does not exist in $GITHUB_REPOSITORY. This workflow never creates or moves a source tag."
             exit 1
           fi
           if [ "$tag_sha" != "$build_sha" ]; then
-            echo "::error::tag '$TAG' points at $tag_sha but the validated artifacts came from $build_sha"
+            echo "::error::source tag '$TAG' points at $tag_sha but the validated artifacts came from $build_sha"
             exit 1
           fi
+          echo "::notice::Source tag $TAG -> $tag_sha (version $version) verified in $GITHUB_REPOSITORY"
+
+          # Diagnostic only. A release here says nothing about whether the feed repository is
+          # free, so it is reported and never used as the publish-conflict authority.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::a release for '$TAG' already exists. This workflow never overwrites a release."
+            echo "::notice::$GITHUB_REPOSITORY already carries a release for $TAG; the feed repository is checked separately"
+          fi
+
+      # The feed repository is where clients resolve updates from, so it must be public, and both
+      # the release and its tag must be free before any asset is fetched.
+      - name: Verify the feed repository and that nothing is published yet
+        id: feedpreconditions
+        shell: bash
+        env:
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # No fallback to github.token: it cannot write another repository, so a fallback would
+          # only defer a configuration mistake until every asset had been fetched.
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured. Publishing to $FEED_REPO needs a token with write access to that repository, stored as a secret on this private repository."
             exit 1
           fi
-          echo "::notice::All publish preconditions hold: tag $TAG -> $tag_sha, version $version"
+          feed_gh() { GH_TOKEN="$FEED_TOKEN" gh "$@"; }
+
+          full_name="$(feed_gh api "repos/$FEED_REPO" --jq '.full_name' 2>/dev/null || true)"
+          if [ -z "$full_name" ]; then
+            echo "::error::the feed repository '$FEED_REPO' is not reachable with FEED_REPO_TOKEN"
+            exit 1
+          fi
+          if [ "$full_name" != "$FEED_REPO" ]; then
+            echo "::error::the feed repository resolved to '$full_name', expected '$FEED_REPO'"
+            exit 1
+          fi
+          visibility="$(feed_gh api "repos/$FEED_REPO" --jq '.visibility' 2>/dev/null || true)"
+          if [ "$visibility" != "public" ]; then
+            echo "::error::the feed repository '$FEED_REPO' is '$visibility', expected 'public'. A client holds no token and can only read a public repository."
+            exit 1
+          fi
+          feed_target="$(feed_gh api "repos/$FEED_REPO" --jq '.default_branch' 2>/dev/null || true)"
+          if [ -z "$feed_target" ]; then
+            echo "::error::the feed repository '$FEED_REPO' has no default branch to publish from"
+            exit 1
+          fi
+
+          if feed_gh release view "$TAG" --repo "$FEED_REPO" >/dev/null 2>&1; then
+            echo "::error::$FEED_REPO already has a release for '$TAG'. This workflow never overwrites a release."
+            exit 1
+          fi
+          if [ -n "$(feed_gh api "repos/$FEED_REPO/git/ref/tags/$TAG" --jq '.ref' 2>/dev/null || true)" ]; then
+            echo "::error::$FEED_REPO already has a tag '$TAG'. This workflow never moves a tag."
+            exit 1
+          fi
+          echo "::notice::Feed repository $FEED_REPO is public with default branch '$feed_target', and is clear of $TAG"
+          printf 'NOVAWING_FEED_TARGET=%s\n' "$feed_target" >> "$GITHUB_ENV"
 
       # The containers are fetched from the pinned build run, never rebuilt.
       - name: Download the Windows installer from the pinned build run
@@ -764,20 +828,30 @@ jobs:
           EOF
           node /tmp/verify-release-assets.cjs
 
-      # The tag already exists and --verify-tag guarantees this cannot create one. Assets are
-      # uploaded by name without --clobber, so an existing asset fails the step rather than
-      # being replaced.
-      - name: Create the GitHub Release
+      # Publishing creates the version tag in the feed repository, from the branch named by
+      # --target rather than an implicit default. No --verify-tag is used: the feed repository has
+      # no such tag yet, and the source tag in this repository was already verified as the
+      # provenance authority. Assets are uploaded by name without --clobber, so an existing asset
+      # fails the step rather than being replaced.
+      - name: Create the release in the feed repository
         id: release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.FEED_REPO_TOKEN || github.token }}
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
           TAG: ${{ inputs.tag }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
-          FEED_REPO: ${{ inputs.feed_repo }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured"
+            exit 1
+          fi
+          if [ -z "${NOVAWING_FEED_TARGET:-}" ]; then
+            echo "::error::the feed repository target was not resolved by the preconditions step"
+            exit 1
+          fi
+          GH_TOKEN="$FEED_TOKEN" gh release create "$TAG" \
             "$NOVAWING_RELEASE_EXE" \
             "$NOVAWING_RELEASE_WINDOWS_LATEST" \
             "$NOVAWING_RELEASE_WINDOWS_BLOCKMAP" \
@@ -788,7 +862,71 @@ jobs:
             "$NOVAWING_RELEASE_MACOS_LATEST" \
             "$NOVAWING_RELEASE_MANIFEST" \
             --repo "$FEED_REPO" \
+            --target "$NOVAWING_FEED_TARGET" \
             --title "NovaWing $TAG" \
-            --notes-file "$NOVAWING_RELEASE_NOTES" \
-            --verify-tag
-          echo "::notice::Released $TAG from the artifacts of build run $BUILD_RUN_ID"
+            --notes-file "$NOVAWING_RELEASE_NOTES"
+          echo "::notice::Published $TAG to $FEED_REPO from the artifacts of build run $BUILD_RUN_ID"
+
+      # Read-only. Reads the release back from the feed repository and proves the published asset
+      # set is exactly what the manifest describes: nothing missing, nothing duplicated, and the
+      # container sizes the manifest recorded. The metadata itself was validated before
+      # publishing and is not regenerated here.
+      - name: Verify the published release in the feed repository
+        id: postpublish
+        shell: bash
+        env:
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured"
+            exit 1
+          fi
+          GH_TOKEN="$FEED_TOKEN" gh api "repos/$FEED_REPO/releases/tags/$TAG" > /tmp/published-release.json
+          cat > /tmp/verify-published-release.cjs <<'EOF'
+          const fs = require("node:fs")
+          const assert = require("node:assert/strict")
+
+          const manifest = JSON.parse(fs.readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, "utf8"))
+          const release = JSON.parse(fs.readFileSync("/tmp/published-release.json", "utf8"))
+
+          assert.equal(release.tag_name, process.env.TAG, `published tag is ${release.tag_name}`)
+          assert.equal(release.draft, false, "the published release is still a draft")
+
+          const assets = release.assets.map((asset) => ({ name: asset.name, size: asset.size, digest: asset.digest ?? null }))
+          const names = assets.map((asset) => asset.name)
+          assert.equal(new Set(names).size, names.length, `duplicate assets: ${names.join(", ")}`)
+
+          const containers = [
+            ["Windows installer", manifest.windows.filename, manifest.windows.size, manifest.windows.sha256],
+            ["macOS DMG", manifest.macos.dmg.filename, manifest.macos.dmg.size, manifest.macos.dmg.sha256],
+            ["macOS ZIP", manifest.macos.zip.filename, manifest.macos.zip.size, manifest.macos.zip.sha256],
+          ]
+          const required = [
+            ...containers.map(([, name]) => name),
+            `${manifest.windows.filename}.blockmap`,
+            `${manifest.macos.dmg.filename}.blockmap`,
+            `${manifest.macos.zip.filename}.blockmap`,
+            "latest.yml",
+            "latest-mac.yml",
+            "release-manifest.json",
+          ]
+          for (const name of required) {
+            assert.ok(assets.some((asset) => asset.name === name), `the published release is missing ${name}`)
+          }
+          for (const [label, name, size, sha256] of containers) {
+            const asset = assets.find((entry) => entry.name === name)
+            assert.equal(asset.size, size, `${label}: published size ${asset.size} does not match the manifest (${size})`)
+            // Newer API versions report an asset digest; when present it must match the manifest.
+            if (asset.digest !== null) {
+              assert.equal(asset.digest, `sha256:${sha256}`, `${label}: published digest ${asset.digest} does not match the manifest`)
+            }
+          }
+          assert.equal(assets.length, required.length, `the release carries ${assets.length} assets, expected ${required.length}`)
+
+          console.log(`PUBLISHED ${release.tag_name}: ${assets.length} assets verified in the feed repository`)
+          for (const asset of assets) console.log(`  ${asset.name} (${asset.size} bytes)`)
+          EOF
+          node /tmp/verify-published-release.cjs
