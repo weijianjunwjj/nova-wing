@@ -367,6 +367,13 @@ export function createDesktopUpdater({ backend, capability = null, getBlockers, 
    * The only path to an install. It requests the injected exit once, and never quits the app,
    * spawns an installer or stops a Runtime itself: admission fencing belongs to the existing
    * Host shutdown that the caller wires into requestInstallExit.
+   *
+   * The gate read and the exit request share one synchronous call chain. Nothing — no await, no
+   * microtask, no timer, no dialog — may sit between them, because the window between "nothing
+   * is running" and "nothing new may start" is exactly where work would be admitted and then
+   * drained by a shutdown the user never agreed to. The returned promise waits only for the
+   * drain and the final action that follow admission.
+   *
    * @param {{ version?: unknown, identity?: unknown } | null} [confirmation]
    * @returns {Promise<UpdaterResult>}
    */
@@ -383,21 +390,22 @@ export function createDesktopUpdater({ backend, capability = null, getBlockers, 
       return refused(UPDATER_BLOCK_REASON.STATE_UNKNOWN)
     }
     const target = { version: confirmed.version, identity: confirmed.identity }
+    // Publish the re-entrancy latch before an exit interface that may re-enter synchronously.
     authorized = true
     observations.installAuthorizations++
     const completion = Promise.withResolvers()
     installInFlight = completion.promise
-    void Promise.resolve()
-      .then(() => requestInstallExit({ candidate: { ...target } }))
-      .then(completion.resolve, completion.reject)
     try {
+      const outcome = requestInstallExit({ candidate: { ...target } })
+      Promise.resolve(outcome).then(completion.resolve, completion.reject)
       await completion.promise
       return succeeded(target)
     } catch (error) {
       report(error)
       observations.installExitFailures++
       // The app never left, so the update is not installed and the candidate is still READY.
-      // Releasing the latch is what makes an explicit retry possible.
+      // Releasing the latch is what makes an explicit retry possible; the real shutdown state
+      // still blocks a retry once a drain has actually begun.
       authorized = false
       return refused(UPDATER_FAILURE.INSTALL_EXIT_FAILED)
     } finally {

@@ -1,6 +1,7 @@
 import { app, Menu, nativeImage, Notification, powerSaveBlocker, Tray } from 'electron'
 import { requireDesktopIsolation } from './isolation.mjs'
 import { createShutdownCoordinator, describeShutdownError } from './shutdown.mjs'
+import { createUpdaterLifecycle } from './updater-lifecycle.mjs'
 import { createDesktopPowerManager } from './power.mjs'
 import { createDesktopTray } from './tray.mjs'
 import { createDesktopNotificationProvider } from './notifications.mjs'
@@ -26,14 +27,21 @@ let windows
 let tray
 let power
 let notifications
+let updater
 let record = (_event, _detail) => {}
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
 }
+// Production ships no update backend and no installer, so the capability stays not installable
+// and the install gate refuses before anything is closed. Only an injected backend plus
+// installer, as the tests do, can turn the update path on. Nothing here checks, downloads or
+// installs on its own.
+const updaterLifecycle = createUpdaterLifecycle({ platform: process.platform, reportFailure: reportBackgroundFailure })
 export const desktopShutdown = createShutdownCoordinator({
   getStartup: () => desktopReady,
   getHost: () => host,
-  requestFinalQuit: () => app.quit(),
+  // The single final quit: an ordinary quit unless an install was authorized at admission.
+  requestFinalQuit: updaterLifecycle.finalQuit({ quit: () => app.quit() }),
   afterDrain() {
     // Keep native recovery controls and the blocker throughout strict drain.
     // On Host failure this continuation is never entered.
@@ -100,9 +108,17 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
     dependencies: { ...fixture?.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
   desktopInstance.launchpadCreateCount++
   await host.start()
+  // The install path is assembled here because it needs the live Host. It is not reachable from
+  // any UI yet, and with no configured backend it stays not installable.
+  updater = updaterLifecycle.createUpdater({
+    host,
+    // The existing coordinator is the only exit, and it stops admission synchronously.
+    requestQuit: () => desktopShutdown.requestQuit(),
+    readShutdownState: () => desktopShutdown,
+  })
   // Startup was admitted before quit; let its owner settle without opening a
   // late window. The coordinator waits for this operation and closes the host.
-  if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [] }
+  if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [], updater }
   windows = createDesktopWindowLifecycle(host, {
     isQuitRequested: () => desktopShutdown.requested,
     reportDiagnostic: (diagnostic) => { record('window-lifecycle', { ...diagnostic, phase: diagnostic.event, event: 'window-lifecycle' }); console.error(`DESKTOP_WINDOW_LIFECYCLE ${JSON.stringify(diagnostic)}`) },
@@ -117,7 +133,7 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   windows.window?.on('hide', () => record('window-hidden', { power: power.snapshot(), tray: !tray.tray.isDestroyed() }))
   record('ready', { launchpadUrl: host.launchpadUrl, tray: !tray.tray.isDestroyed(), trayImage: tray.diagnostics })
   if (fixture) console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
-  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications }
+  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications, updater }
 }) : Promise.resolve(undefined)
 desktopReady.catch((error) => {
   console.error(`DESKTOP_STARTUP_FAILURE ${JSON.stringify({ result: 'FAIL', error: describeShutdownError(error) })}`)
