@@ -90,6 +90,7 @@
     "@mastra/libsql": "^1.21.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@openai/codex-sdk": "0.151.0",
+    "electron-updater": "6.8.9",
     "nodemailer": "^9.0.5",
     "zod": "^4.4.3"
   }

@@ -223,6 +223,12 @@ async function runElectron(entry, prefix, root) {
         'power_scheduled_idle', 'power_suspended_off', 'explicit_quit_uses_strict_shutdown', 'power_quit_drain', 'strict_resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Background gate: ${name}`)
       }
+    } else if (prefix === 'DESKTOP_PACKAGED_UPDATE_FEED') {
+      // The update metadata pipeline. Every gate must hold on both hosts, including the
+      // macOS refusal, which stays BLOCKED_BY_SIGNING here rather than being softened.
+      for (const name of ['packaged_capability', 'explicit_policy', 'local_feed_check', 'download_contract', 'no_install']) {
+        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing update feed gate: ${name}`)
+      }
     } else {
       for (const name of ['electron_main', 'isolation', 'launchpad_create', 'launchpad_start', 'launchpad_http',
         'browser_load', 'renderer_js', 'renderer_node_access', 'launchpad_api', 'session_create', 'session_start',
@@ -258,6 +264,7 @@ let isolation
 let backgroundIsolation
 let notificationIsolation
 let productionIsolation
+let updaterFeedIsolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
@@ -275,12 +282,15 @@ try {
   if (packagedRoot) {
     productionIsolation = await createDesktopIsolation()
     result.runs.push(await runElectron('desktop/tests/production-smoke.mjs', 'DESKTOP_PACKAGED_PRODUCTION', productionIsolation.root))
+    // The update metadata pipeline, against a feed served from this machine. Never GitHub.
+    updaterFeedIsolation = await createDesktopIsolation()
+    result.runs.push(await runElectron('desktop/tests/updater-feed-smoke.mjs', 'DESKTOP_PACKAGED_UPDATE_FEED', updaterFeedIsolation.root))
   }
 } catch (error) {
   result.errors.push(String(error?.stack ?? error))
 } finally {
   const cleanupErrors = []
-  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation, productionIsolation].filter(Boolean)) {
+  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation, productionIsolation, updaterFeedIsolation].filter(Boolean)) {
     try {
       await ownedIsolation.cleanup()
     } catch (error) {
@@ -292,7 +302,7 @@ try {
     backgroundRoot: backgroundIsolation?.root, notificationRoot: notificationIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
       phase: 'temporary_directory_cleanup_after_electron_exit' } : {}) }
 }
-result.result = result.runs.length === (packagedRoot ? 5 : 4) &&
+result.result = result.runs.length === (packagedRoot ? 6 : 4) &&
   result.runs.every((run) => run.result === 'PASS' || run.result === 'NEEDS_SIGNED_VALIDATION') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
 result.nativeNotificationGate = nativeNotificationGate

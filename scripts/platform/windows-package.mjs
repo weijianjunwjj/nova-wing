@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build, Platform, Arch } from 'electron-builder'
 import { DESKTOP_IDENTITY } from '../../desktop/main/identity.mjs'
+import { updateFeedPublishConfig } from './update-feed.mjs'
 
 export const root = resolve(import.meta.dirname, '../..')
 export const output = join(root, 'artifacts', 'desktop')
@@ -129,7 +130,11 @@ export async function packageWindows(installer = false) {
       win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: join(root, 'desktop', 'assets', 'app.ico') },
       nsis: { oneClick: true, perMachine: false, allowElevation: false, createDesktopShortcut: true,
         createStartMenuShortcut: true, deleteAppDataOnUninstall: false, runAfterFinish: false },
-      artifactName: 'NovaWing Setup 0.4.0.${ext}',
+      // Explicit feed, never inferred from the checkout's git remote.
+      publish: updateFeedPublishConfig(),
+      // GitHub-safe by construction: no spaces, so latest.yml names the real asset instead of a
+      // rewritten safe name that no release would ever carry.
+      artifactName: 'NovaWing-Setup-${version}-${arch}.${ext}',
     },
   })
   await auditPackage(join(unpacked, 'resources', 'app'))

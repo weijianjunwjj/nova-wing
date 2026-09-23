@@ -31,6 +31,11 @@ on:
         required: false
         default: ''
         type: string
+      feed_repo:
+        description: 'Publish destination for the update feed. Defaults to the public binary repository; the source repository stays private and clients never hold a token.'
+        required: false
+        default: 'weijianjunwjj/nova-wing-releases'
+        type: string
 
 # Read-only by default. Only the publish job widens this, and only for itself; the validation
 # job never receives write access.
@@ -234,6 +239,11 @@ jobs:
           require_one_into NOVAWING_MACOS_ZIP_RECORD release-input/macos-zip 'macos-distribution.json'
           require_one_into NOVAWING_MACOS_SMOKE release-input/macos-evidence 'result.json'
           require_one_into NOVAWING_MACOS_CHECKOUT release-input/macos-evidence 'checkout-state.txt'
+          require_one_into NOVAWING_WINDOWS_LATEST release-input/windows-nsis 'latest.yml'
+          require_one_into NOVAWING_WINDOWS_BLOCKMAP release-input/windows-nsis '*.exe.blockmap'
+          require_one_into NOVAWING_MACOS_LATEST release-input/macos-zip 'latest-mac.yml'
+          require_one_into NOVAWING_MACOS_ZIP_BLOCKMAP release-input/macos-zip '*-mac.zip.blockmap'
+          require_one_into NOVAWING_MACOS_DMG_BLOCKMAP release-input/macos-dmg '*.dmg.blockmap'
 
       # Recomputes size and SHA256 from the installer itself and checks them, the recorded
       # identity and the packaged-content audit against the smoke evidence for this run.
@@ -262,7 +272,7 @@ jobs:
           assert.equal(installer.signed, false, `installer.json claims signed=${installer.signed}`)
           assert.equal(installer.size, stat.size, `installer.json size ${installer.size} does not match the installer file (${stat.size})`)
           assert.equal(installer.sha256, sha256, "installer.json sha256 does not match the installer file")
-          assert.equal(path.basename(exe), `NovaWing Setup ${installer.version}.exe`,
+          assert.equal(path.basename(exe), `NovaWing-Setup-${installer.version}-${installer.arch}.exe`,
             `unexpected installer filename '${path.basename(exe)}' for version ${installer.version}`)
           assert.equal(audit.result, "PASS", `packaged-content-audit result is ${audit.result}`)
           assert.equal(smoke.result, "PASS", `package-smoke result is ${smoke.result}`)
@@ -507,6 +517,50 @@ jobs:
           EOF
           node /tmp/build-manifest.cjs
 
+      # The update metadata is what the updater actually follows. It must name the same artifact
+      # the manifest already validated, agree with it on version, filename, size and sha512, and
+      # reference nothing that was not shipped.
+      - name: Validate the update metadata against the manifest
+        id: updatemetadata
+        shell: bash
+        run: |
+          cat > /tmp/validate-update-metadata.cjs <<'EOF'
+          const fs = require("node:fs")
+          const assert = require("node:assert/strict")
+          const { createHash } = require("node:crypto")
+          const load = require("js-yaml").load
+
+          const manifest = JSON.parse(fs.readFileSync("artifacts/release/release-manifest.json", "utf8"))
+          const cases = [
+            { label: "windows", metadata: process.env.NOVAWING_WINDOWS_LATEST, entry: manifest.windows,
+              artifact: process.env.NOVAWING_WINDOWS_EXE, blockmap: process.env.NOVAWING_WINDOWS_BLOCKMAP },
+            { label: "macos", metadata: process.env.NOVAWING_MACOS_LATEST, entry: manifest.macos.zip,
+              artifact: process.env.NOVAWING_MACOS_ZIP, blockmap: process.env.NOVAWING_MACOS_ZIP_BLOCKMAP },
+          ]
+          for (const item of cases) {
+            const document = load(fs.readFileSync(item.metadata, "utf8"))
+            assert.equal(document.version, item.entry.version ?? manifest.version,
+              `${item.label}: metadata version ${document.version} does not match the manifest`)
+            assert.ok(Array.isArray(document.files) && document.files.length > 0, `${item.label}: metadata names no files`)
+            assert.equal(document.path, document.files[0].url, `${item.label}: primary path is not the first listed file`)
+            const named = document.files[0]
+            assert.equal(named.url, item.entry.filename,
+              `${item.label}: metadata names ${named.url} but the manifest validated ${item.entry.filename}`)
+            const bytes = fs.readFileSync(item.artifact)
+            assert.equal(named.size, bytes.length, `${item.label}: metadata size does not match the artifact`)
+            assert.equal(named.sha512, createHash("sha512").update(bytes).digest("base64"),
+              `${item.label}: metadata sha512 does not match the artifact`)
+            // The metadata must never point at an asset this release does not carry.
+            for (const file of document.files) {
+              const present = fs.existsSync(`${item.label === "windows" ? "release-input/windows-nsis" : "release-input/macos-zip"}/${file.url}`)
+              assert.ok(present, `${item.label}: metadata references ${file.url}, which this release does not carry`)
+            }
+            assert.ok(fs.existsSync(item.blockmap), `${item.label}: blockmap is missing`)
+            console.log(`${item.label} update metadata verified: ${named.url}`)
+          }
+          EOF
+          node /tmp/validate-update-metadata.cjs
+
       # The whole release gate is read-only evidence: the manifest, the notes, the source run
       # record and the two identity records. No container is re-uploaded here.
       - name: Upload the validation bundle
@@ -659,8 +713,13 @@ jobs:
             echo "$1=$value"
           }
           resolve_asset NOVAWING_RELEASE_EXE release-assets/windows '*.exe'
+          resolve_asset NOVAWING_RELEASE_WINDOWS_LATEST release-assets/windows 'latest.yml'
+          resolve_asset NOVAWING_RELEASE_WINDOWS_BLOCKMAP release-assets/windows '*.exe.blockmap'
           resolve_asset NOVAWING_RELEASE_DMG release-assets/macos-dmg '*.dmg'
+          resolve_asset NOVAWING_RELEASE_DMG_BLOCKMAP release-assets/macos-dmg '*.dmg.blockmap'
           resolve_asset NOVAWING_RELEASE_ZIP release-assets/macos-zip '*-mac.zip'
+          resolve_asset NOVAWING_RELEASE_ZIP_BLOCKMAP release-assets/macos-zip '*-mac.zip.blockmap'
+          resolve_asset NOVAWING_RELEASE_MACOS_LATEST release-assets/macos-zip 'latest-mac.yml'
 
       # Step B. Publishing exactly the validated bytes: every asset is re-hashed against the
       # manifest before the release is created, so a mixed or substituted artifact cannot be
@@ -670,7 +729,9 @@ jobs:
         id: assets
         shell: bash
         run: |
-          for name in NOVAWING_RELEASE_EXE NOVAWING_RELEASE_DMG NOVAWING_RELEASE_ZIP NOVAWING_RELEASE_MANIFEST; do
+          for name in NOVAWING_RELEASE_EXE NOVAWING_RELEASE_WINDOWS_LATEST NOVAWING_RELEASE_WINDOWS_BLOCKMAP \
+            NOVAWING_RELEASE_DMG NOVAWING_RELEASE_DMG_BLOCKMAP NOVAWING_RELEASE_ZIP NOVAWING_RELEASE_ZIP_BLOCKMAP \
+            NOVAWING_RELEASE_MACOS_LATEST NOVAWING_RELEASE_MANIFEST; do
             value="${!name}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set; the resolve step did not publish it to this step"
@@ -710,17 +771,23 @@ jobs:
         id: release
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FEED_REPO_TOKEN || github.token }}
           TAG: ${{ inputs.tag }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          FEED_REPO: ${{ inputs.feed_repo }}
         run: |
           set -euo pipefail
           gh release create "$TAG" \
             "$NOVAWING_RELEASE_EXE" \
+            "$NOVAWING_RELEASE_WINDOWS_LATEST" \
+            "$NOVAWING_RELEASE_WINDOWS_BLOCKMAP" \
             "$NOVAWING_RELEASE_DMG" \
+            "$NOVAWING_RELEASE_DMG_BLOCKMAP" \
             "$NOVAWING_RELEASE_ZIP" \
+            "$NOVAWING_RELEASE_ZIP_BLOCKMAP" \
+            "$NOVAWING_RELEASE_MACOS_LATEST" \
             "$NOVAWING_RELEASE_MANIFEST" \
-            --repo "$GITHUB_REPOSITORY" \
+            --repo "$FEED_REPO" \
             --title "NovaWing $TAG" \
             --notes-file "$NOVAWING_RELEASE_NOTES" \
             --verify-tag

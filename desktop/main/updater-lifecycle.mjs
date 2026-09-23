@@ -19,11 +19,47 @@ import { createDesktopUpdater } from './updater.mjs'
  * @typedef {(intent: { version: string, identity: string }) => unknown} LifecycleInstaller
  */
 
+/**
+ * @typedef {{ platform: string, installable: boolean, reasonCode: string | null,
+ *   signature: 'signed' | 'unsigned' | 'unknown', unsignedInstallApproved?: boolean }} UpdaterCapabilityView
+ */
+
 /** Reasons this module adds. Stable strings; callers must not parse prose. */
 export const UPDATER_LIFECYCLE_REASON = Object.freeze({
   NOT_CONFIGURED: 'UPDATER_NOT_CONFIGURED',
+  REQUIRES_PACKAGED_APP: 'UPDATER_REQUIRES_PACKAGED_APP',
+  BLOCKED_BY_SIGNING: 'BLOCKED_BY_SIGNING',
+  PLATFORM_UNSUPPORTED: 'UPDATER_PLATFORM_UNSUPPORTED',
   INSTALL_NOT_CONFIGURED: 'UPDATER_INSTALL_NOT_CONFIGURED',
 })
+
+/**
+ * The install capability policy, in one place.
+ *
+ * Windows is the only host where an update may be installed today, and only from a packaged app.
+ * It is granted as an explicitly unsigned bootstrap: the artifact is not Authenticode-signed, so
+ * this is TECHNICALLY POSSIBLE and never a claim of trusted distribution. macOS stays blocked by
+ * signing until a Developer ID identity exists, so the product never offers an installable state
+ * there even though the adapter could still read a feed.
+ *
+ * @param {{ platform: string, packaged: boolean, configured: boolean }} options
+ * @returns {UpdaterCapabilityView}
+ */
+export function resolveUpdaterCapability({ platform, packaged, configured }) {
+  if (configured !== true) {
+    return { platform, installable: false, reasonCode: UPDATER_LIFECYCLE_REASON.NOT_CONFIGURED, signature: 'unknown' }
+  }
+  if (packaged !== true) {
+    return { platform, installable: false, reasonCode: UPDATER_LIFECYCLE_REASON.REQUIRES_PACKAGED_APP, signature: 'unknown' }
+  }
+  if (platform === 'darwin') {
+    return { platform, installable: false, reasonCode: UPDATER_LIFECYCLE_REASON.BLOCKED_BY_SIGNING, signature: 'unsigned' }
+  }
+  if (platform === 'win32') {
+    return { platform, installable: true, reasonCode: null, signature: 'unsigned', unsignedInstallApproved: true }
+  }
+  return { platform, installable: false, reasonCode: UPDATER_LIFECYCLE_REASON.PLATFORM_UNSUPPORTED, signature: 'unknown' }
+}
 
 /**
  * A backend that refuses every entry point. Production ships this rather than a stub that could
@@ -94,21 +130,23 @@ export function createFinalQuitAction({ authorization, installer, quit, reportFa
 
 /**
  * Assembles the updater against the real Host. Everything that could make the app act is
- * injected: without both a backend and an installer the capability is not installable, the gate
+ * injected: without a working backend and installer the capability is not installable, the gate
  * refuses before any shutdown begins, and the product keeps running update-disabled.
  *
- * @param {{ platform: string, backend?: LifecycleBackend | null, installer?: LifecycleInstaller | null,
- *   signature?: 'signed' | 'unsigned' | 'unknown', unsignedInstallApproved?: boolean,
+ * `adapter` is the real electron-updater adapter. `backend`/`installer` are the test seams that
+ * drive the same path without electron-updater.
+ *
+ * @param {{ platform: string, packaged?: boolean, adapter?: object | null,
+ *   backend?: LifecycleBackend | null, installer?: LifecycleInstaller | null,
  *   reportFailure?: (error: unknown) => void }} options
  */
 export function createUpdaterLifecycle({
-  platform, backend = null, installer = null, signature = 'unknown',
-  unsignedInstallApproved = false, reportFailure = () => {},
+  platform, packaged = true, adapter = null, backend = null, installer = null, reportFailure = () => {},
 }) {
-  const configured = typeof backend?.check === 'function' && typeof installer === 'function'
-  const capability = Object.freeze(configured
-    ? { platform, installable: true, signature, unsignedInstallApproved }
-    : { platform, installable: false, reasonCode: UPDATER_LIFECYCLE_REASON.NOT_CONFIGURED, signature: 'unknown' })
+  const effectiveBackend = adapter === null ? backend : { check: () => adapter.check(), download: (candidate) => adapter.download(candidate) }
+  const effectiveInstaller = adapter === null ? installer : (intent) => adapter.install(intent)
+  const configured = typeof effectiveBackend?.check === 'function' && typeof effectiveInstaller === 'function'
+  const capability = Object.freeze(resolveUpdaterCapability({ platform, packaged, configured }))
   const authorization = createInstallAuthorization()
 
   return {
@@ -116,7 +154,7 @@ export function createUpdaterLifecycle({
     capability,
     get configured() { return configured },
     finalQuit: ({ quit }) => createFinalQuitAction({
-      authorization, installer: configured ? installer : null, quit, reportFailure,
+      authorization, installer: configured ? effectiveInstaller : null, quit, reportFailure,
     }),
     /**
      * @param {{ host: { updateSafetySnapshot: (options: object) => unknown },
@@ -124,7 +162,7 @@ export function createUpdaterLifecycle({
      */
     createUpdater({ host, requestQuit, readShutdownState }) {
       return createDesktopUpdater({
-        backend: configured ? backend : createUnconfiguredBackend(),
+        backend: configured ? effectiveBackend : createUnconfiguredBackend(),
         capability,
         // The real Host snapshot, read fresh on every gate evaluation. Never a cached reading.
         getBlockers: () => host.updateSafetySnapshot({ readShutdownState }),

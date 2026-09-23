@@ -1,6 +1,8 @@
 import { app, Menu, nativeImage, Notification, powerSaveBlocker, Tray } from 'electron'
+import electronUpdater from 'electron-updater'
 import { requireDesktopIsolation } from './isolation.mjs'
 import { createShutdownCoordinator, describeShutdownError } from './shutdown.mjs'
+import { createElectronUpdaterAdapter } from './electron-updater-adapter.mjs'
 import { createUpdaterLifecycle } from './updater-lifecycle.mjs'
 import { createDesktopPowerManager } from './power.mjs'
 import { createDesktopTray } from './tray.mjs'
@@ -32,11 +34,30 @@ let record = (_event, _detail) => {}
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
 }
-// Production ships no update backend and no installer, so the capability stays not installable
-// and the install gate refuses before anything is closed. Only an injected backend plus
-// installer, as the tests do, can turn the update path on. Nothing here checks, downloads or
-// installs on its own.
-const updaterLifecycle = createUpdaterLifecycle({ platform: process.platform, reportFailure: reportBackgroundFailure })
+/**
+ * The real update adapter, or null when electron-updater cannot be constructed here. A failure
+ * degrades to a not-configured capability instead of failing startup, and the capability policy
+ * still decides whether the product may install anything at all.
+ *
+ * `autoUpdater` is a lazy getter on the CommonJS default export, not a named ESM export.
+ */
+function createUpdateAdapter() {
+  try {
+    return createElectronUpdaterAdapter({ autoUpdater: electronUpdater.autoUpdater })
+  } catch (error) {
+    reportBackgroundFailure(error)
+    return null
+  }
+}
+
+// Windows from a packaged app is the only installable configuration today, and it is granted as
+// an explicitly unsigned bootstrap. macOS stays blocked by signing, and an unpackaged run is
+// never installable. Nothing here checks, downloads or installs on its own: no UI reaches the
+// updater yet, and an ordinary quit can never install a staged update.
+const updaterLifecycle = createUpdaterLifecycle({
+  platform: process.platform, packaged: app.isPackaged, adapter: createUpdateAdapter(),
+  reportFailure: reportBackgroundFailure,
+})
 export const desktopShutdown = createShutdownCoordinator({
   getStartup: () => desktopReady,
   getHost: () => host,

@@ -214,12 +214,31 @@ jobs:
       # Reads back what the packaging adapter wrote and fails the job on any drift. The installer
       # audit itself is not re-implemented here: this only asserts the artifact exists and is
       # self-consistent with the installer file and with the smoke-validated package content.
+      # The update metadata must name the very asset this job produced. electron-builder can write
+      # a `path` no release asset carries, and an updater following it would 404.
+      - name: Verify the update metadata
+        id: updatemetadata
+        shell: pwsh
+        run: |
+          if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
+          $installer = Get-Content -LiteralPath 'artifacts/desktop/installer.json' -Raw | ConvertFrom-Json
+          foreach ($required in @('artifacts/desktop/latest.yml', "artifacts/desktop/$($installer.path)")) {
+            if (-not (Test-Path -LiteralPath $required)) { Write-Error "Missing update metadata input: $required"; exit 1 }
+          }
+          node scripts/platform/verify-update-metadata.mjs --metadata 'artifacts/desktop/latest.yml' --files-dir 'artifacts/desktop' --expect-version $installer.version --expect-path $installer.path
+          if ($LASTEXITCODE -ne 0) { Write-Error 'latest.yml does not match the artifacts this job produced'; exit 1 }
+          $blockmap = "artifacts/desktop/$($installer.path).blockmap"
+          if (-not (Test-Path -LiteralPath $blockmap)) { Write-Error "Missing installer blockmap: $blockmap"; exit 1 }
+          Write-Host "UPDATE_METADATA OK $($installer.path)"
+
       - name: Verify the installer artifact identity
         id: installeridentity
         shell: pwsh
         run: |
           if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
-          $exe = 'artifacts/desktop/NovaWing Setup 0.4.0.exe'
+          $exeCandidates = @(Get-ChildItem -Path 'artifacts/desktop' -Filter '*.exe' -File)
+          if ($exeCandidates.Count -ne 1) { Write-Error "Expected exactly one installer in artifacts/desktop, found $($exeCandidates.Count)"; exit 1 }
+          $exe = $exeCandidates[0].FullName
           $identityFile = 'artifacts/desktop/installer.json'
           $auditFile = 'artifacts/desktop/packaged-content-audit.json'
           $proofFile = 'artifacts/desktop/package-smoke/result.json'
@@ -242,7 +261,10 @@ jobs:
           # The adapter spreads DESKTOP_IDENTITY into this record, so the application name is
           # carried as `appName`; there is deliberately no separate `productName` key.
           if ([string]$installer.appName -ne 'NovaWing') { Write-Error "installer.json appName is '$($installer.appName)'"; exit 1 }
-          if ([string]$installer.version -ne '0.4.0') { Write-Error "installer.json version is $($installer.version)"; exit 1 }
+          $expectedName = "NovaWing-Setup-$($installer.version)-$($installer.arch).exe"
+          if ($exeCandidates[0].Name -ne $expectedName) {
+            Write-Error "installer filename '$($exeCandidates[0].Name)' does not match the version-driven name '$expectedName'"; exit 1
+          }
           if ([string]$installer.arch -ne 'x64') { Write-Error "installer.json arch is $($installer.arch)"; exit 1 }
           if ([int64]$installer.size -ne $size) { Write-Error "installer.json size $($installer.size) does not match the installer file ($size bytes)"; exit 1 }
           if ([string]$installer.sha256 -ne $exeSha) { Write-Error 'installer.json sha256 does not match the installer file'; exit 1 }
@@ -256,7 +278,7 @@ jobs:
           $lines = [System.Collections.Generic.List[string]]::new()
           $lines.Add('# NovaWing Phase 6B - Windows installer identity')
           $lines.Add("github_sha=$env:GITHUB_SHA")
-          $lines.Add('installer_filename=NovaWing Setup 0.4.0.exe')
+          $lines.Add("installer_filename=$($exeCandidates[0].Name)")
           $lines.Add("installer_size=$size")
           $lines.Add("installer_sha256=$exeSha")
           $lines.Add("installer_declared_size=$($installer.size)")
@@ -298,9 +320,11 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
-            artifacts/desktop/NovaWing Setup 0.4.0.exe
+            artifacts/desktop/*.exe
             artifacts/desktop/installer.json
             artifacts/desktop/packaged-content-audit.json
+            artifacts/desktop/latest.yml
+            artifacts/desktop/*.blockmap
 
       - name: Upload build evidence
         if: always()
@@ -525,13 +549,29 @@ jobs:
         id: dmgverify
         shell: bash
         run: |
-          dmg='artifacts/desktop/NovaWing-0.4.0-arm64.dmg'
+          dmg="$(ls artifacts/desktop/*.dmg)"
           if [ ! -f "$dmg" ]; then
             echo "::error::DMG is missing: $dmg"
             exit 1
           fi
           /usr/bin/hdiutil verify "$dmg"
           echo "HDIUTIL_VERIFY PASS: $dmg"
+
+      # The update metadata must name the very assets this job produced.
+      - name: Verify the update metadata
+        id: updatemetadata
+        shell: bash
+        run: |
+          version="$(node -e "process.stdout.write(require('./artifacts/desktop/macos-distribution.json').version)")"
+          zip="$(node -e "process.stdout.write(require('./artifacts/desktop/macos-distribution.json').zip.filename)")"
+          dmg="$(node -e "process.stdout.write(require('./artifacts/desktop/macos-distribution.json').dmg.filename)")"
+          node scripts/platform/verify-update-metadata.mjs \
+            --metadata artifacts/desktop/latest-mac.yml --files-dir artifacts/desktop \
+            --expect-version "$version" --expect-path "$zip" --expect-path "$dmg"
+          for blockmap in "artifacts/desktop/$zip.blockmap" "artifacts/desktop/$dmg.blockmap"; do
+            if [ ! -f "$blockmap" ]; then echo "::error::Missing blockmap: $blockmap"; exit 1; fi
+          done
+          echo "UPDATE_METADATA OK $zip $dmg"
 
       # Reads back macos-distribution.json and fails the job on any drift. The packaging audit is
       # not re-implemented: this asserts the containers exist, that the recorded hash and size are
@@ -548,7 +588,7 @@ jobs:
             const dist = JSON.parse(fs.readFileSync("artifacts/desktop/macos-distribution.json", "utf8"))
             const proof = JSON.parse(fs.readFileSync("artifacts/desktop/package-smoke/result.json", "utf8"))
             const digest = (p) => createHash("sha256").update(fs.readFileSync(p)).digest("hex")
-            const expected = { dmg: "NovaWing-0.4.0-arm64.dmg", zip: "NovaWing-0.4.0-arm64-mac.zip" }
+            const expected = { dmg: `NovaWing-${dist.version}-${dist.arch}.dmg`, zip: `NovaWing-${dist.version}-${dist.arch}-mac.zip` }
             for (const key of Object.keys(expected)) {
               const entry = dist[key]
               assert.ok(entry, `macos-distribution.json records no ${key}`)
@@ -610,7 +650,8 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
-            artifacts/desktop/NovaWing-0.4.0-arm64.dmg
+            artifacts/desktop/*.dmg
+            artifacts/desktop/*.dmg.blockmap
             artifacts/desktop/macos-distribution.json
 
       - name: Upload the macOS ZIP
@@ -621,7 +662,9 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
-            artifacts/desktop/NovaWing-0.4.0-arm64-mac.zip
+            artifacts/desktop/*-mac.zip
+            artifacts/desktop/*-mac.zip.blockmap
+            artifacts/desktop/latest-mac.yml
             artifacts/desktop/macos-distribution.json
 
       - name: Upload build evidence

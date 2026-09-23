@@ -7,6 +7,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build, Platform, Arch } from 'electron-builder'
 import { DESKTOP_IDENTITY } from '../../desktop/main/identity.mjs'
+import { updateFeedPublishConfig } from './update-feed.mjs'
 import { requireInstalledElectron } from './desktop-dependency-preflight.mjs'
 
 export const root = resolve(import.meta.dirname, '../..')
@@ -158,6 +159,7 @@ export async function packageMac() {
       asar: false, npmRebuild: false, nodeGypRebuild: false,
       files: ['**/*'],
       mac: { target: [{ target: 'dir', arch: ['arm64'] }], category: 'public.app-category.developer-tools' },
+      publish: updateFeedPublishConfig(),
       artifactName: `NovaWing ${DESKTOP_IDENTITY.version}.\${ext}`,
     },
   })
@@ -197,6 +199,7 @@ export async function packageMacDistribution(targets = ['dmg', 'zip']) {
       files: ['**/*'],
       mac: { target: targets.map((target) => ({ target, arch: ['arm64'] })),
         category: 'public.app-category.developer-tools', identity: null },
+      publish: updateFeedPublishConfig(),
       dmg: {
         artifactName: '${productName}-${version}-${arch}.${ext}',
         contents: [

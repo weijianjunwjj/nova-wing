@@ -8,6 +8,7 @@ import { createDesktopHost } from '../main/host.mjs'
 import { createShutdownCoordinator } from '../main/shutdown.mjs'
 import {
   createFinalQuitAction, createInstallAuthorization, createUnconfiguredBackend, createUpdaterLifecycle,
+  resolveUpdaterCapability,
 } from '../main/updater-lifecycle.mjs'
 import { UPDATER_BLOCK_REASON, UPDATER_STATE } from '../main/updater.mjs'
 
@@ -62,10 +63,10 @@ async function configDirectory(count = 1) {
  *   pendingHumanDecision: boolean, pendingRecoveryCheckpoint: boolean }} SafetyView
  * @typedef {{ createGate?: ReturnType<typeof deferred>, startGate?: ReturnType<typeof deferred>,
  *   closeGate?: ReturnType<typeof deferred>, safety?: () => SafetyView }} ManagedAppOptions
- * @typedef {{ backend?: { check: () => Promise<{ available: boolean }>,
+ * @typedef {{ platform?: string, packaged?: boolean,
+ *   backend?: { check: () => Promise<{ available: boolean }>,
  *     download: (candidate: unknown) => Promise<unknown> } | null,
- *   installer?: ((intent: { version: string, identity: string }) => unknown) | null,
- *   signature?: 'signed' | 'unsigned' | 'unknown', unsignedInstallApproved?: boolean }} LifecycleOverrides
+ *   installer?: ((intent: { version: string, identity: string }) => unknown) | null }} LifecycleOverrides
  * @typedef {{ apps?: ReturnType<typeof managedApps>, hostClose?: () => Promise<unknown>,
  *   afterDrain?: () => void, lifecycle?: LifecycleOverrides }} HarnessOptions
  */
@@ -111,7 +112,8 @@ async function admissionHarness({ apps = managedApps(), hostClose, afterDrain, l
 
   const backend = { check: async () => ({ available: true, candidate: { ...CANDIDATE } }), download: async () => ({ downloaded: true }) }
   const update = createUpdaterLifecycle({
-    platform: 'test', backend, signature: 'signed',
+    // A packaged Windows host is the only configuration where an install is permitted today.
+    platform: 'win32', packaged: true, backend,
     ...lifecycle,
     installer: 'installer' in lifecycle
       ? lifecycle.installer
@@ -483,6 +485,46 @@ test('the production assembly is not installable and says why, without closing a
     assert.equal(harness.installs.length, 0)
   } finally {
     await harness.cleanup()
+  }
+})
+
+test('the capability policy grants an install only to a packaged Windows host', () => {
+  // Windows from a packaged app: TECHNICALLY POSSIBLE, explicitly unsigned, never trusted.
+  assert.deepEqual(resolveUpdaterCapability({ platform: 'win32', packaged: true, configured: true }), {
+    platform: 'win32', installable: true, reasonCode: null, signature: 'unsigned', unsignedInstallApproved: true,
+  })
+  // macOS stays blocked by signing even though the adapter could read a feed.
+  assert.deepEqual(resolveUpdaterCapability({ platform: 'darwin', packaged: true, configured: true }), {
+    platform: 'darwin', installable: false, reasonCode: 'BLOCKED_BY_SIGNING', signature: 'unsigned',
+  })
+  // An unpackaged run is never installable, whatever the host.
+  assert.equal(resolveUpdaterCapability({ platform: 'win32', packaged: false, configured: true }).reasonCode, 'UPDATER_REQUIRES_PACKAGED_APP')
+  // No adapter means nothing is configured.
+  assert.equal(resolveUpdaterCapability({ platform: 'win32', packaged: true, configured: false }).reasonCode, 'UPDATER_NOT_CONFIGURED')
+  assert.equal(resolveUpdaterCapability({ platform: 'linux', packaged: true, configured: true }).reasonCode, 'UPDATER_PLATFORM_UNSUPPORTED')
+})
+
+test('a configured macOS or unpackaged host still refuses the install before closing anything', async () => {
+  /** @type {Array<[string, LifecycleOverrides, string]>} */
+  const cases = [
+    ['macOS', { platform: 'darwin', packaged: true }, 'BLOCKED_BY_SIGNING'],
+    ['an unpackaged run', { platform: 'win32', packaged: false }, 'UPDATER_REQUIRES_PACKAGED_APP'],
+  ]
+  for (const [label, lifecycle, expected] of cases) {
+    const harness = await admissionHarness({ lifecycle })
+    try {
+      const snapshot = harness.updater.snapshot()
+      assert.equal(snapshot.state, UPDATER_STATE.UNSUPPORTED, label)
+      assert.equal(snapshot.reasonCode, expected, label)
+      const refused = await harness.updater.requestRestartAndInstall({ ...CONFIRMATION })
+      assert.equal(refused.ok, false, label)
+      assert.equal(refused.reasonCode, expected, label)
+      assert.equal(harness.coordinator.requested, false, `${label}: nothing was closed`)
+      assert.equal(admissionOpen(harness.launchpad), true, label)
+      assert.equal(harness.installs.length, 0, label)
+    } finally {
+      await harness.cleanup()
+    }
   }
 })
 
