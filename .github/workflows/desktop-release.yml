@@ -634,10 +634,10 @@ jobs:
           github-token: ${{ github.token }}
           path: release-assets/macos-zip
 
-      # Publishing exactly the validated bytes: every asset is re-hashed against the manifest
-      # before the release is created, so a mixed or substituted artifact cannot be shipped.
-      - name: Verify the release assets against the manifest
-        id: assets
+      # Step A of two. $GITHUB_ENV only affects subsequent steps, so the container paths are
+      # resolved here and consumed by the next step rather than by a process started in this one.
+      - name: Resolve the release assets
+        id: resolveassets
         shell: bash
         run: |
           require_one() {
@@ -650,12 +650,37 @@ jobs:
             fi
             printf '%s' "$hits"
           }
-          value="$(require_one release-assets/windows '*.exe')" || { echo "::error::Windows installer could not be resolved"; exit 1; }
-          printf 'NOVAWING_RELEASE_EXE=%s\n' "$value" >> "$GITHUB_ENV"
-          value="$(require_one release-assets/macos-dmg '*.dmg')" || { echo "::error::macOS DMG could not be resolved"; exit 1; }
-          printf 'NOVAWING_RELEASE_DMG=%s\n' "$value" >> "$GITHUB_ENV"
-          value="$(require_one release-assets/macos-zip '*-mac.zip')" || { echo "::error::macOS ZIP could not be resolved"; exit 1; }
-          printf 'NOVAWING_RELEASE_ZIP=%s\n' "$value" >> "$GITHUB_ENV"
+          resolve_asset() {
+            value="$(require_one "$2" "$3")" || {
+              echo "::error::$1 could not be resolved uniquely (expected exactly one '$3' under $2)"
+              exit 1
+            }
+            printf '%s=%s\n' "$1" "$value" >> "$GITHUB_ENV"
+            echo "$1=$value"
+          }
+          resolve_asset NOVAWING_RELEASE_EXE release-assets/windows '*.exe'
+          resolve_asset NOVAWING_RELEASE_DMG release-assets/macos-dmg '*.dmg'
+          resolve_asset NOVAWING_RELEASE_ZIP release-assets/macos-zip '*-mac.zip'
+
+      # Step B. Publishing exactly the validated bytes: every asset is re-hashed against the
+      # manifest before the release is created, so a mixed or substituted artifact cannot be
+      # shipped. The four paths must already be environment variables here, and must be real
+      # files, so a resolution that produced nothing fails closed at this boundary.
+      - name: Verify the release assets against the manifest
+        id: assets
+        shell: bash
+        run: |
+          for name in NOVAWING_RELEASE_EXE NOVAWING_RELEASE_DMG NOVAWING_RELEASE_ZIP NOVAWING_RELEASE_MANIFEST; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              echo "::error::$name is not set; the resolve step did not publish it to this step"
+              exit 1
+            fi
+            if [ ! -f "$value" ]; then
+              echo "::error::$name is not a file: $value"
+              exit 1
+            fi
+          done
 
           cat > /tmp/verify-release-assets.cjs <<'EOF'
           const fs = require("node:fs")
