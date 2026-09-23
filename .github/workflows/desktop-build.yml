@@ -3,7 +3,8 @@ name: Desktop Build
 # Phase 6B: hosted runners now produce the full desktop distributables from an exact commit.
 # Windows builds the NSIS installer from the exact smoke-validated win-unpacked tree; macOS
 # builds the DMG and ZIP from the exact smoke-validated bundle content.
-# Still no tag, no GitHub Release, no signing, no notarization and no updater.
+# Still no tag, no GitHub Release, no signing and no notarization. The update feed metadata the
+# packaged app needs is produced and verified here, but this workflow publishes nothing.
 on:
   push:
     branches:
@@ -196,6 +197,34 @@ jobs:
       - name: Build the Windows unpacked package
         id: packagedir
         run: npm run desktop:package:dir
+
+      # The feed the packaged app will actually follow is the file electron-builder burned into
+      # it, not the packaging config it was derived from. It must point at the public binary
+      # repository, never at the private source repository a client can never authenticate to.
+      - name: Verify the packaged Windows update feed
+        id: updatefeed
+        shell: pwsh
+        run: |
+          $feedFile = Join-Path 'artifacts/desktop' 'win-unpacked/resources/app-update.yml'
+          if (-not (Test-Path -LiteralPath $feedFile)) { Write-Error "Missing packaged update feed: $feedFile"; exit 1 }
+          # A flat key/value document, parsed without depending on field order. Any line this
+          # cannot read fails the gate rather than being skipped.
+          $values = @{}
+          foreach ($line in Get-Content -LiteralPath $feedFile) {
+            $trimmed = $line.Trim()
+            if ($trimmed.Length -eq 0 -or $trimmed.StartsWith('#')) { continue }
+            $match = [regex]::Match($trimmed, '^([A-Za-z][A-Za-z0-9_]*):\s*(.*)$')
+            if (-not $match.Success) { Write-Error "Unrecognized update feed line: $trimmed"; exit 1 }
+            $values[$match.Groups[1].Value] = $match.Groups[2].Value.Trim([char[]]@(32, 34, 39))
+          }
+          $expected = @{ provider = 'github'; owner = 'weijianjunwjj'; repo = 'nova-wing-releases' }
+          foreach ($key in $expected.Keys) {
+            if ($values[$key] -ne $expected[$key]) {
+              Write-Error "Packaged update feed $key is '$($values[$key])', expected '$($expected[$key])'"; exit 1
+            }
+          }
+          if ($values['repo'] -eq 'nova-wing') { Write-Error 'The packaged update feed still points at the private source repository'; exit 1 }
+          Write-Host "WINDOWS_UPDATE_FEED PASS provider=$($values['provider']) owner=$($values['owner']) repo=$($values['repo'])"
 
       # The strict Native Toast gate is deliberately untouched: this job records whether a
       # Windows Server runner satisfies it, rather than weakening it to make the job green.
