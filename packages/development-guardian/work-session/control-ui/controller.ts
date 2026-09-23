@@ -107,6 +107,59 @@ interface GuardianPhaseSnapshot {
   elapsedMs: number
 }
 
+/** Why a safety view cannot be trusted. Stable strings: callers must not parse prose. */
+export type WorkSessionUpdateSafetyReason =
+  | 'STATE_NOT_HYDRATED'
+  | 'STATE_READ_FAILED'
+
+/**
+ * Internal, redacted projection for a Main-owned update install gate. It carries booleans and
+ * counts only: never checkpoint content, a provider conversation URL, a credential, task text
+ * or the durable state itself. Reading it is a pure observation, so it must not register an
+ * operation of its own, and it is deliberately not part of the HTTP/SSE snapshot.
+ */
+export interface WorkSessionUpdateSafetyView {
+  /** True only when the durable state has been hydrated and could be read in full. */
+  readable: boolean
+  reasonCode: WorkSessionUpdateSafetyReason | null
+  /** Accepted or lifecycle operations that have not settled yet. */
+  inFlightOperations: number
+  /** A non-terminal session is waiting for a human decision. */
+  pendingHumanDecision: boolean
+  /** A non-terminal session still holds a recovery checkpoint awaiting resolution. */
+  pendingRecoveryCheckpoint: boolean
+}
+
+/**
+ * A recovery checkpoint is only a suspension bookmark and must not be confused with an
+ * in-flight Git finalization, which is an operation and is therefore covered by
+ * `inFlightOperations` (checkpoint recovery is one of the promises counted there).
+ * Completed `checkpointCommits` records are history and are never a blocker.
+ */
+function hasPendingRecoveryCheckpoint(state: WorkSessionDurableState): boolean {
+  return state.currentTaskCheckpoint !== undefined
+}
+
+/**
+ * A human decision is pending when any of the existing identity-bound signals is present.
+ * A structured `pendingHumanAction` is only one of them: a HUMAN_REQUIRED suspension without
+ * a business-decision card is still a reason to keep the session untouched.
+ */
+function hasPendingHumanDecision(state: WorkSessionDurableState): boolean {
+  if (effectiveHumanRequired(state) !== undefined) return true
+  const pending = state.pendingHumanAction
+  if (
+    pending !== undefined &&
+    state.state === 'SUSPENDED' &&
+    pending.generation === state.humanRequiredGeneration &&
+    pending.taskId === state.currentTaskId
+  ) {
+    return true
+  }
+  const approval = state.pendingVerificationApproval
+  return approval !== undefined && approval.status !== 'APPROVED'
+}
+
 export class WorkSessionControlController {
   private readonly taskEta: WorkSessionControlControllerOptions['taskEta']
   private readonly readCodingExecutions: WorkSessionControlControllerOptions['readCodingExecutions']
@@ -119,6 +172,9 @@ export class WorkSessionControlController {
   private readonly activityObserver: WorkSessionActivityObserver | undefined
 
   private started = false
+  /** Whether the durable state has been hydrated. getDurableState() cannot distinguish
+   * "no session ever persisted" from "not loaded yet", so safety reads need this flag. */
+  private hydrated = false
   private scheduleCheckAt = 0
   private closed = false
   private closeOperation: Promise<void> | undefined
@@ -213,6 +269,53 @@ export class WorkSessionControlController {
       this.checkpointRecoveryPromise !== undefined
   }
 
+  /** The same liveness as hasActiveOperation(), counted instead of collapsed. */
+  private inFlightOperationCount(): number {
+    return this.acceptedOperations.size +
+      (this.startPromise === undefined ? 0 : 1) +
+      (this.resumePromise === undefined ? 0 : 1) +
+      (this.checkpointRecoveryPromise === undefined ? 0 : 1)
+  }
+
+  /**
+   * Read-only, redacted safety view for an owner that must not disturb live work.
+   *
+   * Fails closed: an unhydrated or unreadable state reports readable=false instead of a
+   * reassuring zero, because "no pending human decision" must never be inferred from a state
+   * this process has not actually read.
+   */
+  getUpdateSafetyView(): WorkSessionUpdateSafetyView {
+    const inFlightOperations = this.inFlightOperationCount()
+    const unreadable = (reasonCode: WorkSessionUpdateSafetyReason): WorkSessionUpdateSafetyView => ({
+      readable: false, reasonCode, inFlightOperations, pendingHumanDecision: false, pendingRecoveryCheckpoint: false,
+    })
+    if (!this.hydrated) return unreadable('STATE_NOT_HYDRATED')
+    let state: WorkSessionDurableState | undefined
+    try {
+      state = this.runtime.getDurableState()
+    } catch {
+      return unreadable('STATE_READ_FAILED')
+    }
+    // Hydrated with no durable state, or a terminal one: nothing is waiting.
+    if (state === undefined || isTerminalWorkSessionState(state.state)) {
+      return {
+        readable: true, reasonCode: null,
+        inFlightOperations, pendingHumanDecision: false, pendingRecoveryCheckpoint: false,
+      }
+    }
+    try {
+      return {
+        readable: true, reasonCode: null, inFlightOperations,
+        pendingHumanDecision: hasPendingHumanDecision(state),
+        pendingRecoveryCheckpoint: hasPendingRecoveryCheckpoint(state),
+      }
+    } catch {
+      // A malformed or legacy durable shape must not turn into a reassuring reading, and a pure
+      // observation must not throw at its caller either.
+      return unreadable('STATE_READ_FAILED')
+    }
+  }
+
   /**
    * Restore an existing durable session before the production HTTP listener opens.
    * Hydration is read-only and never starts or resumes autonomous work.
@@ -220,6 +323,9 @@ export class WorkSessionControlController {
   loadPersistedState(): Promise<WorkSessionDurableState | undefined> {
     if (this.closed) return Promise.reject(new Error('Controller is closing'))
     return this.trackOperation(this.runtime.loadPersistedState().then((state) => {
+      // Hydration completed, including the "no persisted session" answer. A rejected load
+      // leaves this false so every later safety read stays unreadable.
+      this.hydrated = true
       if (state === undefined) return undefined
       this.started = state.state !== 'SCHEDULED'
       this.prevState = state
