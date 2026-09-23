@@ -1,7 +1,9 @@
 name: Desktop Build
 
-# Phase 6A probe only. This workflow answers whether GitHub-hosted runners can run the
-# packaged desktop smoke as it already exists. It builds no installer and creates no release.
+# Phase 6B: hosted runners now produce the full desktop distributables from an exact commit.
+# Windows builds the NSIS installer from the exact smoke-validated win-unpacked tree; macOS
+# builds the DMG and ZIP from the exact smoke-validated bundle content.
+# Still no tag, no GitHub Release, no signing, no notarization and no updater.
 on:
   push:
     branches:
@@ -16,10 +18,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows-probe:
-    name: windows-probe (Windows Server 2022 / x64)
+  windows-build:
+    name: windows-build (Windows Server 2022 / x64)
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check out the exact workflow commit
         uses: actions/checkout@v4
@@ -195,11 +197,80 @@ jobs:
         id: packagedir
         run: npm run desktop:package:dir
 
-      # The strict Native Toast gate is deliberately untouched: this probe finds out whether a
-      # Windows Server runner can satisfy it, rather than weakening it to make the job green.
+      # The strict Native Toast gate is deliberately untouched: this job records whether a
+      # Windows Server runner satisfies it, rather than weakening it to make the job green.
       - name: Run the packaged Electron smoke
         id: smoke
         run: npm run desktop:package:smoke
+
+      # NSIS is built from the exact `dir` tree the smoke just validated. The adapter refuses to
+      # run unless win-unpacked still hashes to the smoke's packageSha256, so the installer can
+      # never be produced from a payload other than the one that passed the smoke. Electron
+      # Builder is given `prepackaged`, so win-unpacked is read, never recreated.
+      - name: Build the Windows NSIS installer
+        id: nsis
+        run: npm run desktop:build:win
+
+      # Reads back what the packaging adapter wrote and fails the job on any drift. The installer
+      # audit itself is not re-implemented here: this only asserts the artifact exists and is
+      # self-consistent with the installer file and with the smoke-validated package content.
+      - name: Verify the installer artifact identity
+        id: installeridentity
+        shell: pwsh
+        run: |
+          if (Test-Path variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
+          $exe = 'artifacts/desktop/NovaWing Setup 0.4.0.exe'
+          $identityFile = 'artifacts/desktop/installer.json'
+          $auditFile = 'artifacts/desktop/packaged-content-audit.json'
+          $proofFile = 'artifacts/desktop/package-smoke/result.json'
+          foreach ($required in @($exe, $identityFile, $auditFile, $proofFile)) {
+            if (-not (Test-Path -LiteralPath $required)) { Write-Error "Missing required artifact: $required"; exit 1 }
+          }
+
+          $installer = Get-Content -LiteralPath $identityFile -Raw | ConvertFrom-Json
+          $audit = Get-Content -LiteralPath $auditFile -Raw | ConvertFrom-Json
+          $proof = Get-Content -LiteralPath $proofFile -Raw | ConvertFrom-Json
+
+          $resolved = (Resolve-Path -LiteralPath $exe).Path
+          $size = (Get-Item -LiteralPath $resolved).Length
+          $hasher = [System.Security.Cryptography.SHA256]::Create()
+          $stream = [System.IO.File]::OpenRead($resolved)
+          try { $digest = $hasher.ComputeHash($stream) } finally { $stream.Dispose(); $hasher.Dispose() }
+          $exeSha = (($digest | ForEach-Object { $_.ToString('x2') }) -join '')
+          $signedText = ([bool]$installer.signed).ToString().ToLowerInvariant()
+
+          if ($installer.productName -ne 'NovaWing') { Write-Error "installer.json productName is $($installer.productName)"; exit 1 }
+          if ([string]$installer.version -ne '0.4.0') { Write-Error "installer.json version is $($installer.version)"; exit 1 }
+          if ([string]$installer.arch -ne 'x64') { Write-Error "installer.json arch is $($installer.arch)"; exit 1 }
+          if ([int64]$installer.size -ne $size) { Write-Error "installer.json size $($installer.size) does not match the installer file ($size bytes)"; exit 1 }
+          if ([string]$installer.sha256 -ne $exeSha) { Write-Error 'installer.json sha256 does not match the installer file'; exit 1 }
+          if ($installer.signed -ne $false) { Write-Error "This phase must ship an unsigned installer, but installer.json says signed=$($installer.signed)"; exit 1 }
+          if ([string]::IsNullOrWhiteSpace([string]$installer.path)) { Write-Error 'installer.json records no installer path'; exit 1 }
+          if ([string]$proof.result -ne 'PASS') { Write-Error "package-smoke result.json is $($proof.result)"; exit 1 }
+          if ([string]$audit.sha256 -ne [string]$proof.packageSha256) {
+            Write-Error "Packaged content drifted across the installer build: audit=$($audit.sha256) smoke=$($proof.packageSha256)"; exit 1
+          }
+
+          $lines = [System.Collections.Generic.List[string]]::new()
+          $lines.Add('# NovaWing Phase 6B - Windows installer identity')
+          $lines.Add("github_sha=$env:GITHUB_SHA")
+          $lines.Add('installer_filename=NovaWing Setup 0.4.0.exe')
+          $lines.Add("installer_size=$size")
+          $lines.Add("installer_sha256=$exeSha")
+          $lines.Add("installer_declared_size=$($installer.size)")
+          $lines.Add("installer_declared_sha256=$($installer.sha256)")
+          $lines.Add("installer_signed=$signedText")
+          $lines.Add("installer_product_name=$($installer.productName)")
+          $lines.Add("installer_version=$($installer.version)")
+          $lines.Add("installer_arch=$($installer.arch)")
+          $lines.Add("installer_electron=$($installer.electron)")
+          $lines.Add("installer_builder=$($installer.builder)")
+          $lines.Add("package_sha256=$($proof.packageSha256)")
+          $lines.Add("package_smoke_result=$($proof.result)")
+          $lines.Add("package_content_sha256=$($audit.sha256)")
+          New-Item -ItemType Directory -Force -Path 'artifacts/ci' | Out-Null
+          $lines | Set-Content -LiteralPath 'artifacts/ci/windows-installer-identity.txt' -Encoding utf8
+          $lines | ForEach-Object { Write-Host $_ }
 
       - name: Evidence inventory
         if: always()
@@ -215,20 +286,30 @@ jobs:
             }
           }
 
-      # Small evidence only. The unpacked package is multi-hundred-MB and is not an output of
-      # this probe, so it is never uploaded.
-      - name: Upload probe evidence
+      # The distributable itself. win-unpacked is still never uploaded: the installer, its audit
+      # and the smoke evidence are the record, and the multi-hundred-MB tree is not.
+      - name: Upload the Windows installer
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: novawing-windows-x64-probe-evidence
+          name: novawing-windows-x64-nsis
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            artifacts/desktop/NovaWing Setup 0.4.0.exe
+            artifacts/desktop/installer.json
+            artifacts/desktop/packaged-content-audit.json
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-windows-x64-evidence
           retention-days: 14
           if-no-files-found: warn
           path: |
             artifacts/ci/**
             artifacts/desktop/package-smoke/**
-            artifacts/desktop/packaged-content-audit.json
-            artifacts/desktop/installer.json
 
       - name: Job summary
         if: always()
@@ -237,15 +318,30 @@ jobs:
           CHECK_OUTCOME: ${{ steps.check.outcome }}
           PACKAGE_OUTCOME: ${{ steps.packagedir.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          NSIS_OUTCOME: ${{ steps.nsis.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.installeridentity.outcome }}
         run: |
+          function Field([string]$path, [string]$key) {
+            $value = 'NOT_AVAILABLE'
+            try {
+              if (Test-Path -LiteralPath $path) {
+                $match = Select-String -Path $path -Pattern ('^' + [regex]::Escape($key) + '=(.*)$') | Select-Object -First 1
+                if ($match) { $value = $match.Matches[0].Groups[1].Value }
+              }
+            } catch { $value = 'NOT_AVAILABLE' }
+            return $value
+          }
           $gate = 'NOT_AVAILABLE'
           $native = 'NOT_AVAILABLE'
           $branch = 'NOT_AVAILABLE'
           $gitBashIdentity = 'NOT_AVAILABLE'
           $gitVersionText = 'NOT_AVAILABLE'
+          $proofSha = 'NOT_AVAILABLE'
           try {
             if (Test-Path 'artifacts/desktop/package-smoke/result.json') {
-              $gate = (Get-Content 'artifacts/desktop/package-smoke/result.json' -Raw | ConvertFrom-Json).nativeNotificationGate
+              $proof = Get-Content 'artifacts/desktop/package-smoke/result.json' -Raw | ConvertFrom-Json
+              $gate = $proof.nativeNotificationGate
+              $proofSha = $proof.packageSha256
             }
           } catch { $gate = 'NOT_AVAILABLE' }
           try {
@@ -267,12 +363,14 @@ jobs:
               if ($version) { $gitVersionText = $version.Matches[0].Groups[1].Value }
             }
           } catch { }
+          $identityPath = 'artifacts/ci/windows-installer-identity.txt'
           @(
-            '## NovaWing Phase 6A - windows-probe',
+            '## NovaWing Phase 6B - windows-build',
             '',
             '| Item | Result |',
             '| --- | --- |',
             '| Runner | windows-2022 / x64 (Windows Server SKU) |',
+            ('| Commit SHA | ' + $env:GITHUB_SHA + ' |'),
             ('| Named branch | ' + $branch + ' |'),
             ('| Git version | ' + $gitVersionText + ' |'),
             ('| Git bash identity | ' + $gitBashIdentity + ' |'),
@@ -281,17 +379,33 @@ jobs:
             ('| `desktop:package:smoke` | ' + $env:SMOKE_OUTCOME + ' |'),
             ('| Native Notification gate | ' + $gate + ' |'),
             ('| Native Notification run | ' + $native + ' |'),
+            ('| `desktop:build:win` | ' + $env:NSIS_OUTCOME + ' |'),
+            ('| Installer identity check | ' + $env:IDENTITY_OUTCOME + ' |'),
+            ('| Installer file | ' + (Field $identityPath 'installer_filename') + ' |'),
+            ('| Installer size (bytes) | ' + (Field $identityPath 'installer_size') + ' |'),
+            ('| Installer SHA256 | ' + (Field $identityPath 'installer_sha256') + ' |'),
+            ('| Installer signed | ' + (Field $identityPath 'installer_signed') + ' |'),
+            ('| Package content SHA256 | ' + (Field $identityPath 'package_content_sha256') + ' |'),
+            ('| packageSha256 (smoke) | ' + $proofSha + ' |'),
+            ('| Smoke result | ' + (Field $identityPath 'package_smoke_result') + ' |'),
             '',
-            'A failure here is a **hosted runner probe** result, not a regression of the Phase 4',
-            'Windows 11 real-host acceptance. The strict Native Toast gate is unchanged and was',
-            'not weakened, skipped or mocked. Git validity is decided by the product resolver,',
-            'not by this workflow.'
+            'The installer is **unsigned** (`signed=false`): no Windows code-signing identity exists',
+            'here, and no signing step was added. Windows toasts deliver without one, so the strict',
+            'Native Toast gate ran for real and was not weakened, skipped or mocked.',
+            '',
+            'The NSIS container hash is expected to change between runs. The identity that must hold',
+            'is the packaged content: the installer was built from the exact win-unpacked tree whose',
+            'packageSha256 the smoke validated, and that equality is asserted above.',
+            '',
+            'WINDOWS_EBUSY_CLEANUP_NOISE: transient EBUSY cleanup warnings are still observed on the',
+            'Windows runner and remain unassociated with any failing test. They are recorded as-is',
+            'and deliberately not fixed in this phase.'
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
-  macos-probe:
-    name: macos-probe (macOS 15 / arm64)
+  macos-build:
+    name: macos-build (macOS 15 / arm64)
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check out the exact workflow commit
         uses: actions/checkout@v4
@@ -397,6 +511,79 @@ jobs:
         id: smoke
         run: npm run desktop:package:smoke
 
+      # The DMG and ZIP are built by the product's own distribution path from the same staged
+      # tree, then audited. No real Codex task is run on the runner.
+      - name: Build the macOS distribution artifacts
+        id: dist
+        run: npm run desktop:package:mac:dist
+
+      # An unreadable image would be a broken distributable, so a non-zero exit from hdiutil
+      # fails the job. The shell already runs with `-e`, so no exit code is discarded.
+      - name: Verify the DMG image
+        id: dmgverify
+        shell: bash
+        run: |
+          dmg='artifacts/desktop/NovaWing-0.4.0-arm64.dmg'
+          if [ ! -f "$dmg" ]; then
+            echo "::error::DMG is missing: $dmg"
+            exit 1
+          fi
+          /usr/bin/hdiutil verify "$dmg"
+          echo "HDIUTIL_VERIFY PASS: $dmg"
+
+      # Reads back macos-distribution.json and fails the job on any drift. The packaging audit is
+      # not re-implemented: this asserts the containers exist, that the recorded hash and size are
+      # the real file's, and that the payload is bit-for-bit the one the smoke accepted.
+      - name: Verify the distribution artifact identity
+        id: distidentity
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          node --input-type=commonjs -e '
+            const assert = require("node:assert/strict")
+            const { createHash } = require("node:crypto")
+            const fs = require("node:fs")
+            const dist = JSON.parse(fs.readFileSync("artifacts/desktop/macos-distribution.json", "utf8"))
+            const proof = JSON.parse(fs.readFileSync("artifacts/desktop/package-smoke/result.json", "utf8"))
+            const digest = (p) => createHash("sha256").update(fs.readFileSync(p)).digest("hex")
+            const expected = { dmg: "NovaWing-0.4.0-arm64.dmg", zip: "NovaWing-0.4.0-arm64-mac.zip" }
+            for (const key of Object.keys(expected)) {
+              const entry = dist[key]
+              assert.ok(entry, `macos-distribution.json records no ${key}`)
+              assert.equal(entry.filename, expected[key], `Unexpected ${key} filename: ${entry.filename}`)
+              assert.equal(entry.size, fs.statSync(entry.path).size, `${key} size does not match the file on disk`)
+              assert.equal(entry.sha256, digest(entry.path), `${key} sha256 does not match the file on disk`)
+            }
+            assert.equal(proof.result, "PASS", `package-smoke result.json is ${proof.result}`)
+            assert.equal(dist.bundleContentSha256, proof.packageSha256,
+              `Distribution payload is not the smoke-validated package: ${dist.bundleContentSha256} vs ${proof.packageSha256}`)
+            assert.equal(dist.signing.signedForDistribution, false, "This phase must ship an unsigned bundle")
+            assert.equal(dist.signing.authority, null, `Unexpected signing authority: ${dist.signing.authority}`)
+            assert.equal(dist.nativeNotificationGate, "NEEDS_SIGNED_VALIDATION",
+              `An unsigned bundle must not claim a delivery gate: ${dist.nativeNotificationGate}`)
+            const lines = [
+              "# NovaWing Phase 6B - macOS distribution identity",
+              `github_sha=${process.env.GITHUB_SHA}`,
+              `dist_version=${dist.version}`,
+              `dist_arch=${dist.arch}`,
+              `dmg_filename=${dist.dmg.filename}`,
+              `dmg_size=${dist.dmg.size}`,
+              `dmg_sha256=${dist.dmg.sha256}`,
+              `zip_filename=${dist.zip.filename}`,
+              `zip_size=${dist.zip.size}`,
+              `zip_sha256=${dist.zip.sha256}`,
+              `bundle_content_sha256=${dist.bundleContentSha256}`,
+              `package_sha256=${proof.packageSha256}`,
+              `package_smoke_result=${proof.result}`,
+              `notification_gate=${dist.nativeNotificationGate}`,
+              `signing_authority=${dist.signing.authority === null ? "NONE" : dist.signing.authority}`,
+              `signing_adhoc=${dist.signing.adhoc}`,
+              `signing_signed_for_distribution=${dist.signing.signedForDistribution}`,
+            ]
+            fs.writeFileSync("artifacts/ci/macos-distribution-identity.txt", lines.join("\n") + "\n")
+            console.log(lines.join("\n"))
+          '
+
       - name: Evidence inventory
         if: always()
         shell: bash
@@ -410,19 +597,41 @@ jobs:
             fi
           done
 
-      # No DMG/ZIP in this round: the probe only has to answer whether the hosted runner can run
-      # the packaged GUI smoke at all.
-      - name: Upload probe evidence
+      # The two containers are uploaded separately so a consumer can take one without pulling the
+      # other; each carries the same distribution record. The multi-hundred-MB mac-arm64 tree and
+      # the staging copy are not uploaded.
+      - name: Upload the macOS DMG
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: novawing-macos-arm64-probe-evidence
+          name: novawing-macos-arm64-dmg
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            artifacts/desktop/NovaWing-0.4.0-arm64.dmg
+            artifacts/desktop/macos-distribution.json
+
+      - name: Upload the macOS ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-macos-arm64-zip
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            artifacts/desktop/NovaWing-0.4.0-arm64-mac.zip
+            artifacts/desktop/macos-distribution.json
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novawing-macos-arm64-evidence
           retention-days: 14
           if-no-files-found: warn
           path: |
             artifacts/ci/**
             artifacts/desktop/package-smoke/**
-            artifacts/desktop/macos-package.json
             artifacts/desktop/macos-packaged-content-audit.json
 
       - name: Job summary
@@ -432,21 +641,17 @@ jobs:
           CHECK_OUTCOME: ${{ steps.check.outcome }}
           PACKAGE_OUTCOME: ${{ steps.apppackage.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          DIST_OUTCOME: ${{ steps.dist.outcome }}
+          DMGVERIFY_OUTCOME: ${{ steps.dmgverify.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.distidentity.outcome }}
         run: |
-          json_field() {
-            node --input-type=commonjs -e "
-              const fs = require('fs')
-              try {
-                const doc = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'))
-                const value = process.argv[2].split('.').reduce((a, k) => (a == null ? a : a[k]), doc)
-                process.stdout.write(value == null ? 'NOT_AVAILABLE' : String(value))
-              } catch { process.stdout.write('NOT_AVAILABLE') }
-            " "$1" "$2"
+          field() {
+            found=''
+            if [ -f artifacts/ci/macos-distribution-identity.txt ]; then
+              found="$(sed -n "s/^$1=//p" artifacts/ci/macos-distribution-identity.txt | head -1)"
+            fi
+            if [ -n "$found" ]; then printf '%s' "$found"; else printf 'NOT_AVAILABLE'; fi
           }
-          gate="$(json_field artifacts/desktop/macos-package.json nativeNotificationGate)"
-          authority="$(json_field artifacts/desktop/macos-package.json signing.authority)"
-          adhoc="$(json_field artifacts/desktop/macos-package.json signing.adhoc)"
-          native="$(json_field artifacts/desktop/package-smoke/native-notification-result.json result)"
           branch_after='NOT_AVAILABLE'
           if [ -f artifacts/ci/checkout-state.txt ]; then
             found="$(sed -n 's/^branch_after=//p' artifacts/ci/checkout-state.txt | head -1)"
@@ -454,25 +659,45 @@ jobs:
           fi
 
           {
-            echo '## NovaWing Phase 6A - macos-probe'
+            echo '## NovaWing Phase 6B - macos-build'
             echo
             echo '| Item | Result |'
             echo '| --- | --- |'
             echo '| Runner | macos-15 / arm64 |'
+            printf '| Commit SHA | %s |\n' "$GITHUB_SHA"
             printf '| Named branch | %s |\n' "$branch_after"
             printf '| `npm run check` | %s |\n' "$CHECK_OUTCOME"
             printf '| `desktop:package:mac` | %s |\n' "$PACKAGE_OUTCOME"
             printf '| `desktop:package:smoke` | %s |\n' "$SMOKE_OUTCOME"
-            printf '| Native Notification gate | %s |\n' "$gate"
-            printf '| Native Notification run | %s |\n' "$native"
-            printf '| Signing authority | %s |\n' "$authority"
-            printf '| Ad-hoc signature | %s |\n' "$adhoc"
+            printf '| Smoke result | %s |\n' "$(field package_smoke_result)"
+            printf '| `desktop:package:mac:dist` | %s |\n' "$DIST_OUTCOME"
+            printf '| `hdiutil verify` | %s |\n' "$DMGVERIFY_OUTCOME"
+            printf '| Distribution identity check | %s |\n' "$IDENTITY_OUTCOME"
+            printf '| DMG file | %s |\n' "$(field dmg_filename)"
+            printf '| DMG size (bytes) | %s |\n' "$(field dmg_size)"
+            printf '| DMG SHA256 | %s |\n' "$(field dmg_sha256)"
+            printf '| ZIP file | %s |\n' "$(field zip_filename)"
+            printf '| ZIP size (bytes) | %s |\n' "$(field zip_size)"
+            printf '| ZIP SHA256 | %s |\n' "$(field zip_sha256)"
+            printf '| bundleContentSha256 | %s |\n' "$(field bundle_content_sha256)"
+            printf '| packageSha256 (smoke) | %s |\n' "$(field package_sha256)"
+            printf '| Native Notification gate | %s |\n' "$(field notification_gate)"
+            printf '| Signing authority | %s |\n' "$(field signing_authority)"
+            printf '| Ad-hoc signature | %s |\n' "$(field signing_adhoc)"
+            echo
+            echo 'The DMG/ZIP container hashes are expected to change between runs. The identity that'
+            echo 'must hold is the payload: bundleContentSha256 equals the packageSha256 the smoke'
+            echo 'validated, and that equality is asserted above.'
             echo
             echo 'Developer ID signing: NOT AVAILABLE'
             echo
             echo 'Notarization: NOT PERFORMED'
             echo
-            echo 'This artifact is unsigned/ad-hoc. It is not a signed release, not notarized and'
-            echo 'not production-signed. A failure here is a hosted runner probe result, not a'
-            echo 'regression of the Phase 5 real-host acceptance.'
+            echo 'Native Notification: NEEDS_SIGNED_VALIDATION'
+            echo
+            echo 'Gatekeeper trusted distribution: NOT CLAIMED'
+            echo
+            echo 'The bundles are unsigned (ad-hoc at most). This is not a signed release, not'
+            echo 'notarized and not intended for trusted distribution. No signing or notarization'
+            echo 'step exists in this workflow and none was added.'
           } >> "$GITHUB_STEP_SUMMARY"
