@@ -239,7 +239,9 @@ jobs:
           $exeSha = (($digest | ForEach-Object { $_.ToString('x2') }) -join '')
           $signedText = ([bool]$installer.signed).ToString().ToLowerInvariant()
 
-          if ($installer.productName -ne 'NovaWing') { Write-Error "installer.json productName is $($installer.productName)"; exit 1 }
+          # The adapter spreads DESKTOP_IDENTITY into this record, so the application name is
+          # carried as `appName`; there is deliberately no separate `productName` key.
+          if ([string]$installer.appName -ne 'NovaWing') { Write-Error "installer.json appName is '$($installer.appName)'"; exit 1 }
           if ([string]$installer.version -ne '0.4.0') { Write-Error "installer.json version is $($installer.version)"; exit 1 }
           if ([string]$installer.arch -ne 'x64') { Write-Error "installer.json arch is $($installer.arch)"; exit 1 }
           if ([int64]$installer.size -ne $size) { Write-Error "installer.json size $($installer.size) does not match the installer file ($size bytes)"; exit 1 }
@@ -260,7 +262,7 @@ jobs:
           $lines.Add("installer_declared_size=$($installer.size)")
           $lines.Add("installer_declared_sha256=$($installer.sha256)")
           $lines.Add("installer_signed=$signedText")
-          $lines.Add("installer_product_name=$($installer.productName)")
+          $lines.Add("installer_app_name=$($installer.appName)")
           $lines.Add("installer_version=$($installer.version)")
           $lines.Add("installer_arch=$($installer.arch)")
           $lines.Add("installer_electron=$($installer.electron)")
