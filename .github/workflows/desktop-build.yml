@@ -198,9 +198,27 @@ jobs:
         id: packagedir
         run: npm run desktop:package:dir
 
-      # The feed the packaged app will actually follow is the file electron-builder burned into
-      # it, not the packaging config it was derived from. It must point at the public binary
-      # repository, never at the private source repository a client can never authenticate to.
+      # The strict Native Toast gate is deliberately untouched: this job records whether a
+      # Windows Server runner satisfies it, rather than weakening it to make the job green.
+      - name: Run the packaged Electron smoke
+        id: smoke
+        run: npm run desktop:package:smoke
+
+      # NSIS is built from the exact `dir` tree the smoke just validated. The adapter refuses to
+      # run unless win-unpacked still hashes to the smoke's packageSha256, so the installer can
+      # never be produced from a payload other than the one that passed the smoke. Electron
+      # Builder is given `prepackaged`, so win-unpacked is read, never recreated.
+      - name: Build the Windows NSIS installer
+        id: nsis
+        run: npm run desktop:build:win
+
+      # The feed the packaged app will actually follow is the file electron-builder burned into it,
+      # not the packaging config it was derived from. It must point at the public binary repository,
+      # never at the private source repository a client can never authenticate to.
+      #
+      # This has to run after the NSIS build: electron-builder writes app-update.yml in its
+      # afterPack hook only when the build targets a distributable, so the `dir` tree alone never
+      # carries it. The NSIS step re-packs that same tree and adds the file to it.
       - name: Verify the packaged Windows update feed
         id: updatefeed
         shell: pwsh
@@ -226,23 +244,6 @@ jobs:
           if ($values['repo'] -eq 'nova-wing') { Write-Error 'The packaged update feed still points at the private source repository'; exit 1 }
           Write-Host "WINDOWS_UPDATE_FEED PASS provider=$($values['provider']) owner=$($values['owner']) repo=$($values['repo'])"
 
-      # The strict Native Toast gate is deliberately untouched: this job records whether a
-      # Windows Server runner satisfies it, rather than weakening it to make the job green.
-      - name: Run the packaged Electron smoke
-        id: smoke
-        run: npm run desktop:package:smoke
-
-      # NSIS is built from the exact `dir` tree the smoke just validated. The adapter refuses to
-      # run unless win-unpacked still hashes to the smoke's packageSha256, so the installer can
-      # never be produced from a payload other than the one that passed the smoke. Electron
-      # Builder is given `prepackaged`, so win-unpacked is read, never recreated.
-      - name: Build the Windows NSIS installer
-        id: nsis
-        run: npm run desktop:build:win
-
-      # Reads back what the packaging adapter wrote and fails the job on any drift. The installer
-      # audit itself is not re-implemented here: this only asserts the artifact exists and is
-      # self-consistent with the installer file and with the smoke-validated package content.
       # The update metadata must name the very asset this job produced. electron-builder can write
       # a `path` no release asset carries, and an updater following it would 404.
       - name: Verify the update metadata
@@ -269,6 +270,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error 'latest.yml does not match the artifacts this job produced'; exit 1 }
           Write-Host "UPDATE_METADATA OK $installerName"
 
+      # Reads back what the packaging adapter wrote and fails the job on any drift. The installer
+      # audit itself is not re-implemented here: this only asserts the artifact exists and is
+      # self-consistent with the installer file and with the smoke-validated package content.
       - name: Verify the installer artifact identity
         id: installeridentity
         shell: pwsh
