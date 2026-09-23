@@ -198,27 +198,11 @@ jobs:
         id: packagedir
         run: npm run desktop:package:dir
 
-      # The strict Native Toast gate is deliberately untouched: this job records whether a
-      # Windows Server runner satisfies it, rather than weakening it to make the job green.
-      - name: Run the packaged Electron smoke
-        id: smoke
-        run: npm run desktop:package:smoke
-
-      # NSIS is built from the exact `dir` tree the smoke just validated. The adapter refuses to
-      # run unless win-unpacked still hashes to the smoke's packageSha256, so the installer can
-      # never be produced from a payload other than the one that passed the smoke. Electron
-      # Builder is given `prepackaged`, so win-unpacked is read, never recreated.
-      - name: Build the Windows NSIS installer
-        id: nsis
-        run: npm run desktop:build:win
-
-      # The feed the packaged app will actually follow is the file electron-builder burned into it,
-      # not the packaging config it was derived from. It must point at the public binary repository,
-      # never at the private source repository a client can never authenticate to.
-      #
-      # This has to run after the NSIS build: electron-builder writes app-update.yml in its
-      # afterPack hook only when the build targets a distributable, so the `dir` tree alone never
-      # carries it. The NSIS step re-packs that same tree and adds the file to it.
+      # The feed the packaged app will actually follow is the file in the packaged tree, not the
+      # packaging config it was derived from. NovaWing's packaging adapter writes it during this
+      # `dir` step — electron-builder's afterPack hook does not run for a `dir` build, and a
+      # prepackaged NSIS build returns before that hook — so it is already on disk here, before
+      # the smoke validates the tree and before the installer re-packs it.
       - name: Verify the packaged Windows update feed
         id: updatefeed
         shell: pwsh
@@ -235,14 +219,28 @@ jobs:
             if (-not $match.Success) { Write-Error "Unrecognized update feed line: $trimmed"; exit 1 }
             $values[$match.Groups[1].Value] = $match.Groups[2].Value.Trim([char[]]@(32, 34, 39))
           }
-          $expected = @{ provider = 'github'; owner = 'weijianjunwjj'; repo = 'nova-wing-releases' }
+          $expected = @{ provider = 'github'; owner = 'weijianjunwjj'; repo = 'nova-wing-releases'; updaterCacheDirName = 'nova-wing-updater' }
           foreach ($key in $expected.Keys) {
             if ($values[$key] -ne $expected[$key]) {
               Write-Error "Packaged update feed $key is '$($values[$key])', expected '$($expected[$key])'"; exit 1
             }
           }
           if ($values['repo'] -eq 'nova-wing') { Write-Error 'The packaged update feed still points at the private source repository'; exit 1 }
-          Write-Host "WINDOWS_UPDATE_FEED PASS provider=$($values['provider']) owner=$($values['owner']) repo=$($values['repo'])"
+          Write-Host "WINDOWS_UPDATE_FEED PASS provider=$($values['provider']) owner=$($values['owner']) repo=$($values['repo']) cache=$($values['updaterCacheDirName'])"
+
+      # The strict Native Toast gate is deliberately untouched: this job records whether a
+      # Windows Server runner satisfies it, rather than weakening it to make the job green.
+      - name: Run the packaged Electron smoke
+        id: smoke
+        run: npm run desktop:package:smoke
+
+      # NSIS is built from the exact `dir` tree the smoke just validated. The adapter refuses to
+      # run unless win-unpacked still hashes to the smoke's packageSha256, so the installer can
+      # never be produced from a payload other than the one that passed the smoke. Electron
+      # Builder is given `prepackaged`, so win-unpacked is read, never recreated.
+      - name: Build the Windows NSIS installer
+        id: nsis
+        run: npm run desktop:build:win
 
       # The update metadata must name the very asset this job produced. electron-builder can write
       # a `path` no release asset carries, and an updater following it would 404.

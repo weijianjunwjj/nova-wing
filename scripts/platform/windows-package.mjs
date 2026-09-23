@@ -6,7 +6,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build, Platform, Arch } from 'electron-builder'
 import { DESKTOP_IDENTITY } from '../../desktop/main/identity.mjs'
-import { updateFeedPublishConfig } from './update-feed.mjs'
+import {
+  foldPackagedUpdateConfigIntoIdentity, readPackagedUpdateConfigBytes, updateFeedPublishConfig,
+  verifyPackagedUpdateConfig, writePackagedUpdateConfig,
+} from './update-feed.mjs'
 
 export const root = resolve(import.meta.dirname, '../..')
 export const output = join(root, 'artifacts', 'desktop')
@@ -55,13 +58,23 @@ export async function auditPackage(appDirectory) {
   assert.ok(files.some((file) => file.includes('@libsql/win32-x64-msvc/') && file.endsWith('.node')))
   assert.equal(files.includes('desktop/main/isolated-fixture.mjs'), false)
   assert.equal(files.some((file) => /^node_modules\/(?:electron|electron-builder|typescript)\//u.test(file)), false)
+  // The packaged update feed sits beside the app tree, so the walk above never sees it. It is
+  // folded into the identity here: a feed swapped after the smoke validated the package must not
+  // still hash the same, or the installer could be built from a tree that was never smoke-tested.
+  const updateConfig = await readPackagedUpdateConfigBytes(join(appDirectory, '..'))
   const hash = createHash('sha256')
   for (const file of files.sort()) {
     hash.update(file).update('\0')
     for await (const chunk of createReadStream(join(appDirectory, file))) hash.update(chunk)
     hash.update('\0')
   }
-  const report = { name: 'PACKAGED_CONTENT_AUDIT', result: 'PASS', appDirectory, sha256: hash.digest('hex'), files: files.sort() }
+  if (updateConfig !== null) {
+    foldPackagedUpdateConfigIntoIdentity(hash, updateConfig)
+  }
+  const report = {
+    name: 'PACKAGED_CONTENT_AUDIT', result: 'PASS', appDirectory, sha256: hash.digest('hex'), files: files.sort(),
+    ...(updateConfig === null ? {} : { updateConfigSha256: createHash('sha256').update(updateConfig).digest('hex') }),
+  }
   await writeFile(join(output, 'packaged-content-audit.json'), JSON.stringify(report, null, 2))
   console.log(`PACKAGED_CONTENT_AUDIT PASS (${files.length} files)`)
   return report
@@ -112,6 +125,10 @@ export async function prepareStage() {
 export async function packageWindows(installer = false) {
   const manifest = installer ? JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) : await prepareStage()
   if (installer) {
+    // The installer must consume the exact tree the packaged smoke validated, so the feed it
+    // carries is verified here rather than written: repairing it now would put a file the smoke
+    // never saw into the installer.
+    await verifyPackagedUpdateConfig(join(unpacked, 'resources'))
     const audit = await auditPackage(join(unpacked, 'resources', 'app'))
     const proof = JSON.parse(await readFile(join(output, 'package-smoke', 'result.json'), 'utf8'))
     assert.equal(proof.result, 'PASS', 'Unpacked smoke must pass before NSIS')
@@ -137,6 +154,13 @@ export async function packageWindows(installer = false) {
       artifactName: 'NovaWing-Setup-${version}-${arch}.${ext}',
     },
   })
+  if (!installer) {
+    // Written by NovaWing rather than by electron-builder: its afterPack hook does not run for a
+    // `dir` build, and a prepackaged NSIS build returns before that hook too. Doing it here keeps
+    // the feed inside the tree the packaged smoke validates, the NSIS build re-packs, and the
+    // audit below binds into the packaged identity.
+    await writePackagedUpdateConfig(join(unpacked, 'resources'))
+  }
   await auditPackage(join(unpacked, 'resources', 'app'))
   if (installer) {
     const path = paths.find((entry) => entry.endsWith('.exe'))
