@@ -34,6 +34,44 @@ NOT_CREATED
 Policy: create the annotated private source tag only after Release Validate PASS and after this
 baseline is committed and pushed. It must peel to a712bd15a81004bb981e89b076c445bedce405f4.
 
+===== C2. v0.4.2 post-baseline private tag evidence =====
+
+The baseline and workflow guard were committed as
+e8148a0d797800d98adfc1cc0dae5941febab088 and pushed before tag creation.
+
+$ git cat-file -t v0.4.2
+tag
+
+$ git rev-parse v0.4.2
+621fd7f024900df6f7374b5a14284bf279a8b5a2
+
+$ git rev-parse v0.4.2^{}
+a712bd15a81004bb981e89b076c445bedce405f4
+
+$ git show --no-patch --format=fuller v0.4.2
+tag v0.4.2
+Tagger:     weijianjun <2661043132@qq.com>
+TaggerDate: Thu Sep 24 13:23:10 2026 +0800
+
+NovaWing v0.4.2
+
+commit a712bd15a81004bb981e89b076c445bedce405f4
+Author:     weijianjun <2661043132@qq.com>
+AuthorDate: Thu Sep 24 11:26:15 2026 +0800
+Commit:     weijianjun <2661043132@qq.com>
+CommitDate: Thu Sep 24 11:26:15 2026 +0800
+
+    fix(desktop): ship Electron and Chromium notices in the macOS bundle
+
+$ git verify-tag v0.4.2
+error: no signature found
+
+verify-tag exit status: 1
+tag kind: annotated
+tag signed state: unsigned
+tag creation UTC: 2026-09-24T05:23:10Z
+tag creation local: 2026-09-24T13:23:10+0800
+
 ===== D. Product commit =====
 
 $ git log -1 --format=fuller a712bd15a81004bb981e89b076c445bedce405f4

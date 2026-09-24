@@ -10,13 +10,17 @@ candidate. It does not modify or supersede the frozen v0.4.1 snapshot.
 | Version | `0.4.2` |
 | Product commit | `a712bd15a81004bb981e89b076c445bedce405f4` |
 | Private source tag | `v0.4.2` |
-| Tag state at snapshot commit | `NOT_CREATED` — policy creates the annotated tag only after Release Validate passes and this baseline is committed and pushed |
-| Required tag target | `a712bd15a81004bb981e89b076c445bedce405f4` |
-| Tag object SHA | `PENDING_POST_BASELINE_TAG_CREATION` |
-| Tag signed state | `PENDING_POST_BASELINE_TAG_CREATION` |
+| Tag state at initial snapshot commit | `NOT_CREATED` — the annotated tag was created only after Release Validate passed and baseline commit `e8148a0d797800d98adfc1cc0dae5941febab088` was pushed |
+| Tag created | `YES` |
+| Tag object SHA | `621fd7f024900df6f7374b5a14284bf279a8b5a2` |
+| Tag target SHA | `a712bd15a81004bb981e89b076c445bedce405f4` |
+| Tag kind | `annotated` |
+| Tag signed state | `unsigned` (`git verify-tag` exit `1`: `error: no signature found`) |
+| Tag creation UTC | `2026-09-24T05:23:10Z` |
+| Tag creation local | `2026-09-24T13:23:10+0800` |
 
-The post-tag metadata is recorded after the baseline commit without moving or amending the
-product commit. The tag must point to the product commit, never to a baseline-only commit.
+The post-tag metadata was recorded in a follow-up baseline commit without moving or amending the
+product commit. The tag points to the product commit, never to a baseline-only commit.
 
 ## DESKTOP BUILD
 
@@ -50,6 +54,8 @@ product commit. The tag must point to the product commit, never to a baseline-on
 | --- | --- |
 | Baseline creation UTC | `2026-09-24T04:30:12Z` |
 | Baseline creation local | `2026-09-24T12:30:12+0800` |
+| Post-tag evidence revision UTC | `2026-09-24T05:23:27Z` |
+| Post-tag evidence revision local | `2026-09-24T13:23:27+0800` |
 | Working branch | `feat/v0.4.2-public-bootstrap` |
 | Working tree at snapshot start | `DIRTY` — only the version-driven release guard change was present; the product commit itself was clean and already pushed |
 | Private repository | `weijianjunwjj/nova-wing`, `private=true` (GitHub API verified) |

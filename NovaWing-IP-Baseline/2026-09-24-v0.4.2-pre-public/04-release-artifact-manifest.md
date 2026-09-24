@@ -79,8 +79,8 @@ platform identity records. The publish job was skipped.
 ## 7. Provenance chain
 
 ```text
-intended private source tag v0.4.2
-    └─ required target ─────► a712bd15a81004bb981e89b076c445bedce405f4
+private source tag v0.4.2 (object 621fd7f024900df6f7374b5a14284bf279a8b5a2)
+    └─ peeled target ───────► a712bd15a81004bb981e89b076c445bedce405f4   MATCH
 Desktop Build 35951460301
     └─ head_sha ────────────► a712bd15a81004bb981e89b076c445bedce405f4   MATCH
 artifacts (exe/dmg/zip)
@@ -93,8 +93,9 @@ Desktop Release validate 35955424307
     └─ publish job ─────────► SKIPPED
 ```
 
-The tag object is deliberately created only after the baseline commit. Its object and peeled
-SHAs are then recorded in this snapshot without changing the product commit.
+The annotated, unsigned tag object was deliberately created only after baseline commit
+`e8148a0d797800d98adfc1cc0dae5941febab088` was pushed. Its object and peeled SHAs are recorded
+here without changing the product commit.
 
 ## 8. Signing status
 
