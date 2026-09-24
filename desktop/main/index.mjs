@@ -30,6 +30,7 @@ let tray
 let power
 let notifications
 let updater
+let unsubscribeUpdater = () => {}
 let record = (_event, _detail) => {}
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
@@ -52,8 +53,8 @@ function createUpdateAdapter() {
 
 // Windows from a packaged app is the only installable configuration today, and it is granted as
 // an explicitly unsigned bootstrap. macOS stays blocked by signing, and an unpackaged run is
-// never installable. Nothing here checks, downloads or installs on its own: no UI reaches the
-// updater yet, and an ordinary quit can never install a staged update.
+// never installable. Nothing here checks, downloads or installs on its own: only the explicit
+// Tray actions reach the updater, and an ordinary quit can never install a staged update.
 const updaterLifecycle = createUpdaterLifecycle({
   platform: process.platform, packaged: app.isPackaged, adapter: createUpdateAdapter(),
   reportFailure: reportBackgroundFailure,
@@ -68,6 +69,8 @@ export const desktopShutdown = createShutdownCoordinator({
     // On Host failure this continuation is never entered.
     notifications?.dispose()
     power?.dispose()
+    unsubscribeUpdater()
+    updater?.dispose()
     tray?.destroy()
     windows?.destroyWindowForQuit()
     record('strict-quit-drained', { power: power?.snapshot() })
@@ -129,8 +132,8 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
     dependencies: { ...fixture?.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
   desktopInstance.launchpadCreateCount++
   await host.start()
-  // The install path is assembled here because it needs the live Host. It is not reachable from
-  // any UI yet, and with no configured backend it stays not installable.
+  // The install path is assembled here because it needs the live Host. The Tray only forwards
+  // explicit user intent into this Main-owned controller; it never owns update state or policy.
   updater = updaterLifecycle.createUpdater({
     host,
     // The existing coordinator is the only exit, and it stops admission synchronously.
@@ -146,7 +149,16 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   })
   tray = createDesktopTray({ Tray, Menu, nativeImage,
     showWindow: () => windows.showWindow(), hideWindow: () => windows.hideWindow(),
-    requestQuit: () => app.quit(), reportFailure: reportBackgroundFailure,
+    requestQuit: () => app.quit(), updater, reportFailure: reportBackgroundFailure,
+  })
+  unsubscribeUpdater = updater.subscribe((snapshot) => {
+    tray.setUpdaterSnapshot(snapshot)
+    record('updater-state', {
+      state: snapshot.state, reasonCode: snapshot.reasonCode,
+      candidateVersion: snapshot.candidate?.version ?? null,
+      capability: snapshot.capability,
+      observations: snapshot.observations,
+    })
   })
   power.subscribe((count) => tray.setActivity(count))
   power.subscribe(() => record('power', power.snapshot()))

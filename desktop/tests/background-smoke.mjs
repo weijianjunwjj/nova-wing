@@ -10,7 +10,8 @@ import { createResourceTracker } from './resource-tracker.mjs'
 const names = [
   'window_close_hides', 'host_survives_hide', 'runtime_survives_hide', 'task_survives_hide',
   'hidden_completion', 'durable_hidden_completion', 'same_session_restored',
-  'tray_created', 'tray_show', 'tray_hide', 'tray_hide_show_10x', 'close_to_tray_show_10x', 'tray_survives_crash',
+  'tray_created', 'updater_tray_user_reachable', 'tray_show', 'tray_hide', 'tray_hide_show_10x',
+  'close_to_tray_show_10x', 'tray_survives_crash',
   'single_instance', 'second_instance_focus', 'no_duplicate_host', 'secondary_no_database',
   'renderer_crash_detected', 'renderer_recovered', 'runtime_survives_renderer_crash',
   'destroyed_window_recovery', 'window_all_closed_background',
@@ -73,7 +74,7 @@ async function run() {
     process.stderr.write('')
     tracker = createResourceTracker()
     desktop = await desktopReady
-    const { host, fixture, power, tray, windows } = desktop
+    const { host, fixture, power, tray, updater, windows } = desktop
     const nativeTray = tray.tray
     const samplePower = () => {
       const sample = power.snapshot()
@@ -105,6 +106,23 @@ async function run() {
     assert.equal(nativeTray.isDestroyed(), false)
     assert.equal(tray.tray, nativeTray)
     pass('tray_created', { native: true, destroyed: false })
+
+    current = 'updater_tray_user_reachable'
+    const updaterSnapshot = updater.snapshot()
+    const updaterItem = tray.menu.getMenuItemById('update')
+    assert.ok(updaterItem)
+    if (updaterSnapshot.capability.installable) {
+      assert.equal(updaterSnapshot.state, 'IDLE')
+      assert.equal(updaterItem.label, '检查更新')
+      assert.notEqual(updaterItem.enabled, false)
+      assert.equal(typeof updaterItem.click, 'function')
+    } else {
+      assert.equal(updaterSnapshot.state, 'UNSUPPORTED')
+      assert.equal(updaterItem.enabled, false)
+    }
+    pass('updater_tray_user_reachable', { state: updaterSnapshot.state,
+      installable: updaterSnapshot.capability.installable, label: updaterItem.label,
+      enabled: updaterItem.enabled !== false, action: typeof updaterItem.click === 'function' })
 
     current = 'window_close_hides'
     const firstGate = fixture.armTask('BACKGROUND-001')

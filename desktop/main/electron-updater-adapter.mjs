@@ -69,9 +69,12 @@ export function createElectronUpdaterAdapter({ autoUpdater, channel = 'latest', 
   // would install a staged update on an ordinary quit.
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  // electron-updater's channel setter deliberately flips allowDowngrade back to true. Apply the
+  // channel first, then seal both admission policies so an older public release can never become
+  // a candidate merely because Main selected the normal release channel.
+  if (typeof channel === 'string' && channel.length > 0) autoUpdater.channel = channel
   autoUpdater.allowDowngrade = false
   autoUpdater.allowPrerelease = false
-  if (typeof channel === 'string' && channel.length > 0) autoUpdater.channel = channel
   if (feed !== null && feed !== undefined) autoUpdater.setFeedURL(feed)
 
   /** @type {Array<[string, (payload: any) => void]>} */

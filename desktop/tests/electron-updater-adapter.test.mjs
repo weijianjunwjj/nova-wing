@@ -25,13 +25,17 @@ class FakeUpdater extends EventEmitter {
   autoInstallOnAppQuit = true
   allowDowngrade = true
   allowPrerelease = true
-  channel = 'latest'
+  _channel = 'latest'
   feed = null
   quitCalls = []
   downloadCalls = 0
   checkResult = null
   checkError = null
   downloadError = null
+  get channel() { return this._channel }
+  // Match electron-updater: selecting a channel implicitly enables downgrade until the caller
+  // explicitly disables it again.
+  set channel(value) { this._channel = value; this.allowDowngrade = true }
   setFeedURL(feed) { this.feed = feed }
   async checkForUpdates() { if (this.checkError) throw this.checkError; return this.checkResult }
   async downloadUpdate() { this.downloadCalls += 1; if (this.downloadError) throw this.downloadError; return ['downloaded-artifact'] }
@@ -65,6 +69,18 @@ test('the adapter configures the explicit policy instead of trusting defaults', 
   assert.equal(fake.autoInstallOnAppQuit, false)
   assert.equal(fake.allowDowngrade, false)
   assert.equal(fake.allowPrerelease, false)
+})
+
+test('the explicit no-downgrade policy is applied after electron-updater changes channel', () => {
+  const fake = new FakeUpdater()
+  fake.allowDowngrade = false
+  fake.channel = 'beta'
+  assert.equal(fake.allowDowngrade, true, 'the facade reproduces electron-updater channel semantics')
+
+  const adapter = createElectronUpdaterAdapter({ autoUpdater: fake, channel: 'latest' })
+  assert.equal(fake.channel, 'latest')
+  assert.equal(fake.allowDowngrade, false)
+  assert.equal(adapter.policy().allowDowngrade, false)
 })
 
 test('an adapter requires an updater instance', () => {
