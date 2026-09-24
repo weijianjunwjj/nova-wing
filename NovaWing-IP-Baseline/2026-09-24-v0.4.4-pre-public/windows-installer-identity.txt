@@ -1,0 +1,16 @@
+# NovaWing Phase 6B - Windows installer identity
+github_sha=9ddbeedfb69b07323e256eaca9a284504e66c1e3
+installer_filename=NovaWing-Setup-0.4.4-x64.exe
+installer_size=216557708
+installer_sha256=59d37eaeb1e155ca6e9804116de394c0bf683ba937e923860133f68e1e39892e
+installer_declared_size=216557708
+installer_declared_sha256=59d37eaeb1e155ca6e9804116de394c0bf683ba937e923860133f68e1e39892e
+installer_signed=false
+installer_app_name=NovaWing
+installer_version=0.4.4
+installer_arch=x64
+installer_electron=44.4.3
+installer_builder=26.15.3
+package_sha256=0016953595fb67598072ff9b90a9bdac4e17ea466b6e0c50d3a7e8c9f45d0e45
+package_smoke_result=PASS
+package_content_sha256=0016953595fb67598072ff9b90a9bdac4e17ea466b6e0c50d3a7e8c9f45d0e45

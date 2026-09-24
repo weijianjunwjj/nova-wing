@@ -1,2 +1,10 @@
 # Patch artifacts preserve upstream context whitespace required by `git apply`.
 patches/*.patch -whitespace
+
+# Private pre-public evidence preserves mature-tool output byte-for-byte. Large machine reports
+# and verbatim third-party licence text are reviewed through their recorded hashes and summaries.
+NovaWing-IP-Baseline/** -text
+NovaWing-IP-Baseline/**/*.json -diff -whitespace
+NovaWing-IP-Baseline/**/THIRD_PARTY_NOTICES-*.txt -diff -whitespace
+NovaWing-IP-Baseline/**/*-identity.txt -whitespace
+NovaWing-IP-Baseline/**/SHA256SUMS.txt -whitespace
