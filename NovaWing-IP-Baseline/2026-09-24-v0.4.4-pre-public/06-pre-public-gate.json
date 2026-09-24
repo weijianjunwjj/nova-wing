@@ -9,19 +9,19 @@
   "tagCreatedUtc": null,
   "tagCreatedLocal": null,
   "buildRunId": 36010798923,
-  "validationRunId": null,
+  "validationRunId": 36021658632,
   "publishRunId": null,
 
   "baselineCreatedUtc": "2026-09-24T15:31:51Z",
-  "baselineRevisedUtc": "2026-09-24T15:31:51Z",
-  "revisionNote": "Initial independent v0.4.4 pre-public snapshot; Release Validate and private tag remain pending.",
+  "baselineRevisedUtc": "2026-09-24T15:40:32Z",
+  "revisionNote": "Release Validate passed with publish skipped; the annotated private tag remains pending.",
   "workingBranch": "feat/v0.4.4-update-e2e-target",
   "repositoryPrivate": true,
   "feedRepositoryPublic": true,
   "publicV044Published": false,
 
   "prePublicGate": "READY",
-  "validation": "PENDING",
+  "validation": "PASS",
   "evidenceSnapshot": "PASS",
   "shippedIpAudit": "PASS",
   "secrets": "PASS",
@@ -47,7 +47,7 @@
   "clientRequiredSecretConflictBlocking": false,
   "clientRequiredSecretConflictRule": "A client-required conflict blocks only if the Owner explicitly classifies the item KEEP_PRIVATE. No listed item has that classification.",
 
-  "publicRelease": "PENDING_VALIDATION",
+  "publicRelease": "READY",
   "blockingReasons": [],
   "nonBlockingObservations": [
     "candidate-1, candidate-2, and candidate-3 were Owner-accepted and publicly disclosed with v0.4.2; they are historical rather than renewed blockers.",
@@ -59,7 +59,7 @@
 
   "evidence": {
     "buildCommitSha": "9ddbeedfb69b07323e256eaca9a284504e66c1e3",
-    "releaseManifestSha256": null,
+    "releaseManifestSha256": "0056b3ad0d4e16ef2e0b18f8725f0e79c0e5e0f1705af283b70fb396251e4b58",
     "provenanceChainIntact": true,
     "shippedArtifacts": {
       "windowsInstaller": {

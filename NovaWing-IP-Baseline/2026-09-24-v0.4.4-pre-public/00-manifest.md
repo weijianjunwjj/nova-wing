@@ -38,8 +38,13 @@ Pre-Public Gate pass. It must peel to the product commit, never a baseline-only 
 | Source repository | `weijianjunwjj/nova-wing`, private |
 | Feed repository | `weijianjunwjj/nova-wing-releases`, public |
 | Public v0.4.4 state | `NOT_PUBLISHED` |
-| Release Validate state | `PENDING` |
+| Release Validate state | `PASS`, run `36021658632`; publish job `skipped` |
 | Windows update E2E | `NOT_RUN`; installed public v0.4.3 intentionally preserved |
+
+The validate-only workflow generated `release-manifest.json` with SHA-256
+`0056b3ad0d4e16ef2e0b18f8725f0e79c0e5e0f1705af283b70fb396251e4b58`. It binds the release
+candidate to Desktop Build `36010798923` and product commit
+`9ddbeedfb69b07323e256eaca9a284504e66c1e3`.
 
 ## Patent history and gate verdict
 
@@ -57,8 +62,8 @@ PATENT_DECISION_REQUIRED = NONE
 PRE_PUBLIC_GATE = READY
 ```
 
-Publication still requires a passing Release Validate run, an annotated private source tag that
-peels to the product commit, and a successful publish workflow.
+Publication now requires an annotated private source tag that peels to the product commit and a
+successful publish workflow.
 
 ## Handling
 
