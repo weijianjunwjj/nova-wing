@@ -1,0 +1,15 @@
+{
+  "name": "NOVAWING_OWNER_PUBLIC_DISCLOSURE_DECISION",
+  "schemaVersion": 1,
+  "version": "0.4.2",
+  "tag": "v0.4.2",
+  "tagTargetSha": "a712bd15a81004bb981e89b076c445bedce405f4",
+  "decision": "ACCEPT_PUBLIC_DISCLOSURE",
+  "resolvedPatentDecisionRequired": [
+    "candidate-1",
+    "candidate-2",
+    "candidate-3"
+  ],
+  "ownerStatement": "Owner explicitly accepts public disclosure of these three shipped mechanism combinations and does not require preservation of the pre-public patent window for this release.",
+  "decisionDate": "2026-09-24T05:37:35Z"
+}

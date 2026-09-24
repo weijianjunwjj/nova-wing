@@ -711,6 +711,7 @@ jobs:
           set -euo pipefail
           gate_index="$RUNNER_TEMP/pre-public-gate-index.json"
           gate_file="$RUNNER_TEMP/pre-public-gate.json"
+          decision_file="$RUNNER_TEMP/owner-public-disclosure-decision.json"
           if ! gh api "repos/$GITHUB_REPOSITORY/contents/NovaWing-IP-Baseline?ref=$GATE_REF" \
               > "$gate_index" 2>/dev/null; then
             echo "::error::cannot enumerate Pre-Public IP Gate records in $GITHUB_REPOSITORY@$GATE_REF"
@@ -742,6 +743,14 @@ jobs:
             exit 1
           fi
           export NOVAWING_PRE_PUBLIC_GATE="$gate_file"
+
+          DECISION_PATH="$gate_directories/07-owner-public-disclosure-decision.json"
+          if gh api "repos/$GITHUB_REPOSITORY/contents/$DECISION_PATH?ref=$GATE_REF" \
+              -H "Accept: application/vnd.github.raw" > "$decision_file" 2>/dev/null; then
+            export NOVAWING_OWNER_DISCLOSURE_DECISION="$decision_file"
+          else
+            export NOVAWING_OWNER_DISCLOSURE_DECISION=""
+          fi
 
           node --input-type=module <<'GATE_EOF'
           import { readFileSync } from 'node:fs'
@@ -777,21 +786,98 @@ jobs:
             ['shippedIpAudit', gate.shippedIpAudit, 'PASS'],
             ['secrets', gate.secrets, 'PASS'],
             ['thirdPartyLicenses', gate.thirdPartyLicenses, 'PASS'],
-            ['publicRelease', gate.publicRelease, 'READY'],
+            ['sbom', gate.sbom, 'PASS'],
+            ['thirdPartyNotices', gate.thirdPartyNotices, 'PASS'],
+            ['clientRequiredSecretConflictBlocking', gate.clientRequiredSecretConflictBlocking, false],
+            ['evidence.provenanceChainIntact', gate.evidence?.provenanceChainIntact, true],
           ]
           const failures = []
           for (const [field, actual, expected] of checks) {
             if (actual !== expected) failures.push(`${field}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
           }
-          const blocking = Array.isArray(gate.blockingReasons) ? gate.blockingReasons : ['blockingReasons is not an array']
-          if (blocking.length !== 0) failures.push(`blockingReasons must be empty, got ${JSON.stringify(blocking)}`)
-          if (!Array.isArray(gate.patentDecisionRequired)) failures.push('patentDecisionRequired is not an array')
-          else if (gate.patentDecisionRequired.length !== 0) failures.push(`patentDecisionRequired is not empty: ${JSON.stringify(gate.patentDecisionRequired)}`)
+          const blocking = Array.isArray(gate.blockingReasons) ? gate.blockingReasons : null
+          if (blocking === null) failures.push('blockingReasons is not an array')
+          const patents = Array.isArray(gate.patentDecisionRequired) ? gate.patentDecisionRequired : null
+          if (patents === null) failures.push('patentDecisionRequired is not an array')
           if (!Array.isArray(gate.keepPrivateAccidentallyShipped)) failures.push('keepPrivateAccidentallyShipped is not an array')
           else if (gate.keepPrivateAccidentallyShipped.length !== 0) failures.push(`keepPrivateAccidentallyShipped is not empty: ${JSON.stringify(gate.keepPrivateAccidentallyShipped)}`)
 
           if (failures.length > 0) fail(failures)
-          console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha}`)
+
+          if (gate.publicRelease === 'READY') {
+            const readyFailures = []
+            if (blocking.length !== 0) readyFailures.push(`blockingReasons must be empty, got ${JSON.stringify(blocking)}`)
+            if (patents.length !== 0) readyFailures.push(`patentDecisionRequired is not empty: ${JSON.stringify(patents)}`)
+            if (readyFailures.length > 0) fail(readyFailures)
+            console.log('PRE_PUBLIC_IP_GATE READY')
+            console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha}`)
+            process.exit(0)
+          }
+
+          if (gate.publicRelease !== 'HUMAN_REQUIRED') {
+            fail(`publicRelease must be READY or HUMAN_REQUIRED, got ${JSON.stringify(gate.publicRelease)}`)
+          }
+
+          const patentBlockerOnly = blocking.length === 1 &&
+            typeof blocking[0] === 'string' && /^PATENT_DECISION_REQUIRED(?::|$)/u.test(blocking[0])
+          if (!patentBlockerOnly) {
+            fail(`Owner disclosure cannot resolve blockingReasons: ${JSON.stringify(blocking)}`)
+          }
+          if (patents.length === 0) fail('PATENT_DECISION_REQUIRED blocker has no candidates')
+
+          const candidateIds = []
+          for (const candidate of patents) {
+            const match = /^(candidate-[1-9][0-9]*):(?:\s|$)/u.exec(candidate)
+            if (match === null) fail(`invalid patentDecisionRequired candidate: ${JSON.stringify(candidate)}`)
+            candidateIds.push(match[1])
+          }
+          if (new Set(candidateIds).size !== candidateIds.length) {
+            fail(`duplicate patentDecisionRequired candidates: ${JSON.stringify(candidateIds)}`)
+          }
+
+          let decision
+          try {
+            if (!process.env.NOVAWING_OWNER_DISCLOSURE_DECISION) throw new Error('amendment is missing')
+            decision = JSON.parse(readFileSync(process.env.NOVAWING_OWNER_DISCLOSURE_DECISION, 'utf8'))
+          } catch (error) {
+            fail(`Owner public disclosure amendment is unavailable or unreadable: ${error.message}`)
+          }
+
+          const decisionFailures = []
+          const decisionChecks = [
+            ['name', decision.name, 'NOVAWING_OWNER_PUBLIC_DISCLOSURE_DECISION'],
+            ['schemaVersion', decision.schemaVersion, 1],
+            ['version', String(decision.version), version],
+            ['tag', decision.tag, tag],
+            ['tagTargetSha', decision.tagTargetSha, manifest.buildCommitSha],
+            ['decision', decision.decision, 'ACCEPT_PUBLIC_DISCLOSURE'],
+          ]
+          for (const [field, actual, expected] of decisionChecks) {
+            if (actual !== expected) decisionFailures.push(`amendment ${field}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+          }
+          if (typeof decision.ownerStatement !== 'string' || decision.ownerStatement.trim() === '') {
+            decisionFailures.push('amendment ownerStatement must be a non-empty string')
+          }
+          if (typeof decision.decisionDate !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(decision.decisionDate)) {
+            decisionFailures.push('amendment decisionDate must be a UTC timestamp')
+          }
+
+          const resolved = decision.resolvedPatentDecisionRequired
+          if (!Array.isArray(resolved) || resolved.some((value) => typeof value !== 'string')) {
+            decisionFailures.push('amendment resolvedPatentDecisionRequired must be a string array')
+          } else {
+            const expected = [...candidateIds].sort()
+            const actual = [...resolved].sort()
+            if (new Set(actual).size !== actual.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
+              decisionFailures.push(`amendment candidate coverage ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+            }
+          }
+          if (decisionFailures.length > 0) fail(decisionFailures)
+
+          const accepted = [...candidateIds].sort()
+          console.log('PRE_PUBLIC_IP_GATE READY')
+          console.log(`OWNER_PUBLIC_DISCLOSURE_ACCEPTED ${accepted.join(',')}`)
+          console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha} after Owner public disclosure decision`)
           GATE_EOF
 
       # Fails closed on every precondition before anything is fetched or uploaded. The
