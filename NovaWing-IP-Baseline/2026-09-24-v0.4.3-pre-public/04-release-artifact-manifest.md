@@ -29,7 +29,7 @@ private product commit dab1aca91417ebdb1caa8d487daa49074d47f16e
   → installer / DMG / ZIP identity metadata
   → independent container hashes and extracted package-content hashes
   → Release Validate 35993337053 / manifest a55c8187e260… (PASS)
-  → annotated private source tag (pending)
+  → annotated private source tag 5c3a0ffbeab8… → dab1aca91417…
   → public feed release (pending)
 ```
 

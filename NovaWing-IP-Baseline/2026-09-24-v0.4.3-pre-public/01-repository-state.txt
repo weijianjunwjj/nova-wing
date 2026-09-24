@@ -34,6 +34,15 @@ Policy: create one annotated private source tag only after Desktop Build PASS, R
 PASS, and Pre-Public Gate READY. It must peel to
 dab1aca91417ebdb1caa8d487daa49074d47f16e.
 
+Final tag state after all three gates passed:
+
+$ git ls-remote --tags origin refs/tags/v0.4.3 refs/tags/v0.4.3^{}
+5c3a0ffbeab8f69839d8c65b82757ae9319215cc refs/tags/v0.4.3
+dab1aca91417ebdb1caa8d487daa49074d47f16e refs/tags/v0.4.3^{}
+
+The tag is annotated, unsigned, and was created at 2026-09-24T11:33:26Z
+(2026-09-24T19:33:26+08:00). It points to the product commit and not either baseline-only commit.
+
 ===== D. Version and toolchain =====
 
 Desktop product version: 0.4.3

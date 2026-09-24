@@ -12,10 +12,12 @@ candidate. It does not modify or supersede the frozen v0.4.1 or v0.4.2 baselines
 | Product branch | `fix/v0.4.3-windows-tray-white-screen` |
 | Private source tag | `v0.4.3` |
 | Tag state at initial snapshot | `NOT_CREATED` |
+| Final tag state | `CREATED`, annotated, unsigned |
+| Tag object | `5c3a0ffbeab8f69839d8c65b82757ae9319215cc` |
 | Required tag target | `dab1aca91417ebdb1caa8d487daa49074d47f16e` |
 
-The annotated private tag is intentionally deferred until Desktop Build, Release Validate, and
-this Pre-Public Gate all pass. It must target the product commit, never a baseline-only commit.
+The annotated private tag was created only after Desktop Build, Release Validate, and this
+Pre-Public Gate passed. It peels to the product commit, never a baseline-only commit.
 
 ## Desktop Build
 
