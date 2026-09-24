@@ -695,6 +695,81 @@ jobs:
           resolve_into NOVAWING_RELEASE_MANIFEST release-validation 'release-manifest.json'
           resolve_into NOVAWING_RELEASE_NOTES release-validation 'release-notes.md'
 
+      # The Pre-Public IP Gate. This is the last human gate before binary artifacts become
+      # public: the evidence snapshot, the shipped-content audit, the secret scan and the
+      # third-party license review are all recorded in a gate file in the private source
+      # repository, and this step re-reads it at the workflow ref and re-checks it against the
+      # exact build this run is about to publish. It runs before anything is fetched or
+      # uploaded, it is not bypassable, and a missing or unreadable gate file fails closed.
+      - name: Pre-public IP gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_PATH: NovaWing-IP-Baseline/2026-09-24-v0.4.1-pre-public/06-pre-public-gate.json
+          GATE_REF: ${{ github.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gate_file="$RUNNER_TEMP/pre-public-gate.json"
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/$GATE_PATH?ref=$GATE_REF" \
+              -H "Accept: application/vnd.github.raw" > "$gate_file" 2>/dev/null; then
+            echo "::error::no Pre-Public IP Gate record at $GATE_PATH in $GITHUB_REPOSITORY@$GATE_REF"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+          export NOVAWING_PRE_PUBLIC_GATE="$gate_file"
+
+          node --input-type=module <<'GATE_EOF'
+          import { readFileSync } from 'node:fs'
+
+          // Every failure path ends in the same stable marker, including a gate file that
+          // cannot be read or parsed at all.
+          const fail = (messages) => {
+            for (const message of [].concat(messages)) console.error(`::error::Pre-Public IP Gate: ${message}`)
+            console.log('PRE_PUBLIC_IP_GATE HUMAN_REQUIRED')
+            process.exit(1)
+          }
+
+          let gate
+          let manifest
+          try {
+            gate = JSON.parse(readFileSync(process.env.NOVAWING_PRE_PUBLIC_GATE, 'utf8'))
+            manifest = JSON.parse(readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, 'utf8'))
+          } catch (error) {
+            fail(`gate record or release manifest is unreadable: ${error.message}`)
+          }
+
+          const tag = process.env.TAG
+          const version = String(manifest.version)
+
+          const checks = [
+            ['name', gate.name, 'NOVAWING_PRE_PUBLIC_IP_GATE'],
+            ['version', String(gate.version), version],
+            ['tag', gate.tag, tag],
+            ['tagTargetSha', gate.tagTargetSha, manifest.buildCommitSha],
+            ['buildRunId', String(gate.buildRunId), String(manifest.buildRunId)],
+            ['validation', gate.validation, 'PASS'],
+            ['evidenceSnapshot', gate.evidenceSnapshot, 'PASS'],
+            ['shippedIpAudit', gate.shippedIpAudit, 'PASS'],
+            ['secrets', gate.secrets, 'PASS'],
+            ['thirdPartyLicenses', gate.thirdPartyLicenses, 'PASS'],
+            ['publicRelease', gate.publicRelease, 'READY'],
+          ]
+          const failures = []
+          for (const [field, actual, expected] of checks) {
+            if (actual !== expected) failures.push(`${field}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+          }
+          const blocking = Array.isArray(gate.blockingReasons) ? gate.blockingReasons : ['blockingReasons is not an array']
+          if (blocking.length !== 0) failures.push(`blockingReasons must be empty, got ${JSON.stringify(blocking)}`)
+          if (!Array.isArray(gate.patentDecisionRequired)) failures.push('patentDecisionRequired is not an array')
+          else if (gate.patentDecisionRequired.length !== 0) failures.push(`patentDecisionRequired is not empty: ${JSON.stringify(gate.patentDecisionRequired)}`)
+          if (!Array.isArray(gate.keepPrivateAccidentallyShipped)) failures.push('keepPrivateAccidentallyShipped is not an array')
+          else if (gate.keepPrivateAccidentallyShipped.length !== 0) failures.push(`keepPrivateAccidentallyShipped is not empty: ${JSON.stringify(gate.keepPrivateAccidentallyShipped)}`)
+
+          if (failures.length > 0) fail(failures)
+          console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha}`)
+          GATE_EOF
+
       # Fails closed on every precondition before anything is fetched or uploaded. The
       # confirmation string, the version agreement and the source tag are checked here; the feed
       # repository is a separate authority and is checked in its own step below.

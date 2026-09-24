@@ -1,0 +1,213 @@
+NovaWing v0.4.1 PRE-PUBLIC IP GATE - repository state evidence
+Generated (UTC): 2026-09-24T02:52:23Z
+Generated (local): 2026-09-24T10:52:23+0800 CST
+Host: Darwin 23.3.0
+Working directory: /Users/weijianjun/nova-wing
+
+===== A. Git identity and working tree =====
+
+$ git rev-parse HEAD
+74ee7980695f899a665af45c25cffc3e2bcb486a
+
+$ git branch --show-current
+feat/v0.4.1-updater
+
+$ git status --porcelain=v1
+ M .github/workflows/desktop-release.yml
+?? NovaWing-IP-Baseline/
+
+$ git status --porcelain=v1 | wc -l   (0 == clean)
+       2
+
+===== B. Source tag v0.4.1 (annotated tag object) =====
+
+$ git show --no-patch --format=fuller v0.4.1
+tag v0.4.1
+Tagger:     weijianjun <2661043132@qq.com>
+TaggerDate: Wed Sep 23 23:33:35 2026 +0800
+
+NovaWing v0.4.1
+
+commit 9c5d0b97972f62e725a38cb853ffbda5ddb54455
+Author:     weijianjun <2661043132@qq.com>
+AuthorDate: Wed Sep 23 21:53:27 2026 +0800
+Commit:     weijianjun <2661043132@qq.com>
+CommitDate: Wed Sep 23 21:53:27 2026 +0800
+
+    fix(desktop): persist Windows updater feed in packaged tree
+
+    The packaged Windows app carried no app-update.yml at all. electron-builder
+    writes it from an afterPack hook, and that hook runs for neither of this
+    build's targets: `dir` is not a distributable target, and the prepackaged
+    NSIS build returns from doPack before the hook. A shipped Windows app would
+    therefore have had no feed to read.
+
+    The packaging adapter now writes the file itself, at the point where the
+    unpacked tree is complete and before it is audited, so the packaged smoke
+    validates a tree that already carries the feed and the installer re-packs
+    that same tree.
+
+    The file also joins the packaged identity. Without that, a feed swapped after
+    the smoke ran would hash identically and the installer could be built from a
+    tree no smoke ever saw. The installer phase verifies the feed rather than
+    writing it, so a missing or altered feed fails closed instead of being
+    repaired on the way past.
+
+    The document itself is assembled without a YAML library: every value is a
+    fixed identifier from the single feed source, and each is checked against a
+    plain-scalar pattern before it is written, so a value that would need
+    escaping fails the build instead of producing a malformed document.
+
+    Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
+
+$ git rev-parse v0.4.1
+ef218a8e71dbb735a0a826160cfb79a1c3be14b8
+
+$ git rev-parse v0.4.1^{}
+9c5d0b97972f62e725a38cb853ffbda5ddb54455
+
+$ git cat-file -t v0.4.1
+tag
+
+$ git cat-file -p v0.4.1
+object 9c5d0b97972f62e725a38cb853ffbda5ddb54455
+type commit
+tag v0.4.1
+tagger weijianjun <2661043132@qq.com> 1790177615 +0800
+
+NovaWing v0.4.1
+
+===== C. Product build commit 9c5d0b9 (Desktop Build source) =====
+
+$ git log -1 --format=fuller 9c5d0b97972f62e725a38cb853ffbda5ddb54455
+commit 9c5d0b97972f62e725a38cb853ffbda5ddb54455
+Author:     weijianjun <2661043132@qq.com>
+AuthorDate: Wed Sep 23 21:53:27 2026 +0800
+Commit:     weijianjun <2661043132@qq.com>
+CommitDate: Wed Sep 23 21:53:27 2026 +0800
+
+    fix(desktop): persist Windows updater feed in packaged tree
+
+    The packaged Windows app carried no app-update.yml at all. electron-builder
+    writes it from an afterPack hook, and that hook runs for neither of this
+    build's targets: `dir` is not a distributable target, and the prepackaged
+    NSIS build returns from doPack before the hook. A shipped Windows app would
+    therefore have had no feed to read.
+
+    The packaging adapter now writes the file itself, at the point where the
+    unpacked tree is complete and before it is audited, so the packaged smoke
+    validates a tree that already carries the feed and the installer re-packs
+    that same tree.
+
+    The file also joins the packaged identity. Without that, a feed swapped after
+    the smoke ran would hash identically and the installer could be built from a
+    tree no smoke ever saw. The installer phase verifies the feed rather than
+    writing it, so a missing or altered feed fails closed instead of being
+    repaired on the way past.
+
+    The document itself is assembled without a YAML library: every value is a
+    fixed identifier from the single feed source, and each is checked against a
+    plain-scalar pattern before it is written, so a value that would need
+    escaping fails the build instead of producing a malformed document.
+
+    Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
+
+$ git merge-base --is-ancestor 9c5d0b9 HEAD && echo YES || echo NO
+YES
+
+$ git merge-base --is-ancestor 9c5d0b9 main && echo YES || echo NO
+NO
+
+$ git rev-list --count 9c5d0b9..HEAD
+2
+
+$ git log --oneline 9c5d0b9..HEAD
+74ee798 fix(ci): parse update metadata without runtime dependencies
+87d3b52 fix(ci): separate source tag from public feed release
+
+===== D. All repository tags =====
+
+$ git tag --list --format=%(refname:short) %(objecttype) %(objectname)
+v0.2.1 tag a63c871f6fd328a3780c3592a530f0f86bbb78ad
+v0.2.2 tag b09a35d98477783546de34b67ac80d09cb53b808
+v0.2.3 tag 997ac64aa324f6e0eb18c56e18a3ce7bd3ec87f9
+v0.2.4 tag 84df828faab3d670b78d3be4d6c7447802c66238
+v0.2.5 tag 8a5e97a23b7b47328ff8241baab3f4d2978c7d1d
+v0.2.6 tag 0d44e9461bf1b1eda3064793e0fbfa88e2162916
+v0.2.7 tag 5c0ecf13da51098127247e6022c067d9f3a6aac7
+v0.2.8 tag 0a82c5b129a3b559351e80c91a6256d0ec27c601
+v0.3.0 tag ff1f81bd935741031cf5bde46c8286b45f8d0192
+v0.3.1 tag c4a84cb76746887dbf9a146cbb4391a73d2b60ac
+v0.3.2 tag 14c269bb11b702fc652905555b4413e4ccfbd788
+v0.4.0 tag 8f97ef4bc34719a12da87ce3eeab2f7aff1541f2
+v0.4.1 tag ef218a8e71dbb735a0a826160cfb79a1c3be14b8
+
+===== E. Remotes =====
+
+$ git remote -v
+origin	https://github.com/weijianjunwjj/nova-wing (fetch)
+origin	https://github.com/weijianjunwjj/nova-wing (push)
+
+===== F. Version identity =====
+
+$ node -p "require('./package.json').version"
+0.1.0
+
+$ node -p "String(require('./package.json').license)"
+UNLICENSED
+
+$ node -p "require('./package.json').name"
+nova-wing
+
+$ grep -n version desktop/main/identity.mjs
+3: * Root npm kernel version remains independent of this product version.
+7:  version: '0.4.1',
+
+===== G. Toolchain versions =====
+
+$ node --version
+v20.20.2
+
+$ npm --version
+10.8.2
+
+$ git --version
+git version 2.39.3 (Apple Git-146)
+
+$ node_modules/electron/package.json version
+44.4.3
+
+$ node_modules/electron-builder/package.json version
+26.15.3
+
+$ node_modules/electron-updater/package.json version
+6.8.9
+
+$ node_modules/@openai/codex/package.json version (bundled Codex SDK)
+0.151.0
+
+$ node_modules/@anthropic-ai/claude-code/package.json version
+NOT_FOUND
+
+===== H. Repository visibility and public release state (machine-verified via GitHub API) =====
+Uses the locally stored git credential; the token is never written to this file.
+
+$ curl -sS -H "Authorization: token <redacted>" https://api.github.com/repos/weijianjunwjj/nova-wing
+full_name: weijianjunwjj/nova-wing
+private: true
+visibility: private
+default_branch: main
+license: null
+
+$ curl -sS -H "Authorization: token <redacted>" https://api.github.com/repos/weijianjunwjj/nova-wing-releases
+full_name: weijianjunwjj/nova-wing-releases
+private: false
+visibility: public
+
+$ curl -sS ... /repos/weijianjunwjj/nova-wing-releases/releases
+release_count: 0
+  => public v0.4.1 Release: NOT PUBLISHED
+
+$ curl -sS ... /repos/weijianjunwjj/nova-wing/releases/tags/v0.4.1
+message: Not Found
+  => no Release object exists for tag v0.4.1 in the PRIVATE source repo

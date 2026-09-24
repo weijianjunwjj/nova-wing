@@ -1,0 +1,50 @@
+NovaWing v0.4.1 - npm run check (local, repository tree)
+Generated (local): 2026-09-24T09:44:52+0800
+
+Node used: v24.21.0
+package.json engines: {"node":">=24.0.0"}; CI workflows use node-version 24
+
+NOTE ON ENVIRONMENT: this command was first run on Node v20.20.2 and FAILED at the test
+step, because on Node 20 `node --test` does not expand the quoted glob pattern
+"dist-tests/tests/*.test.js" and reported "Could not find ...". Re-run under the
+engine-required Node v24.21.0 it passes. That is an environment mismatch, not a product
+defect, and it is recorded here rather than hidden.
+
+===== stage headers =====
+> nova-wing@0.1.0 check
+> nova-wing@0.1.0 typecheck
+> nova-wing@0.1.0 test
+> nova-wing@0.1.0 build
+> nova-wing@0.1.0 build:tests
+> nova-wing@0.1.0 check:unused
+> nova-wing@0.1.0 check:migration
+> nova-wing@0.1.0 build
+> nova-wing@0.1.0 check:exports
+> nova-wing@0.1.0 build
+> nova-wing@0.1.0 check:boundaries
+> nova-wing@0.1.0 check:platform
+> nova-wing@0.1.0 check:desktop
+
+===== test totals (node --test) =====
+ℹ tests 1180
+ℹ suites 1
+ℹ pass 1180
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 79506.973666
+ℹ tests 186
+ℹ suites 0
+ℹ pass 186
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 580.73025
+
+===== failure markers =====
+not-ok lines: 0
+
+===== exit =====
+NPM_CHECK_EXIT=0
