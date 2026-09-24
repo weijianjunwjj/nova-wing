@@ -216,6 +216,7 @@ async function runElectron(entry, prefix, root) {
       assert.equal(secondary.result, 'PASS', JSON.stringify(secondary))
       for (const name of ['window_close_hides', 'host_survives_hide', 'runtime_survives_hide', 'task_survives_hide',
         'hidden_completion', 'durable_hidden_completion', 'same_session_restored', 'tray_created', 'tray_show', 'tray_hide',
+        'tray_hide_show_10x', 'close_to_tray_show_10x',
         'single_instance', 'second_instance_focus', 'no_duplicate_host', 'secondary_no_database',
         'renderer_crash_detected', 'renderer_recovered', 'runtime_survives_renderer_crash', 'tray_survives_crash',
         'destroyed_window_recovery', 'window_all_closed_background', 'power_idle_off', 'power_active_on',
