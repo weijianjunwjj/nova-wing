@@ -1,0 +1,109 @@
+NovaWing v0.4.2 PRE-PUBLIC IP GATE - repository state evidence
+Generated (UTC): 2026-09-24T04:30:12Z
+Generated (local): 2026-09-24T12:30:12+0800
+Working directory: /Users/weijianjun/nova-wing
+
+===== A. Git identity and working tree at snapshot start =====
+
+$ git rev-parse HEAD
+a712bd15a81004bb981e89b076c445bedce405f4
+
+$ git branch --show-current
+feat/v0.4.2-public-bootstrap
+
+$ git status --porcelain=v1
+ M .github/workflows/desktop-release.yml
+
+The only pre-existing worktree change was the version-driven release guard required by this
+baseline. The product commit was already committed and pushed. New v0.4.2 baseline files were
+created after this capture.
+
+===== B. Frozen v0.4.1 identity (unchanged) =====
+
+$ git rev-parse v0.4.1
+ef218a8e71dbb735a0a826160cfb79a1c3be14b8
+
+$ git rev-parse v0.4.1^{}
+9c5d0b97972f62e725a38cb853ffbda5ddb54455
+
+===== C. v0.4.2 tag state at snapshot commit =====
+
+$ git rev-parse v0.4.2
+NOT_CREATED
+
+Policy: create the annotated private source tag only after Release Validate PASS and after this
+baseline is committed and pushed. It must peel to a712bd15a81004bb981e89b076c445bedce405f4.
+
+===== D. Product commit =====
+
+$ git log -1 --format=fuller a712bd15a81004bb981e89b076c445bedce405f4
+commit a712bd15a81004bb981e89b076c445bedce405f4
+Author:     weijianjun <2661043132@qq.com>
+AuthorDate: Thu Sep 24 11:26:15 2026 +0800
+Commit:     weijianjun <2661043132@qq.com>
+CommitDate: Thu Sep 24 11:26:15 2026 +0800
+
+    fix(desktop): ship Electron and Chromium notices in the macOS bundle
+
+===== E. Version identity =====
+
+$ DESKTOP_IDENTITY.version
+0.4.2
+
+$ node -p "require('./package.json').version"
+0.1.0
+
+$ node -p "require('./package.json').license"
+UNLICENSED
+
+The root package version remains independent of the Desktop product version.
+
+===== F. Toolchain versions (machine-read) =====
+
+$ node --version
+v24.21.0
+
+$ npm --version
+11.19.0
+
+$ git --version
+git version 2.39.3 (Apple Git-146)
+
+$ node_modules/electron/package.json version
+44.4.3
+
+$ node_modules/electron-builder/package.json version
+26.15.3
+
+$ node_modules/electron-updater/package.json version
+6.8.9
+
+$ node_modules/@openai/codex-sdk/package.json version
+0.151.0
+
+$ node_modules/@openai/codex/package.json version (bundled Codex)
+0.151.0
+
+===== G. Repository visibility and public state (GitHub API) =====
+
+weijianjunwjj/nova-wing          private=true   visibility=private
+weijianjunwjj/nova-wing-releases private=false visibility=public
+feed_release_count=0
+public v0.4.2 release=false
+
+===== H. CI source identities =====
+
+Desktop Build 35951460301:
+  workflow=Desktop Build
+  status=completed
+  conclusion=success
+  head_sha=a712bd15a81004bb981e89b076c445bedce405f4
+  branch=feat/v0.4.2-public-bootstrap
+
+Desktop Release Validate 35955424307:
+  workflow=Desktop Release
+  status=completed
+  conclusion=success
+  head_sha=a712bd15a81004bb981e89b076c445bedce405f4
+  validate job=success
+  publish job=skipped

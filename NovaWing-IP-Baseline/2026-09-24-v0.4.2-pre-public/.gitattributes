@@ -1,0 +1,5 @@
+# Mature tooling preserves upstream license text verbatim, including significant or historical
+# trailing whitespace. Do not normalize or rewrite those evidence bytes to satisfy Git's text
+# whitespace diagnostics.
+THIRD_PARTY_NOTICES-*.txt -whitespace
+license-inventory-*.json -whitespace

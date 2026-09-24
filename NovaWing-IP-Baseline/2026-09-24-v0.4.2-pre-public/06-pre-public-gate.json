@@ -1,0 +1,129 @@
+{
+  "name": "NOVAWING_PRE_PUBLIC_IP_GATE",
+  "version": "0.4.2",
+  "tag": "v0.4.2",
+  "tagObjectSha": "PENDING_POST_BASELINE_TAG_CREATION",
+  "tagTargetSha": "a712bd15a81004bb981e89b076c445bedce405f4",
+  "buildRunId": 35951460301,
+  "validationRunId": 35955424307,
+
+  "baselineCreatedUtc": "2026-09-24T04:30:12Z",
+  "workingBranch": "feat/v0.4.2-public-bootstrap",
+  "repositoryPrivate": true,
+  "feedRepositoryPublic": true,
+  "publicV042Published": false,
+
+  "validation": "PASS",
+  "evidenceSnapshot": "PASS",
+  "shippedIpAudit": "PASS",
+  "secrets": "PASS",
+  "thirdPartyLicenses": "PASS",
+  "sbom": "PASS",
+  "thirdPartyNotices": "PASS",
+
+  "patentDecisionRequired": [
+    "candidate-1: authoritative task facts -> typed execution evidence -> independent deterministic verification -> evidence admission -> evidence-bound finalization",
+    "candidate-2: persisted verification plan -> scoped command/cwd admission -> source/script fingerprint revalidation -> independent verifier truth -> completion gate",
+    "candidate-3: bounded recovery -> authority-preserving diagnosis -> deterministic recovery admission -> re-verification -> fail-closed HUMAN_REQUIRED"
+  ],
+  "keepPrivateAccidentallyShipped": [],
+  "clientRequiredSecretConflict": [
+    "RECOVERY_ACTION_BUDGET=4 (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "autonomous diagnosis system prompt (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "assessRisk() risk-scoring rules (dist/packages/development-guardian/work-session/risk-evidence.js)",
+    "reviewer and recovery budgets (dist/packages/development-guardian/work-session/reviewer-adapters.js and brain-review-budget.js)",
+    "deterministic verifier allowlist (dist/packages/development-guardian/verification-command-policy.js)",
+    "executor/provider routing heuristics (dist/packages/development-guardian/executor-router.js)"
+  ],
+  "clientRequiredSecretConflictBlocking": false,
+  "clientRequiredSecretConflictRule": "A client-required conflict blocks only if the Owner explicitly classifies the item KEEP_PRIVATE. No listed v0.4.2 item has that classification.",
+
+  "publicRelease": "HUMAN_REQUIRED",
+  "blockingReasons": [
+    "PATENT_DECISION_REQUIRED: candidate-1, candidate-2, and candidate-3 are specific mechanisms, are shipped in both packages, and retain an unresolved pre-publication Owner decision. The Owner must explicitly choose whether to pursue/consult on patent protection before publication or accept public disclosure and the resulting loss of the pre-publication window."
+  ],
+
+  "nonBlockingObservations": [
+    "CLIENT_REQUIRED_SECRET_CONFLICT is recorded and non-blocking because no listed item is Owner-classified KEEP_PRIVATE.",
+    "EULA_STATUS=NOT_DEFINED: root and shipped package metadata are UNLICENSED; the supplied policy does not make this a blocker.",
+    "macOS Native Notification remains NEEDS_SIGNED_VALIDATION because Developer ID signing and notarization were not performed."
+  ],
+
+  "evidence": {
+    "buildCommitSha": "a712bd15a81004bb981e89b076c445bedce405f4",
+    "releaseManifestSha256": "47244115f2c5594b83ecd12ca91301a53cfe3c1aad23fc8702d9a42595e36968",
+    "provenanceChainIntact": true,
+    "shippedArtifacts": {
+      "windowsInstaller": {
+        "filename": "NovaWing-Setup-0.4.2-x64.exe",
+        "size": 216555731,
+        "sha256": "e2f0cef2bcd6d0df3c21255d67d14b1eed2615d0e5243fc3f5aa8dbb6475e820",
+        "packagedContentSha256": "bfb4af720a8fc478e9ab9bacd54628a2ac6c5abe67cecf9e03f0bc8b1b3785ac",
+        "appTreeFiles": 5511,
+        "signed": false
+      },
+      "macosDmg": {
+        "filename": "NovaWing-0.4.2-arm64.dmg",
+        "size": 260433106,
+        "sha256": "02a8453911135b345a1ecfb5f42ca1840e9e3a79dbf3a9543fdaa47e8cb08467",
+        "packagedContentSha256": "b68ae261150d96186e1cfbb0aa291bbba3b2238b53f9593a47f3c3fd141e807f",
+        "signedForDistribution": false,
+        "notarized": false
+      },
+      "macosZip": {
+        "filename": "NovaWing-0.4.2-arm64-mac.zip",
+        "size": 263626939,
+        "sha256": "b9f7def8b15bde04eeccf5cd13109443a2f9191a535139343a19ee6708b5a296",
+        "packagedContentSha256": "b68ae261150d96186e1cfbb0aa291bbba3b2238b53f9593a47f3c3fd141e807f",
+        "appTreeFiles": 5510
+      }
+    },
+    "distributionNotices": {
+      "electronVersion": "44.4.3",
+      "electronSha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d",
+      "chromiumWindowsSha256": "7b328b8c7463ac9bfc7dc648c751533517c8441a0b5b21047d6c0b2620e60d70",
+      "chromiumMacosSha256": "a62dabd1c6ef1327365b2a3fdffb806222684a746dcb8f4afd1c1f690eba5535",
+      "appZipDmgVerified": true
+    },
+    "debugArtifactAudit": {
+      "sourceMaps": 0,
+      "novaWingAuthoredTypeScript": 0,
+      "novaWingAuthoredTestsOrFixtures": 0,
+      "pdbFiles": 0,
+      "envOrCredentialFiles": 0,
+      "privateBaselineFiles": 0,
+      "verdict": "PASS"
+    },
+    "secretScan": {
+      "scanner": "gitleaks 8.30.1, default ruleset, local-only, 100% redaction",
+      "handWrittenScannerUsed": false,
+      "thirdPartySaaSUpload": false,
+      "nodeModulesScanned": true,
+      "novaWingOriginFindings": 0,
+      "thirdPartyFindings": 3
+    },
+    "sbomEvidence": {
+      "tool": "@cyclonedx/cyclonedx-npm 6.0.1",
+      "specVersion": "1.6",
+      "componentCount": 255
+    },
+    "licenseEvidence": {
+      "tool": "license-checker 25.0.1",
+      "thirdPartyPackages": 259,
+      "unknownThirdParty": 0,
+      "copyleftDeclarations": 0
+    },
+    "noticeEvidence": {
+      "tool": "generate-license-file 4.2.5",
+      "noticeEntries": 259,
+      "shippedPackages": 259,
+      "uncovered": 0,
+      "licenseTextWrittenByModel": false
+    },
+    "releaseNotesAudit": "PASS"
+  },
+
+  "ownerDecisionsRequired": [
+    "Patent: explicitly choose either to pursue/consult on protection before public release, or to accept public disclosure and forgo the pre-publication window for candidate-1, candidate-2, and candidate-3."
+  ]
+}

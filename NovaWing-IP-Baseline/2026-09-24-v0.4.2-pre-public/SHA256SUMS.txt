@@ -1,0 +1,17 @@
+cb94b2433b5f5b6b734898a04b8201997d688319b9cee5d5a372cd281d84c495  ./.gitattributes
+ecebae4ad8e31e53981f0169185d84211ab1b76a6aa884c264985bbc73cef699  ./00-manifest.md
+c2117d337637b67e543fb70dd08b136ec58832e37c153297a21dde559fe3aa3e  ./01-repository-state.txt
+d1718d25d32019432548932e767e15c35682c3c8269e4399ff6eb76564b5d230  ./02-npm-run-check.txt
+2fbfb2976f95afe772809516fc47a8a006c227e42d1b881203be35a810c70162  ./02-v0.4.2-validation-evidence.md
+891c5b2d89509fbbf6dd835dc699f20872a88b1335d0bacf33bfd601c6bb258c  ./03-real-host-evidence.md
+152b5fb25127af2feef0043c3a5d00c5f85907aa75ddb898a0aa5204960475d5  ./04-release-artifact-manifest.md
+f5f553872c312c48c1cf5083da74582c3b77032a31f85e87ba60dad57eefcafa  ./05-shipped-ip-inventory.md
+34bf96ffc5bfb51fb99371a0f086619add6ffa583c66e7717806fd9f53d3e6db  ./06-pre-public-gate.json
+986856c0408dd3ce05f42b8fba378ce248e7c4019f5967570d80585cb0aba8f8  ./THIRD_PARTY_NOTICES-macos.txt
+b743ae2e8f1cabb02cb4e59e2b2da04250e1cbce2ca28d12c4f387274d503887  ./THIRD_PARTY_NOTICES-windows.txt
+9b68e5475e2738aa4633ea32f6d9bcfe928630b8ab61b799ee1d1738c0a996ed  ./gitleaks-macos-full.json
+4d07a57811e41b4bcc2cf0d4dd366f5d8e99809709143a8c29f6e936470cd75d  ./gitleaks-windows-full.json
+d6474ff519046c0d241a9822ccf3a2d45ea040dec2b79e6b45a4ad6808af2b43  ./license-inventory-macos.json
+ea3825ad23e4439812642829b72666f4c034c30c0f752c2cd17c488235d8ae79  ./license-inventory-windows.json
+fae9e2907d179e2513dd9b1420459c9e1deea9e5fd15cabc1dcf30f215e7d68f  ./sbom-shipped-macos.json
+2cbe364ade3d2027b6165cf03e3544f6268fdba259265eba2b8a1b7a38597862  ./sbom-shipped-windows.json

@@ -705,12 +705,36 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GATE_PATH: NovaWing-IP-Baseline/2026-09-24-v0.4.1-pre-public/06-pre-public-gate.json
           GATE_REF: ${{ github.sha }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          gate_index="$RUNNER_TEMP/pre-public-gate-index.json"
           gate_file="$RUNNER_TEMP/pre-public-gate.json"
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/NovaWing-IP-Baseline?ref=$GATE_REF" \
+              > "$gate_index" 2>/dev/null; then
+            echo "::error::cannot enumerate Pre-Public IP Gate records in $GITHUB_REPOSITORY@$GATE_REF"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+
+          gate_directories="$(GATE_INDEX="$gate_index" node --input-type=module <<'INDEX_EOF'
+          import { readFileSync } from 'node:fs'
+          const entries = JSON.parse(readFileSync(process.env.GATE_INDEX, 'utf8'))
+          const suffix = `-${process.env.TAG}-pre-public`
+          const matches = entries.filter((entry) => entry.type === 'dir' && entry.name.endsWith(suffix))
+          process.stdout.write(matches.map((entry) => entry.path).join('\n'))
+          INDEX_EOF
+          )"
+          gate_count="$(printf '%s\n' "$gate_directories" | awk 'NF { count++ } END { print count + 0 }')"
+          if [ "$gate_count" -ne 1 ]; then
+            echo "::error::expected exactly one Pre-Public IP Gate directory ending in '-$TAG-pre-public', found $gate_count"
+            printf '::error::candidate=%s\n' "${gate_directories:-NONE}"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+          GATE_PATH="$gate_directories/06-pre-public-gate.json"
+
           if ! gh api "repos/$GITHUB_REPOSITORY/contents/$GATE_PATH?ref=$GATE_REF" \
               -H "Accept: application/vnd.github.raw" > "$gate_file" 2>/dev/null; then
             echo "::error::no Pre-Public IP Gate record at $GATE_PATH in $GITHUB_REPOSITORY@$GATE_REF"
