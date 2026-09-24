@@ -1,0 +1,56 @@
+{
+  "name": "MACOS_BUNDLED_DISTRIBUTION_NOTICES",
+  "result": "PASS",
+  "bundle": "artifacts/desktop/mac-arm64/NovaWing.app",
+  "electronVersion": "44.4.3",
+  "notices": [
+    {
+      "component": "Electron",
+      "license": "MIT",
+      "source": "node_modules/electron/dist/LICENSE",
+      "shipped": "Contents/Resources/LICENSE.electron.txt",
+      "bytes": 1096,
+      "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+    },
+    {
+      "component": "Chromium",
+      "license": "BSD-3-Clause and others",
+      "source": "node_modules/electron/dist/LICENSES.chromium.html",
+      "shipped": "Contents/Resources/LICENSES.chromium.html",
+      "bytes": 20111209,
+      "sha256": "a62dabd1c6ef1327365b2a3fdffb806222684a746dcb8f4afd1c1f690eba5535"
+    }
+  ],
+  "containers": {
+    "name": "MACOS_CONTAINER_DISTRIBUTION_NOTICES",
+    "result": "PASS",
+    "dmg": {
+      "filename": "NovaWing-0.4.3-arm64.dmg",
+      "notices": [
+        {
+          "shipped": "LICENSE.electron.txt",
+          "bytes": 1096,
+          "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+        },
+        {
+          "shipped": "LICENSES.chromium.html",
+          "bytes": 20111209,
+          "sha256": "a62dabd1c6ef1327365b2a3fdffb806222684a746dcb8f4afd1c1f690eba5535"
+        }
+      ]
+    },
+    "zip": {
+      "filename": "NovaWing-0.4.3-arm64-mac.zip",
+      "notices": [
+        {
+          "shipped": "NovaWing.app/Contents/Resources/LICENSE.electron.txt",
+          "listed": true
+        },
+        {
+          "shipped": "NovaWing.app/Contents/Resources/LICENSES.chromium.html",
+          "listed": true
+        }
+      ]
+    }
+  }
+}

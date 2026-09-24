@@ -1,0 +1,1395 @@
+{
+  "name": "DESKTOP_COMPATIBILITY_SMOKE",
+  "timeoutMs": 60000,
+  "packageSha256": "edc34520f96632a4ea8df3c0c3e5c1cec4a321c703d3c53242c6bbe00ba16b12",
+  "runs": [
+    {
+      "entry": "desktop/tests/launchpad-smoke.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "result": "PASS",
+        "checks": {
+          "electron_main": {
+            "status": "PASS",
+            "detail": {
+              "electron": "44.4.3",
+              "node": "24.21.0",
+              "chrome": "152.0.7977.130",
+              "v8": "15.2.124.28-electron.0",
+              "modules": "149",
+              "platform": "win32",
+              "arch": "x64",
+              "execPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\NovaWing.exe",
+              "cwd": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\repo"
+            }
+          },
+          "isolation": {
+            "status": "PASS",
+            "detail": {
+              "root": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK",
+              "config": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\config",
+              "data": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data",
+              "repo": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\repo"
+            }
+          },
+          "launchpad_create": {
+            "status": "PASS",
+            "detail": {
+              "factory": "createNovaWingLaunchpad"
+            }
+          },
+          "launchpad_start": {
+            "status": "PASS",
+            "detail": {
+              "url": "http://127.0.0.1:54783"
+            }
+          },
+          "launchpad_http": {
+            "status": "PASS",
+            "detail": {
+              "status": 200,
+              "existingCsp": true
+            }
+          },
+          "browser_load": {
+            "status": "PASS",
+            "detail": {
+              "url": "http://127.0.0.1:54783/",
+              "title": "NovaWing Launchpad"
+            }
+          },
+          "renderer_js": {
+            "status": "PASS",
+            "detail": {
+              "composerClickHandler": true,
+              "analyticsRendered": true
+            }
+          },
+          "renderer_node_access": {
+            "status": "PASS",
+            "detail": {
+              "require": "undefined",
+              "process": "undefined"
+            }
+          },
+          "launchpad_api": {
+            "status": "PASS",
+            "detail": {
+              "status": 200,
+              "configCount": 0,
+              "unauthorized": 403
+            }
+          },
+          "session_create": {
+            "status": "PASS",
+            "detail": {
+              "httpStatus": 202,
+              "productionFactory": "createProductionWorkSessionUi",
+              "fixtureControlPlane": "v1",
+              "runtimeCreateCount": 1
+            }
+          },
+          "session_start": {
+            "status": "PASS",
+            "detail": {
+              "state": "RUNNING",
+              "startedAt": "2026-09-24T10:38:01.237Z"
+            }
+          },
+          "control_origin_registered": {
+            "status": "PASS",
+            "detail": {
+              "launchpad": "http://127.0.0.1:54783",
+              "control": "http://127.0.0.1:54787"
+            }
+          },
+          "control_navigation": {
+            "status": "PASS",
+            "detail": {
+              "url": "http://127.0.0.1:54787/",
+              "source": "existing window.location.assign(controlUrl)"
+            }
+          },
+          "control_http": {
+            "status": "PASS",
+            "detail": {
+              "status": 200,
+              "sessionId": "repo-202609241038-2f274c"
+            }
+          },
+          "control_sse": {
+            "status": "PASS",
+            "detail": {
+              "transport": "native EventSource",
+              "observedBy": "Chromium Network.eventSourceMessageReceived",
+              "connected": true,
+              "eventsAfterTaskRelease": 2,
+              "eventNames": [
+                "connected",
+                "snapshot",
+                "activity"
+              ]
+            }
+          },
+          "fake_task": {
+            "status": "PASS",
+            "detail": {
+              "taskRunCount": 1,
+              "fakeExecutionCount": 1,
+              "forbiddenCapabilityAttempts": 0,
+              "runner": "existing FakeTaskRunner"
+            }
+          },
+          "terminal_state": {
+            "status": "PASS",
+            "detail": {
+              "state": "COMPLETED",
+              "completedTaskIds": [
+                "DESKTOP-SMOKE-001"
+              ],
+              "rendererBadge": "已完成"
+            }
+          },
+          "renderer_reload_no_duplicate_runtime": {
+            "status": "PASS",
+            "detail": {
+              "productionUiCreateCount": 1,
+              "runtimeCreateCount": 1,
+              "taskRunCount": 1,
+              "fakeExecutionCount": 1,
+              "sessionId": "repo-202609241038-2f274c",
+              "state": "COMPLETED",
+              "completedTaskIds": [
+                "DESKTOP-SMOKE-001"
+              ],
+              "persistedSnapshotUnchanged": true
+            }
+          },
+          "external_navigation_blocked": {
+            "status": "PASS",
+            "detail": {
+              "attempted": "https://example.com/",
+              "currentUrl": "http://127.0.0.1:54787/"
+            }
+          },
+          "random_loopback_blocked": {
+            "status": "PASS",
+            "detail": {
+              "attempted": [
+                "http://127.0.0.1:54792/",
+                "http://localhost:54792/"
+              ],
+              "requestsReceived": 0
+            }
+          },
+          "file_navigation_blocked": {
+            "status": "PASS",
+            "detail": {
+              "scheme": "file:",
+              "currentUrl": "http://127.0.0.1:54787/"
+            }
+          },
+          "javascript_navigation_blocked": {
+            "status": "PASS",
+            "detail": {
+              "scheme": "javascript:",
+              "executed": false
+            }
+          },
+          "window_open_denied": {
+            "status": "PASS",
+            "detail": {
+              "createdWindows": 0
+            }
+          },
+          "webview_denied": {
+            "status": "PASS",
+            "detail": {
+              "webviewTag": false,
+              "attachedWebviews": 0
+            }
+          },
+          "permission_denied": {
+            "status": "PASS",
+            "detail": {
+              "notification": "denied"
+            }
+          },
+          "host_close": {
+            "status": "PASS",
+            "detail": {
+              "trigger": "explicit app.quit after BrowserWindow close hid it",
+              "runtimeCloseCount": 2,
+              "closeCalls": 1
+            }
+          },
+          "control_origin_unregistered": {
+            "status": "PASS",
+            "detail": {
+              "control": "http://127.0.0.1:54787",
+              "ownedOrigins": []
+            }
+          },
+          "strict_shared_close": {
+            "status": "PASS",
+            "detail": {
+              "shutdownOperations": 1,
+              "closeCalls": 1,
+              "samePromise": true
+            }
+          },
+          "strict_repeated_quit": {
+            "status": "PASS",
+            "detail": {
+              "quitRequests": 3,
+              "shutdownOperations": 1,
+              "finalQuitRequests": 1,
+              "failures": 0,
+              "runtimeCloseAttemptCount": 2,
+              "runtimeOwners": [
+                {
+                  "closeAttempts": 1
+                },
+                {
+                  "closeAttempts": 1
+                }
+              ]
+            }
+          },
+          "strict_accepted_operation_drain": {
+            "status": "PASS",
+            "detail": {
+              "pendingBeforeRelease": true,
+              "completedAfterRelease": true,
+              "taskRunCount": 2,
+              "fakeExecutionCount": 2
+            }
+          },
+          "strict_reject_new_operations": {
+            "status": "PASS",
+            "detail": {
+              "rejected": [
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                },
+                {
+                  "status": 503
+                }
+              ],
+              "newRuntimeCount": 0,
+              "newTaskCount": 0
+            }
+          },
+          "strict_sse_closed": {
+            "status": "PASS",
+            "detail": {
+              "connectedBeforeQuit": true,
+              "ended": true
+            }
+          },
+          "strict_resources": {
+            "status": "PASS",
+            "detail": {
+              "tracked": {
+                "created": {
+                  "TCPSERVERWRAP": 4,
+                  "Timeout": 106,
+                  "TCPWRAP": 30
+                },
+                "live": []
+              },
+              "httpListeners": 0,
+              "sseConnections": 0,
+              "schedulerTimers": 0,
+              "controlOrigins": 0,
+              "liveProductionUi": 0,
+              "runtimeOwners": 0
+            }
+          }
+        },
+        "childPids": [
+          4908,
+          5256,
+          5168
+        ],
+        "errors": [],
+        "diagnostics": {},
+        "environment": {
+          "electron": "44.4.3",
+          "node": "24.21.0",
+          "chrome": "152.0.7977.130",
+          "v8": "15.2.124.28-electron.0",
+          "modules": "149",
+          "platform": "win32",
+          "arch": "x64",
+          "execPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\NovaWing.exe",
+          "cwd": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\repo"
+        }
+      },
+      "errors": [],
+      "result": "PASS"
+    },
+    {
+      "entry": "desktop/tests/runtime-compatibility.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "environment": {
+          "packaged": true,
+          "electron": "44.4.3",
+          "node": "24.21.0",
+          "chrome": "152.0.7977.130",
+          "v8": "15.2.124.28-electron.0",
+          "modules": "149",
+          "platform": "win32",
+          "arch": "x64",
+          "execPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\NovaWing.exe",
+          "cwd": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\repo"
+        },
+        "checks": {
+          "environment": {
+            "status": "PASS",
+            "detail": "Real Electron Main process"
+          },
+          "isolation": {
+            "status": "PASS",
+            "detail": {
+              "root": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK",
+              "config": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\config",
+              "data": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data"
+            }
+          },
+          "guardian_import": {
+            "status": "PASS",
+            "detail": {
+              "module": "file:///C:/Users/runneradmin/AppData/Local/Temp/novawing-desktop-package-2ngupN/resources/app/dist/packages/development-guardian/index.js",
+              "productionFactory": "createProductionWorkSessionUi",
+              "launchpadFactory": "createNovaWingLaunchpad"
+            }
+          },
+          "node_sqlite": {
+            "status": "PASS",
+            "detail": {
+              "create": true,
+              "insert": true,
+              "select": true,
+              "closed": true
+            }
+          },
+          "libsql": {
+            "status": "PASS",
+            "detail": {
+              "module": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\resources\\app\\node_modules\\libsql\\index.js",
+              "initialize": true,
+              "insert": true,
+              "select": true,
+              "closed": true
+            }
+          },
+          "runtime_create": {
+            "status": "PASS",
+            "detail": {
+              "storageUrl": "file:///C:/Users/runneradmin/AppData/Local/Temp/novawing-desktop-smoke-oyFfGK/data/session.db",
+              "loadedState": "SCHEDULED",
+              "executedTasks": 0
+            }
+          },
+          "fake_task": {
+            "status": "PASS",
+            "detail": {
+              "runner": "FakeTaskRunner",
+              "state": "COMPLETED",
+              "executions": 1,
+              "persistedSnapshot": true,
+              "ledger": true
+            }
+          },
+          "runtime_close": {
+            "status": "PASS",
+            "detail": {
+              "first": true,
+              "reopened": true
+            }
+          },
+          "runtime_reopen": {
+            "status": "PASS",
+            "detail": {
+              "state": "COMPLETED",
+              "sessionId": "desktop-compatibility",
+              "completedTaskIds": [
+                "T1"
+              ],
+              "executions": 0
+            }
+          },
+          "resources": {
+            "status": "PASS",
+            "detail": {
+              "baseline": {
+                "PipeWrap": 2
+              },
+              "active": {
+                "PipeWrap": 2
+              },
+              "extra": {},
+              "tracked": {
+                "created": {
+                  "Timeout": 1
+                },
+                "live": []
+              },
+              "connections": [
+                {
+                  "name": "node:sqlite",
+                  "closed": true
+                },
+                {
+                  "name": "libsql",
+                  "closed": true
+                },
+                {
+                  "name": "runtime:first",
+                  "closed": true
+                },
+                {
+                  "name": "runtime:reopened",
+                  "closed": true
+                }
+              ],
+              "scope": "Resources created since production import tracked by asyncId, including unref handles; normal Electron and child exit checked externally"
+            }
+          },
+          "packaged_dependencies": {
+            "status": "PASS",
+            "detail": {
+              "result": "PASS",
+              "appPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\resources\\app",
+              "resourcesPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\resources",
+              "execPath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\NovaWing.exe",
+              "cwd": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\repo",
+              "userData": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\electron-userData",
+              "businessPaths": {
+                "data": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data",
+                "config": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\home\\local\\NovaWing",
+                "trustedConfig": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\config",
+                "secrets": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\home\\local\\NovaWing\\secrets",
+                "smtpSecret": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\home\\local\\NovaWing\\secrets\\smtp.json",
+                "sessions": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\work-sessions",
+                "codingExecution": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\coding-executors.sqlite",
+                "analytics": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\work-sessions\\task-run-analytics.db",
+                "runtimeRepairAudit": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\runtime-repair-audit.log",
+                "repairAudit": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\repair-audit.log",
+                "eta": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK\\data\\runtime-ui\\eta"
+              },
+              "identity": {
+                "appName": "NovaWing",
+                "version": "0.4.3",
+                "appUserModelId": "io.github.weijianjunwjj.novawing",
+                "toastActivatorCLSID": "5F5D220B-E789-5710-A023-D7CA6AD8E382"
+              },
+              "git": "C:\\Program Files\\Git\\cmd\\git.exe",
+              "gitPath": "C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\bin;D:\\a\\nova-wing\\nova-wing\\node_modules\\.bin;D:\\a\\nova-wing\\node_modules\\.bin;D:\\a\\node_modules\\.bin;D:\\node_modules\\.bin;C:\\hostedtoolcache\\windows\\node\\24.21.0\\x64\\node_modules\\npm\\node_modules\\@npmcli\\run-script\\lib\\node-gyp-bin;C:\\Program Files\\PowerShell\\7;C:\\hostedtoolcache\\windows\\node\\24.21.0\\x64;C:\\Program Files\\MongoDB\\Server\\7.0\\bin;C:\\aliyun-cli;C:\\vcpkg;C:\\Program Files (x86)\\NSIS\\;C:\\tools\\zstd;C:\\Program Files\\Mercurial\\;C:\\hostedtoolcache\\windows\\stack\\3.11.1\\x64;C:\\cabal\\bin;C:\\\\ghcup\\bin;C:\\mingw64\\bin;C:\\Program Files\\dotnet;C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin;C:\\Program Files\\R\\R-4.6.1\\bin\\x64;C:\\SeleniumWebDrivers\\GeckoDriver;C:\\SeleniumWebDrivers\\EdgeDriver\\;C:\\SeleniumWebDrivers\\ChromeDriver;C:\\Program Files (x86)\\sbt\\bin;C:\\Program Files (x86)\\GitHub CLI;C:\\Program Files\\Git\\bin;C:\\Program Files (x86)\\pipx_bin;C:\\npm\\prefix;C:\\hostedtoolcache\\windows\\go\\1.24.13\\x64\\bin;C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64\\Scripts;C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64;C:\\hostedtoolcache\\windows\\Ruby\\3.3.12\\x64\\bin;C:\\Program Files\\OpenSSL\\bin;C:\\tools\\kotlinc\\bin;C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\8.0.504-1\\x64\\bin;C:\\Program Files\\ImageMagick-7.1.2-Q16-HDRI;C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin;C:\\ProgramData\\kind;C:\\ProgramData\\Chocolatey\\bin;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\Program Files\\dotnet\\;C:\\Program Files\\PowerShell\\7\\;C:\\Program Files\\Microsoft\\Web Platform Installer\\;C:\\Program Files\\TortoiseSVN\\bin;C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\170\\Tools\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\150\\Tools\\Binn\\;C:\\Program Files (x86)\\Windows Kits\\10\\Windows Performance Toolkit\\;C:\\Program Files (x86)\\WiX Toolset v3.14\\bin;C:\\Program Files\\Microsoft SQL Server\\130\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\140\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\150\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\160\\DTS\\Binn\\;C:\\Program Files\\Microsoft SQL Server\\170\\DTS\\Binn\\;C:\\Strawberry\\c\\bin;C:\\Strawberry\\perl\\site\\bin;C:\\Strawberry\\perl\\bin;C:\\ProgramData\\chocolatey\\lib\\pulumi\\tools\\Pulumi\\bin;C:\\Program Files\\CMake\\bin;C:\\ProgramData\\chocolatey\\lib\\maven\\apache-maven-3.9.16\\bin;C:\\Program Files\\Microsoft Service Fabric\\bin\\Fabric\\Fabric.Code;C:\\Program Files\\Microsoft SDKs\\Service Fabric\\Tools\\ServiceFabricLocalClusterManager;C:\\Program Files\\nodejs\\;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\mingw64\\bin;C:\\Program Files\\Git\\usr\\bin;C:\\Program Files\\GitHub CLI\\;c:\\tools\\php;C:\\Program Files (x86)\\sbt\\bin;C:\\Program Files\\Amazon\\AWSCLIV2\\;C:\\Program Files\\Amazon\\SessionManagerPlugin\\bin\\;C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\;C:\\Program Files\\Microsoft SQL Server\\130\\Tools\\Binn\\;C:\\Program Files\\mongosh\\;C:\\Program Files\\LLVM\\bin;C:\\Program Files (x86)\\LLVM\\bin;C:\\Users\\runneradmin\\.dotnet\\tools;C:\\Users\\runneradmin\\.cargo\\bin;C:\\Users\\runneradmin\\AppData\\Local\\Microsoft\\WindowsApps",
+              "gitVersion": "git version 2.55.0.windows.5",
+              "shellGitVersion": "git version 2.55.0.windows.5",
+              "codex": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\resources\\app\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+              "version": "codex-cli 0.151.0",
+              "nativeModules": [
+                "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-package-2ngupN\\resources\\app\\node_modules\\@libsql\\win32-x64-msvc\\index.node"
+              ]
+            }
+          }
+        },
+        "childPids": [
+          5792,
+          4164
+        ],
+        "errors": [],
+        "result": "PASS"
+      },
+      "errors": [],
+      "result": "PASS"
+    },
+    {
+      "entry": "desktop/tests/background-smoke.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "name": "DESKTOP_BACKGROUND_RUNTIME",
+        "result": "PASS",
+        "checks": {
+          "window_close_hides": {
+            "status": "PASS",
+            "detail": {
+              "destroyed": false,
+              "visible": false,
+              "shutdownRequested": false
+            }
+          },
+          "host_survives_hide": {
+            "status": "PASS",
+            "detail": {
+              "closeCalls": 0,
+              "launchpadHttp": 200
+            }
+          },
+          "runtime_survives_hide": {
+            "status": "PASS",
+            "detail": {
+              "runtimeCreateCount": 1,
+              "runtimeCloseCount": 0
+            }
+          },
+          "task_survives_hide": {
+            "status": "PASS",
+            "detail": {
+              "taskRunCount": 1,
+              "fakeExecutionCount": 0,
+              "state": "RUNNING"
+            }
+          },
+          "hidden_completion": {
+            "status": "PASS",
+            "detail": {
+              "windowHidden": true,
+              "state": "COMPLETED",
+              "hostAlive": true
+            }
+          },
+          "durable_hidden_completion": {
+            "status": "PASS",
+            "detail": {
+              "state": "COMPLETED",
+              "completedTaskIds": [
+                "BACKGROUND-001"
+              ]
+            }
+          },
+          "same_session_restored": {
+            "status": "PASS",
+            "detail": {
+              "sessionId": "repo-202609241038-95d08b",
+              "runtimeCreateCount": 1,
+              "taskRunCount": 1
+            }
+          },
+          "tray_created": {
+            "status": "PASS",
+            "detail": {
+              "native": true,
+              "destroyed": false
+            }
+          },
+          "updater_tray_user_reachable": {
+            "status": "PASS",
+            "detail": {
+              "state": "IDLE",
+              "installable": true,
+              "label": "检查更新",
+              "enabled": true,
+              "action": true
+            }
+          },
+          "tray_show": {
+            "status": "PASS",
+            "detail": {
+              "sameWindow": true,
+              "focused": true
+            }
+          },
+          "tray_hide": {
+            "status": "PASS",
+            "detail": {
+              "hidden": true,
+              "trayAlive": true
+            }
+          },
+          "tray_hide_show_10x": {
+            "status": "PASS",
+            "detail": {
+              "cycles": 10,
+              "whiteScreens": 0,
+              "sameWindow": true,
+              "nonWhiteRatios": [
+                0.9953930319608407,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617
+              ],
+              "baseline": {
+                "host": 1,
+                "runtime": 1,
+                "windows": 1,
+                "loads": 1,
+                "recoveries": 0
+              }
+            }
+          },
+          "close_to_tray_show_10x": {
+            "status": "PASS",
+            "detail": {
+              "cycles": 10,
+              "whiteScreens": 0,
+              "sameWindow": true,
+              "nonWhiteRatios": [
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617,
+                0.995249064209617
+              ],
+              "baseline": {
+                "host": 1,
+                "runtime": 1,
+                "windows": 1,
+                "loads": 1,
+                "recoveries": 0
+              }
+            }
+          },
+          "tray_survives_crash": {
+            "status": "PASS",
+            "detail": {
+              "sameTray": true,
+              "destroyed": false
+            }
+          },
+          "single_instance": {
+            "status": "PASS",
+            "detail": {
+              "entry": "desktop/tests/background-smoke.mjs",
+              "pid": 4860,
+              "exitCode": 0,
+              "signal": null,
+              "timedOut": false,
+              "report": {
+                "primary": false,
+                "secondInstanceCount": 0,
+                "fixtureCreateCount": 0,
+                "hostCreateCount": 0,
+                "launchpadCreateCount": 0,
+                "runtimeCreateCount": 0,
+                "lockAcquired": false
+              },
+              "databaseFilesUnchanged": true,
+              "errors": [],
+              "result": "PASS"
+            }
+          },
+          "second_instance_focus": {
+            "status": "PASS",
+            "detail": {
+              "count": 1,
+              "visible": true,
+              "focused": true
+            }
+          },
+          "no_duplicate_host": {
+            "status": "PASS",
+            "detail": {
+              "primary": true,
+              "secondInstanceCount": 1,
+              "fixtureCreateCount": 1,
+              "hostCreateCount": 1,
+              "launchpadCreateCount": 1,
+              "runtimeCreateCount": 1
+            }
+          },
+          "secondary_no_database": {
+            "status": "PASS",
+            "detail": {
+              "primary": false,
+              "secondInstanceCount": 0,
+              "fixtureCreateCount": 0,
+              "hostCreateCount": 0,
+              "launchpadCreateCount": 0,
+              "runtimeCreateCount": 0,
+              "lockAcquired": false,
+              "databaseFilesUnchanged": true
+            }
+          },
+          "renderer_crash_detected": {
+            "status": "PASS",
+            "detail": {
+              "reason": "crashed",
+              "exitCode": 2
+            }
+          },
+          "renderer_recovered": {
+            "status": "PASS",
+            "detail": {
+              "sessionId": "repo-202609241038-f0a912",
+              "url": "http://127.0.0.1:54821/"
+            }
+          },
+          "runtime_survives_renderer_crash": {
+            "status": "PASS",
+            "detail": {
+              "runtimeCreateCount": 2,
+              "runtimeCloseCount": 0,
+              "taskRunCount": 2
+            }
+          },
+          "destroyed_window_recovery": {
+            "status": "PASS",
+            "detail": {
+              "previousId": 1,
+              "newId": 2,
+              "url": "http://127.0.0.1:54821/",
+              "runtimeCreateCount": 2
+            }
+          },
+          "window_all_closed_background": {
+            "status": "PASS",
+            "detail": {
+              "shutdownRequested": false,
+              "closeCalls": 0,
+              "trayAlive": true
+            }
+          },
+          "power_idle_off": {
+            "status": "PASS",
+            "detail": {
+              "activeCount": 0,
+              "blockerActive": false,
+              "startCount": 0,
+              "stopCount": 0
+            }
+          },
+          "power_active_on": {
+            "status": "PASS",
+            "detail": {
+              "activeCount": 1,
+              "blockerId": 0,
+              "blockerActive": true,
+              "startCount": 1,
+              "stopCount": 0
+            }
+          },
+          "power_hidden_on": {
+            "status": "PASS",
+            "detail": {
+              "activeCount": 1,
+              "blockerId": 0,
+              "blockerActive": true,
+              "startCount": 1,
+              "stopCount": 0
+            }
+          },
+          "power_crash_on": {
+            "status": "PASS",
+            "detail": {
+              "activeCount": 1,
+              "blockerId": 1,
+              "blockerActive": true,
+              "startCount": 2,
+              "stopCount": 1
+            }
+          },
+          "power_multi_activity": {
+            "status": "PASS",
+            "detail": {
+              "sessions": [
+                "repo-202609241038-655897",
+                "repo-202609241038-4241df"
+              ],
+              "blockerId": 2,
+              "startCount": 1,
+              "stopCount": 1,
+              "activeAfterFirstRelease": 1
+            }
+          },
+          "power_terminal_off": {
+            "status": "PASS",
+            "detail": {
+              "activeCount": 0,
+              "blockerActive": false,
+              "startCount": 1,
+              "stopCount": 1
+            }
+          },
+          "power_failure_release": {
+            "status": "PASS",
+            "detail": {
+              "error": "isolated-background-runner-failure",
+              "state": "RUNNING",
+              "power": {
+                "activeCount": 0,
+                "blockerActive": false,
+                "startCount": 4,
+                "stopCount": 4
+              },
+              "propagatedRuntimeError": "isolated-background-runner-failure",
+              "source": "actual fake task runner throw through production Runtime/controller"
+            }
+          },
+          "power_scheduled_idle": {
+            "status": "PASS",
+            "detail": {
+              "scheduledStartAt": "2026-09-25T10:38:11.603Z",
+              "actualExecutions": 0,
+              "newBlockers": 0,
+              "power": {
+                "activeCount": 0,
+                "blockerActive": false,
+                "startCount": 5,
+                "stopCount": 5
+              }
+            }
+          },
+          "power_suspended_off": {
+            "status": "PASS",
+            "detail": {
+              "state": "SUSPENDED",
+              "category": "DECISION_REQUIRED",
+              "power": {
+                "activeCount": 0,
+                "blockerActive": false,
+                "startCount": 5,
+                "stopCount": 5
+              }
+            }
+          },
+          "explicit_quit_uses_strict_shutdown": {
+            "status": "PASS",
+            "detail": {
+              "trigger": "actual Tray Quit menu handler",
+              "quitRequests": 1,
+              "shutdownOperations": 1,
+              "finalQuitRequests": 1,
+              "failures": 0,
+              "runtimeCloseCount": 8,
+              "trayDestroyed": true
+            }
+          },
+          "power_quit_drain": {
+            "status": "PASS",
+            "detail": {
+              "pendingWhileGateHeld": true,
+              "blockerHeldUntilSettle": true,
+              "final": {
+                "activeCount": 0,
+                "blockerActive": false,
+                "startCount": 6,
+                "stopCount": 6
+              }
+            }
+          },
+          "strict_resources": {
+            "status": "PASS",
+            "detail": {
+              "created": {
+                "TCPSERVERWRAP": 9,
+                "Timeout": 195,
+                "TCPWRAP": 37
+              },
+              "live": []
+            }
+          }
+        },
+        "errors": [],
+        "childPids": [
+          2912,
+          7612,
+          4132
+        ],
+        "diagnostics": {},
+        "environment": {
+          "electron": "44.4.3",
+          "node": "24.21.0",
+          "chrome": "152.0.7977.130",
+          "platform": "win32",
+          "arch": "x64"
+        }
+      },
+      "errors": [],
+      "result": "PASS"
+    },
+    {
+      "entry": "desktop/tests/notification-smoke.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "name": "DESKTOP_NATIVE_NOTIFICATION",
+        "result": "PASS",
+        "checks": {
+          "completed_generated": {
+            "status": "PASS",
+            "detail": {
+              "sessionId": "repo-202609241038-d8bd14",
+              "completionReason": "ALL_TASKS_COMPLETED",
+              "durableAttempted": true,
+              "durableNotified": true
+            }
+          },
+          "completed_desktop_delivery": {
+            "status": "PASS",
+            "detail": {
+              "source": "real Electron Notification show event",
+              "attempts": 1,
+              "shown": 1
+            }
+          },
+          "failed_generated": {
+            "status": "PASS",
+            "detail": {
+              "source": "FakeTaskRunner FAILED result through real Runtime",
+              "sessionId": "repo-202609241038-35604d",
+              "state": "FAILED",
+              "stage": "RUNTIME",
+              "category": "RUNTIME_ERROR"
+            }
+          },
+          "failed_desktop_delivery": {
+            "status": "PASS",
+            "detail": {
+              "attempts": 1,
+              "shown": 1,
+              "failureReasonUnchanged": true
+            }
+          },
+          "human_required_generated": {
+            "status": "PASS",
+            "detail": {
+              "state": "SUSPENDED",
+              "category": "DECISION_REQUIRED",
+              "generation": 1,
+              "runtimeAlive": true,
+              "powerBlockerActive": false
+            }
+          },
+          "human_required_desktop_delivery": {
+            "status": "PASS",
+            "detail": {
+              "attempts": 1,
+              "shown": 1
+            }
+          },
+          "user_paused_not_notified": {
+            "status": "PASS",
+            "detail": {
+              "suspensionReason": "USER_PAUSED",
+              "humanRequired": false,
+              "ordinaryIdleNotified": false,
+              "futureScheduleNotified": false,
+              "futureScheduleExecuted": false
+            }
+          },
+          "desktop_independent_from_email_opt_in": {
+            "status": "PASS",
+            "detail": {
+              "smtpEnabled": false,
+              "emailNotifyOnCompleted": false,
+              "channels": [
+                {
+                  "channel": "DESKTOP",
+                  "status": "SENT"
+                }
+              ],
+              "assertion": "Production composition delivered DESKTOP COMPLETED with SMTP and completion email disabled"
+            }
+          },
+          "channel_retry_isolated": {
+            "status": "PASS",
+            "detail": {
+              "emailAttempts": 1,
+              "desktopAttempts": 2,
+              "retryLimit": 1,
+              "channels": [
+                {
+                  "channel": "EMAIL",
+                  "status": "SENT"
+                },
+                {
+                  "channel": "DESKTOP",
+                  "status": "FAILED",
+                  "reason": "渠道投递失败。"
+                }
+              ],
+              "smtpTransport": "in-memory sendMail fixture; no network"
+            }
+          },
+          "duplicate_suppression": {
+            "status": "PASS",
+            "detail": {
+              "notificationCountBefore": 3,
+              "notificationCountAfter": 3,
+              "actions": [
+                "reload",
+                "hide/show",
+                "renderer crash/recovery",
+                "real SSE reconnect",
+                "window recreation",
+                "status polling"
+              ],
+              "realSseConnections": 2,
+              "durableIdentity": "repo-202609241038-d8bd14:completed"
+            }
+          },
+          "unsupported_not_registered": {
+            "status": "PASS",
+            "detail": {
+              "provider": "absent",
+              "desktopCapability": false,
+              "nativeObjectsCreated": 0,
+              "businessState": "COMPLETED",
+              "syntheticSkippedOrSent": false
+            }
+          },
+          "provider_failure_does_not_change_task": {
+            "status": "PASS",
+            "detail": {
+              "cases": [
+                {
+                  "kind": "COMPLETED",
+                  "businessState": "COMPLETED",
+                  "delivery": "FAILED",
+                  "attempts": 2
+                },
+                {
+                  "kind": "FAILED",
+                  "businessState": "FAILED",
+                  "delivery": "FAILED",
+                  "attempts": 2
+                },
+                {
+                  "kind": "HUMAN_REQUIRED",
+                  "businessState": "SUSPENDED",
+                  "delivery": "FAILED",
+                  "attempts": 2
+                }
+              ],
+              "source": "injected Electron failed event through Production composition"
+            }
+          },
+          "hidden_window_notification": {
+            "status": "PASS",
+            "detail": {
+              "kinds": [
+                "COMPLETED",
+                "FAILED",
+                "HUMAN_REQUIRED"
+              ],
+              "shownWhileHidden": 3
+            }
+          },
+          "click_session_resolution": {
+            "status": "PASS",
+            "detail": {
+              "clicks": [
+                {
+                  "kind": "COMPLETED",
+                  "sessionId": "repo-202609241038-d8bd14",
+                  "identity": "60d858e0bd2986d9b8d3e8988a6cd804",
+                  "host": 1,
+                  "runtime": 1,
+                  "executions": 1,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                },
+                {
+                  "kind": "FAILED",
+                  "sessionId": "repo-202609241038-35604d",
+                  "identity": "7c823c3ef785884fc279ee6ae15ff694",
+                  "host": 1,
+                  "runtime": 2,
+                  "executions": 2,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                },
+                {
+                  "kind": "HUMAN_REQUIRED",
+                  "sessionId": "repo-202609241038-95d371",
+                  "identity": "395b8517e9adac84ae5c15a9f8435ae0",
+                  "host": 1,
+                  "runtime": 3,
+                  "executions": 3,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                }
+              ],
+              "payload": "internal identity mapped to sessionId",
+              "navigationSource": "Host live owned-origin registry"
+            }
+          },
+          "click_show_restore_focus": {
+            "status": "PASS",
+            "detail": {
+              "allVisibleAndFocused": true,
+              "minimizedWindowRestored": true
+            }
+          },
+          "click_no_duplicate_runtime": {
+            "status": "PASS",
+            "detail": {
+              "clicks": [
+                {
+                  "kind": "COMPLETED",
+                  "sessionId": "repo-202609241038-d8bd14",
+                  "identity": "60d858e0bd2986d9b8d3e8988a6cd804",
+                  "host": 1,
+                  "runtime": 1,
+                  "executions": 1,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                },
+                {
+                  "kind": "FAILED",
+                  "sessionId": "repo-202609241038-35604d",
+                  "identity": "7c823c3ef785884fc279ee6ae15ff694",
+                  "host": 1,
+                  "runtime": 2,
+                  "executions": 2,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                },
+                {
+                  "kind": "HUMAN_REQUIRED",
+                  "sessionId": "repo-202609241038-95d371",
+                  "identity": "395b8517e9adac84ae5c15a9f8435ae0",
+                  "host": 1,
+                  "runtime": 3,
+                  "executions": 3,
+                  "visible": true,
+                  "focused": true,
+                  "minimized": false
+                }
+              ],
+              "allCountsUnchanged": true
+            }
+          },
+          "window_navigation_regression": {
+            "status": "PASS",
+            "detail": {
+              "A": {
+                "sessionId": "repo-202609241038-d8bd14",
+                "nonWhiteRatio": 0.995249064209617,
+                "loads": 0
+              },
+              "B": {
+                "sessionId": "repo-202609241038-d8bd14",
+                "nonWhiteRatio": 0.995249064209617,
+                "loads": 0
+              },
+              "C": {
+                "sessionId": "repo-202609241038-35604d",
+                "nonWhiteRatio": 0.995249064209617,
+                "loads": 1
+              },
+              "D": {
+                "sessionId": "repo-202609241038-d8bd14",
+                "nonWhiteRatio": 0.995249064209617,
+                "loads": 1
+              },
+              "E": {
+                "sessionId": "repo-202609241038-d8bd14",
+                "nonWhiteRatio": 0.995249064209617,
+                "loads": 1
+              },
+              "maxConcurrentLoads": 1,
+              "shows": [
+                {
+                  "loading": false,
+                  "finishes": 2
+                },
+                {
+                  "loading": false,
+                  "finishes": 2
+                },
+                {
+                  "loading": false,
+                  "finishes": 2
+                },
+                {
+                  "loading": false,
+                  "finishes": 3
+                },
+                {
+                  "loading": false,
+                  "finishes": 1
+                },
+                {
+                  "loading": false,
+                  "finishes": 2
+                }
+              ],
+              "runtimeAndTaskCountsUnchanged": true
+            }
+          },
+          "notification_drain": {
+            "status": "PASS",
+            "detail": {
+              "pendingAtStrictQuit": true,
+              "businessState": "COMPLETED",
+              "deliveryStatus": "FAILED",
+              "attempts": 2,
+              "acknowledgementTimeoutMs": 80,
+              "elapsedMs": 349.3966999999993,
+              "shutdownOperations": 1
+            }
+          },
+          "cleanup": {
+            "status": "PASS",
+            "detail": {
+              "pendingDeliveries": 0,
+              "temporaryNotificationRefs": 0,
+              "timers": 0,
+              "activationAfterShutdown": "fail-closed",
+              "runtimeCloseCount": 10,
+              "resources": {
+                "created": {
+                  "TCPSERVERWRAP": 11,
+                  "Timeout": 234,
+                  "TCPWRAP": 51
+                },
+                "live": []
+              }
+            }
+          }
+        },
+        "errors": [],
+        "childPids": [
+          7008,
+          656,
+          5236
+        ],
+        "environment": {
+          "electron": "44.4.3",
+          "node": "24.21.0",
+          "chrome": "152.0.7977.130",
+          "platform": "win32",
+          "arch": "x64"
+        },
+        "windowsNativeToastVisual": "NEEDS_PACKAGED_VALIDATION",
+        "clickAutomation": "Main provider click handler; no Windows notification-center automation"
+      },
+      "errors": [],
+      "result": "PASS"
+    },
+    {
+      "entry": "desktop/tests/production-smoke.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "result": "PASS",
+        "environment": {
+          "electron": "44.4.3"
+        },
+        "checks": {
+          "production_start": {
+            "status": "PASS"
+          },
+          "production_strict_quit": {
+            "status": "PASS"
+          }
+        },
+        "childPids": [
+          7664,
+          1348,
+          6044
+        ]
+      },
+      "errors": [],
+      "result": "PASS"
+    },
+    {
+      "entry": "desktop/tests/updater-feed-smoke.mjs",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "report": {
+        "result": "PASS",
+        "environment": {
+          "electron": "44.4.3"
+        },
+        "host": "win32",
+        "checks": {
+          "packaged_capability": {
+            "status": "PASS",
+            "detail": {
+              "platform": "win32",
+              "installable": true,
+              "signature": "unsigned"
+            }
+          },
+          "explicit_policy": {
+            "status": "PASS",
+            "detail": {
+              "autoDownload": false,
+              "autoInstallOnAppQuit": false
+            }
+          },
+          "local_feed_check": {
+            "status": "PASS",
+            "detail": {
+              "version": "9.9.9",
+              "identity": "9.9.9|latest|AnSAfMIjhkZ3PMW3SD3P5TXIsF53foZCLipdsAgLQ+cL0cuN2im6jvLP/8vAf6x/7+1bM+zLMq18/D8o6niBRw==",
+              "requests": [
+                "/latest.yml"
+              ]
+            }
+          },
+          "download_contract": {
+            "status": "PASS"
+          },
+          "no_install": {
+            "status": "PASS"
+          }
+        }
+      },
+      "errors": [],
+      "result": "PASS"
+    }
+  ],
+  "cleanup": {
+    "status": "PASS",
+    "temporaryRoot": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-oyFfGK",
+    "backgroundRoot": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-j8jE6t",
+    "notificationRoot": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\novawing-desktop-smoke-3vpd3W"
+  },
+  "errors": [],
+  "result": "PASS",
+  "nativeNotificationGate": "REQUIRED"
+}

@@ -1,0 +1,141 @@
+{
+  "name": "NOVAWING_PRE_PUBLIC_IP_GATE",
+  "version": "0.4.3",
+  "tag": "v0.4.3",
+  "tagObjectSha": null,
+  "tagTargetSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e",
+  "tagAnnotated": null,
+  "tagSigned": null,
+  "tagCreatedUtc": null,
+  "tagCreatedLocal": null,
+  "buildRunId": 35987215152,
+  "validationRunId": null,
+  "publishRunId": null,
+
+  "baselineCreatedUtc": "2026-09-24T11:22:33Z",
+  "baselineRevisedUtc": null,
+  "revisionNote": "Initial independent v0.4.3 pre-public snapshot after successful Desktop Build and shipped-container audit; Release Validate and source tag are intentionally pending.",
+  "workingBranch": "fix/v0.4.3-windows-tray-white-screen",
+  "repositoryPrivate": true,
+  "feedRepositoryPublic": true,
+  "publicV043Published": false,
+
+  "validation": "PASS",
+  "evidenceSnapshot": "PASS",
+  "shippedIpAudit": "PASS",
+  "secrets": "PASS",
+  "thirdPartyLicenses": "PASS",
+  "sbom": "PASS",
+  "thirdPartyNotices": "PASS",
+
+  "previouslyPubliclyDisclosed": [
+    "candidate-1",
+    "candidate-2",
+    "candidate-3"
+  ],
+  "patentDecisionRequired": [],
+  "keepPrivateAccidentallyShipped": [],
+  "clientRequiredSecretConflict": [
+    "RECOVERY_ACTION_BUDGET=4 (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "autonomous diagnosis system prompt (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "assessRisk() risk-scoring rules (dist/packages/development-guardian/work-session/risk-evidence.js)",
+    "reviewer and recovery budgets (dist/packages/development-guardian/work-session/reviewer-adapters.js and brain-review-budget.js)",
+    "deterministic verifier allowlist (dist/packages/development-guardian/verification-command-policy.js)",
+    "executor/provider routing heuristics (dist/packages/development-guardian/executor-router.js)"
+  ],
+  "clientRequiredSecretConflictBlocking": false,
+  "clientRequiredSecretConflictRule": "A client-required conflict blocks only if the Owner explicitly classifies the item KEEP_PRIVATE. No listed item has that classification.",
+
+  "publicRelease": "READY",
+  "blockingReasons": [],
+  "nonBlockingObservations": [
+    "candidate-1, candidate-2, and candidate-3 were Owner-accepted and publicly disclosed with v0.4.2; they do not reopen a pre-publication window for v0.4.3.",
+    "CLIENT_REQUIRED_SECRET_CONFLICT remains recorded and non-blocking because no listed item is Owner-classified KEEP_PRIVATE.",
+    "EULA_STATUS=NOT_DEFINED: root and shipped package metadata are UNLICENSED; the established policy does not make this a blocker.",
+    "macOS Native Notification remains NEEDS_SIGNED_VALIDATION because Developer ID signing and notarization were not performed.",
+    "Desktop Build attempt 1 retained a macOS native visibility transient; attempt 2 passed unchanged at the same source SHA and the final run conclusion is success."
+  ],
+
+  "evidence": {
+    "buildCommitSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e",
+    "releaseManifestSha256": null,
+    "provenanceChainIntact": true,
+    "shippedArtifacts": {
+      "windowsInstaller": {
+        "filename": "NovaWing-Setup-0.4.3-x64.exe",
+        "size": 216557393,
+        "sha256": "99fa8bbfa13c8e4aba642a500e559c20ca4ce0de3c044f97ec89a1306d558d44",
+        "packagedContentSha256": "edc34520f96632a4ea8df3c0c3e5c1cec4a321c703d3c53242c6bbe00ba16b12",
+        "appTreeFiles": 5511,
+        "signed": false
+      },
+      "macosDmg": {
+        "filename": "NovaWing-0.4.3-arm64.dmg",
+        "size": 260422315,
+        "sha256": "0dd95666ffa8e11b210674c4de804aacf03b3cb61572595d2301b47adae2e6c2",
+        "packagedContentSha256": "85d302071314cf531aa0fbdb11f2c22e123c7fdbe36d978c6c27ee533251f46d",
+        "appTreeFiles": 5510,
+        "signedForDistribution": false,
+        "notarized": false
+      },
+      "macosZip": {
+        "filename": "NovaWing-0.4.3-arm64-mac.zip",
+        "size": 263628665,
+        "sha256": "679aac5438219a1afca6de1b9393174054986dd6a44f6b894c5b22a3f559b5bc",
+        "packagedContentSha256": "85d302071314cf531aa0fbdb11f2c22e123c7fdbe36d978c6c27ee533251f46d",
+        "appTreeFiles": 5510
+      }
+    },
+    "distributionNotices": {
+      "electronVersion": "44.4.3",
+      "electronSha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d",
+      "chromiumMacosSha256": "a62dabd1c6ef1327365b2a3fdffb806222684a746dcb8f4afd1c1f690eba5535",
+      "appZipDmgVerified": true
+    },
+    "debugArtifactAudit": {
+      "sourceMaps": 0,
+      "novaWingAuthoredTestsOrFixtures": 0,
+      "pdbOrDebugFiles": 0,
+      "envOrCredentialFiles": 0,
+      "privateBaselineFiles": 0,
+      "verdict": "PASS"
+    },
+    "secretScan": {
+      "scanner": "gitleaks 8.30.1, default ruleset, local-only, 100% redaction",
+      "handWrittenScannerUsed": false,
+      "thirdPartySaaSUpload": false,
+      "nodeModulesScanned": true,
+      "novaWingOriginFindings": 0,
+      "thirdPartyFindings": 3,
+      "newFindingsSinceV042": 0
+    },
+    "sbomEvidence": {
+      "tool": "@cyclonedx/cyclonedx-npm 6.0.1",
+      "specVersion": "1.6",
+      "componentCount": 255
+    },
+    "licenseEvidence": {
+      "tool": "license-checker 25.0.1",
+      "thirdPartyPackages": 259,
+      "unknownThirdParty": 0,
+      "copyleftDeclarations": 0
+    },
+    "noticeEvidence": {
+      "tool": "generate-license-file 4.2.5",
+      "noticeEntries": 259,
+      "shippedPackages": 259,
+      "uncovered": 0,
+      "licenseTextWrittenByModel": false
+    },
+    "realHost": {
+      "windowsHideShow10x": "PASS",
+      "windowsCloseShow10x": "PASS",
+      "whiteScreens": "0/20",
+      "hostRecreated": false,
+      "runtimeRecreated": false,
+      "checkNoUpdateOn043": "PASS"
+    }
+  },
+
+  "ownerDecisionsRequired": []
+}
