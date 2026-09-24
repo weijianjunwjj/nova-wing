@@ -80,3 +80,18 @@ generate-license-file 4.2.5
 
 No shipped artifact bytes were written back into the repository. Only the compact evidence files
 listed by 00-manifest.md were copied into this private baseline.
+
+===== H. Release Validate =====
+
+Desktop Release Validate 35993337053:
+  workflow=Desktop Release
+  status=completed
+  conclusion=success
+  branch head=ee0d679c5e887b2e7c3ecfc6b13657e2e38d9e75 (baseline-only commit)
+  validated build run=35987215152
+  validated product SHA=dab1aca91417ebdb1caa8d487daa49074d47f16e
+  validate job=success
+  publish job=skipped
+  release-manifest SHA-256=a55c8187e260d9a419aa8f8794c4d54420cd6dc33f412fd265e6940d9b9c8b42
+
+Validate mode did not create a public release or upload assets to the public feed.

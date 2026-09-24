@@ -42,7 +42,12 @@ distribution gates. The final workflow conclusion is `success` at the same immut
 | Source repository | `weijianjunwjj/nova-wing`, private |
 | Feed repository | `weijianjunwjj/nova-wing-releases`, public |
 | Public v0.4.3 state | `NOT_PUBLISHED` |
-| Release Validate state | `PENDING` at initial snapshot |
+| Release Validate state | `PASS`, run `35993337053`; publish job `skipped` |
+
+The validate-only workflow generated `release-manifest.json` with SHA-256
+`a55c8187e260d9a419aa8f8794c4d54420cd6dc33f412fd265e6940d9b9c8b42`. It binds the release
+candidate to Desktop Build `35987215152` and product commit
+`dab1aca91417ebdb1caa8d487daa49074d47f16e`.
 
 ## Patent history and gate verdict
 

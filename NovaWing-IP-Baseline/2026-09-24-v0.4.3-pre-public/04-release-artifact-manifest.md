@@ -15,8 +15,10 @@ artifacts; no local installer is included.
 | `NovaWing-0.4.3-arm64-mac.zip.blockmap` | 274,669 | `78c108c564d97dc8af1efa4778b430f2d7be7bc8bb4c7ff77dc2ad8ef1891161` |
 | `latest-mac.yml` | 508 | `b2af8c25faea73f0162725ed5b272dfba3a30b819d7fab3adb4f28c5db132f5b` |
 
-`release-manifest.json` is deliberately absent at this phase; Release Validate generates it from
-these exact build containers and binds it to the run ID, product commit, version, and tag.
+Release Validate run `35993337053` generated `release-manifest.json` from these exact build
+containers and bound it to the run ID, product commit, version, and tag. Its SHA-256 is
+`a55c8187e260d9a419aa8f8794c4d54420cd6dc33f412fd265e6940d9b9c8b42`; a copy is retained in this
+private baseline.
 
 ## Provenance chain
 
@@ -26,7 +28,7 @@ private product commit dab1aca91417ebdb1caa8d487daa49074d47f16e
   → immutable CI artifacts
   → installer / DMG / ZIP identity metadata
   → independent container hashes and extracted package-content hashes
-  → Release Validate manifest (pending)
+  → Release Validate 35993337053 / manifest a55c8187e260… (PASS)
   → annotated private source tag (pending)
   → public feed release (pending)
 ```

@@ -1,3 +1,4 @@
+* text eol=lf
 *.json -diff
 THIRD_PARTY_NOTICES-*.txt -diff
 license-inventory-*.json -diff

@@ -9,12 +9,12 @@
   "tagCreatedUtc": null,
   "tagCreatedLocal": null,
   "buildRunId": 35987215152,
-  "validationRunId": null,
+  "validationRunId": 35993337053,
   "publishRunId": null,
 
   "baselineCreatedUtc": "2026-09-24T11:22:33Z",
-  "baselineRevisedUtc": null,
-  "revisionNote": "Initial independent v0.4.3 pre-public snapshot after successful Desktop Build and shipped-container audit; Release Validate and source tag are intentionally pending.",
+  "baselineRevisedUtc": "2026-09-24T11:31:41Z",
+  "revisionNote": "Release Validate passed and publish was skipped. The annotated source tag remains intentionally pending until this revised evidence is committed.",
   "workingBranch": "fix/v0.4.3-windows-tray-white-screen",
   "repositoryPrivate": true,
   "feedRepositoryPublic": true,
@@ -58,7 +58,7 @@
 
   "evidence": {
     "buildCommitSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e",
-    "releaseManifestSha256": null,
+    "releaseManifestSha256": "a55c8187e260d9a419aa8f8794c4d54420cd6dc33f412fd265e6940d9b9c8b42",
     "provenanceChainIntact": true,
     "shippedArtifacts": {
       "windowsInstaller": {
