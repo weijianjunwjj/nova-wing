@@ -76,7 +76,8 @@
     "desktop:package:mac": "npm run build && node scripts/platform/macos-package.mjs",
     "desktop:package:mac:dist": "npm run build && node scripts/platform/macos-package.mjs --dist",
     "desktop:package:smoke": "node scripts/desktop-package-smoke.mjs",
-    "desktop:build:win": "node scripts/platform/windows-package.mjs --installer"
+    "desktop:build:win": "node scripts/platform/windows-package.mjs --installer",
+    "third-party:notices": "node scripts/third-party-notices.mjs"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

@@ -10,6 +10,7 @@ export const platformAdapters = {
   'desktop/main/tray-icon.mjs': 'Host status-bar image selection and macOS template-image behaviour.',
   'scripts/platform/windows-package.mjs': 'Windows x64 NSIS staging and native package content audit.',
   'scripts/platform/macos-package.mjs': 'macOS arm64 .app staging, bundle identity and native package content audit.',
+  'scripts/platform/third-party-licenses.mjs': 'Electron/Chromium distribution notice placement, bundle-level notice byte verification and DMG/ZIP container inspection via host unzip/hdiutil.',
   'scripts/platform/desktop-package-resolver.mjs': 'Single reviewed host-to-packaging-adapter selection.',
   'packages/development-guardian/platform/shell.ts': 'Native Git Bash / POSIX Bash contract and fingerprint.',
   'packages/development-guardian/platform/paths.ts': 'OS config/data roots, path identity and CLI path conversion.',

@@ -666,6 +666,48 @@ jobs:
             console.log(lines.join("\n"))
           '
 
+      # Electron and Chromium ship their licence text beside the app tree, and electron-builder
+      # does not carry it into a macOS bundle on its own. This gate re-derives the expected bytes
+      # from the pinned Electron distribution and checks the bundle and both containers against
+      # them, so a package that silently dropped or substituted a notice fails the job.
+      - name: Verify the bundled distribution notices
+        id: distnotices
+        shell: bash
+        run: |
+          mkdir -p artifacts/ci
+          node --input-type=commonjs -e '
+            const assert = require("node:assert/strict")
+            const { createHash } = require("node:crypto")
+            const fs = require("node:fs")
+            const path = require("node:path")
+            const digest = (p) => createHash("sha256").update(fs.readFileSync(p)).digest("hex")
+            const report = JSON.parse(fs.readFileSync("artifacts/desktop/macos-bundled-licenses.json", "utf8"))
+            assert.equal(report.result, "PASS", `bundled notice audit is ${report.result}`)
+            assert.ok(report.notices.length >= 2, "expected at least an Electron and a Chromium notice")
+            const lines = [
+              "# NovaWing - macOS bundled distribution notices",
+              `github_sha=${process.env.GITHUB_SHA}`,
+              `electron_version=${report.electronVersion}`,
+            ]
+            for (const notice of report.notices) {
+              const key = notice.component.toLowerCase()
+              // 1. The pinned Electron distribution really carries these bytes.
+              assert.equal(digest(notice.source), notice.sha256, `${notice.source} does not match the recorded sha256`)
+              // 2. The built bundle carries the same bytes at the recorded shipped path.
+              const shipped = path.join("artifacts/desktop/mac-arm64/NovaWing.app", notice.shipped)
+              assert.ok(fs.existsSync(shipped), `Bundle is missing ${notice.shipped}`)
+              assert.equal(digest(shipped), notice.sha256, `${notice.shipped} differs from the pinned Electron distribution`)
+              lines.push(`${key}_source=${notice.source}`, `${key}_shipped=${notice.shipped}`,
+                `${key}_sha256=${notice.sha256}`, `${key}_bytes=${notice.bytes}`)
+            }
+            assert.equal(report.containers.result, "PASS", `container notice audit is ${report.containers.result}`)
+            assert.equal(report.containers.dmg.notices.length, report.notices.length, "DMG is missing a distribution notice")
+            assert.equal(report.containers.zip.notices.length, report.notices.length, "ZIP is missing a distribution notice")
+            lines.push(`container_dmg=${report.containers.dmg.filename}`, `container_zip=${report.containers.zip.filename}`)
+            fs.writeFileSync("artifacts/ci/macos-distribution-notices.txt", lines.join("\n") + "\n")
+            console.log(lines.join("\n"))
+          '
+
       - name: Evidence inventory
         if: always()
         shell: bash
@@ -718,6 +760,7 @@ jobs:
             artifacts/ci/**
             artifacts/desktop/package-smoke/**
             artifacts/desktop/macos-packaged-content-audit.json
+            artifacts/desktop/macos-bundled-licenses.json
 
       - name: Job summary
         if: always()
@@ -729,6 +772,7 @@ jobs:
           DIST_OUTCOME: ${{ steps.dist.outcome }}
           DMGVERIFY_OUTCOME: ${{ steps.dmgverify.outcome }}
           IDENTITY_OUTCOME: ${{ steps.distidentity.outcome }}
+          NOTICES_OUTCOME: ${{ steps.distnotices.outcome }}
         run: |
           field() {
             found=''
@@ -758,6 +802,7 @@ jobs:
             printf '| `desktop:package:mac:dist` | %s |\n' "$DIST_OUTCOME"
             printf '| `hdiutil verify` | %s |\n' "$DMGVERIFY_OUTCOME"
             printf '| Distribution identity check | %s |\n' "$IDENTITY_OUTCOME"
+            printf '| Distribution notices check | %s |\n' "$NOTICES_OUTCOME"
             printf '| DMG file | %s |\n' "$(field dmg_filename)"
             printf '| DMG size (bytes) | %s |\n' "$(field dmg_size)"
             printf '| DMG SHA256 | %s |\n' "$(field dmg_sha256)"
