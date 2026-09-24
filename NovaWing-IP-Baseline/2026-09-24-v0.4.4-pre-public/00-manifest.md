@@ -13,9 +13,12 @@ candidate. It does not modify or supersede the frozen v0.4.1, v0.4.2, or v0.4.3 
 | Branch base | `313bee70b5b2182bd18a94c4cb2ebf15895fc742` |
 | Private source tag | `v0.4.4` |
 | Tag state at initial snapshot | `NOT_CREATED` |
+| Final tag state | `CREATED`, annotated, unsigned |
+| Tag object | `5f09ae97d8cd8333dc3cb9b30ffa90140df341cf` |
+| Required tag target | `9ddbeedfb69b07323e256eaca9a284504e66c1e3` |
 
-The annotated private tag may be created only after Desktop Build, Release Validate, and this
-Pre-Public Gate pass. It must peel to the product commit, never a baseline-only commit.
+The annotated private tag was created only after Desktop Build, Release Validate, and this
+Pre-Public Gate passed. It peels to the product commit, never a baseline-only commit.
 
 ## Desktop Build
 

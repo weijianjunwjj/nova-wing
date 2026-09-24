@@ -29,6 +29,6 @@ private product commit 9ddbeedfb69b07323e256eaca9a284504e66c1e3
   → installer / DMG / ZIP identity metadata
   → independent container hashes and extracted package-content hashes
   → Release Validate 36021658632 / manifest 0056b3ad0d4… (PASS; publish skipped)
-  → annotated private source tag (pending)
+  → annotated private source tag 5f09ae97d8cd… → 9ddbeedfb69b…
   → public feed release (pending)
 ```
