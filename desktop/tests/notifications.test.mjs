@@ -329,8 +329,21 @@ test('cleanup tolerates native close failure and non-Windows needs no activation
 
 test('identity config pins the immutable product and notification identities', () => {
   assert.equal(DESKTOP_IDENTITY.appName, 'NovaWing')
-  assert.equal(DESKTOP_IDENTITY.version, '0.4.3')
+  assert.equal(DESKTOP_IDENTITY.version, '0.4.4')
   assert.equal(DESKTOP_IDENTITY.appUserModelId, 'io.github.weijianjunwjj.novawing')
   assert.equal(DESKTOP_IDENTITY.toastActivatorCLSID, '5F5D220B-E789-5710-A023-D7CA6AD8E382')
   assert.equal(Object.isFrozen(DESKTOP_IDENTITY), true)
+})
+
+test('up-to-date feedback uses one native informational notification per explicit request', async (t) => {
+  const { provider, instances } = fixture()
+  t.after(() => provider.dispose())
+  const delivery = provider.notifyUpToDate(DESKTOP_IDENTITY.version)
+  assert.equal(instances.length, 1)
+  assert.equal(instances[0].settings.title, 'NovaWing')
+  assert.equal(instances[0].settings.body, '已是最新版本 v0.4.4')
+  instances[0].emit('show')
+  await delivery
+  assert.equal(provider.snapshot().counts.created, 1)
+  assert.equal(provider.snapshot().counts.shown, 1)
 })

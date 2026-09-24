@@ -140,12 +140,14 @@ test('Tray actions use shared window and quit callbacks and event-only status', 
 test('Tray updater returns from CHECKING to IDLE when no update is available', async () => {
   const gate = Promise.withResolvers()
   let checks = 0
+  let notifications = 0
   const updater = createDesktopUpdater({
     backend: { async check() { checks++; return gate.promise }, async download() { assert.fail('no update cannot download') } },
     capability: { platform: 'win32', installable: true, signature: 'unsigned', unsignedInstallApproved: true },
     getBlockers: idleBlockers, async requestInstallExit() { assert.fail('no update cannot install') },
   })
-  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater })
+  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ } })
   const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
   assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
   tray.menu.getMenuItemById('update').click()
@@ -154,6 +156,7 @@ test('Tray updater returns from CHECKING to IDLE when no update is available', a
   gate.resolve({ available: false })
   await settle()
   assert.equal(checks, 1)
+  assert.equal(notifications, 1)
   assert.equal(updater.snapshot().state, UPDATER_STATE.IDLE)
   assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
   unsubscribe()
@@ -167,6 +170,7 @@ test('Tray updater follows AVAILABLE through READY and binds install to the exac
   let downloads = 0
   let blockers = idleBlockers()
   const installs = []
+  let notifications = 0
   const updater = createDesktopUpdater({
     backend: {
       async check() { return checkGate.promise },
@@ -176,13 +180,15 @@ test('Tray updater follows AVAILABLE through READY and binds install to the exac
     getBlockers: () => blockers,
     async requestInstallExit({ candidate }) { installs.push(candidate) },
   })
-  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater })
+  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ } })
   const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
   tray.menu.getMenuItemById('update').click()
   checkGate.resolve({ available: true, candidate: UPDATE_CANDIDATE })
   await settle()
   assert.equal(tray.menu.getMenuItemById('update').label, '下载 v0.4.4')
   assert.equal(installs.length, 0, 'AVAILABLE offers download, never install')
+  assert.equal(notifications, 0, 'an available update is never reported as current')
 
   const availableItem = tray.menu.getMenuItemById('update')
   availableItem.click()
@@ -220,6 +226,7 @@ test('Tray updater follows AVAILABLE through READY and binds install to the exac
 test('Tray updater reports a safe failure and ERROR remains retryable', async () => {
   let attempt = 0
   const failures = []
+  let notifications = 0
   const updater = createDesktopUpdater({
     backend: {
       async check() {
@@ -233,17 +240,20 @@ test('Tray updater reports a safe failure and ERROR remains retryable', async ()
     getBlockers: idleBlockers, async requestInstallExit() { assert.fail('no install') },
   })
   const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ },
     reportFailure: (error) => failures.push(String(error.message ?? error)) })
   const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
   tray.menu.getMenuItemById('update').click()
   await settle()
   assert.equal(tray.menu.getMenuItemById('update').label, '检查更新失败 / 重试')
+  assert.equal(notifications, 0, 'a backend error is never reported as current')
   assert.deepEqual(failures, ['Updater check failed: CHECK_FAILED'])
   assert.doesNotMatch(JSON.stringify(updater.snapshot()), /should-never-leak/u)
   tray.menu.getMenuItemById('update').click()
   await settle()
   assert.equal(updater.snapshot().state, UPDATER_STATE.IDLE)
   assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
+  assert.equal(notifications, 1, 'the successful explicit retry reports no update once')
   unsubscribe()
   tray.destroy()
   updater.dispose()

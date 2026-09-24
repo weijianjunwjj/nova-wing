@@ -4,11 +4,11 @@ import { UPDATER_STATE } from './updater.mjs'
 
 const UNSUPPORTED_UPDATER = Object.freeze({ state: UPDATER_STATE.UNSUPPORTED, candidate: null })
 
-function updaterMenuItem(snapshot, updater, invoke) {
+function updaterMenuItem(snapshot, updater, invoke, checkForUpdate) {
   const version = snapshot?.candidate?.version
   switch (snapshot?.state) {
     case UPDATER_STATE.IDLE:
-      return { id: 'update', label: '检查更新', click: () => invoke('check', () => updater.check()) }
+      return { id: 'update', label: '检查更新', click: checkForUpdate }
     case UPDATER_STATE.CHECKING:
       return { id: 'update', label: '正在检查更新…', enabled: false }
     case UPDATER_STATE.AVAILABLE:
@@ -23,7 +23,7 @@ function updaterMenuItem(snapshot, updater, invoke) {
         click: () => invoke('install', () => updater.requestRestartAndInstall(confirmation)) }
     }
     case UPDATER_STATE.ERROR:
-      return { id: 'update', label: '检查更新失败 / 重试', click: () => invoke('check', () => updater.check()) }
+      return { id: 'update', label: '检查更新失败 / 重试', click: checkForUpdate }
     case UPDATER_STATE.UNSUPPORTED:
     default:
       return { id: 'update', label: '更新：当前环境不支持', enabled: false }
@@ -32,7 +32,7 @@ function updaterMenuItem(snapshot, updater, invoke) {
 
 /** A small native entry point; it owns no Runtime or task state machine. */
 export function createDesktopTray({ Tray, Menu, nativeImage, showWindow, hideWindow, requestQuit,
-  updater = null, reportFailure = (_error) => {} }) {
+  updater = null, notifyNoUpdate = () => {}, reportFailure = (_error) => {} }) {
   const { image, diagnostics } = resolveTrayImage({
     nativeImage, assetsDirectory: fileURLToPath(new URL('../assets/', import.meta.url)),
   })
@@ -51,6 +51,13 @@ export function createDesktopTray({ Tray, Menu, nativeImage, showWindow, hideWin
       }, reportFailure)
     } catch (error) { reportFailure(error) }
   }
+  const checkForUpdate = () => invoke('check', async () => {
+    const result = await updater.check()
+    if (result?.ok === true && result.state === UPDATER_STATE.IDLE && result.candidate === null) {
+      await notifyNoUpdate()
+    }
+    return result
+  })
   function rebuild() {
     if (tray.isDestroyed()) return
     const active = lastActive === true
@@ -59,7 +66,7 @@ export function createDesktopTray({ Tray, Menu, nativeImage, showWindow, hideWin
       { id: 'status', label: `当前状态：${active ? '运行中' : '空闲'}`, enabled: false },
       { id: 'hide', label: '隐藏 NovaWing', click: () => invoke('hide', hideWindow) },
       { type: 'separator' },
-      updaterMenuItem(updaterSnapshot, updater, invoke),
+      updaterMenuItem(updaterSnapshot, updater, invoke, checkForUpdate),
       { type: 'separator' },
       { id: 'quit', label: '退出 NovaWing', click: () => invoke('quit', requestQuit) },
     ])

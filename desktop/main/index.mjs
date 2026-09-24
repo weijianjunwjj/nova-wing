@@ -149,7 +149,9 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   })
   tray = createDesktopTray({ Tray, Menu, nativeImage,
     showWindow: () => windows.showWindow(), hideWindow: () => windows.hideWindow(),
-    requestQuit: () => app.quit(), updater, reportFailure: reportBackgroundFailure,
+    requestQuit: () => app.quit(), updater,
+    notifyNoUpdate: () => notifications?.notifyUpToDate(DESKTOP_IDENTITY.version),
+    reportFailure: reportBackgroundFailure,
   })
   unsubscribeUpdater = updater.subscribe((snapshot) => {
     tray.setUpdaterSnapshot(snapshot)

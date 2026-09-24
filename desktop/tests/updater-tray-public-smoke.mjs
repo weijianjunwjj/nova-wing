@@ -18,7 +18,7 @@ void desktopReady.then(async (desktop) => {
   let report
   try {
     assert.ok(app.isPackaged, 'the public updater Tray smoke only runs in a packaged app')
-    assert.equal(DESKTOP_IDENTITY.version, '0.4.3')
+    assert.equal(DESKTOP_IDENTITY.version, '0.4.4')
     const before = desktop.updater.snapshot()
     assert.equal(before.state, 'IDLE')
     assert.equal(before.candidate, null)
@@ -34,7 +34,7 @@ void desktopReady.then(async (desktop) => {
     assert.equal(desktop.tray.menu.getMenuItemById('update').label, '正在检查更新…')
     assert.equal(desktop.tray.menu.getMenuItemById('update').enabled, false)
 
-    const after = await eventually('public v0.4.2 feed to resolve as no update', () => {
+    const after = await eventually('public v0.4.3 feed to resolve as no update', () => {
       const snapshot = desktop.updater.snapshot()
       return snapshot.state !== 'CHECKING' ? snapshot : null
     })
@@ -51,7 +51,7 @@ void desktopReady.then(async (desktop) => {
       checks: {
         tray_action: { status: 'PASS', detail: { before: before.state, during: checking.state, after: after.state } },
         no_downgrade: { status: 'PASS', detail: { currentVersion: DESKTOP_IDENTITY.version,
-          publicLatestVersion: '0.4.2', candidate: after.candidate } },
+          publicLatestVersion: '0.4.3', candidate: after.candidate } },
         no_download_or_install: { status: 'PASS', detail: after.observations },
       },
     }
