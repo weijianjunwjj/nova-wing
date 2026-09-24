@@ -947,31 +947,45 @@ jobs:
           fi
           feed_gh() { GH_TOKEN="$FEED_TOKEN" gh "$@"; }
 
-          full_name="$(feed_gh api "repos/$FEED_REPO" --jq '.full_name' 2>/dev/null || true)"
-          if [ -z "$full_name" ]; then
+          repo_json="$RUNNER_TEMP/feed-repository.json"
+          if ! feed_gh api "repos/$FEED_REPO" > "$repo_json"; then
             echo "::error::the feed repository '$FEED_REPO' is not reachable with FEED_REPO_TOKEN"
             exit 1
           fi
+          repo_fields="$(node -e '
+            const repo = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
+            process.stdout.write([repo.full_name ?? "", repo.visibility ?? "", repo.default_branch ?? ""].join("\t"))
+          ' "$repo_json")"
+          IFS=$'\t' read -r full_name visibility feed_target <<< "$repo_fields"
           if [ "$full_name" != "$FEED_REPO" ]; then
             echo "::error::the feed repository resolved to '$full_name', expected '$FEED_REPO'"
             exit 1
           fi
-          visibility="$(feed_gh api "repos/$FEED_REPO" --jq '.visibility' 2>/dev/null || true)"
           if [ "$visibility" != "public" ]; then
             echo "::error::the feed repository '$FEED_REPO' is '$visibility', expected 'public'. A client holds no token and can only read a public repository."
             exit 1
           fi
-          feed_target="$(feed_gh api "repos/$FEED_REPO" --jq '.default_branch' 2>/dev/null || true)"
           if [ -z "$feed_target" ]; then
             echo "::error::the feed repository '$FEED_REPO' has no default branch to publish from"
             exit 1
           fi
 
-          if feed_gh release view "$TAG" --repo "$FEED_REPO" >/dev/null 2>&1; then
+          release_tags="$RUNNER_TEMP/feed-release-tags.txt"
+          if ! feed_gh api --paginate "repos/$FEED_REPO/releases?per_page=100" --jq '.[].tag_name' > "$release_tags"; then
+            echo "::error::cannot determine whether feed release '$TAG' exists"
+            exit 1
+          fi
+          if grep -Fxq "$TAG" "$release_tags"; then
             echo "::error::$FEED_REPO already has a release for '$TAG'. This workflow never overwrites a release."
             exit 1
           fi
-          if [ -n "$(feed_gh api "repos/$FEED_REPO/git/ref/tags/$TAG" --jq '.ref' 2>/dev/null || true)" ]; then
+
+          tag_refs="$RUNNER_TEMP/feed-tag-refs.txt"
+          if ! feed_gh api "repos/$FEED_REPO/git/matching-refs/tags/$TAG" --jq '.[].ref' > "$tag_refs"; then
+            echo "::error::cannot determine whether feed tag '$TAG' exists"
+            exit 1
+          fi
+          if grep -Fxq "refs/tags/$TAG" "$tag_refs"; then
             echo "::error::$FEED_REPO already has a tag '$TAG'. This workflow never moves a tag."
             exit 1
           fi
