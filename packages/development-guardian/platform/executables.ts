@@ -28,8 +28,23 @@ export function defaultAskBridgeHeadless(platform: NodeJS.Platform = process.pla
 export function codexChatGptEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
   const allowed = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'HOME', 'LOCALAPPDATA',
     'APPDATA', 'TEMP', 'TMP', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CODEX_HOME', 'SSL_CERT_FILE', 'CODEX_CA_CERTIFICATE', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'])
-  return Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] =>
-    entry[1] !== undefined && allowed.has(entry[0].toUpperCase())))
+  const environment = Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] =>
+    entry[1] !== undefined && entry[0].toUpperCase() !== 'NO_PROXY' && allowed.has(entry[0].toUpperCase())))
+  const bypasses = Object.entries(source)
+    .filter(([key, value]) => key.toUpperCase() === 'NO_PROXY' && value !== undefined)
+    .flatMap(([, value]) => (value ?? '').split(','))
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  const seen = new Set<string>()
+  environment.NO_PROXY = [...bypasses, 'localhost', '127.0.0.1', '::1']
+    .filter((entry) => {
+      const key = entry.toLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .join(',')
+  return environment
 }
 
 export function isVenvPythonPath(value: string): boolean {

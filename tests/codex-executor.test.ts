@@ -98,7 +98,7 @@ test('effective SDK configuration defaults to Terra high, ChatGPT auth and no am
   assert.equal(thread.approvalPolicy, 'never')
   assert.equal(thread.networkAccessEnabled, false)
   assert.deepEqual(thread.additionalDirectories, [])
-  assert.deepEqual(runtime.env, { PATH: 'safe' })
+  assert.deepEqual(runtime.env, { PATH: 'safe', NO_PROXY: 'localhost,127.0.0.1,::1' })
   assert.equal(runtime.apiKey, undefined)
   assert.equal(runtime.config?.forced_login_method, 'chatgpt')
   assert.equal(runtime.config?.model_provider, 'openai')
@@ -106,7 +106,29 @@ test('effective SDK configuration defaults to Terra high, ChatGPT auth and no am
   assert.match(runtime.configOverrides![0]!, /^mcp_servers=\{novawing_workspace=\{/u)
   assert.doesNotMatch(runtime.configOverrides![0]!, /external-tool/u)
   assert.match(runtime.configOverrides!.at(-1)!, /default_tools_approval_mode="approve"/u)
-  assert.deepEqual(codexChatGptEnvironment({ openai_api_key: 'secret', Home: 'profile' }), { Home: 'profile' })
+  assert.deepEqual(codexChatGptEnvironment({ openai_api_key: 'secret', Home: 'profile' }), {
+    Home: 'profile', NO_PROXY: 'localhost,127.0.0.1,::1',
+  })
+})
+
+test('Codex child environment preserves proxy policy while always bypassing owned loopback MCP', () => {
+  assert.deepEqual(codexChatGptEnvironment({}), { NO_PROXY: 'localhost,127.0.0.1,::1' })
+  assert.deepEqual(codexChatGptEnvironment({ NO_PROXY: ' example.com ' }), {
+    NO_PROXY: 'example.com,localhost,127.0.0.1,::1',
+  })
+  assert.deepEqual(codexChatGptEnvironment({ NO_PROXY: ' localhost,127.0.0.1,LOCALHOST ' }), {
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+  })
+  assert.deepEqual(codexChatGptEnvironment({ no_proxy: 'internal.example', NO_PROXY: 'EXAMPLE.com' }), {
+    NO_PROXY: 'internal.example,EXAMPLE.com,localhost,127.0.0.1,::1',
+  })
+  assert.deepEqual(codexChatGptEnvironment({
+    HTTP_PROXY: 'http://proxy.example:8080', HTTPS_PROXY: 'http://proxy.example:8443',
+    OPENAI_API_KEY: 'secret', UNRELATED_SECRET: 'secret',
+  }), {
+    HTTP_PROXY: 'http://proxy.example:8080', HTTPS_PROXY: 'http://proxy.example:8443',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+  })
 })
 
 test('SDK runtime discovery does not require a system codex command', async () => {
@@ -239,6 +261,7 @@ test('Codex preflight performs a real read-only git/list/package tool probe on a
   try {
     if (process.platform === 'win32') assert.match(root, /^[A-Za-z]:\\/u)
     await executor.preflight(task)
+    assert.equal(runtime?.env?.NO_PROXY, 'localhost,127.0.0.1,::1')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -389,6 +412,7 @@ test('CodexExecutor passes effective SDK options, persists/resumes thread and ig
     assert.equal(threads[0]?.model, 'gpt-5.6-terra')
     assert.equal(threads[0]?.modelReasoningEffort, 'high')
     assert.equal(runtimes[0]?.apiKey, undefined)
+    assert.ok(runtimes.every((runtime) => runtime.env?.NO_PROXY === 'localhost,127.0.0.1,::1'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
