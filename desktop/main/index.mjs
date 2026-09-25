@@ -1,6 +1,9 @@
 import { app, Menu, nativeImage, Notification, powerSaveBlocker, Tray } from 'electron'
+import electronUpdater from 'electron-updater'
 import { requireDesktopIsolation } from './isolation.mjs'
 import { createShutdownCoordinator, describeShutdownError } from './shutdown.mjs'
+import { createElectronUpdaterAdapter } from './electron-updater-adapter.mjs'
+import { createUpdaterLifecycle } from './updater-lifecycle.mjs'
 import { createDesktopPowerManager } from './power.mjs'
 import { createDesktopTray } from './tray.mjs'
 import { createDesktopNotificationProvider } from './notifications.mjs'
@@ -26,19 +29,48 @@ let windows
 let tray
 let power
 let notifications
+let updater
+let unsubscribeUpdater = () => {}
 let record = (_event, _detail) => {}
 function reportBackgroundFailure(error) {
   console.error(`DESKTOP_BACKGROUND_FAILURE ${JSON.stringify({ error: describeShutdownError(error) })}`)
 }
+/**
+ * The real update adapter, or null when electron-updater cannot be constructed here. A failure
+ * degrades to a not-configured capability instead of failing startup, and the capability policy
+ * still decides whether the product may install anything at all.
+ *
+ * `autoUpdater` is a lazy getter on the CommonJS default export, not a named ESM export.
+ */
+function createUpdateAdapter() {
+  try {
+    return createElectronUpdaterAdapter({ autoUpdater: electronUpdater.autoUpdater })
+  } catch (error) {
+    reportBackgroundFailure(error)
+    return null
+  }
+}
+
+// Windows from a packaged app is the only installable configuration today, and it is granted as
+// an explicitly unsigned bootstrap. macOS stays blocked by signing, and an unpackaged run is
+// never installable. Nothing here checks, downloads or installs on its own: only the explicit
+// Tray actions reach the updater, and an ordinary quit can never install a staged update.
+const updaterLifecycle = createUpdaterLifecycle({
+  platform: process.platform, packaged: app.isPackaged, adapter: createUpdateAdapter(),
+  reportFailure: reportBackgroundFailure,
+})
 export const desktopShutdown = createShutdownCoordinator({
   getStartup: () => desktopReady,
   getHost: () => host,
-  requestFinalQuit: () => app.quit(),
+  // The single final quit: an ordinary quit unless an install was authorized at admission.
+  requestFinalQuit: updaterLifecycle.finalQuit({ quit: () => app.quit() }),
   afterDrain() {
     // Keep native recovery controls and the blocker throughout strict drain.
     // On Host failure this continuation is never entered.
     notifications?.dispose()
     power?.dispose()
+    unsubscribeUpdater()
+    updater?.dispose()
     tray?.destroy()
     windows?.destroyWindowForQuit()
     record('strict-quit-drained', { power: power?.snapshot() })
@@ -100,16 +132,35 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
     dependencies: { ...fixture?.dependencies, activityObserver: power.observe }, desktopNotifier: notifications ?? null })
   desktopInstance.launchpadCreateCount++
   await host.start()
+  // The install path is assembled here because it needs the live Host. The Tray only forwards
+  // explicit user intent into this Main-owned controller; it never owns update state or policy.
+  updater = updaterLifecycle.createUpdater({
+    host,
+    // The existing coordinator is the only exit, and it stops admission synchronously.
+    requestQuit: () => desktopShutdown.requestQuit(),
+    readShutdownState: () => desktopShutdown,
+  })
   // Startup was admitted before quit; let its owner settle without opening a
   // late window. The coordinator waits for this operation and closes the host.
-  if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [] }
+  if (desktopShutdown.requested) return { window: undefined, host, fixture, blocked: [], updater }
   windows = createDesktopWindowLifecycle(host, {
     isQuitRequested: () => desktopShutdown.requested,
     reportDiagnostic: (diagnostic) => { record('window-lifecycle', { ...diagnostic, phase: diagnostic.event, event: 'window-lifecycle' }); console.error(`DESKTOP_WINDOW_LIFECYCLE ${JSON.stringify(diagnostic)}`) },
   })
   tray = createDesktopTray({ Tray, Menu, nativeImage,
     showWindow: () => windows.showWindow(), hideWindow: () => windows.hideWindow(),
-    requestQuit: () => app.quit(), reportFailure: reportBackgroundFailure,
+    requestQuit: () => app.quit(), updater,
+    notifyNoUpdate: () => notifications?.notifyUpToDate(DESKTOP_IDENTITY.version),
+    reportFailure: reportBackgroundFailure,
+  })
+  unsubscribeUpdater = updater.subscribe((snapshot) => {
+    tray.setUpdaterSnapshot(snapshot)
+    record('updater-state', {
+      state: snapshot.state, reasonCode: snapshot.reasonCode,
+      candidateVersion: snapshot.candidate?.version ?? null,
+      capability: snapshot.capability,
+      observations: snapshot.observations,
+    })
   })
   power.subscribe((count) => tray.setActivity(count))
   power.subscribe(() => record('power', power.snapshot()))
@@ -117,7 +168,7 @@ export const desktopReady = desktopInstance.primary ? app.whenReady().then(async
   windows.window?.on('hide', () => record('window-hidden', { power: power.snapshot(), tray: !tray.tray.isDestroyed() }))
   record('ready', { launchpadUrl: host.launchpadUrl, tray: !tray.tray.isDestroyed(), trayImage: tray.diagnostics })
   if (fixture) console.log(`DESKTOP_ISOLATED_FIXTURE ${JSON.stringify({ repo: fixture.repoDirectory, launchpadUrl: host.launchpadUrl })}`)
-  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications }
+  return { get window() { return windows.window }, host, fixture, blocked: windows.blocked, windows, tray, power, notifications, updater }
 }) : Promise.resolve(undefined)
 desktopReady.catch((error) => {
   console.error(`DESKTOP_STARTUP_FAILURE ${JSON.stringify({ result: 'FAIL', error: describeShutdownError(error) })}`)

@@ -12,6 +12,10 @@ class FakeWindow extends EventEmitter {
   restores = 0
   loads = []
   calls = []
+  invalidations = 0
+  frameSubscriptions = 0
+  presentationEnabled = true
+  frameSubscriber
   url = ''
   loading = false
   constructor() {
@@ -22,6 +26,18 @@ class FakeWindow extends EventEmitter {
   webContents = Object.assign(new EventEmitter(), {
     getURL: () => this.url,
     isLoadingMainFrame: () => this.loading,
+    isDestroyed: () => this.destroyed,
+    getBackgroundThrottling: () => true,
+    beginFrameSubscription: (callback) => { this.frameSubscriptions++; this.frameSubscriber = callback },
+    endFrameSubscription: () => { this.frameSubscriber = undefined },
+    invalidate: () => {
+      this.invalidations++
+      const subscriber = this.frameSubscriber
+      if (this.presentationEnabled && subscriber) queueMicrotask(() => {
+        if (this.frameSubscriber === subscriber) subscriber({ getSize: () => ({ width: 1200, height: 860 }) },
+          { x: 0, y: 0, width: 1200, height: 860 })
+      })
+    },
     setWindowOpenHandler: (handler) => { this.openHandler = handler },
     session: {
       setPermissionRequestHandler: (handler) => { this.permissionHandler = handler },
@@ -104,6 +120,67 @@ test('ordinary close hides without releasing Host and show restores and focuses 
   window.calls = []
   await lifecycle.showWindow()
   assert.deepEqual(window.calls, ['focus'])
+})
+
+test('healthy hide/show reuses one BrowserWindow and presents ten times without navigation or recovery', async () => {
+  const { lifecycle, windows, diagnostics } = harness()
+  await lifecycle.showWindow()
+  const [window] = windows
+  const initialLoads = [...window.loads]
+  for (let cycle = 0; cycle < 10; cycle++) {
+    lifecycle.hideWindow()
+    await lifecycle.showWindow()
+    assert.equal(lifecycle.window, window)
+    assert.equal(window.visible, true)
+  }
+  assert.equal(windows.length, 1)
+  assert.deepEqual(window.loads, initialLoads)
+  assert.equal(lifecycle.observations.created, 1)
+  assert.equal(lifecycle.observations.presentationRecoveries, 0)
+  assert.equal(lifecycle.observations.presentationFailures, 0)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-hide-request').length, 10)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-hidden').length, 10)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-show-request').length, 11)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-show-native').length, 11)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-show-ready').length, 11)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-show-recovery').length, 0)
+  assert.equal(diagnostics.filter(({ event }) => event === 'window-show-failed').length, 0)
+  const restored = diagnostics.findLast(({ event }) => event === 'window-show-ready')
+  for (const field of ['windowId', 'generation', 'currentUrl', 'healthy', 'isVisible', 'isMinimized',
+    'isLoadingMainFrame', 'pendingLoads', 'visibleIntent']) assert.ok(Object.hasOwn(restored, field), field)
+  assert.equal(restored.presentationState, 'presented')
+  assert.deepEqual(restored.frameSize, { width: 1200, height: 860 })
+})
+
+test('missing presentation performs one state-preserving recovery without reload or recreation', async () => {
+  const deadlines = []
+  const { lifecycle, windows, diagnostics } = harness({
+    schedulePresentationTimeout(callback) {
+      const deadline = { callback, cancelled: false }
+      deadlines.push(deadline)
+      return deadline
+    },
+    cancelPresentationTimeout(deadline) { deadline.cancelled = true },
+  })
+  await lifecycle.showWindow()
+  const [window] = windows
+  const initialLoads = [...window.loads]
+  lifecycle.hideWindow()
+  window.presentationEnabled = false
+  const restored = lifecycle.showWindow()
+  for (let turn = 0; turn < 8 && !deadlines.some(({ cancelled }) => !cancelled); turn++) await Promise.resolve()
+  const firstDeadline = deadlines.find(({ cancelled }) => !cancelled)
+  assert.ok(firstDeadline)
+  window.presentationEnabled = true
+  firstDeadline.callback()
+  await restored
+  assert.equal(windows.length, 1)
+  assert.deepEqual(window.loads, initialLoads)
+  assert.equal(window.visible, true)
+  assert.equal(lifecycle.observations.presentationRecoveries, 1)
+  assert.equal(lifecycle.observations.presentationFailures, 0)
+  assert.deepEqual(diagnostics.filter(({ event }) => event.startsWith('window-show-')).map(({ event }) => event).slice(-4),
+    ['window-show-native', 'window-show-recovery', 'window-show-native', 'window-show-ready'])
 })
 
 test('window recreation restores only a committed main-frame URL and revalidates revoked origins', async () => {

@@ -76,7 +76,8 @@
     "desktop:package:mac": "npm run build && node scripts/platform/macos-package.mjs",
     "desktop:package:mac:dist": "npm run build && node scripts/platform/macos-package.mjs --dist",
     "desktop:package:smoke": "node scripts/desktop-package-smoke.mjs",
-    "desktop:build:win": "node scripts/platform/windows-package.mjs --installer"
+    "desktop:build:win": "node scripts/platform/windows-package.mjs --installer",
+    "third-party:notices": "node scripts/third-party-notices.mjs"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
@@ -90,6 +91,7 @@
     "@mastra/libsql": "^1.21.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@openai/codex-sdk": "0.151.0",
+    "electron-updater": "6.8.9",
     "nodemailer": "^9.0.5",
     "zod": "^4.4.3"
   }

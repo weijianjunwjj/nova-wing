@@ -1,0 +1,33 @@
+NOVAWING V0.4.4 PRE-PUBLIC REPOSITORY STATE
+captured_utc=2026-09-24T15:31:51Z
+captured_local=2026-09-24T23:31:51+08:00
+repository=weijianjunwjj/nova-wing
+repository_visibility=private
+branch=feat/v0.4.4-update-e2e-target
+branch_base=313bee70b5b2182bd18a94c4cb2ebf15895fc742
+product_commit=9ddbeedfb69b07323e256eaca9a284504e66c1e3
+product_commit_subject=feat(desktop): report up-to-date checks
+origin=https://github.com/weijianjunwjj/nova-wing.git
+desktop_build_run=36010798923
+desktop_build_head_sha=9ddbeedfb69b07323e256eaca9a284504e66c1e3
+desktop_build_attempt=1
+desktop_build_conclusion=success
+v0.4.4_local_tag_at_capture=absent
+v0.4.4_origin_tag_at_capture=absent
+working_tree_before_baseline_creation=clean
+
+PRODUCT DELTA FROM BRANCH BASE
+M desktop/main/identity.mjs
+M desktop/main/index.mjs
+M desktop/main/notifications.mjs
+M desktop/main/tray.mjs
+M desktop/tests/notifications.test.mjs
+M desktop/tests/power-tray.test.mjs
+M desktop/tests/updater-tray-public-smoke.mjs
+
+RECENT HISTORY
+9ddbeedfb69b07323e256eaca9a284504e66c1e3 2026-09-24T22:09:14+08:00 feat(desktop): report up-to-date checks
+313bee70b5b2182bd18a94c4cb2ebf15895fc742 2026-09-24T19:35:27+08:00 chore(ip): bind v0.4.3 source tag evidence
+21d2a8422d862a1ce6224ba1fa665aed382922ec 2026-09-24T19:32:47+08:00 chore(ip): record v0.4.3 release validation
+ee0d679c5e887b2e7c3ecfc6b13657e2e38d9e75 2026-09-24T19:29:16+08:00 chore(ip): record v0.4.3 pre-public baseline
+dab1aca91417ebdb1caa8d487daa49074d47f16e 2026-09-24T18:20:25+08:00 feat(desktop): expose updater controls in tray

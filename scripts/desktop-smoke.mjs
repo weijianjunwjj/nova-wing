@@ -9,6 +9,7 @@ import { createDesktopIsolation, installedElectronBinary, repositoryRoot } from 
 import { desktopPackaging } from './platform/desktop-package-resolver.mjs'
 
 const packagedRoot = process.env.NOVAWING_PACKAGED_SMOKE_APP_ROOT
+const publicUpdateSmoke = Boolean(packagedRoot) && process.env.NOVAWING_PUBLIC_UPDATE_SMOKE === '1'
 const evidenceDirectory = join(repositoryRoot, 'artifacts', 'desktop', packagedRoot ? 'package-smoke' : 'bootstrap-smoke')
 async function entryArgs(entry, root) {
   if (packagedRoot) {
@@ -215,13 +216,25 @@ async function runElectron(entry, prefix, root) {
       assert.ok(secondary, 'External runner must start the real secondary Electron')
       assert.equal(secondary.result, 'PASS', JSON.stringify(secondary))
       for (const name of ['window_close_hides', 'host_survives_hide', 'runtime_survives_hide', 'task_survives_hide',
-        'hidden_completion', 'durable_hidden_completion', 'same_session_restored', 'tray_created', 'tray_show', 'tray_hide',
+        'hidden_completion', 'durable_hidden_completion', 'same_session_restored', 'tray_created',
+        'updater_tray_user_reachable', 'tray_show', 'tray_hide',
+        'tray_hide_show_10x', 'close_to_tray_show_10x',
         'single_instance', 'second_instance_focus', 'no_duplicate_host', 'secondary_no_database',
         'renderer_crash_detected', 'renderer_recovered', 'runtime_survives_renderer_crash', 'tray_survives_crash',
         'destroyed_window_recovery', 'window_all_closed_background', 'power_idle_off', 'power_active_on',
         'power_hidden_on', 'power_crash_on', 'power_multi_activity', 'power_terminal_off', 'power_failure_release',
         'power_scheduled_idle', 'power_suspended_off', 'explicit_quit_uses_strict_shutdown', 'power_quit_drain', 'strict_resources']) {
         assert.equal(report.checks?.[name]?.status, 'PASS', `Missing Background gate: ${name}`)
+      }
+    } else if (prefix === 'DESKTOP_PACKAGED_UPDATE_FEED') {
+      // The update metadata pipeline. Every gate must hold on both hosts, including the
+      // macOS refusal, which stays BLOCKED_BY_SIGNING here rather than being softened.
+      for (const name of ['packaged_capability', 'explicit_policy', 'local_feed_check', 'download_contract', 'no_install']) {
+        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing update feed gate: ${name}`)
+      }
+    } else if (prefix === 'DESKTOP_PUBLIC_UPDATE_TRAY') {
+      for (const name of ['tray_action', 'no_downgrade', 'no_download_or_install']) {
+        assert.equal(report.checks?.[name]?.status, 'PASS', `Missing public updater Tray gate: ${name}`)
       }
     } else {
       for (const name of ['electron_main', 'isolation', 'launchpad_create', 'launchpad_start', 'launchpad_http',
@@ -258,6 +271,8 @@ let isolation
 let backgroundIsolation
 let notificationIsolation
 let productionIsolation
+let publicUpdateIsolation
+let updaterFeedIsolation
 try {
   await mkdir(evidenceDirectory, { recursive: true })
   assert.equal(process.versions.electron, undefined, 'Launch this runner with external Node')
@@ -275,12 +290,21 @@ try {
   if (packagedRoot) {
     productionIsolation = await createDesktopIsolation()
     result.runs.push(await runElectron('desktop/tests/production-smoke.mjs', 'DESKTOP_PACKAGED_PRODUCTION', productionIsolation.root))
+    if (publicUpdateSmoke) {
+      publicUpdateIsolation = await createDesktopIsolation()
+      result.runs.push(await runElectron('desktop/tests/updater-tray-public-smoke.mjs',
+        'DESKTOP_PUBLIC_UPDATE_TRAY', publicUpdateIsolation.root))
+    }
+    // The update metadata pipeline, against a feed served from this machine. Never GitHub.
+    updaterFeedIsolation = await createDesktopIsolation()
+    result.runs.push(await runElectron('desktop/tests/updater-feed-smoke.mjs', 'DESKTOP_PACKAGED_UPDATE_FEED', updaterFeedIsolation.root))
   }
 } catch (error) {
   result.errors.push(String(error?.stack ?? error))
 } finally {
   const cleanupErrors = []
-  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation, productionIsolation].filter(Boolean)) {
+  for (const ownedIsolation of [isolation, backgroundIsolation, notificationIsolation, productionIsolation,
+    publicUpdateIsolation, updaterFeedIsolation].filter(Boolean)) {
     try {
       await ownedIsolation.cleanup()
     } catch (error) {
@@ -292,7 +316,7 @@ try {
     backgroundRoot: backgroundIsolation?.root, notificationRoot: notificationIsolation?.root, ...(cleanupErrors.length ? { errors: cleanupErrors,
       phase: 'temporary_directory_cleanup_after_electron_exit' } : {}) }
 }
-result.result = result.runs.length === (packagedRoot ? 5 : 4) &&
+result.result = result.runs.length === (packagedRoot ? (publicUpdateSmoke ? 7 : 6) : 4) &&
   result.runs.every((run) => run.result === 'PASS' || run.result === 'NEEDS_SIGNED_VALIDATION') &&
   result.cleanup.status === 'PASS' && result.errors.length === 0 ? 'PASS' : 'FAIL'
 result.nativeNotificationGate = nativeNotificationGate

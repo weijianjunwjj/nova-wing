@@ -10,7 +10,8 @@ import { createResourceTracker } from './resource-tracker.mjs'
 const names = [
   'window_close_hides', 'host_survives_hide', 'runtime_survives_hide', 'task_survives_hide',
   'hidden_completion', 'durable_hidden_completion', 'same_session_restored',
-  'tray_created', 'tray_show', 'tray_hide', 'tray_survives_crash',
+  'tray_created', 'updater_tray_user_reachable', 'tray_show', 'tray_hide', 'tray_hide_show_10x',
+  'close_to_tray_show_10x', 'tray_survives_crash',
   'single_instance', 'second_instance_focus', 'no_duplicate_host', 'secondary_no_database',
   'renderer_crash_detected', 'renderer_recovered', 'runtime_survives_renderer_crash',
   'destroyed_window_recovery', 'window_all_closed_background',
@@ -40,6 +41,24 @@ async function eventually(description, condition, timeoutMs = 15_000) {
   assert.fail(`Timed out waiting for ${description}`)
 }
 function evaluate(window, expression) { return window.webContents.executeJavaScript(expression, true) }
+async function visibleSurface(window) {
+  assert.equal(window.isVisible(), true)
+  assert.equal(window.webContents.isLoadingMainFrame(), false)
+  const page = await evaluate(window, '({ ready: document.readyState, textLength: document.body.innerText.length })')
+  assert.equal(page.ready, 'complete')
+  assert.ok(page.textLength > 100)
+  const bitmap = (await window.webContents.capturePage()).toBitmap()
+  assert.ok(bitmap.length > 0)
+  let colored = 0
+  let samples = 0
+  for (let index = 0; index < bitmap.length; index += 400) {
+    samples++
+    if (bitmap[index] < 240 || bitmap[index + 1] < 240 || bitmap[index + 2] < 240) colored++
+  }
+  const nonWhiteRatio = colored / samples
+  assert.ok(nonWhiteRatio > 0.1, 'Restored BrowserWindow must not present a blank white surface')
+  return nonWhiteRatio
+}
 async function status(url) {
   const response = await fetch(`${url}/api/status`)
   assert.equal(response.status, 200)
@@ -55,7 +74,7 @@ async function run() {
     process.stderr.write('')
     tracker = createResourceTracker()
     desktop = await desktopReady
-    const { host, fixture, power, tray, windows } = desktop
+    const { host, fixture, power, tray, updater, windows } = desktop
     const nativeTray = tray.tray
     const samplePower = () => {
       const sample = power.snapshot()
@@ -87,6 +106,23 @@ async function run() {
     assert.equal(nativeTray.isDestroyed(), false)
     assert.equal(tray.tray, nativeTray)
     pass('tray_created', { native: true, destroyed: false })
+
+    current = 'updater_tray_user_reachable'
+    const updaterSnapshot = updater.snapshot()
+    const updaterItem = tray.menu.getMenuItemById('update')
+    assert.ok(updaterItem)
+    if (updaterSnapshot.capability.installable) {
+      assert.equal(updaterSnapshot.state, 'IDLE')
+      assert.equal(updaterItem.label, '检查更新')
+      assert.notEqual(updaterItem.enabled, false)
+      assert.equal(typeof updaterItem.click, 'function')
+    } else {
+      assert.equal(updaterSnapshot.state, 'UNSUPPORTED')
+      assert.equal(updaterItem.enabled, false)
+    }
+    pass('updater_tray_user_reachable', { state: updaterSnapshot.state,
+      installable: updaterSnapshot.capability.installable, label: updaterItem.label,
+      enabled: updaterItem.enabled !== false, action: typeof updaterItem.click === 'function' })
 
     current = 'window_close_hides'
     const firstGate = fixture.armTask('BACKGROUND-001')
@@ -143,6 +179,49 @@ async function run() {
     assert.equal(desktop.window.isVisible(), false)
     assert.equal(nativeTray.isDestroyed(), false)
     pass('tray_hide', { hidden: true, trayAlive: true })
+
+    current = 'tray_hide_show_10x'
+    const trayBaseline = { host: desktopInstance.hostCreateCount, runtime: fixture.getEvidence().runtimeCreateCount,
+      windows: windows.observations.created, loads: windows.observations.navigationLoads,
+      recoveries: windows.observations.presentationRecoveries }
+    const trayRatios = []
+    for (let cycle = 0; cycle < 10; cycle++) {
+      clickTray('hide')
+      assert.equal(desktop.window.isVisible(), false)
+      clickTray('show')
+      await windows.showWindow()
+      assert.equal(desktop.window, firstWindow)
+      trayRatios.push(await visibleSurface(desktop.window))
+    }
+    assert.equal(desktopInstance.hostCreateCount, trayBaseline.host)
+    assert.equal(fixture.getEvidence().runtimeCreateCount, trayBaseline.runtime)
+    assert.equal(windows.observations.created, trayBaseline.windows)
+    assert.equal(windows.observations.navigationLoads, trayBaseline.loads)
+    assert.equal(windows.observations.presentationRecoveries, trayBaseline.recoveries)
+    pass('tray_hide_show_10x', { cycles: 10, whiteScreens: 0, sameWindow: true,
+      nonWhiteRatios: trayRatios, baseline: trayBaseline })
+
+    current = 'close_to_tray_show_10x'
+    const closeBaseline = { host: desktopInstance.hostCreateCount, runtime: fixture.getEvidence().runtimeCreateCount,
+      windows: windows.observations.created, loads: windows.observations.navigationLoads,
+      recoveries: windows.observations.presentationRecoveries }
+    const closeRatios = []
+    for (let cycle = 0; cycle < 10; cycle++) {
+      desktop.window.close()
+      assert.equal(desktop.window.isDestroyed(), false)
+      assert.equal(desktop.window.isVisible(), false)
+      clickTray('show')
+      await windows.showWindow()
+      assert.equal(desktop.window, firstWindow)
+      closeRatios.push(await visibleSurface(desktop.window))
+    }
+    assert.equal(desktopInstance.hostCreateCount, closeBaseline.host)
+    assert.equal(fixture.getEvidence().runtimeCreateCount, closeBaseline.runtime)
+    assert.equal(windows.observations.created, closeBaseline.windows)
+    assert.equal(windows.observations.navigationLoads, closeBaseline.loads)
+    assert.equal(windows.observations.presentationRecoveries, closeBaseline.recoveries)
+    pass('close_to_tray_show_10x', { cycles: 10, whiteScreens: 0, sameWindow: true,
+      nonWhiteRatios: closeRatios, baseline: closeBaseline })
 
     current = 'single_instance'
     const secondInstance = once(app, 'second-instance')

@@ -5,6 +5,12 @@ import { test } from 'node:test'
 import { createDesktopPowerManager } from '../main/power.mjs'
 import { createDesktopTray } from '../main/tray.mjs'
 import { createShutdownCoordinator } from '../main/shutdown.mjs'
+import { createDesktopUpdater, UPDATER_STATE } from '../main/updater.mjs'
+
+const UPDATE_CANDIDATE = Object.freeze({ version: '0.4.4', identity: '0.4.4|latest|sha512-fixture' })
+const idleBlockers = () => ({ readable: true, activeOperations: 0, pendingHumanDecisions: 0,
+  pendingCheckpoints: 0, shutdownInFlight: false })
+const settle = () => new Promise((resolve) => setImmediate(resolve))
 
 function powerFixture() {
   const calls = []
@@ -117,6 +123,8 @@ test('Tray actions use shared window and quit callbacks and event-only status', 
   tray.setActivity(2)
   assert.equal(tray.menu.getMenuItemById('status').label, '当前状态：运行中')
   assert.equal(tray.menu.getMenuItemById('status').enabled, false)
+  assert.equal(tray.menu.getMenuItemById('update').label, '更新：当前环境不支持')
+  assert.equal(tray.menu.getMenuItemById('update').enabled, false)
   const menu = tray.menu
   tray.setActivity(1)
   assert.equal(tray.menu, menu)
@@ -127,6 +135,128 @@ test('Tray actions use shared window and quit callbacks and event-only status', 
   tray.destroy()
   tray.destroy()
   assert.equal(tray.tray.isDestroyed(), true)
+})
+
+test('Tray updater returns from CHECKING to IDLE when no update is available', async () => {
+  const gate = Promise.withResolvers()
+  let checks = 0
+  let notifications = 0
+  const updater = createDesktopUpdater({
+    backend: { async check() { checks++; return gate.promise }, async download() { assert.fail('no update cannot download') } },
+    capability: { platform: 'win32', installable: true, signature: 'unsigned', unsignedInstallApproved: true },
+    getBlockers: idleBlockers, async requestInstallExit() { assert.fail('no update cannot install') },
+  })
+  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ } })
+  const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
+  assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
+  tray.menu.getMenuItemById('update').click()
+  assert.equal(tray.menu.getMenuItemById('update').label, '正在检查更新…')
+  assert.equal(tray.menu.getMenuItemById('update').enabled, false)
+  gate.resolve({ available: false })
+  await settle()
+  assert.equal(checks, 1)
+  assert.equal(notifications, 1)
+  assert.equal(updater.snapshot().state, UPDATER_STATE.IDLE)
+  assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
+  unsubscribe()
+  tray.destroy()
+  updater.dispose()
+})
+
+test('Tray updater follows AVAILABLE through READY and binds install to the exact candidate', async () => {
+  const checkGate = Promise.withResolvers()
+  const downloadGate = Promise.withResolvers()
+  let downloads = 0
+  let blockers = idleBlockers()
+  const installs = []
+  let notifications = 0
+  const updater = createDesktopUpdater({
+    backend: {
+      async check() { return checkGate.promise },
+      async download(candidate) { downloads++; assert.deepEqual(candidate, UPDATE_CANDIDATE); return downloadGate.promise },
+    },
+    capability: { platform: 'win32', installable: true, signature: 'unsigned', unsignedInstallApproved: true },
+    getBlockers: () => blockers,
+    async requestInstallExit({ candidate }) { installs.push(candidate) },
+  })
+  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ } })
+  const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
+  tray.menu.getMenuItemById('update').click()
+  checkGate.resolve({ available: true, candidate: UPDATE_CANDIDATE })
+  await settle()
+  assert.equal(tray.menu.getMenuItemById('update').label, '下载 v0.4.4')
+  assert.equal(installs.length, 0, 'AVAILABLE offers download, never install')
+  assert.equal(notifications, 0, 'an available update is never reported as current')
+
+  const availableItem = tray.menu.getMenuItemById('update')
+  availableItem.click()
+  availableItem.click()
+  assert.equal(tray.menu.getMenuItemById('update').label, '正在下载 v0.4.4…')
+  assert.equal(tray.menu.getMenuItemById('update').enabled, false)
+  assert.equal(downloads, 1, 'DOWNLOADING rejects a duplicate user intent')
+  tray.setActivity(1)
+  assert.equal(tray.menu.getMenuItemById('status').label, '当前状态：运行中')
+  assert.equal(tray.menu.getMenuItemById('update').label, '正在下载 v0.4.4…',
+    'activity rebuild preserves updater presentation')
+
+  downloadGate.resolve(undefined)
+  await settle()
+  assert.equal(tray.menu.getMenuItemById('update').label, '重启并安装 v0.4.4')
+  for (const blocked of [
+    { activeOperations: 1 }, { pendingHumanDecisions: 1 }, { pendingCheckpoints: 1 }, { shutdownInFlight: true },
+  ]) {
+    blockers = { ...idleBlockers(), ...blocked }
+    tray.menu.getMenuItemById('update').click()
+    await settle()
+    assert.equal(installs.length, 0)
+    assert.equal(updater.snapshot().state, UPDATER_STATE.READY)
+  }
+  blockers = idleBlockers()
+  tray.menu.getMenuItemById('update').click()
+  await settle()
+  assert.deepEqual(installs, [{ ...UPDATE_CANDIDATE }])
+  assert.equal(updater.snapshot().observations.installAuthorizations, 1)
+  unsubscribe()
+  tray.destroy()
+  updater.dispose()
+})
+
+test('Tray updater reports a safe failure and ERROR remains retryable', async () => {
+  let attempt = 0
+  const failures = []
+  let notifications = 0
+  const updater = createDesktopUpdater({
+    backend: {
+      async check() {
+        attempt++
+        if (attempt === 1) throw new Error('Authorization: Bearer should-never-leak')
+        return { available: false }
+      },
+      async download() { assert.fail('no download') },
+    },
+    capability: { platform: 'win32', installable: true, signature: 'unsigned', unsignedInstallApproved: true },
+    getBlockers: idleBlockers, async requestInstallExit() { assert.fail('no install') },
+  })
+  const tray = trayFixture({ showWindow() {}, hideWindow() {}, requestQuit() {}, updater,
+    notifyNoUpdate() { notifications++ },
+    reportFailure: (error) => failures.push(String(error.message ?? error)) })
+  const unsubscribe = updater.subscribe(tray.setUpdaterSnapshot)
+  tray.menu.getMenuItemById('update').click()
+  await settle()
+  assert.equal(tray.menu.getMenuItemById('update').label, '检查更新失败 / 重试')
+  assert.equal(notifications, 0, 'a backend error is never reported as current')
+  assert.deepEqual(failures, ['Updater check failed: CHECK_FAILED'])
+  assert.doesNotMatch(JSON.stringify(updater.snapshot()), /should-never-leak/u)
+  tray.menu.getMenuItemById('update').click()
+  await settle()
+  assert.equal(updater.snapshot().state, UPDATER_STATE.IDLE)
+  assert.equal(tray.menu.getMenuItemById('update').label, '检查更新')
+  assert.equal(notifications, 1, 'the successful explicit retry reports no update once')
+  unsubscribe()
+  tray.destroy()
+  updater.dispose()
 })
 
 test('Strict quit keeps Tray and blocker while drain is pending, then cleans before final quit', async () => {

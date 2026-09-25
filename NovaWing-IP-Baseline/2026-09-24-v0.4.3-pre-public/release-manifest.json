@@ -1,0 +1,65 @@
+{
+  "name": "NOVAWING_RELEASE_MANIFEST",
+  "version": "0.4.3",
+  "tag": "v0.4.3",
+  "mode": "validate",
+  "buildRunId": 35987215152,
+  "buildCommitSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e",
+  "build": {
+    "workflowName": "Desktop Build",
+    "workflowPath": ".github/workflows/desktop-build.yml",
+    "event": "workflow_dispatch",
+    "status": "completed",
+    "conclusion": "success",
+    "createdAt": "2026-09-24T10:26:19Z",
+    "runUrl": "https://github.com/weijianjunwjj/nova-wing/actions/runs/35987215152"
+  },
+  "windows": {
+    "filename": "NovaWing-Setup-0.4.3-x64.exe",
+    "size": 216557393,
+    "sha256": "99fa8bbfa13c8e4aba642a500e559c20ca4ce0de3c044f97ec89a1306d558d44",
+    "signed": false,
+    "appName": "NovaWing",
+    "version": "0.4.3",
+    "arch": "x64",
+    "electron": "44.4.3",
+    "builder": "26.15.3",
+    "packageContentSha256": "edc34520f96632a4ea8df3c0c3e5c1cec4a321c703d3c53242c6bbe00ba16b12",
+    "packageSmokeResult": "PASS",
+    "nativeNotificationGate": "REQUIRED",
+    "buildRunId": 35987215152,
+    "buildCommitSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e"
+  },
+  "macos": {
+    "appName": "NovaWing",
+    "version": "0.4.3",
+    "arch": "arm64",
+    "bundleIdentifier": "io.github.weijianjunwjj.novawing",
+    "bundleContentSha256": "85d302071314cf531aa0fbdb11f2c22e123c7fdbe36d978c6c27ee533251f46d",
+    "dmg": {
+      "filename": "NovaWing-0.4.3-arm64.dmg",
+      "size": 260422315,
+      "sha256": "0dd95666ffa8e11b210674c4de804aacf03b3cb61572595d2301b47adae2e6c2"
+    },
+    "zip": {
+      "filename": "NovaWing-0.4.3-arm64-mac.zip",
+      "size": 263628665,
+      "sha256": "679aac5438219a1afca6de1b9393174054986dd6a44f6b894c5b22a3f559b5bc"
+    },
+    "signedForDistribution": false,
+    "adHocSigned": true,
+    "signingAuthority": null,
+    "notarized": false,
+    "nativeNotificationGate": "NEEDS_SIGNED_VALIDATION",
+    "packageSmokeResult": "PASS",
+    "buildRunId": 35987215152,
+    "buildCommitSha": "dab1aca91417ebdb1caa8d487daa49074d47f16e"
+  },
+  "limitations": [
+    "Windows installer is unsigned (signed=false). Authenticode signing was not performed, so Windows SmartScreen may warn that the publisher is unknown.",
+    "macOS bundles are unsigned. Developer ID signing: NOT AVAILABLE.",
+    "macOS Notarization: NOT PERFORMED. Gatekeeper may block or warn on the downloaded artifact because it is not Developer-ID signed and not notarized.",
+    "macOS Native Notification: NEEDS_SIGNED_VALIDATION. Native delivery requires a distribution-signed bundle and was not validated for these artifacts.",
+    "Gatekeeper trusted distribution: NOT CLAIMED."
+  ]
+}

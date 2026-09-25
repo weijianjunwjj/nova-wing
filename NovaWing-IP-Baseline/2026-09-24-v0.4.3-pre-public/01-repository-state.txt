@@ -1,0 +1,106 @@
+NovaWing v0.4.3 PRE-PUBLIC IP GATE - repository state evidence
+Generated (UTC): 2026-09-24T11:22:33Z
+Generated (local): 2026-09-24T19:22:33+08:00
+Working directory: D:\VSCode\nova-wing
+
+===== A. Product identity =====
+
+$ git rev-parse HEAD
+dab1aca91417ebdb1caa8d487daa49074d47f16e
+
+$ git branch --show-current
+fix/v0.4.3-windows-tray-white-screen
+
+$ git log --oneline -2
+dab1aca feat(desktop): expose updater controls in tray
+45d85fe fix(desktop): restore tray window presentation
+
+The branch and exact product commit were already pushed before Desktop Build dispatch.
+
+===== B. Protected historical state =====
+
+$ git ls-remote --tags origin refs/tags/v0.4.2 refs/tags/v0.4.2^{}
+621fd7f024900df6f7374b5a14284bf279a8b5a2 refs/tags/v0.4.2
+a712bd15a81004bb981e89b076c445bedce405f4 refs/tags/v0.4.2^{}
+
+The v0.4.2 tag, public release, artifacts, and v0.4.1/v0.4.2 baselines were not changed.
+
+===== C. v0.4.3 tag state at initial snapshot =====
+
+$ git ls-remote --tags origin refs/tags/v0.4.3
+NOT_CREATED
+
+Policy: create one annotated private source tag only after Desktop Build PASS, Release Validate
+PASS, and Pre-Public Gate READY. It must peel to
+dab1aca91417ebdb1caa8d487daa49074d47f16e.
+
+Final tag state after all three gates passed:
+
+$ git ls-remote --tags origin refs/tags/v0.4.3 refs/tags/v0.4.3^{}
+5c3a0ffbeab8f69839d8c65b82757ae9319215cc refs/tags/v0.4.3
+dab1aca91417ebdb1caa8d487daa49074d47f16e refs/tags/v0.4.3^{}
+
+The tag is annotated, unsigned, and was created at 2026-09-24T11:33:26Z
+(2026-09-24T19:33:26+08:00). It points to the product commit and not either baseline-only commit.
+
+===== D. Version and toolchain =====
+
+Desktop product version: 0.4.3
+Root package version: 0.1.0 (independent package identity)
+Root package license: UNLICENSED
+Node: v24.14.1 (local audit); CI Node 24.20.0/24.21.0 runtime evidence
+npm: 11.11.0
+Git: 2.47.1.windows.1
+Electron: 44.4.3
+electron-builder: 26.15.3
+electron-updater: 6.8.9
+Bundled Codex: 0.151.0
+
+===== E. Repository visibility and publication state =====
+
+weijianjunwjj/nova-wing          private=true   visibility=private
+weijianjunwjj/nova-wing-releases private=false  visibility=public
+public v0.4.3 release=NOT_PUBLISHED
+
+===== F. Authoritative CI build =====
+
+Desktop Build 35987215152:
+  workflow=Desktop Build
+  status=completed
+  conclusion=success
+  run_attempt=2
+  head_sha=dab1aca91417ebdb1caa8d487daa49074d47f16e
+  branch=fix/v0.4.3-windows-tray-white-screen
+  windows job=success
+  macOS job=success
+
+Attempt 1 macOS packaged smoke failed its first native visibility observation. GitHub reran only
+the failed macOS job against the same head SHA. Attempt 2 passed packaged smoke and all subsequent
+DMG/ZIP, metadata, identity, notice, and upload steps. Windows was not rebuilt and retained its
+successful result from the same run.
+
+===== G. Audit tooling =====
+
+gitleaks 8.30.1 (official archive checksum verified), default rules, 100% redaction
+@cyclonedx/cyclonedx-npm 6.0.1
+license-checker 25.0.1
+generate-license-file 4.2.5
+7-Zip 16.04 for independent NSIS/7z/ZIP/DMG-HFS extraction
+
+No shipped artifact bytes were written back into the repository. Only the compact evidence files
+listed by 00-manifest.md were copied into this private baseline.
+
+===== H. Release Validate =====
+
+Desktop Release Validate 35993337053:
+  workflow=Desktop Release
+  status=completed
+  conclusion=success
+  branch head=ee0d679c5e887b2e7c3ecfc6b13657e2e38d9e75 (baseline-only commit)
+  validated build run=35987215152
+  validated product SHA=dab1aca91417ebdb1caa8d487daa49074d47f16e
+  validate job=success
+  publish job=skipped
+  release-manifest SHA-256=a55c8187e260d9a419aa8f8794c4d54420cd6dc33f412fd265e6940d9b9c8b42
+
+Validate mode did not create a public release or upload assets to the public feed.

@@ -13,23 +13,30 @@ export function loadOwnedURL(window, host, url) {
  *   resolveSessionUrl?: (sessionId: string) => string | undefined }} host
  * @param {{ createWindow: (settings: import('electron').BrowserWindowConstructorOptions) => import('electron').BrowserWindow,
  *   isQuitRequested?: () => boolean, reportDiagnostic?: (diagnostic: object) => void,
- *   now?: () => number, maxRecoveryAttempts?: number, recoveryWindowMs?: number }} options
+ *   now?: () => number, maxRecoveryAttempts?: number, recoveryWindowMs?: number,
+ *   presentationTimeoutMs?: number, schedulePresentationTimeout?: typeof setTimeout,
+ *   cancelPresentationTimeout?: typeof clearTimeout }} options
  */
 export function createWindowLifecycle(host, {
   createWindow, isQuitRequested = () => false,
   reportDiagnostic = (diagnostic) => console.error(`DESKTOP_RENDERER_RECOVERY ${JSON.stringify(diagnostic)}`),
   now = Date.now, maxRecoveryAttempts = 3, recoveryWindowMs = 60_000,
+  presentationTimeoutMs = 2_000, schedulePresentationTimeout = setTimeout,
+  cancelPresentationTimeout = clearTimeout,
 }) {
-  if (!Number.isInteger(maxRecoveryAttempts) || maxRecoveryAttempts < 1 || recoveryWindowMs <= 0) {
+  if (!Number.isInteger(maxRecoveryAttempts) || maxRecoveryAttempts < 1 || recoveryWindowMs <= 0 || presentationTimeoutMs <= 0) {
     throw new Error('Desktop recovery limits must be positive')
   }
   const blocked = []
-  const observations = { created: 0, hiddenCloses: 0, crashes: 0, recoveryAttempts: 0, recovered: 0, recoveryFailures: 0, recoveryLimited: 0 }
-  /** @type {{ window?: import('electron').BrowserWindow, ready: Promise<import('electron').BrowserWindow | undefined>, navigation: Promise<void>, pendingLoads: number, healthy: boolean, crashed: boolean, generation: number, target?: string } | undefined} */
+  const observations = { created: 0, hiddenCloses: 0, crashes: 0, recoveryAttempts: 0, recovered: 0,
+    recoveryFailures: 0, recoveryLimited: 0, presentationAttempts: 0, presentationRecoveries: 0,
+    presentationReady: 0, presentationFailures: 0, navigationLoads: 0 }
+  /** @type {{ window?: import('electron').BrowserWindow, ready: Promise<import('electron').BrowserWindow | undefined>, navigation: Promise<void>, presentation?: Promise<void>, pendingLoads: number, healthy: boolean, crashed: boolean, generation: number, target?: string } | undefined} */
   let current
   let lastTrustedUrl
   let destroyedForQuit = false
   let visibleIntent = false
+  let generation = 0
   /** @type {Promise<void> | undefined} */
   let pendingRecovery
   let pendingSessionNavigation = Promise.resolve()
@@ -43,10 +50,16 @@ export function createWindowLifecycle(host, {
 
   function trace(event, window = current?.window, extra = {}) {
     const destroyed = !window || window.isDestroyed()
+    const contentsDestroyed = destroyed || window.webContents.isDestroyed?.() === true
     diagnostic({ event, timestamp: new Date(now()).toISOString(), windowId: window?.id,
       currentUrl: destroyed ? undefined : window.webContents.getURL(), targetUrl: current?.target,
-      isVisible: !destroyed && window.isVisible(), isDestroyed: destroyed,
-      isLoading: !destroyed && window.webContents.isLoadingMainFrame(), ...extra })
+      generation: current?.generation, healthy: current?.healthy ?? false,
+      isVisible: !destroyed && window.isVisible(), isMinimized: !destroyed && window.isMinimized(),
+      isDestroyed: destroyed, webContentsDestroyed: contentsDestroyed,
+      isLoadingMainFrame: !contentsDestroyed && window.webContents.isLoadingMainFrame(),
+      pendingLoads: current?.pendingLoads ?? 0, visibleIntent,
+      backgroundThrottling: contentsDestroyed ? undefined : window.webContents.getBackgroundThrottling?.(),
+      ...extra })
   }
 
   const sameUrl = (left, right) => left && right && new URL(left).href === new URL(right).href
@@ -92,6 +105,7 @@ export function createWindowLifecycle(host, {
       // Keep the visible intent, but never expose a new/failed document while loading.
       if (window.isVisible()) window.hide()
       trace('navigation-start', window, { targetUrl: url })
+      observations.navigationLoads++
       await loadOwnedURL(window, host, url)
       await pageIdle(window)
       if (!window.isDestroyed() && current === entry) {
@@ -114,13 +128,73 @@ export function createWindowLifecycle(host, {
     if (current?.window === window && !window.isDestroyed() && host.isAllowedNavigation(url)) lastTrustedUrl = url
   }
 
-  function showExisting(window) {
-    if (quitting() || !visibleIntent || window.isDestroyed() || current?.window !== window) return
-    if (!current.healthy || current.pendingLoads || window.webContents.isLoadingMainFrame()) return
+  function waitForPresentation(window, attempt) {
+    return new Promise((resolve) => {
+      const contents = window.webContents
+      let settled = false
+      const finish = (presented, detail = {}) => {
+        if (settled) return
+        settled = true
+        cancelPresentationTimeout(timeout)
+        try { contents.endFrameSubscription() } catch {}
+        resolve({ presented, ...detail })
+      }
+      const timeout = schedulePresentationTimeout(() => finish(false, { reason: 'presentation-timeout' }), presentationTimeoutMs)
+      try {
+        contents.beginFrameSubscription((image, dirtyRect) => {
+          const size = image?.getSize?.()
+          finish(true, { attempt, frameSize: size, dirtyRect })
+        })
+      } catch (error) {
+        finish(false, { reason: 'presentation-subscription-failed',
+          message: error instanceof Error ? error.message : String(error) })
+      }
+    })
+  }
+
+  async function presentationAttempt(window, attempt) {
+    const frame = waitForPresentation(window, attempt)
     if (window.isMinimized()) window.restore()
     if (!window.isVisible()) window.show()
-    window.focus()
-    trace('window-shown', window)
+    trace('window-show-native', window, { attempt, presentationState: 'awaiting' })
+    window.webContents.invalidate()
+    return frame
+  }
+
+  function showExisting(window) {
+    if (quitting() || !visibleIntent || window.isDestroyed() || current?.window !== window) return Promise.resolve()
+    if (!current.healthy || current.pendingLoads || window.webContents.isLoadingMainFrame()) return Promise.resolve()
+    const entry = current
+    if (entry.presentation) return entry.presentation
+    const operation = (async () => {
+      if (window.isVisible() && !window.isMinimized()) {
+        window.focus()
+        trace('window-show-ready', window, { reusedVisibleSurface: true, presentationState: 'already-visible' })
+        return
+      }
+      observations.presentationAttempts++
+      let result = await presentationAttempt(window, 1)
+      if (!result.presented && !quitting() && visibleIntent && !window.isDestroyed() && current === entry) {
+        observations.presentationRecoveries++
+        trace('window-show-recovery', window, { attempt: 1, presentationState: 'missing', ...result })
+        if (window.isVisible()) window.hide()
+        result = await presentationAttempt(window, 2)
+      }
+      if (quitting() || !visibleIntent || window.isDestroyed() || current !== entry) return
+      if (!result.presented) {
+        observations.presentationFailures++
+        if (!window.isDestroyed() && window.isVisible()) window.hide()
+        trace('window-show-failed', window, { attempt: 2, presentationState: 'missing', ...result })
+        throw new Error(`Desktop window presentation failed: ${result.reason ?? 'no frame'}`)
+      }
+      if (quitting() || !visibleIntent || window.isDestroyed() || current !== entry) return
+      window.focus()
+      observations.presentationReady++
+      trace('window-show-ready', window, { presentationState: 'presented', ...result })
+    })()
+    const shared = operation.finally(() => { if (entry.presentation === shared) entry.presentation = undefined })
+    entry.presentation = shared
+    return shared
   }
 
   function recoverRenderer(window, details) {
@@ -128,7 +202,7 @@ export function createWindowLifecycle(host, {
     observations.crashes++
     current.healthy = false
     current.crashed = true
-    current.generation++
+    current.generation = ++generation
     const crashedTarget = current.target
     if (window.isVisible()) window.hide()
     trace('render-process-gone', window, { reason: details.reason, exitCode: details.exitCode })
@@ -159,7 +233,7 @@ export function createWindowLifecycle(host, {
           : crashedTarget && host.isAllowedNavigation(crashedTarget) ? crashedTarget : recoveryUrl())
       }
       if (quitting() || !target || target.isDestroyed() || current?.window !== target) return
-      showExisting(target)
+      await showExisting(target)
       observations.recovered++
       diagnostic({ event: 'recovered', url: lastTrustedUrl })
     }).catch((error) => {
@@ -217,7 +291,8 @@ export function createWindowLifecycle(host, {
     if (current && !current.window?.isDestroyed()) return current.ready
     const completion = Promise.withResolvers()
     // Publish before calling the factory or loading; either can reenter Main.
-    const entry = { window: undefined, ready: completion.promise, navigation: Promise.resolve(), pendingLoads: 0, healthy: false, crashed: false, generation: 0, target: undefined }
+    const entry = { window: undefined, ready: completion.promise, navigation: Promise.resolve(), presentation: undefined,
+      pendingLoads: 0, healthy: false, crashed: false, generation: ++generation, target: undefined }
     current = entry
     void (async () => {
       const window = createWindow({
@@ -263,7 +338,7 @@ export function createWindowLifecycle(host, {
   async function showWindow() {
     if (quitting()) return undefined
     visibleIntent = true
-    trace('show-request')
+    trace('window-show-request')
     const window = await ensureWindow()
     // Activation/Tray may arrive while a notification or renderer recovery owns
     // navigation. A stable tail, not a timer, decides when showing is safe.
@@ -278,7 +353,7 @@ export function createWindowLifecycle(host, {
     }
     if (window && !window.isDestroyed() && current?.window === window &&
         (!current.healthy || !host.isAllowedNavigation(window.webContents.getURL()))) await navigate(window, recoveryUrl)
-    if (window) showExisting(window)
+    if (window) await showExisting(window)
     return window
   }
 
@@ -311,7 +386,7 @@ export function createWindowLifecycle(host, {
       if (revoked() && host.isAllowedNavigation(host.launchpadUrl)) {
         await navigate(window, () => host.launchpadUrl)
       }
-      showExisting(window)
+      await showExisting(window)
       return window
     })
     pendingSessionNavigation = operation.then(() => undefined, () => undefined)
@@ -321,6 +396,7 @@ export function createWindowLifecycle(host, {
   function hideWindow() {
     visibleIntent = false
     const window = current?.window
+    trace('window-hide-request', window)
     if (window && !window.isDestroyed()) window.hide()
     trace('window-hidden', window)
   }

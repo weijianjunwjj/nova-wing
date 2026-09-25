@@ -1,0 +1,17 @@
+# NovaWing Phase 6B - macOS distribution identity
+github_sha=dab1aca91417ebdb1caa8d487daa49074d47f16e
+dist_version=0.4.3
+dist_arch=arm64
+dmg_filename=NovaWing-0.4.3-arm64.dmg
+dmg_size=260422315
+dmg_sha256=0dd95666ffa8e11b210674c4de804aacf03b3cb61572595d2301b47adae2e6c2
+zip_filename=NovaWing-0.4.3-arm64-mac.zip
+zip_size=263628665
+zip_sha256=679aac5438219a1afca6de1b9393174054986dd6a44f6b894c5b22a3f559b5bc
+bundle_content_sha256=85d302071314cf531aa0fbdb11f2c22e123c7fdbe36d978c6c27ee533251f46d
+package_sha256=85d302071314cf531aa0fbdb11f2c22e123c7fdbe36d978c6c27ee533251f46d
+package_smoke_result=PASS
+notification_gate=NEEDS_SIGNED_VALIDATION
+signing_authority=NONE
+signing_adhoc=true
+signing_signed_for_distribution=false

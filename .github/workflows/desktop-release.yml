@@ -2,8 +2,18 @@ name: Desktop Release
 
 # Phase 6C. This workflow never builds anything. It consumes the artifacts of one
 # already-successful Desktop Build run, re-derives their identity from the files themselves,
-# and - only in publish mode, with an exact confirmation string - creates a GitHub Release
-# for a tag that already exists and already points at the verified commit.
+# and - only in publish mode, with an exact confirmation string - publishes them.
+#
+# Two authorities are deliberately kept apart, and never mixed:
+#
+#   SOURCE TAG, in this private repository. It exists only to prove which commit the artifacts
+#   came from, and must already point at the validated build commit. This workflow never creates
+#   or moves a source tag.
+#
+#   FEED RELEASE, in a separate public binary repository. It is the version a client resolves,
+#   and it carries no provenance of its own: the source tag, the build run and
+#   release-manifest.json already carry that. Publishing may create the version tag there,
+#   because that repository has no source tag to verify against.
 #
 # Build artifacts are retained for 14 days. Validation and publishing must happen before the
 # source run's artifacts expire; the run validation below fails closed once they have.
@@ -15,11 +25,11 @@ on:
         required: true
         type: string
       tag:
-        description: 'Existing release tag, e.g. v0.4.0. Must equal v<artifact version>.'
+        description: 'Source tag in this repository, e.g. v0.4.1. Must already exist, must point at the validated build commit, and must equal v<artifact version>.'
         required: true
         type: string
       mode:
-        description: 'validate = dry run (never creates a tag or release); publish = create the release'
+        description: 'validate = dry run (never creates a tag or release anywhere); publish = publish to the feed repository'
         required: true
         default: validate
         type: choice
@@ -30,6 +40,11 @@ on:
         description: 'publish only: the exact string RELEASE <tag>'
         required: false
         default: ''
+        type: string
+      feed_repo:
+        description: 'Publish destination for the update feed. Defaults to the public binary repository; the source repository stays private and clients never hold a token.'
+        required: false
+        default: 'weijianjunwjj/nova-wing-releases'
         type: string
 
 # Read-only by default. Only the publish job widens this, and only for itself; the validation
@@ -234,6 +249,11 @@ jobs:
           require_one_into NOVAWING_MACOS_ZIP_RECORD release-input/macos-zip 'macos-distribution.json'
           require_one_into NOVAWING_MACOS_SMOKE release-input/macos-evidence 'result.json'
           require_one_into NOVAWING_MACOS_CHECKOUT release-input/macos-evidence 'checkout-state.txt'
+          require_one_into NOVAWING_WINDOWS_LATEST release-input/windows-nsis 'latest.yml'
+          require_one_into NOVAWING_WINDOWS_BLOCKMAP release-input/windows-nsis '*.exe.blockmap'
+          require_one_into NOVAWING_MACOS_LATEST release-input/macos-zip 'latest-mac.yml'
+          require_one_into NOVAWING_MACOS_ZIP_BLOCKMAP release-input/macos-zip '*-mac.zip.blockmap'
+          require_one_into NOVAWING_MACOS_DMG_BLOCKMAP release-input/macos-dmg '*.dmg.blockmap'
 
       # Recomputes size and SHA256 from the installer itself and checks them, the recorded
       # identity and the packaged-content audit against the smoke evidence for this run.
@@ -262,7 +282,7 @@ jobs:
           assert.equal(installer.signed, false, `installer.json claims signed=${installer.signed}`)
           assert.equal(installer.size, stat.size, `installer.json size ${installer.size} does not match the installer file (${stat.size})`)
           assert.equal(installer.sha256, sha256, "installer.json sha256 does not match the installer file")
-          assert.equal(path.basename(exe), `NovaWing Setup ${installer.version}.exe`,
+          assert.equal(path.basename(exe), `NovaWing-Setup-${installer.version}-${installer.arch}.exe`,
             `unexpected installer filename '${path.basename(exe)}' for version ${installer.version}`)
           assert.equal(audit.result, "PASS", `packaged-content-audit result is ${audit.result}`)
           assert.equal(smoke.result, "PASS", `package-smoke result is ${smoke.result}`)
@@ -507,6 +527,116 @@ jobs:
           EOF
           node /tmp/build-manifest.cjs
 
+      # The update metadata is what the updater actually follows. It must name the same artifact
+      # the manifest already validated, agree with it on version, filename, size and sha512, and
+      # reference nothing that was not shipped.
+      - name: Validate the update metadata against the manifest
+        id: updatemetadata
+        shell: bash
+        run: |
+          cat > /tmp/validate-update-metadata.cjs <<'EOF'
+          const fs = require("node:fs")
+          const path = require("node:path")
+          const assert = require("node:assert/strict")
+          const { createHash } = require("node:crypto")
+
+          // Strict parser for electron-builder update metadata. It understands exactly the structure that
+          // is produced — a version, a list of files and a primary path — and rejects anything else rather
+          // than guessing. Other top-level keys are ignored; nothing inside the file list may be missing.
+
+          function parseUpdateMetadata(text) {
+            const top = new Map()
+            const files = []
+            let current = null
+            let inFiles = false
+            const lines = text.split(/\r?\n/)
+
+            for (let index = 0; index < lines.length; index += 1) {
+              const raw = lines[index]
+              if (raw.includes("\t")) throw new Error(`line ${index + 1} uses a tab for indentation`)
+              const line = raw.trim()
+              if (line === "" || line.startsWith("#")) continue
+              const indent = raw.length - raw.trimStart().length
+              const key = /^([A-Za-z][A-Za-z0-9_]*):(?:\s+(.*))?$/.exec(line)
+
+              if (indent === 0) {
+                if (key === null) throw new Error(`line ${index + 1} is not a top-level key: ${line}`)
+                inFiles = key[1] === "files"
+                if (inFiles) {
+                  if (key[2] !== undefined && key[2] !== "") throw new Error(`line ${index + 1}: files must be a list`)
+                  continue
+                }
+                top.set(key[1], key[2] === undefined ? "" : key[2].trim())
+                continue
+              }
+
+              if (!inFiles) throw new Error(`line ${index + 1} is indented below a key that is not a list`)
+              if (line.startsWith("- ")) {
+                current = new Map()
+                files.push(current)
+                const rest = line.slice(2).trim()
+                if (rest === "") continue
+                const field = /^([A-Za-z][A-Za-z0-9_]*):\s+(.+)$/.exec(rest)
+                if (field === null) throw new Error(`line ${index + 1} is not a file entry: ${line}`)
+                current.set(field[1], field[2].trim())
+                continue
+              }
+              if (current === null) throw new Error(`line ${index + 1} does not belong to a file entry: ${line}`)
+              if (key === null) throw new Error(`line ${index + 1} is not a file field: ${line}`)
+              current.set(key[1], key[2] === undefined ? "" : key[2].trim())
+            }
+
+            const version = top.get("version")
+            if (typeof version !== "string" || version === "") throw new Error("metadata has no version")
+            const primary = top.get("path")
+            if (typeof primary !== "string" || primary === "") throw new Error("metadata has no path")
+            if (files.length === 0) throw new Error("metadata lists no files")
+            const parsed = files.map((entry, index) => {
+              const url = entry.get("url")
+              if (typeof url !== "string" || url === "") throw new Error(`file ${index + 1} has no url`)
+              const sha512 = entry.get("sha512")
+              if (typeof sha512 !== "string" || sha512 === "") throw new Error(`file ${index + 1} has no sha512`)
+              const size = entry.get("size")
+              if (typeof size !== "string" || !/^\d+$/.test(size)) throw new Error(`file ${index + 1} has no non-negative integer size`)
+              return { url, sha512, size: Number(size) }
+            })
+            if (primary !== parsed[0].url) throw new Error(`path ${primary} is not the first listed file ${parsed[0].url}`)
+            return { version, path: primary, files: parsed }
+          }
+
+          const manifest = JSON.parse(fs.readFileSync("artifacts/release/release-manifest.json", "utf8"))
+          // Each platform's metadata may only name artifacts this release actually carries, and
+          // macOS lists two: the ZIP and the DMG, which are downloaded into separate directories.
+          const cases = [
+            { label: "windows", metadata: process.env.NOVAWING_WINDOWS_LATEST, primary: manifest.windows.filename,
+              directories: ["release-input/windows-nsis"], blockmap: process.env.NOVAWING_WINDOWS_BLOCKMAP },
+            { label: "macos", metadata: process.env.NOVAWING_MACOS_LATEST, primary: manifest.macos.zip.filename,
+              directories: ["release-input/macos-zip", "release-input/macos-dmg"],
+              blockmap: process.env.NOVAWING_MACOS_ZIP_BLOCKMAP },
+          ]
+          for (const item of cases) {
+            const document = parseUpdateMetadata(fs.readFileSync(item.metadata, "utf8"))
+            assert.equal(document.version, manifest.version,
+              `${item.label}: metadata version ${document.version} does not match the manifest`)
+            assert.equal(document.path, item.primary,
+              `${item.label}: metadata primary path ${document.path} is not the manifest's ${item.primary}`)
+            // Every listed file is checked, not just the primary one, and against the real bytes.
+            for (const file of document.files) {
+              const located = item.directories.map((directory) => path.join(directory, file.url))
+                .find((candidate) => fs.existsSync(candidate))
+              assert.ok(located, `${item.label}: metadata references ${file.url}, which this release does not carry`)
+              const bytes = fs.readFileSync(located)
+              assert.equal(file.size, bytes.length,
+                `${item.label}: metadata size for ${file.url} does not match the artifact`)
+              assert.equal(file.sha512, createHash("sha512").update(bytes).digest("base64"),
+                `${item.label}: metadata sha512 for ${file.url} does not match the artifact`)
+            }
+            assert.ok(fs.existsSync(item.blockmap), `${item.label}: blockmap is missing`)
+            console.log(`${item.label} update metadata verified: ${document.files.map((file) => file.url).join(", ")}`)
+          }
+          EOF
+          node /tmp/validate-update-metadata.cjs
+
       # The whole release gate is read-only evidence: the manifest, the notes, the source run
       # record and the two identity records. No container is re-uploaded here.
       - name: Upload the validation bundle
@@ -565,10 +695,195 @@ jobs:
           resolve_into NOVAWING_RELEASE_MANIFEST release-validation 'release-manifest.json'
           resolve_into NOVAWING_RELEASE_NOTES release-validation 'release-notes.md'
 
-      # Fails closed on every precondition before anything is created: the confirmation string,
-      # the tag existing at all, the tag pointing at the exact verified commit, the tag agreeing
-      # with the validated version, and no release already existing for that tag.
-      - name: Verify the tag, the confirmation and the release preconditions
+      # The Pre-Public IP Gate. This is the last human gate before binary artifacts become
+      # public: the evidence snapshot, the shipped-content audit, the secret scan and the
+      # third-party license review are all recorded in a gate file in the private source
+      # repository, and this step re-reads it at the workflow ref and re-checks it against the
+      # exact build this run is about to publish. It runs before anything is fetched or
+      # uploaded, it is not bypassable, and a missing or unreadable gate file fails closed.
+      - name: Pre-public IP gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REF: ${{ github.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gate_index="$RUNNER_TEMP/pre-public-gate-index.json"
+          gate_file="$RUNNER_TEMP/pre-public-gate.json"
+          decision_file="$RUNNER_TEMP/owner-public-disclosure-decision.json"
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/NovaWing-IP-Baseline?ref=$GATE_REF" \
+              > "$gate_index" 2>/dev/null; then
+            echo "::error::cannot enumerate Pre-Public IP Gate records in $GITHUB_REPOSITORY@$GATE_REF"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+
+          gate_directories="$(GATE_INDEX="$gate_index" node --input-type=module <<'INDEX_EOF'
+          import { readFileSync } from 'node:fs'
+          const entries = JSON.parse(readFileSync(process.env.GATE_INDEX, 'utf8'))
+          const suffix = `-${process.env.TAG}-pre-public`
+          const matches = entries.filter((entry) => entry.type === 'dir' && entry.name.endsWith(suffix))
+          process.stdout.write(matches.map((entry) => entry.path).join('\n'))
+          INDEX_EOF
+          )"
+          gate_count="$(printf '%s\n' "$gate_directories" | awk 'NF { count++ } END { print count + 0 }')"
+          if [ "$gate_count" -ne 1 ]; then
+            echo "::error::expected exactly one Pre-Public IP Gate directory ending in '-$TAG-pre-public', found $gate_count"
+            printf '::error::candidate=%s\n' "${gate_directories:-NONE}"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+          GATE_PATH="$gate_directories/06-pre-public-gate.json"
+
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/$GATE_PATH?ref=$GATE_REF" \
+              -H "Accept: application/vnd.github.raw" > "$gate_file" 2>/dev/null; then
+            echo "::error::no Pre-Public IP Gate record at $GATE_PATH in $GITHUB_REPOSITORY@$GATE_REF"
+            echo "PRE_PUBLIC_IP_GATE HUMAN_REQUIRED"
+            exit 1
+          fi
+          export NOVAWING_PRE_PUBLIC_GATE="$gate_file"
+
+          DECISION_PATH="$gate_directories/07-owner-public-disclosure-decision.json"
+          if gh api "repos/$GITHUB_REPOSITORY/contents/$DECISION_PATH?ref=$GATE_REF" \
+              -H "Accept: application/vnd.github.raw" > "$decision_file" 2>/dev/null; then
+            export NOVAWING_OWNER_DISCLOSURE_DECISION="$decision_file"
+          else
+            export NOVAWING_OWNER_DISCLOSURE_DECISION=""
+          fi
+
+          node --input-type=module <<'GATE_EOF'
+          import { readFileSync } from 'node:fs'
+
+          // Every failure path ends in the same stable marker, including a gate file that
+          // cannot be read or parsed at all.
+          const fail = (messages) => {
+            for (const message of [].concat(messages)) console.error(`::error::Pre-Public IP Gate: ${message}`)
+            console.log('PRE_PUBLIC_IP_GATE HUMAN_REQUIRED')
+            process.exit(1)
+          }
+
+          let gate
+          let manifest
+          try {
+            gate = JSON.parse(readFileSync(process.env.NOVAWING_PRE_PUBLIC_GATE, 'utf8'))
+            manifest = JSON.parse(readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, 'utf8'))
+          } catch (error) {
+            fail(`gate record or release manifest is unreadable: ${error.message}`)
+          }
+
+          const tag = process.env.TAG
+          const version = String(manifest.version)
+
+          const checks = [
+            ['name', gate.name, 'NOVAWING_PRE_PUBLIC_IP_GATE'],
+            ['version', String(gate.version), version],
+            ['tag', gate.tag, tag],
+            ['tagTargetSha', gate.tagTargetSha, manifest.buildCommitSha],
+            ['buildRunId', String(gate.buildRunId), String(manifest.buildRunId)],
+            ['validation', gate.validation, 'PASS'],
+            ['evidenceSnapshot', gate.evidenceSnapshot, 'PASS'],
+            ['shippedIpAudit', gate.shippedIpAudit, 'PASS'],
+            ['secrets', gate.secrets, 'PASS'],
+            ['thirdPartyLicenses', gate.thirdPartyLicenses, 'PASS'],
+            ['sbom', gate.sbom, 'PASS'],
+            ['thirdPartyNotices', gate.thirdPartyNotices, 'PASS'],
+            ['clientRequiredSecretConflictBlocking', gate.clientRequiredSecretConflictBlocking, false],
+            ['evidence.provenanceChainIntact', gate.evidence?.provenanceChainIntact, true],
+          ]
+          const failures = []
+          for (const [field, actual, expected] of checks) {
+            if (actual !== expected) failures.push(`${field}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+          }
+          const blocking = Array.isArray(gate.blockingReasons) ? gate.blockingReasons : null
+          if (blocking === null) failures.push('blockingReasons is not an array')
+          const patents = Array.isArray(gate.patentDecisionRequired) ? gate.patentDecisionRequired : null
+          if (patents === null) failures.push('patentDecisionRequired is not an array')
+          if (!Array.isArray(gate.keepPrivateAccidentallyShipped)) failures.push('keepPrivateAccidentallyShipped is not an array')
+          else if (gate.keepPrivateAccidentallyShipped.length !== 0) failures.push(`keepPrivateAccidentallyShipped is not empty: ${JSON.stringify(gate.keepPrivateAccidentallyShipped)}`)
+
+          if (failures.length > 0) fail(failures)
+
+          if (gate.publicRelease === 'READY') {
+            const readyFailures = []
+            if (blocking.length !== 0) readyFailures.push(`blockingReasons must be empty, got ${JSON.stringify(blocking)}`)
+            if (patents.length !== 0) readyFailures.push(`patentDecisionRequired is not empty: ${JSON.stringify(patents)}`)
+            if (readyFailures.length > 0) fail(readyFailures)
+            console.log('PRE_PUBLIC_IP_GATE READY')
+            console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha}`)
+            process.exit(0)
+          }
+
+          if (gate.publicRelease !== 'HUMAN_REQUIRED') {
+            fail(`publicRelease must be READY or HUMAN_REQUIRED, got ${JSON.stringify(gate.publicRelease)}`)
+          }
+
+          const patentBlockerOnly = blocking.length === 1 &&
+            typeof blocking[0] === 'string' && /^PATENT_DECISION_REQUIRED(?::|$)/u.test(blocking[0])
+          if (!patentBlockerOnly) {
+            fail(`Owner disclosure cannot resolve blockingReasons: ${JSON.stringify(blocking)}`)
+          }
+          if (patents.length === 0) fail('PATENT_DECISION_REQUIRED blocker has no candidates')
+
+          const candidateIds = []
+          for (const candidate of patents) {
+            const match = /^(candidate-[1-9][0-9]*):(?:\s|$)/u.exec(candidate)
+            if (match === null) fail(`invalid patentDecisionRequired candidate: ${JSON.stringify(candidate)}`)
+            candidateIds.push(match[1])
+          }
+          if (new Set(candidateIds).size !== candidateIds.length) {
+            fail(`duplicate patentDecisionRequired candidates: ${JSON.stringify(candidateIds)}`)
+          }
+
+          let decision
+          try {
+            if (!process.env.NOVAWING_OWNER_DISCLOSURE_DECISION) throw new Error('amendment is missing')
+            decision = JSON.parse(readFileSync(process.env.NOVAWING_OWNER_DISCLOSURE_DECISION, 'utf8'))
+          } catch (error) {
+            fail(`Owner public disclosure amendment is unavailable or unreadable: ${error.message}`)
+          }
+
+          const decisionFailures = []
+          const decisionChecks = [
+            ['name', decision.name, 'NOVAWING_OWNER_PUBLIC_DISCLOSURE_DECISION'],
+            ['schemaVersion', decision.schemaVersion, 1],
+            ['version', String(decision.version), version],
+            ['tag', decision.tag, tag],
+            ['tagTargetSha', decision.tagTargetSha, manifest.buildCommitSha],
+            ['decision', decision.decision, 'ACCEPT_PUBLIC_DISCLOSURE'],
+          ]
+          for (const [field, actual, expected] of decisionChecks) {
+            if (actual !== expected) decisionFailures.push(`amendment ${field}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+          }
+          if (typeof decision.ownerStatement !== 'string' || decision.ownerStatement.trim() === '') {
+            decisionFailures.push('amendment ownerStatement must be a non-empty string')
+          }
+          if (typeof decision.decisionDate !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(decision.decisionDate)) {
+            decisionFailures.push('amendment decisionDate must be a UTC timestamp')
+          }
+
+          const resolved = decision.resolvedPatentDecisionRequired
+          if (!Array.isArray(resolved) || resolved.some((value) => typeof value !== 'string')) {
+            decisionFailures.push('amendment resolvedPatentDecisionRequired must be a string array')
+          } else {
+            const expected = [...candidateIds].sort()
+            const actual = [...resolved].sort()
+            if (new Set(actual).size !== actual.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
+              decisionFailures.push(`amendment candidate coverage ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`)
+            }
+          }
+          if (decisionFailures.length > 0) fail(decisionFailures)
+
+          const accepted = [...candidateIds].sort()
+          console.log('PRE_PUBLIC_IP_GATE READY')
+          console.log(`OWNER_PUBLIC_DISCLOSURE_ACCEPTED ${accepted.join(',')}`)
+          console.log(`::notice::Pre-Public IP Gate READY for ${tag} at ${manifest.buildCommitSha} after Owner public disclosure decision`)
+          GATE_EOF
+
+      # Fails closed on every precondition before anything is fetched or uploaded. The
+      # confirmation string, the version agreement and the source tag are checked here; the feed
+      # repository is a separate authority and is checked in its own step below.
+      - name: Verify the confirmation and the source tag
         id: preconditions
         shell: bash
         env:
@@ -594,20 +909,88 @@ jobs:
             exit 1
           fi
 
+          # Source tag authority: it is the provenance record for these artifacts, so it must
+          # exist in this repository and bind the exact build commit.
           tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha' 2>/dev/null || true)"
           if [ -z "$tag_sha" ]; then
-            echo "::error::tag '$TAG' does not exist. This workflow never creates or moves a tag."
+            echo "::error::source tag '$TAG' does not exist in $GITHUB_REPOSITORY. This workflow never creates or moves a source tag."
             exit 1
           fi
           if [ "$tag_sha" != "$build_sha" ]; then
-            echo "::error::tag '$TAG' points at $tag_sha but the validated artifacts came from $build_sha"
+            echo "::error::source tag '$TAG' points at $tag_sha but the validated artifacts came from $build_sha"
             exit 1
           fi
+          echo "::notice::Source tag $TAG -> $tag_sha (version $version) verified in $GITHUB_REPOSITORY"
+
+          # Diagnostic only. A release here says nothing about whether the feed repository is
+          # free, so it is reported and never used as the publish-conflict authority.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::a release for '$TAG' already exists. This workflow never overwrites a release."
+            echo "::notice::$GITHUB_REPOSITORY already carries a release for $TAG; the feed repository is checked separately"
+          fi
+
+      # The feed repository is where clients resolve updates from, so it must be public, and both
+      # the release and its tag must be free before any asset is fetched.
+      - name: Verify the feed repository and that nothing is published yet
+        id: feedpreconditions
+        shell: bash
+        env:
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # No fallback to github.token: it cannot write another repository, so a fallback would
+          # only defer a configuration mistake until every asset had been fetched.
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured. Publishing to $FEED_REPO needs a token with write access to that repository, stored as a secret on this private repository."
             exit 1
           fi
-          echo "::notice::All publish preconditions hold: tag $TAG -> $tag_sha, version $version"
+          feed_gh() { GH_TOKEN="$FEED_TOKEN" gh "$@"; }
+
+          repo_json="$RUNNER_TEMP/feed-repository.json"
+          if ! feed_gh api "repos/$FEED_REPO" > "$repo_json"; then
+            echo "::error::the feed repository '$FEED_REPO' is not reachable with FEED_REPO_TOKEN"
+            exit 1
+          fi
+          repo_fields="$(node -e '
+            const repo = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
+            process.stdout.write([repo.full_name ?? "", repo.visibility ?? "", repo.default_branch ?? ""].join("\t"))
+          ' "$repo_json")"
+          IFS=$'\t' read -r full_name visibility feed_target <<< "$repo_fields"
+          if [ "$full_name" != "$FEED_REPO" ]; then
+            echo "::error::the feed repository resolved to '$full_name', expected '$FEED_REPO'"
+            exit 1
+          fi
+          if [ "$visibility" != "public" ]; then
+            echo "::error::the feed repository '$FEED_REPO' is '$visibility', expected 'public'. A client holds no token and can only read a public repository."
+            exit 1
+          fi
+          if [ -z "$feed_target" ]; then
+            echo "::error::the feed repository '$FEED_REPO' has no default branch to publish from"
+            exit 1
+          fi
+
+          release_tags="$RUNNER_TEMP/feed-release-tags.txt"
+          if ! feed_gh api --paginate "repos/$FEED_REPO/releases?per_page=100" --jq '.[].tag_name' > "$release_tags"; then
+            echo "::error::cannot determine whether feed release '$TAG' exists"
+            exit 1
+          fi
+          if grep -Fxq "$TAG" "$release_tags"; then
+            echo "::error::$FEED_REPO already has a release for '$TAG'. This workflow never overwrites a release."
+            exit 1
+          fi
+
+          tag_refs="$RUNNER_TEMP/feed-tag-refs.txt"
+          if ! feed_gh api "repos/$FEED_REPO/git/matching-refs/tags/$TAG" --jq '.[].ref' > "$tag_refs"; then
+            echo "::error::cannot determine whether feed tag '$TAG' exists"
+            exit 1
+          fi
+          if grep -Fxq "refs/tags/$TAG" "$tag_refs"; then
+            echo "::error::$FEED_REPO already has a tag '$TAG'. This workflow never moves a tag."
+            exit 1
+          fi
+          echo "::notice::Feed repository $FEED_REPO is public with default branch '$feed_target', and is clear of $TAG"
+          printf 'NOVAWING_FEED_TARGET=%s\n' "$feed_target" >> "$GITHUB_ENV"
 
       # The containers are fetched from the pinned build run, never rebuilt.
       - name: Download the Windows installer from the pinned build run
@@ -659,8 +1042,13 @@ jobs:
             echo "$1=$value"
           }
           resolve_asset NOVAWING_RELEASE_EXE release-assets/windows '*.exe'
+          resolve_asset NOVAWING_RELEASE_WINDOWS_LATEST release-assets/windows 'latest.yml'
+          resolve_asset NOVAWING_RELEASE_WINDOWS_BLOCKMAP release-assets/windows '*.exe.blockmap'
           resolve_asset NOVAWING_RELEASE_DMG release-assets/macos-dmg '*.dmg'
+          resolve_asset NOVAWING_RELEASE_DMG_BLOCKMAP release-assets/macos-dmg '*.dmg.blockmap'
           resolve_asset NOVAWING_RELEASE_ZIP release-assets/macos-zip '*-mac.zip'
+          resolve_asset NOVAWING_RELEASE_ZIP_BLOCKMAP release-assets/macos-zip '*-mac.zip.blockmap'
+          resolve_asset NOVAWING_RELEASE_MACOS_LATEST release-assets/macos-zip 'latest-mac.yml'
 
       # Step B. Publishing exactly the validated bytes: every asset is re-hashed against the
       # manifest before the release is created, so a mixed or substituted artifact cannot be
@@ -670,7 +1058,9 @@ jobs:
         id: assets
         shell: bash
         run: |
-          for name in NOVAWING_RELEASE_EXE NOVAWING_RELEASE_DMG NOVAWING_RELEASE_ZIP NOVAWING_RELEASE_MANIFEST; do
+          for name in NOVAWING_RELEASE_EXE NOVAWING_RELEASE_WINDOWS_LATEST NOVAWING_RELEASE_WINDOWS_BLOCKMAP \
+            NOVAWING_RELEASE_DMG NOVAWING_RELEASE_DMG_BLOCKMAP NOVAWING_RELEASE_ZIP NOVAWING_RELEASE_ZIP_BLOCKMAP \
+            NOVAWING_RELEASE_MACOS_LATEST NOVAWING_RELEASE_MANIFEST; do
             value="${!name}"
             if [ -z "$value" ]; then
               echo "::error::$name is not set; the resolve step did not publish it to this step"
@@ -703,25 +1093,105 @@ jobs:
           EOF
           node /tmp/verify-release-assets.cjs
 
-      # The tag already exists and --verify-tag guarantees this cannot create one. Assets are
-      # uploaded by name without --clobber, so an existing asset fails the step rather than
-      # being replaced.
-      - name: Create the GitHub Release
+      # Publishing creates the version tag in the feed repository, from the branch named by
+      # --target rather than an implicit default. No --verify-tag is used: the feed repository has
+      # no such tag yet, and the source tag in this repository was already verified as the
+      # provenance authority. Assets are uploaded by name without --clobber, so an existing asset
+      # fails the step rather than being replaced.
+      - name: Create the release in the feed repository
         id: release
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
           TAG: ${{ inputs.tag }}
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured"
+            exit 1
+          fi
+          if [ -z "${NOVAWING_FEED_TARGET:-}" ]; then
+            echo "::error::the feed repository target was not resolved by the preconditions step"
+            exit 1
+          fi
+          GH_TOKEN="$FEED_TOKEN" gh release create "$TAG" \
             "$NOVAWING_RELEASE_EXE" \
+            "$NOVAWING_RELEASE_WINDOWS_LATEST" \
+            "$NOVAWING_RELEASE_WINDOWS_BLOCKMAP" \
             "$NOVAWING_RELEASE_DMG" \
+            "$NOVAWING_RELEASE_DMG_BLOCKMAP" \
             "$NOVAWING_RELEASE_ZIP" \
+            "$NOVAWING_RELEASE_ZIP_BLOCKMAP" \
+            "$NOVAWING_RELEASE_MACOS_LATEST" \
             "$NOVAWING_RELEASE_MANIFEST" \
-            --repo "$GITHUB_REPOSITORY" \
+            --repo "$FEED_REPO" \
+            --target "$NOVAWING_FEED_TARGET" \
             --title "NovaWing $TAG" \
-            --notes-file "$NOVAWING_RELEASE_NOTES" \
-            --verify-tag
-          echo "::notice::Released $TAG from the artifacts of build run $BUILD_RUN_ID"
+            --notes-file "$NOVAWING_RELEASE_NOTES"
+          echo "::notice::Published $TAG to $FEED_REPO from the artifacts of build run $BUILD_RUN_ID"
+
+      # Read-only. Reads the release back from the feed repository and proves the published asset
+      # set is exactly what the manifest describes: nothing missing, nothing duplicated, and the
+      # container sizes the manifest recorded. The metadata itself was validated before
+      # publishing and is not regenerated here.
+      - name: Verify the published release in the feed repository
+        id: postpublish
+        shell: bash
+        env:
+          FEED_REPO: ${{ inputs.feed_repo }}
+          FEED_TOKEN: ${{ secrets.FEED_REPO_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FEED_TOKEN:-}" ]; then
+            echo "::error::FEED_REPO_TOKEN is not configured"
+            exit 1
+          fi
+          GH_TOKEN="$FEED_TOKEN" gh api "repos/$FEED_REPO/releases/tags/$TAG" > /tmp/published-release.json
+          cat > /tmp/verify-published-release.cjs <<'EOF'
+          const fs = require("node:fs")
+          const assert = require("node:assert/strict")
+
+          const manifest = JSON.parse(fs.readFileSync(process.env.NOVAWING_RELEASE_MANIFEST, "utf8"))
+          const release = JSON.parse(fs.readFileSync("/tmp/published-release.json", "utf8"))
+
+          assert.equal(release.tag_name, process.env.TAG, `published tag is ${release.tag_name}`)
+          assert.equal(release.draft, false, "the published release is still a draft")
+
+          const assets = release.assets.map((asset) => ({ name: asset.name, size: asset.size, digest: asset.digest ?? null }))
+          const names = assets.map((asset) => asset.name)
+          assert.equal(new Set(names).size, names.length, `duplicate assets: ${names.join(", ")}`)
+
+          const containers = [
+            ["Windows installer", manifest.windows.filename, manifest.windows.size, manifest.windows.sha256],
+            ["macOS DMG", manifest.macos.dmg.filename, manifest.macos.dmg.size, manifest.macos.dmg.sha256],
+            ["macOS ZIP", manifest.macos.zip.filename, manifest.macos.zip.size, manifest.macos.zip.sha256],
+          ]
+          const required = [
+            ...containers.map(([, name]) => name),
+            `${manifest.windows.filename}.blockmap`,
+            `${manifest.macos.dmg.filename}.blockmap`,
+            `${manifest.macos.zip.filename}.blockmap`,
+            "latest.yml",
+            "latest-mac.yml",
+            "release-manifest.json",
+          ]
+          for (const name of required) {
+            assert.ok(assets.some((asset) => asset.name === name), `the published release is missing ${name}`)
+          }
+          for (const [label, name, size, sha256] of containers) {
+            const asset = assets.find((entry) => entry.name === name)
+            assert.equal(asset.size, size, `${label}: published size ${asset.size} does not match the manifest (${size})`)
+            // Newer API versions report an asset digest; when present it must match the manifest.
+            if (asset.digest !== null) {
+              assert.equal(asset.digest, `sha256:${sha256}`, `${label}: published digest ${asset.digest} does not match the manifest`)
+            }
+          }
+          assert.equal(assets.length, required.length, `the release carries ${assets.length} assets, expected ${required.length}`)
+
+          console.log(`PUBLISHED ${release.tag_name}: ${assets.length} assets verified in the feed repository`)
+          for (const asset of assets) console.log(`  ${asset.name} (${asset.size} bytes)`)
+          EOF
+          node /tmp/verify-published-release.cjs

@@ -47,6 +47,25 @@ export function createShutdownCoordinator({ getStartup, getHost, requestFinalQui
     return shutdownPromise
   }
 
+  /**
+   * Attach the single final-quit continuation to the shared shutdown operation. Both quit
+   * entries call this, so they share one shutdownPromise, one continuation latch, one failure
+   * report and one final-quit count.
+   */
+  function attachFinalQuit() {
+    const operation = shutdown()
+    if (quitContinuationAttached) return operation
+    quitContinuationAttached = true
+    void operation.then(() => {
+      observations.finalQuitRequests++
+      requestFinalQuit()
+    }, (error) => {
+      observations.failures++
+      reportFailure(error)
+    })
+    return operation
+  }
+
   return {
     observations, shutdown,
     get requested() { return requested },
@@ -55,16 +74,17 @@ export function createShutdownCoordinator({ getStartup, getHost, requestFinalQui
       if (completed) return
       event.preventDefault()
       observations.quitRequests++
-      const operation = shutdown()
-      if (quitContinuationAttached) return
-      quitContinuationAttached = true
-      void operation.then(() => {
-        observations.finalQuitRequests++
-        requestFinalQuit()
-      }, (error) => {
-        observations.failures++
-        reportFailure(error)
-      })
+      attachFinalQuit()
+    },
+    /**
+     * Programmatic quit entry. It stops admission synchronously — Host close and Launchpad close
+     * both refuse new work before their first await — so a caller may use it to enter the strict
+     * drain without an Electron event. It returns the shared drain operation; the final quit is
+     * still delivered only by the single continuation attached here.
+     */
+    requestQuit() {
+      observations.quitRequests++
+      return attachFinalQuit()
     },
   }
 }

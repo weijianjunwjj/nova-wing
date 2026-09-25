@@ -1,0 +1,2056 @@
+{
+  "@a2a-js/sdk@0.3.14": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/a2aproject/a2a-js",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@a2a-js/sdk-v0_3",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@a2a-js/sdk-v0_3/LICENSE"
+  },
+  "@a2a-js/sdk@1.0.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/a2aproject/a2a-js",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@a2a-js/sdk-v1",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@a2a-js/sdk-v1/LICENSE"
+  },
+  "@ai-sdk/provider-utils@3.0.30": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v5",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v5/LICENSE"
+  },
+  "@ai-sdk/provider-utils@4.0.40": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v6"
+  },
+  "@ai-sdk/provider-utils@5.0.13": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v7"
+  },
+  "@ai-sdk/provider@2.0.3": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider/LICENSE"
+  },
+  "@ai-sdk/provider@3.0.14": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v6/node_modules/@ai-sdk/provider",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v6/node_modules/@ai-sdk/provider/LICENSE"
+  },
+  "@ai-sdk/provider@4.0.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/ai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v7/node_modules/@ai-sdk/provider",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@ai-sdk/provider-utils-v7/node_modules/@ai-sdk/provider/LICENSE"
+  },
+  "@hono/node-server@2.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/honojs/node-server",
+    "publisher": "Yusuke Wada",
+    "email": "yusuke@kamawada.com",
+    "url": "https://github.com/yusukebe",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@hono/node-server",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@hono/node-server/LICENSE"
+  },
+  "@isaacs/ttlcache@2.1.5": {
+    "licenses": "BlueOak-1.0.0",
+    "repository": "https://github.com/isaacs/ttlcache",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "https://izs.me",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@isaacs/ttlcache",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@isaacs/ttlcache/LICENSE.md"
+  },
+  "@libsql/client@0.17.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/tursodatabase/libsql-client-ts",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/client"
+  },
+  "@libsql/core@0.17.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/tursodatabase/libsql-client-ts",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/core"
+  },
+  "@libsql/darwin-arm64@0.5.29": {
+    "licenses": "MIT",
+    "repository": "https://github.com/tursodatabase/libsql-js",
+    "publisher": "Pekka Enberg",
+    "email": "penberg@iki.fi",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/darwin-arm64"
+  },
+  "@libsql/hrana-client@0.10.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/libsql/hrana-client-ts",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/hrana-client",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/hrana-client/LICENSE"
+  },
+  "@libsql/isomorphic-ws@0.1.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/libsql/isomorphic-ts",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@libsql/isomorphic-ws"
+  },
+  "@lukeed/csprng@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lukeed/csprng",
+    "publisher": "Luke Edwards",
+    "email": "luke.edwards05@gmail.com",
+    "url": "https://lukeed.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@lukeed/csprng",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@lukeed/csprng/license"
+  },
+  "@lukeed/uuid@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lukeed/uuid",
+    "publisher": "Luke Edwards",
+    "email": "luke.edwards05@gmail.com",
+    "url": "https://lukeed.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@lukeed/uuid",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@lukeed/uuid/license"
+  },
+  "@mastra/core@1.60.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/mastra-ai/mastra",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@mastra/core"
+  },
+  "@mastra/libsql@1.21.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/mastra-ai/mastra",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@mastra/libsql",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@mastra/libsql/LICENSE.md"
+  },
+  "@mastra/schema-compat@1.3.7": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/mastra-ai/mastra",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@mastra/schema-compat",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@mastra/schema-compat/LICENSE.md"
+  },
+  "@modelcontextprotocol/core@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/modelcontextprotocol/typescript-sdk",
+    "publisher": "Anthropic, PBC",
+    "url": "https://anthropic.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/core",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/core/LICENSE"
+  },
+  "@modelcontextprotocol/sdk@1.30.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/modelcontextprotocol/typescript-sdk",
+    "publisher": "Anthropic, PBC",
+    "url": "https://anthropic.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/sdk",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/sdk/LICENSE"
+  },
+  "@modelcontextprotocol/server@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/modelcontextprotocol/typescript-sdk",
+    "publisher": "Anthropic, PBC",
+    "url": "https://anthropic.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/server",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/server/LICENSE"
+  },
+  "@neon-rs/load@0.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/dherman/neon-rs",
+    "publisher": "Dave Herman",
+    "email": "david.herman@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@neon-rs/load",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@neon-rs/load/LICENSE"
+  },
+  "@openai/codex-sdk@0.151.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/openai/codex",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@openai/codex-sdk",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@openai/codex-sdk/LICENSE"
+  },
+  "@openai/codex@0.151.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/openai/codex",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@openai/codex"
+  },
+  "@openai/codex@0.151.0-darwin-arm64": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/openai/codex",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@openai/codex-darwin-arm64"
+  },
+  "@posthog/core@1.48.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/PostHog/posthog-js",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@posthog/core"
+  },
+  "@posthog/types@1.405.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/PostHog/posthog-js",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@posthog/types",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@posthog/types/LICENSE"
+  },
+  "@sec-ant/readable-stream@0.4.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Sec-ant/readable-stream",
+    "publisher": "Ze-Zheng Wu",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sec-ant/readable-stream",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sec-ant/readable-stream/LICENSE"
+  },
+  "@sindresorhus/merge-streams@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/merge-streams",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/merge-streams",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/merge-streams/license"
+  },
+  "@sindresorhus/slugify@2.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/slugify",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/slugify",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/slugify/license"
+  },
+  "@sindresorhus/transliterate@1.6.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/transliterate",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/transliterate",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@sindresorhus/transliterate/license"
+  },
+  "@standard-schema/spec@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/standard-schema/standard-schema",
+    "publisher": "Colin McDonnell",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@standard-schema/spec",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@standard-schema/spec/LICENSE"
+  },
+  "@types/debug@4.1.13": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/debug",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/debug/LICENSE"
+  },
+  "@types/mdast@4.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/mdast",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/mdast/LICENSE"
+  },
+  "@types/ms@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/ms",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/ms/LICENSE"
+  },
+  "@types/node@24.10.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/node",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/node/LICENSE"
+  },
+  "@types/unist@3.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/unist",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/unist/LICENSE"
+  },
+  "@types/ws@8.18.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/ws",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@types/ws/LICENSE"
+  },
+  "@workflow/serde@4.1.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/workflow",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@workflow/serde",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@workflow/serde/LICENSE.md"
+  },
+  "@workflow/serde@4.1.0-beta.2": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/workflow",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/chat/node_modules/@workflow/serde",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/chat/node_modules/@workflow/serde/LICENSE.md"
+  },
+  "accepts@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/accepts",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/accepts",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/accepts/LICENSE"
+  },
+  "ajv-formats@3.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ajv-validator/ajv-formats",
+    "publisher": "Evgeny Poberezkin",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ajv-formats",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ajv-formats/LICENSE"
+  },
+  "ajv@8.20.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ajv-validator/ajv",
+    "publisher": "Evgeny Poberezkin",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ajv",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ajv/LICENSE"
+  },
+  "argparse@1.0.10": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodeca/argparse",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/argparse",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/argparse/LICENSE"
+  },
+  "argparse@2.0.1": {
+    "licenses": "Python-2.0",
+    "repository": "https://github.com/nodeca/argparse",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater/node_modules/argparse",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater/node_modules/argparse/LICENSE"
+  },
+  "bail@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/bail",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/bail",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/bail/license"
+  },
+  "body-parser@2.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/body-parser",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/body-parser",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/body-parser/LICENSE"
+  },
+  "builder-util-runtime@9.7.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/electron-userland/electron-builder",
+    "publisher": "Vladimir Krivosheev",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/builder-util-runtime",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/builder-util-runtime/LICENSE"
+  },
+  "bytes@3.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/visionmedia/bytes.js",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/bytes",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/bytes/LICENSE"
+  },
+  "call-bind-apply-helpers@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/call-bind-apply-helpers",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/call-bind-apply-helpers",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/call-bind-apply-helpers/LICENSE"
+  },
+  "call-bound@1.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/call-bound",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/call-bound",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/call-bound/LICENSE"
+  },
+  "ccount@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/ccount",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ccount",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ccount/license"
+  },
+  "character-entities@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/character-entities",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/character-entities",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/character-entities/license"
+  },
+  "chat@4.38.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vercel/chat",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/chat",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/chat/LICENSE"
+  },
+  "content-disposition@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/content-disposition",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/content-disposition",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/content-disposition/LICENSE"
+  },
+  "content-type@1.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/content-type",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/sdk/node_modules/content-type",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/@modelcontextprotocol/sdk/node_modules/content-type/LICENSE"
+  },
+  "content-type@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/content-type",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/content-type",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/content-type/LICENSE"
+  },
+  "cookie-signature@1.2.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/visionmedia/node-cookie-signature",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@learnboost.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cookie-signature",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cookie-signature/LICENSE"
+  },
+  "cookie@0.7.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/cookie",
+    "publisher": "Roman Shtylman",
+    "email": "shtylman@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cookie",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cookie/LICENSE"
+  },
+  "cors@2.8.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/cors",
+    "publisher": "Troy Goode",
+    "email": "troygoode@gmail.com",
+    "url": "https://github.com/troygoode/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cors",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cors/LICENSE"
+  },
+  "croner@10.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/hexagon/croner",
+    "publisher": "Hexagon",
+    "email": "github.com/hexagon",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/croner",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/croner/LICENSE"
+  },
+  "cross-spawn@7.0.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/moxystudio/node-cross-spawn",
+    "publisher": "André Cruz",
+    "email": "andre@moxy.studio",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cross-spawn",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/cross-spawn/LICENSE"
+  },
+  "debug@4.4.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/debug-js/debug",
+    "publisher": "Josh Junon",
+    "url": "https://github.com/qix-",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/debug",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/debug/LICENSE"
+  },
+  "decode-named-character-reference@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/decode-named-character-reference",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/decode-named-character-reference",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/decode-named-character-reference/license"
+  },
+  "depd@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/dougwilson/nodejs-depd",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/depd",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/depd/LICENSE"
+  },
+  "dequal@2.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lukeed/dequal",
+    "publisher": "Luke Edwards",
+    "email": "luke.edwards05@gmail.com",
+    "url": "https://lukeed.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dequal",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dequal/license"
+  },
+  "detect-libc@2.0.2": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/lovell/detect-libc",
+    "publisher": "Lovell Fuller",
+    "email": "npm@lovell.info",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/detect-libc",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/detect-libc/LICENSE"
+  },
+  "devlop@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/devlop",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/devlop",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/devlop/license"
+  },
+  "dotenv@17.4.2": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/motdotla/dotenv",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dotenv",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dotenv/LICENSE"
+  },
+  "dunder-proto@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/es-shims/dunder-proto",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dunder-proto",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/dunder-proto/LICENSE"
+  },
+  "ee-first@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonathanong/ee-first",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ee-first",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ee-first/LICENSE"
+  },
+  "electron-updater@6.8.9": {
+    "licenses": "MIT",
+    "repository": "https://github.com/electron-userland/electron-builder",
+    "publisher": "Vladimir Krivosheev",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater/LICENSE"
+  },
+  "encodeurl@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/encodeurl",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/encodeurl",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/encodeurl/LICENSE"
+  },
+  "es-define-property@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-define-property",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-define-property",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-define-property/LICENSE"
+  },
+  "es-errors@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-errors",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-errors",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-errors/LICENSE"
+  },
+  "es-object-atoms@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-object-atoms",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-object-atoms",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/es-object-atoms/LICENSE"
+  },
+  "escape-html@1.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/component/escape-html",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/escape-html",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/escape-html/LICENSE"
+  },
+  "escape-string-regexp@5.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/escape-string-regexp",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/escape-string-regexp",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/escape-string-regexp/license"
+  },
+  "esprima@4.0.1": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/jquery/esprima",
+    "publisher": "Ariya Hidayat",
+    "email": "ariya.hidayat@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/esprima",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/esprima/LICENSE.BSD"
+  },
+  "etag@1.8.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/etag",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/etag",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/etag/LICENSE"
+  },
+  "eventsource-parser@3.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/rexxars/eventsource-parser",
+    "publisher": "Espen Hovlandsdal",
+    "email": "espen@hovlandsdal.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/eventsource-parser",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/eventsource-parser/LICENSE"
+  },
+  "eventsource@3.0.7": {
+    "licenses": "MIT",
+    "repository": "git://git@github.com/EventSource/eventsource",
+    "publisher": "Espen Hovlandsdal",
+    "email": "espen@hovlandsdal.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/eventsource",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/eventsource/LICENSE"
+  },
+  "execa@9.6.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/execa",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/execa",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/execa/license"
+  },
+  "express-rate-limit@8.7.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/express-rate-limit/express-rate-limit",
+    "publisher": "Nathan Friedly",
+    "url": "http://nfriedly.com/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/express-rate-limit",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/express-rate-limit/license"
+  },
+  "express@5.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/express",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/express",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/express/LICENSE"
+  },
+  "extend-shallow@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/extend-shallow",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/extend-shallow",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/extend-shallow/LICENSE"
+  },
+  "extend@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/justmoon/node-extend",
+    "publisher": "Stefan Thomas",
+    "email": "justmoon@members.fsf.org",
+    "url": "http://www.justmoon.net",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/extend",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/extend/LICENSE"
+  },
+  "fast-deep-equal@3.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/epoberezkin/fast-deep-equal",
+    "publisher": "Evgeny Poberezkin",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fast-deep-equal",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fast-deep-equal/LICENSE"
+  },
+  "fast-uri@3.1.7": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/fastify/fast-uri",
+    "publisher": "Vincent Le Goff",
+    "email": "vince.legoff@gmail.com",
+    "url": "https://github.com/zekth",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fast-uri",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fast-uri/LICENSE"
+  },
+  "fastq@1.20.1": {
+    "licenses": "ISC",
+    "repository": "https://github.com/mcollina/fastq",
+    "publisher": "Matteo Collina",
+    "email": "hello@matteocollina.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fastq",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fastq/LICENSE"
+  },
+  "figures@6.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/figures",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/figures",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/figures/license"
+  },
+  "finalhandler@2.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/finalhandler",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/finalhandler",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/finalhandler/LICENSE"
+  },
+  "forwarded@0.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/forwarded",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/forwarded",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/forwarded/LICENSE"
+  },
+  "fresh@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/fresh",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fresh",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fresh/LICENSE"
+  },
+  "fs-extra@10.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jprichardson/node-fs-extra",
+    "publisher": "JP Richardson",
+    "email": "jprichardson@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fs-extra",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/fs-extra/LICENSE"
+  },
+  "function-bind@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Raynos/function-bind",
+    "publisher": "Raynos",
+    "email": "raynos2@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/function-bind",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/function-bind/LICENSE"
+  },
+  "get-intrinsic@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/get-intrinsic",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-intrinsic",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-intrinsic/LICENSE"
+  },
+  "get-proto@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/get-proto",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-proto",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-proto/LICENSE"
+  },
+  "get-stream@9.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/get-stream",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-stream",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/get-stream/license"
+  },
+  "gopd@1.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/gopd",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/gopd",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/gopd/LICENSE"
+  },
+  "graceful-fs@4.2.11": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/node-graceful-fs",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/graceful-fs",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/graceful-fs/LICENSE"
+  },
+  "gray-matter@4.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/gray-matter",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/gray-matter",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/gray-matter/LICENSE"
+  },
+  "has-symbols@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/has-symbols",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "url": "http://ljharb.codes",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/has-symbols",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/has-symbols/LICENSE"
+  },
+  "hasown@2.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/hasOwn",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/hasown",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/hasown/LICENSE"
+  },
+  "hono@4.13.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/honojs/hono",
+    "publisher": "Yusuke Wada",
+    "email": "yusuke@kamawada.com",
+    "url": "https://github.com/yusukebe",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/hono",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/hono/LICENSE"
+  },
+  "http-errors@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/http-errors",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/http-errors",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/http-errors/LICENSE"
+  },
+  "human-signals@8.0.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/ehmicky/human-signals",
+    "publisher": "ehmicky",
+    "email": "ehmicky@gmail.com",
+    "url": "https://github.com/ehmicky",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/human-signals",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/human-signals/LICENSE"
+  },
+  "iconv-lite@0.7.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/iconv-lite",
+    "publisher": "Alexander Shtuchkin",
+    "email": "ashtuchkin@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/iconv-lite",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/iconv-lite/LICENSE"
+  },
+  "ignore@7.0.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/kaelzhang/node-ignore",
+    "publisher": "kael",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ignore",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ignore/LICENSE-MIT"
+  },
+  "inherits@2.0.4": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/inherits",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/inherits",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/inherits/LICENSE"
+  },
+  "ip-address@10.7.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/beaugunderson/ip-address",
+    "publisher": "Beau Gunderson",
+    "email": "beau@beaugunderson.com",
+    "url": "https://beaugunderson.com/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ip-address",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ip-address/LICENSE"
+  },
+  "ipaddr.js@1.9.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/whitequark/ipaddr.js",
+    "publisher": "whitequark",
+    "email": "whitequark@whitequark.org",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ipaddr.js",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ipaddr.js/LICENSE"
+  },
+  "is-extendable@0.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/is-extendable",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-extendable",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-extendable/LICENSE"
+  },
+  "is-network-error@1.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-network-error",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-network-error",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-network-error/license"
+  },
+  "is-plain-obj@4.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-plain-obj",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-plain-obj",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-plain-obj/license"
+  },
+  "is-promise@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/then/is-promise",
+    "publisher": "ForbesLindesay",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-promise",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-promise/LICENSE"
+  },
+  "is-stream@4.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-stream",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-stream",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-stream/license"
+  },
+  "is-unicode-supported@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-unicode-supported",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-unicode-supported",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/is-unicode-supported/license"
+  },
+  "isexe@2.0.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/isexe",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/isexe",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/isexe/LICENSE"
+  },
+  "jose@6.2.9": {
+    "licenses": "MIT",
+    "repository": "https://github.com/panva/jose",
+    "publisher": "Filip Skokan",
+    "email": "panva.ip@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jose",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jose/LICENSE.md"
+  },
+  "jpeg-js@0.4.4": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/eugeneware/jpeg-js",
+    "publisher": "Eugene Ware",
+    "email": "eugene@noblesamurai.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jpeg-js",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jpeg-js/LICENSE"
+  },
+  "js-base64@3.9.3": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dankogai/js-base64",
+    "publisher": "Dan Kogai",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/js-base64",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/js-base64/LICENSE.md"
+  },
+  "js-yaml@3.15.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodeca/js-yaml",
+    "publisher": "Vladimir Zapparov",
+    "email": "dervus.grim@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/js-yaml",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/js-yaml/LICENSE"
+  },
+  "js-yaml@4.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodeca/js-yaml",
+    "publisher": "Vladimir Zapparov",
+    "email": "dervus.grim@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater/node_modules/js-yaml",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/electron-updater/node_modules/js-yaml/LICENSE"
+  },
+  "json-schema-to-zod@2.8.1": {
+    "licenses": "ISC",
+    "repository": "https://github.com/StefanTerdell/json-schema-to-zod",
+    "publisher": "Stefan Terdell",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-to-zod",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-to-zod/LICENSE"
+  },
+  "json-schema-traverse@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/epoberezkin/json-schema-traverse",
+    "publisher": "Evgeny Poberezkin",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-traverse",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-traverse/LICENSE"
+  },
+  "json-schema-typed@8.0.2": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/RemyRylan/json-schema-typed",
+    "publisher": "Remy Rylan",
+    "url": "https://github.com/RemyRylan",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-typed",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema-typed/LICENSE.md"
+  },
+  "json-schema@0.4.0": {
+    "licenses": "(AFL-2.1 OR BSD-3-Clause)",
+    "repository": "https://github.com/kriszyp/json-schema",
+    "publisher": "Kris Zyp",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/json-schema/LICENSE"
+  },
+  "jsonfile@6.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jprichardson/node-jsonfile",
+    "publisher": "JP Richardson",
+    "email": "jprichardson@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jsonfile",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/jsonfile/LICENSE"
+  },
+  "kind-of@6.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/kind-of",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/kind-of",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/kind-of/LICENSE"
+  },
+  "lazy-val@1.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/develar/lazy-val",
+    "publisher": "Vladimir Krivosheev",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lazy-val"
+  },
+  "libsql@0.5.29": {
+    "licenses": "MIT",
+    "repository": "https://github.com/tursodatabase/libsql-js",
+    "publisher": "Pekka Enberg",
+    "email": "penberg@iki.fi",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/libsql",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/libsql/LICENSE"
+  },
+  "lodash.escaperegexp@4.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lodash.escaperegexp",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lodash.escaperegexp/LICENSE"
+  },
+  "lodash.isequal@4.5.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lodash.isequal",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lodash.isequal/LICENSE"
+  },
+  "longest-streak@3.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/longest-streak",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/longest-streak",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/longest-streak/license"
+  },
+  "lru-cache@11.5.2": {
+    "licenses": "BlueOak-1.0.0",
+    "repository": "https://github.com/isaacs/node-lru-cache",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lru-cache",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/lru-cache/LICENSE.md"
+  },
+  "markdown-table@3.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/markdown-table",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/markdown-table",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/markdown-table/license"
+  },
+  "math-intrinsics@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/es-shims/math-intrinsics",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/math-intrinsics",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/math-intrinsics/LICENSE"
+  },
+  "mdast-util-find-and-replace@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-find-and-replace",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-find-and-replace",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-find-and-replace/license"
+  },
+  "mdast-util-from-markdown@2.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-from-markdown",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-from-markdown",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-from-markdown/license"
+  },
+  "mdast-util-gfm-autolink-literal@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm-autolink-literal",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-autolink-literal",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-autolink-literal/license"
+  },
+  "mdast-util-gfm-footnote@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm-footnote",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-footnote",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-footnote/license"
+  },
+  "mdast-util-gfm-strikethrough@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm-strikethrough",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-strikethrough",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-strikethrough/license"
+  },
+  "mdast-util-gfm-table@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm-table",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-table",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-table/license"
+  },
+  "mdast-util-gfm-task-list-item@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm-task-list-item",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-task-list-item",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm-task-list-item/license"
+  },
+  "mdast-util-gfm@3.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-gfm",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-gfm/license"
+  },
+  "mdast-util-phrasing@4.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-phrasing",
+    "publisher": "Victor Felder",
+    "email": "victor@draft.li",
+    "url": "https://draft.li",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-phrasing",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-phrasing/license"
+  },
+  "mdast-util-to-markdown@2.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-to-markdown",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-to-markdown",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-to-markdown/license"
+  },
+  "mdast-util-to-string@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/mdast-util-to-string",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-to-string",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mdast-util-to-string/license"
+  },
+  "media-typer@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/media-typer",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/media-typer",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/media-typer/LICENSE"
+  },
+  "merge-descriptors@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/merge-descriptors",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/merge-descriptors",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/merge-descriptors/license"
+  },
+  "micromark-core-commonmark@2.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-core-commonmark",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-core-commonmark",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-core-commonmark/license"
+  },
+  "micromark-extension-gfm-autolink-literal@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-autolink-literal",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-autolink-literal",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-autolink-literal/license"
+  },
+  "micromark-extension-gfm-footnote@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-footnote",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-footnote",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-footnote/license"
+  },
+  "micromark-extension-gfm-strikethrough@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-strikethrough",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-strikethrough",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-strikethrough/license"
+  },
+  "micromark-extension-gfm-table@2.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-table",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-table",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-table/license"
+  },
+  "micromark-extension-gfm-tagfilter@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-tagfilter",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-tagfilter",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-tagfilter/license"
+  },
+  "micromark-extension-gfm-task-list-item@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm-task-list-item",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-task-list-item",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm-task-list-item/license"
+  },
+  "micromark-extension-gfm@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark-extension-gfm",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-extension-gfm/license"
+  },
+  "micromark-factory-destination@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-factory-destination",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-destination",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-destination/license"
+  },
+  "micromark-factory-label@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-factory-label",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-label",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-label/license"
+  },
+  "micromark-factory-space@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-factory-space",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-space",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-space/license"
+  },
+  "micromark-factory-title@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-factory-title",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-title",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-title/license"
+  },
+  "micromark-factory-whitespace@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-factory-whitespace",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-whitespace",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-factory-whitespace/license"
+  },
+  "micromark-util-character@2.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-character",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-character",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-character/license"
+  },
+  "micromark-util-chunked@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-chunked",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-chunked",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-chunked/license"
+  },
+  "micromark-util-classify-character@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-classify-character",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-classify-character",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-classify-character/license"
+  },
+  "micromark-util-combine-extensions@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-combine-extensions",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-combine-extensions",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-combine-extensions/license"
+  },
+  "micromark-util-decode-numeric-character-reference@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-decode-numeric-character-reference",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-decode-numeric-character-reference",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-decode-numeric-character-reference/license"
+  },
+  "micromark-util-decode-string@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-decode-string",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-decode-string",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-decode-string/license"
+  },
+  "micromark-util-encode@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-encode",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-encode",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-encode/license"
+  },
+  "micromark-util-html-tag-name@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-html-tag-name",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-html-tag-name",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-html-tag-name/license"
+  },
+  "micromark-util-normalize-identifier@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-normalize-identifier",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-normalize-identifier",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-normalize-identifier/license"
+  },
+  "micromark-util-resolve-all@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-resolve-all",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-resolve-all",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-resolve-all/license"
+  },
+  "micromark-util-sanitize-uri@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-sanitize-uri",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-sanitize-uri",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-sanitize-uri/license"
+  },
+  "micromark-util-subtokenize@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-subtokenize",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-subtokenize",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-subtokenize/license"
+  },
+  "micromark-util-symbol@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-symbol",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-symbol",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-symbol/license"
+  },
+  "micromark-util-types@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark-util-types",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-types",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark-util-types/license"
+  },
+  "micromark@4.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromark/micromark/tree/main/packages/micromark",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/micromark/license"
+  },
+  "mime-db@1.54.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/mime-db",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mime-db",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mime-db/LICENSE"
+  },
+  "mime-types@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/mime-types",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mime-types",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/mime-types/LICENSE"
+  },
+  "ms@2.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vercel/ms",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ms",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ms/license.md"
+  },
+  "negotiator@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/negotiator",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/negotiator",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/negotiator/LICENSE"
+  },
+  "nodemailer@9.0.5": {
+    "licenses": "MIT-0",
+    "repository": "https://github.com/nodemailer/nodemailer",
+    "publisher": "Andris Reinman",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/nodemailer",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/nodemailer/LICENSE"
+  },
+  "nova-wing@0.4.2": {
+    "licenses": "UNKNOWN",
+    "publisher": "NovaWing",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app"
+  },
+  "npm-run-path@6.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/npm-run-path",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/npm-run-path",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/npm-run-path/license"
+  },
+  "object-assign@4.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/object-assign",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/object-assign",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/object-assign/license"
+  },
+  "object-inspect@1.13.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/object-inspect",
+    "publisher": "James Halliday",
+    "email": "mail@substack.net",
+    "url": "http://substack.net",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/object-inspect",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/object-inspect/LICENSE"
+  },
+  "on-finished@2.4.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/on-finished",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/on-finished",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/on-finished/LICENSE"
+  },
+  "once@1.4.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/once",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/once",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/once/LICENSE"
+  },
+  "p-map@7.0.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/p-map",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/p-map",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/p-map/license"
+  },
+  "p-retry@7.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/p-retry",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/p-retry",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/p-retry/license"
+  },
+  "parse-ms@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/parse-ms",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/parse-ms",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/parse-ms/license"
+  },
+  "parseurl@1.3.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/parseurl",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/parseurl",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/parseurl/LICENSE"
+  },
+  "path-key@3.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/path-key",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/path-key",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/path-key/license"
+  },
+  "path-key@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/path-key",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/npm-run-path/node_modules/path-key",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/npm-run-path/node_modules/path-key/license"
+  },
+  "path-to-regexp@8.4.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/path-to-regexp",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/path-to-regexp",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/path-to-regexp/LICENSE"
+  },
+  "picomatch@4.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/micromatch/picomatch",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/picomatch",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/picomatch/LICENSE"
+  },
+  "pkce-challenge@5.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/crouchcd/pkce-challenge",
+    "publisher": "crouchcd",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/pkce-challenge",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/pkce-challenge/LICENSE"
+  },
+  "posthog-node@5.49.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/PostHog/posthog-js",
+    "publisher": "PostHog",
+    "email": "engineering@posthog.com",
+    "url": "https://posthog.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/posthog-node",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/posthog-node/LICENSE"
+  },
+  "pretty-ms@9.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/pretty-ms",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/pretty-ms",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/pretty-ms/license"
+  },
+  "promise-limit@2.7.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/featurist/promise-limit",
+    "publisher": "Tim Macfarlane",
+    "email": "timmacfarlane@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/promise-limit"
+  },
+  "proxy-addr@2.0.7": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/proxy-addr",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/proxy-addr",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/proxy-addr/LICENSE"
+  },
+  "qs@6.16.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/ljharb/qs",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/qs",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/qs/LICENSE.md"
+  },
+  "range-parser@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/range-parser",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/range-parser",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/range-parser/LICENSE"
+  },
+  "raw-body@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stream-utils/raw-body",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/raw-body",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/raw-body/LICENSE"
+  },
+  "remark-gfm@4.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/remarkjs/remark-gfm",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-gfm",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-gfm/license"
+  },
+  "remark-parse@11.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/remarkjs/remark/tree/main/packages/remark-parse",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-parse",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-parse/license"
+  },
+  "remark-stringify@11.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/remarkjs/remark/tree/main/packages/remark-stringify",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-stringify",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remark-stringify/license"
+  },
+  "remend@1.3.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/vercel/streamdown",
+    "publisher": "Hayden Bleasel",
+    "email": "hayden.bleasel@vercel.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remend",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/remend/LICENSE"
+  },
+  "require-from-string@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/floatdrop/require-from-string",
+    "publisher": "Vsevolod Strukchinsky",
+    "email": "floatdrop@gmail.com",
+    "url": "github.com/floatdrop",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/require-from-string",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/require-from-string/license"
+  },
+  "reusify@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mcollina/reusify",
+    "publisher": "Matteo Collina",
+    "email": "hello@matteocollina.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/reusify",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/reusify/LICENSE"
+  },
+  "router@2.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/router",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/router",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/router/LICENSE"
+  },
+  "safer-buffer@2.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ChALkeR/safer-buffer",
+    "publisher": "Nikita Skovoroda",
+    "email": "chalkerx@gmail.com",
+    "url": "https://github.com/ChALkeR",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/safer-buffer",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/safer-buffer/LICENSE"
+  },
+  "sax@1.6.1": {
+    "licenses": "BlueOak-1.0.0",
+    "repository": "https://github.com/isaacs/sax-js",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/sax",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/sax/LICENSE.md"
+  },
+  "section-matter@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/section-matter",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/section-matter",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/section-matter/LICENSE"
+  },
+  "semver@7.7.4": {
+    "licenses": "ISC",
+    "repository": "https://github.com/npm/node-semver",
+    "publisher": "GitHub Inc.",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/semver",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/semver/LICENSE"
+  },
+  "send@1.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/send",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/send",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/send/LICENSE"
+  },
+  "serve-static@2.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/serve-static",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/serve-static",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/serve-static/LICENSE"
+  },
+  "setprototypeof@1.2.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/wesleytodd/setprototypeof",
+    "publisher": "Wes Todd",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/setprototypeof",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/setprototypeof/LICENSE"
+  },
+  "shebang-command@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/kevva/shebang-command",
+    "publisher": "Kevin Mårtensson",
+    "email": "kevinmartensson@gmail.com",
+    "url": "github.com/kevva",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/shebang-command",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/shebang-command/license"
+  },
+  "shebang-regex@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/shebang-regex",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/shebang-regex",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/shebang-regex/license"
+  },
+  "side-channel-list@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-list",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-list",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-list/LICENSE"
+  },
+  "side-channel-map@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-map",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-map",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-map/LICENSE"
+  },
+  "side-channel-weakmap@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-weakmap",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-weakmap",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel-weakmap/LICENSE"
+  },
+  "side-channel@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/side-channel/LICENSE"
+  },
+  "signal-exit@4.1.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/tapjs/signal-exit",
+    "publisher": "Ben Coe",
+    "email": "ben@npmjs.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/signal-exit",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/signal-exit/LICENSE.txt"
+  },
+  "sprintf-js@1.0.3": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/alexei/sprintf.js",
+    "publisher": "Alexandru Marasteanu",
+    "email": "hello@alexei.ro",
+    "url": "http://alexei.ro/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/sprintf-js",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/sprintf-js/LICENSE"
+  },
+  "statuses@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/statuses",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/statuses",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/statuses/LICENSE"
+  },
+  "strip-bom-string@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/strip-bom-string",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/strip-bom-string",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/strip-bom-string/LICENSE"
+  },
+  "strip-final-newline@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/strip-final-newline",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/strip-final-newline",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/strip-final-newline/license"
+  },
+  "tiny-typed-emitter@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/binier/tiny-typed-emitter",
+    "publisher": "Zurab Benashvili",
+    "email": "zura.benashvili@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/tiny-typed-emitter",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/tiny-typed-emitter/LICENSE"
+  },
+  "toidentifier@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/component/toidentifier",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/toidentifier",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/toidentifier/LICENSE"
+  },
+  "tokenx@1.6.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/johannschopplich/tokenx",
+    "publisher": "Johann Schopplich",
+    "email": "hello@johannschopplich.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/tokenx",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/tokenx/LICENSE"
+  },
+  "trough@2.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/trough",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/trough",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/trough/license"
+  },
+  "type-is@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/type-is",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/type-is",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/type-is/LICENSE"
+  },
+  "undici-types@7.16.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodejs/undici",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/undici-types",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/undici-types/LICENSE"
+  },
+  "unicorn-magic@0.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/unicorn-magic",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unicorn-magic",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unicorn-magic/license"
+  },
+  "unified@11.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/unifiedjs/unified",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unified",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unified/license"
+  },
+  "unist-util-is@6.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/unist-util-is",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-is",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-is/license"
+  },
+  "unist-util-stringify-position@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/unist-util-stringify-position",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-stringify-position",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-stringify-position/license"
+  },
+  "unist-util-visit-parents@6.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/unist-util-visit-parents",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-visit-parents",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-visit-parents/license"
+  },
+  "unist-util-visit@5.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/syntax-tree/unist-util-visit",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-visit",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unist-util-visit/license"
+  },
+  "universalify@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/RyanZim/universalify",
+    "publisher": "Ryan Zimmerman",
+    "email": "opensrc@ryanzim.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/universalify",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/universalify/LICENSE"
+  },
+  "unpipe@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stream-utils/unpipe",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unpipe",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/unpipe/LICENSE"
+  },
+  "uuid@11.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/uuidjs/uuid",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/uuid",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/uuid/LICENSE.md"
+  },
+  "vary@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/vary",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vary",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vary/LICENSE"
+  },
+  "vfile-message@4.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vfile/vfile-message",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vfile-message",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vfile-message/license"
+  },
+  "vfile@6.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vfile/vfile",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vfile",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/vfile/license"
+  },
+  "which@2.0.2": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/node-which",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/which",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/which/LICENSE"
+  },
+  "wrappy@1.0.2": {
+    "licenses": "ISC",
+    "repository": "https://github.com/npm/wrappy",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/wrappy",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/wrappy/LICENSE"
+  },
+  "ws@8.21.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/websockets/ws",
+    "publisher": "Einar Otto Stangvik",
+    "email": "einaros@gmail.com",
+    "url": "http://2x.io",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ws",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/ws/LICENSE"
+  },
+  "xxhash-wasm@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jungomi/xxhash-wasm",
+    "publisher": "Michael Jungo",
+    "email": "michaeljungo92@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/xxhash-wasm",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/xxhash-wasm/LICENSE.md"
+  },
+  "yoctocolors@2.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/yoctocolors",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/yoctocolors",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/yoctocolors/license"
+  },
+  "zod-from-json-schema@0.5.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/glideapps/zod-from-json-schema",
+    "publisher": "Mark Probst",
+    "email": "mark.probst@gmail.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod-from-json-schema",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod-from-json-schema/LICENSE"
+  },
+  "zod-to-json-schema@3.25.2": {
+    "licenses": "ISC",
+    "repository": "https://github.com/StefanTerdell/zod-to-json-schema",
+    "publisher": "Stefan Terdell",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod-to-json-schema",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod-to-json-schema/LICENSE"
+  },
+  "zod@4.4.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/colinhacks/zod",
+    "publisher": "Colin McDonnell",
+    "email": "zod@colinhacks.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zod/LICENSE"
+  },
+  "zwitch@2.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/wooorm/zwitch",
+    "publisher": "Titus Wormer",
+    "email": "tituswormer@gmail.com",
+    "url": "https://wooorm.com",
+    "path": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zwitch",
+    "licenseFile": "/tmp/novawing-v042-audit.vKq09o/extracted/macos-zip-payload/NovaWing.app/Contents/Resources/app/node_modules/zwitch/license"
+  }
+}
+

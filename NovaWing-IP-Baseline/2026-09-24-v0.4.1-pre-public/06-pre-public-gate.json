@@ -1,0 +1,156 @@
+{
+  "name": "NOVAWING_PRE_PUBLIC_IP_GATE",
+  "version": "0.4.1",
+  "tag": "v0.4.1",
+  "tagObjectSha": "ef218a8e71dbb735a0a826160cfb79a1c3be14b8",
+  "tagTargetSha": "9c5d0b97972f62e725a38cb853ffbda5ddb54455",
+  "buildRunId": 35870473791,
+  "validationRunId": 35881232734,
+
+  "baselineCreatedUtc": "2026-09-24T01:20:50Z",
+  "baselineRevisedUtc": "2026-09-24T02:52:06Z",
+  "revisionNote": "Gate semantics correction: CLIENT_REQUIRED_SECRET_CONFLICT was moved out of blockingReasons (it blocks only on an explicit Owner KEEP_PRIVATE classification). publicRelease was not changed and the guard was not weakened.",
+  "workingBranch": "feat/v0.4.1-updater",
+  "repositoryPrivate": true,
+  "feedRepositoryPublic": true,
+  "publicV041Published": false,
+
+  "validation": "PASS",
+  "evidenceSnapshot": "PASS",
+  "shippedIpAudit": "PASS",
+  "secrets": "PASS",
+  "thirdPartyLicenses": "FAIL",
+
+  "patentDecisionRequired": [
+    "candidate-1: authoritative task facts -> typed execution evidence -> independent deterministic verification -> evidence admission -> evidence-bound finalization",
+    "candidate-2: persisted verification plan -> scoped command/cwd admission -> source/script fingerprint revalidation -> independent verifier truth -> completion gate",
+    "candidate-3: bounded recovery -> authority-preserving diagnosis -> deterministic recovery admission -> re-verification -> fail-closed HUMAN_REQUIRED"
+  ],
+  "keepPrivateAccidentallyShipped": [],
+  "clientRequiredSecretConflict": [
+    "RECOVERY_ACTION_BUDGET=4 (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "autonomous diagnosis system prompt (dist/packages/development-guardian/work-session/autonomous-diagnosis.js)",
+    "assessRisk() risk-scoring rules (dist/packages/development-guardian/work-session/risk-evidence.js)",
+    "REVIEW_DEFAULT_MAX_TURNS=40 (dist/packages/development-guardian/work-session/reviewer-adapters.js)",
+    "brain review time budgets (dist/packages/development-guardian/brain-review-budget.js)",
+    "deterministic verifier allowlist (dist/packages/development-guardian/verification-command-policy.js)",
+    "executor/provider routing heuristics (dist/packages/development-guardian/executor-router.js)"
+  ],
+
+  "clientRequiredSecretConflictBlocking": false,
+  "clientRequiredSecretConflictRule": "CLIENT_REQUIRED_SECRET_CONFLICT enters blockingReasons only for an item the Owner has explicitly classified KEEP_PRIVATE. No item shipped in v0.4.1 carries such a classification, so this conflict is recorded but is not a blocking reason. If the Owner later classifies any listed item as KEEP_PRIVATE, that item moves into blockingReasons.",
+
+  "publicRelease": "HUMAN_REQUIRED",
+  "blockingReasons": [
+    "PATENT_DECISION_REQUIRED: three shipped mechanism combinations (candidate-1, candidate-2, candidate-3) are specific, are actually shipped in both packages, and have no confirmed prior public disclosure. The Owner must explicitly choose either to pursue/consult on a patent first, or to accept disclosure and forgo the pre-publication window. This gate makes no patentability judgement and does not decide for the Owner.",
+    "THIRD_PARTY_LICENSES FAIL: the macOS artifacts (NovaWing-0.4.1-arm64.dmg and NovaWing-0.4.1-arm64-mac.zip) ship no Electron/Chromium license text. LICENSE.electron.txt and LICENSES.chromium.html are present in the Windows installer payload but absent from the macOS app bundle, verified both by unpacking the ZIP and by read-only mounting the DMG."
+  ],
+
+  "nonBlockingObservations": [
+    "CLIENT_REQUIRED_SECRET_CONFLICT (recorded, NOT blocking): recovery budgets, risk-scoring rules, the deterministic verifier allowlist, provider routing heuristics and the autonomous-diagnosis prompt ship inside client-executed code and cannot be removed without removing the feature. These are not classified KEEP_PRIVATE by the Owner, so they are retained as a recorded conflict and do not enter blockingReasons.",
+    "EULA_STATUS=NOT_DEFINED: root and shipped package.json are both UNLICENSED; no EULA or binary redistribution terms exist. Not a blocker unless the Owner has decided publishing requires one.",
+    "THIRD_PARTY_NOTICES is not defined in the repository; no notice document accompanies the release.",
+    "@posthog/core analytics telemetry is bundled in both packages, and @mastra/core ships its own upstream PostHog client key. Product/privacy decision, not an IP finding.",
+    "macOS notification-smoke reports report.result FAIL internally and is normalised to NEEDS_SIGNED_VALIDATION by the harness; packageSmokeResult=PASS is valid only together with the unsigned-bundle limitation.",
+    "No v0.4.1 real-host acceptance run exists; the recorded real-host evidence is v0.4.0 (Windows Phase 4, macOS Phase 5)."
+  ],
+
+  "evidence": {
+    "shippedArtifacts": {
+      "windowsInstaller": {
+        "filename": "NovaWing-Setup-0.4.1-x64.exe",
+        "size": 216555685,
+        "sha256": "b3df92143b8c76e1d7c99542d0eb89dfb40e1f6835db8979e9db825cfef1367f",
+        "sizeAndHashVerified": true,
+        "extraction": "7zz -> $PLUGINSDIR/app-64.7z -> sealed payload",
+        "packagedContentSha256": "484199978e2c125b25a742d1b11d3e19d72a1efc0992c47a47190da9c0f83945",
+        "packagedContentSha256IndependentlyReproduced": true,
+        "appTreeFiles": 5511,
+        "signed": false
+      },
+      "macosDmg": {
+        "filename": "NovaWing-0.4.1-arm64.dmg",
+        "size": 258322811,
+        "sha256": "9b99228511a62d2276524d0116d645933d57271a82505c7bc04f1ecae2bfe2f1",
+        "sizeAndHashVerified": true,
+        "extraction": "hdiutil read-only mount",
+        "signedForDistribution": false,
+        "notarized": false
+      },
+      "macosZip": {
+        "filename": "NovaWing-0.4.1-arm64-mac.zip",
+        "size": 261540410,
+        "sha256": "ab0f6e97edbc583e8065c8940b5df8753446dd54c23130baf6257625e0637f87",
+        "sizeAndHashVerified": true,
+        "extraction": "unzip -> NovaWing.app",
+        "packagedContentSha256": "e097e7bd7c0a9cdbe1400fb3b7d0e9a2699aa726ca84ffd54ce267f69486cc2e",
+        "packagedContentSha256IndependentlyReproduced": true,
+        "appTreeFiles": 5510
+      },
+      "appUpdateYmlSha256": "57a65b9e7de5c62c1546633d3464a9cad64bb6d63c5530634d374afc9fe8978a"
+    },
+    "provenanceChainIntact": true,
+    "debugArtifactAudit": {
+      "sourceMaps": 0,
+      "novaWingAuthoredTypeScript": 0,
+      "novaWingAuthoredTestsOrFixtures": 0,
+      "pdbFiles": 0,
+      "envOrCredentialFiles": 0,
+      "privateBaselineFiles": 0,
+      "verdict": "PASS"
+    },
+    "secretScan": {
+      "scanner": "gitleaks 8.30.1 (Homebrew), default ruleset, run locally",
+      "handWrittenScannerUsed": false,
+      "thirdPartySaaSUpload": false,
+      "nodeModulesScanned": true,
+      "novaWingOriginFindings": 0,
+      "thirdPartyFindings": [
+        {
+          "file": "node_modules/@mastra/core/dist/telemetry/index.cjs",
+          "rule": "generic-api-key",
+          "assessment": "upstream Mastra package's own PostHog client-side ingestion key (phc_ prefix), published in the public npm package"
+        },
+        {
+          "file": "node_modules/@mastra/core/dist/telemetry/index.js",
+          "rule": "generic-api-key",
+          "assessment": "same upstream value as index.cjs"
+        },
+        {
+          "file": "node_modules/dotenv/README-es.md",
+          "rule": "private-key",
+          "assessment": "truncated RSA key inside a documentation code fence"
+        }
+      ]
+    },
+    "sbom": {
+      "tool": "@cyclonedx/cyclonedx-npm 6.0.1",
+      "specVersion": "1.6",
+      "componentCount": 255,
+      "componentsWithoutLicense": 0,
+      "copyleftComponents": 0,
+      "artifacts": [
+        "sbom-shipped-windows.json",
+        "sbom-shipped-macos.json"
+      ]
+    },
+    "thirdPartyLicenseGap": {
+      "windowsHas": [
+        "LICENSE.electron.txt",
+        "LICENSES.chromium.html"
+      ],
+      "macosHas": [],
+      "verifiedBy": [
+        "find over unpacked ZIP app bundle",
+        "hdiutil read-only mount of DMG"
+      ]
+    },
+    "releaseNotesAudit": "PASS - no checkpoint schema, evidence-admission algorithm, risk thresholds, recovery decision tree, verifier ranking, proprietary prompt text, or replicable state sequence"
+  },
+
+  "ownerDecisionsRequired": [
+    "Patent: choose explicitly between (1) pursuing/consulting a patent before publication, or (2) accepting disclosure and forgoing the pre-publication window. This gate does not choose.",
+    "Third-party license text: decide whether to ship the Electron/Chromium license text in the macOS bundle (as Windows already does), or to record an accepted deviation.",
+    "Non-blocking classification check: confirm that none of the CLIENT_REQUIRED_SECRET_CONFLICT items is intended as KEEP_PRIVATE. If the Owner classifies any as KEEP_PRIVATE, that item becomes a blocking reason on the next run; this gate does not block on the conflict by itself."
+  ]
+}

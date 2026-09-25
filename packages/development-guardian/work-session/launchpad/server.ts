@@ -18,6 +18,7 @@ import {
   type TrustedWorkSessionConfig,
 } from '../production.js'
 import { ProductionWorkSessionInitializationError } from '../production-lifecycle-errors.js'
+import type { WorkSessionUpdateSafetyReason, WorkSessionUpdateSafetyView } from '../control-ui/controller.js'
 import { observeWorkSessionActivity, type WorkSessionActivityObserver } from '../activity.js'
 import { trackHttpPreconnections } from '../http-preconnections.js'
 import { WorkSessionRuntime, type PreflightRepairRecord } from '../runtime.js'
@@ -172,6 +173,8 @@ interface ManagedWorkSessionApp {
   controller: {
     start(): { started: boolean }
     getSnapshot?(): { runtime: { displayState?: WorkSessionDisplayState } }
+    /** Optional redacted update-safety projection. Absence fails the safety read closed. */
+    getUpdateSafetyView?(): WorkSessionUpdateSafetyView
   }
   start(): Promise<{ url: string }>
   /** Whether the local control server is still accepting connections. */
@@ -179,6 +182,49 @@ interface ManagedWorkSessionApp {
   /** Whether start/resume/recovery work is currently in flight. */
   hasActiveSession(): boolean
   close(): Promise<void>
+}
+
+/** Why the Launchpad safety read cannot be trusted. Stable strings. */
+export type LaunchpadUpdateSafetyReason =
+  | 'OWNER_SAFETY_VIEW_UNAVAILABLE'
+  | 'OWNER_STATE_UNREADABLE'
+  | WorkSessionUpdateSafetyReason
+
+/**
+ * Internal, redacted safety projection over the work THIS Launchpad owns. It reports booleans
+ * and counts only, and never the durable state, a checkpoint, a URL or task text.
+ */
+export interface LaunchpadUpdateSafetyView {
+  readable: boolean
+  reasonCode: LaunchpadUpdateSafetyReason | null
+  activeOperations: number
+  pendingHumanDecisions: number
+  pendingCheckpoints: number
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+/**
+ * An app whose projection is missing, malformed or throwing is unreadable, never idle. This
+ * mirrors isBlockingLiveApp: an indeterminate owner is treated as the unsafe case.
+ */
+function readAppSafetyView(app: ManagedWorkSessionApp): WorkSessionUpdateSafetyView | null {
+  try {
+    const read = app.controller?.getUpdateSafetyView
+    if (typeof read !== 'function') return null
+    const view: unknown = read.call(app.controller)
+    if (view === null || typeof view !== 'object') return null
+    const record = view as Record<string, unknown>
+    if (typeof record.readable !== 'boolean') return null
+    if (typeof record.pendingHumanDecision !== 'boolean') return null
+    if (typeof record.pendingRecoveryCheckpoint !== 'boolean') return null
+    if (!isNonNegativeInteger(record.inFlightOperations)) return null
+    return record as unknown as WorkSessionUpdateSafetyView
+  } catch {
+    return null
+  }
 }
 
 interface LiveWorkSessionApp {
@@ -631,6 +677,43 @@ export class NovaWingLaunchpad {
       const status = this.liveApps.get(config.summary.configId)?.app.controller.getSnapshot?.().runtime.displayState ?? this.statuses.get(config.summary.configId)
       return { ...config.summary, ...(status === undefined ? {} : { status }) }
     })
+  }
+
+  /**
+   * Read-only, redacted safety projection for the Desktop update install gate.
+   *
+   * The scope is exactly what this process still owns: apps in `ownedApps` — an app leaves that
+   * set only once its close has settled — plus the operations this Launchpad accepted. Sessions
+   * that merely exist in the config directory are deliberately excluded: this process never took
+   * them over, and an old on-disk session must not block updates forever. `liveApps` is a
+   * navigation registry, so an empty one proves nothing about work and is never consulted here.
+   *
+   * Counts are a conservative upper bound. The Launchpad's accepted HTTP handlers overlap with
+   * its in-flight launch/delete/create records, and that overlap is deliberately not
+   * deduplicated: the gate only asks whether any unsettled ownership work remains.
+   */
+  getUpdateSafetyView(): LaunchpadUpdateSafetyView {
+    let activeOperations = this.acceptedOperations.size + this.activeStarts.size +
+      this.activeDeletes.size + this.activeCreates.size +
+      (this.scheduleRecovery === undefined ? 0 : 1)
+    let pendingHumanDecisions = 0
+    let pendingCheckpoints = 0
+    for (const app of this.ownedApps) {
+      // A close that has not settled is itself unsettled lifecycle work, and the app must not
+      // disappear from the safety reading before it actually finishes closing.
+      if (this.appCloses.get(app) !== undefined) activeOperations += 1
+      const view = readAppSafetyView(app)
+      if (view === null) {
+        return { readable: false, reasonCode: 'OWNER_SAFETY_VIEW_UNAVAILABLE', activeOperations, pendingHumanDecisions, pendingCheckpoints }
+      }
+      if (!view.readable) {
+        return { readable: false, reasonCode: view.reasonCode ?? 'OWNER_STATE_UNREADABLE', activeOperations, pendingHumanDecisions, pendingCheckpoints }
+      }
+      activeOperations += view.inFlightOperations
+      if (view.pendingHumanDecision) pendingHumanDecisions += 1
+      if (view.pendingRecoveryCheckpoint) pendingCheckpoints += 1
+    }
+    return { readable: true, reasonCode: null, activeOperations, pendingHumanDecisions, pendingCheckpoints }
   }
 
   /** Unknown, failed, stale, and timed-out observations never mean exhausted. */

@@ -7,7 +7,9 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build, Platform, Arch } from 'electron-builder'
 import { DESKTOP_IDENTITY } from '../../desktop/main/identity.mjs'
+import { updateFeedPublishConfig } from './update-feed.mjs'
 import { requireInstalledElectron } from './desktop-dependency-preflight.mjs'
+import { auditBundledDistributionNotices, auditContainerNotices, distributionNoticeExtraResources } from './third-party-licenses.mjs'
 
 export const root = resolve(import.meta.dirname, '../..')
 export const output = join(root, 'artifacts', 'desktop')
@@ -157,18 +159,25 @@ export async function packageMac() {
       electronDist: join(root, 'node_modules', 'electron', 'dist'),
       asar: false, npmRebuild: false, nodeGypRebuild: false,
       files: ['**/*'],
+      // Electron/Chromium notices live beside the app tree in Contents/Resources, not inside
+      // it; electron-builder does not carry them into a macOS bundle on its own.
+      extraResources: distributionNoticeExtraResources(root),
       mac: { target: [{ target: 'dir', arch: ['arm64'] }], category: 'public.app-category.developer-tools' },
+      publish: updateFeedPublishConfig(),
       artifactName: `NovaWing ${DESKTOP_IDENTITY.version}.\${ext}`,
     },
   })
   const audit = await auditPackage(packagedAppRoot)
   const info = auditBundle()
+  const licenses = await auditBundledDistributionNotices(packagedBundle, root)
+  await writeFile(join(output, 'macos-bundled-licenses.json'), JSON.stringify(licenses, null, 2))
   const signing = bundleSigningState()
   await writeFile(join(output, 'macos-package.json'), JSON.stringify({
     bundle: packagedBundle, executable: packagedExecutable(packagedAppRoot), sha256: audit.sha256,
     electron: manifest.devDependencies.electron, builder: manifest.devDependencies['electron-builder'],
     arch: 'arm64', appName, version: DESKTOP_IDENTITY.version,
     CFBundleIdentifier: info.CFBundleIdentifier, signing, nativeNotificationGate: nativeNotificationGate(),
+    distributionNotices: licenses.notices,
   }, null, 2))
   console.log(`MACOS_PACKAGE PASS: ${packagedBundle}`)
   return { bundle: packagedBundle, executable: packagedExecutable(packagedAppRoot), sha256: audit.sha256 }
@@ -195,8 +204,10 @@ export async function packageMacDistribution(targets = ['dmg', 'zip']) {
       electronDist: join(root, 'node_modules', 'electron', 'dist'),
       asar: false, npmRebuild: false, nodeGypRebuild: false,
       files: ['**/*'],
+      extraResources: distributionNoticeExtraResources(root),
       mac: { target: targets.map((target) => ({ target, arch: ['arm64'] })),
         category: 'public.app-category.developer-tools', identity: null },
+      publish: updateFeedPublishConfig(),
       dmg: {
         artifactName: '${productName}-${version}-${arch}.${ext}',
         contents: [
@@ -220,10 +231,16 @@ export async function packageMacDistribution(targets = ['dmg', 'zip']) {
     }
   }
   const audit = await auditPackage(packagedAppRoot)
+  const licenses = await auditBundledDistributionNotices(packagedBundle, root)
+  const containerNotices = auditContainerNotices({ root, dmgPath: artifacts.dmg.path, zipPath: artifacts.zip.path, bundleName })
+  await writeFile(join(output, 'macos-bundled-licenses.json'), JSON.stringify({ ...licenses, containers: containerNotices }, null, 2))
   await writeFile(join(output, 'macos-distribution.json'), JSON.stringify({
     appName, version: DESKTOP_IDENTITY.version, arch: 'arm64', CFBundleIdentifier: DESKTOP_IDENTITY.appUserModelId,
     bundle: packagedBundle, bundleContentSha256: audit.sha256, identity: null,
-    signing: bundleSigningState(), nativeNotificationGate: nativeNotificationGate(), ...artifacts,
+    signing: bundleSigningState(), nativeNotificationGate: nativeNotificationGate(),
+    distributionNotices: licenses.notices,
+    containerNotices: containerNotices.result,
+    ...artifacts,
   }, null, 2))
   console.log(`MACOS_DISTRIBUTION PASS: ${Object.values(artifacts).map((entry) => entry.filename).join(', ')}`)
   return artifacts

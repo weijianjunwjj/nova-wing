@@ -14,6 +14,7 @@ const NOTIFICATION_TEXT = Object.freeze({
   FAILED: { title: `${DESKTOP_IDENTITY.appName} · 任务失败`, body: '任务执行失败，点击查看详情。' },
   HUMAN_REQUIRED: { title: `${DESKTOP_IDENTITY.appName} · 需要你的处理`, body: '任务正在等待你的操作，点击继续。' },
 })
+const UPDATER_NOTIFICATION_SESSION = 'desktop-updater'
 
 /**
  * notificationId already identifies the durable generation: terminal kinds have
@@ -72,6 +73,7 @@ export function createDesktopNotificationProvider({
   const active = new Map()
   const counts = { created: 0, shown: 0, failed: 0, timedOut: 0, clicked: 0, closed: 0,
     routeFailed: 0, unresolvedActivations: 0, released: 0 }
+  let updaterNotificationSequence = 0
   let closing = false
   let disposed = false
   const clicksBlocked = () => closing || disposed || isQuitRequested()
@@ -108,7 +110,7 @@ export function createDesktopNotificationProvider({
   async function activateNotification(identity) {
     if (clicksBlocked()) return false
     const entry = active.get(identity)
-    if (!entry || entry.pending || entry.released) return false
+    if (!entry || entry.pending || entry.released || !entry.routable) return false
     counts.clicked++
     describe(entry, 'click')
     try {
@@ -157,8 +159,11 @@ export function createDesktopNotificationProvider({
 
     let native
     try {
+      const text = kind === 'UP_TO_DATE'
+        ? { title: DESKTOP_IDENTITY.appName, body: `已是最新版本 v${notification.version}` }
+        : NOTIFICATION_TEXT[kind]
       native = new Notification({
-        ...NOTIFICATION_TEXT[kind], id: identity,
+        ...text, id: identity,
         groupId: createHash('sha256').update(notification.session.id).digest('hex').slice(0, 32),
       })
     } catch {
@@ -166,7 +171,8 @@ export function createDesktopNotificationProvider({
       diagnostic({ phase: 'failed', identity, sessionId: notification.session.id, kind, reason: 'CONSTRUCTION_FAILED' })
       return Promise.reject(new Error('Desktop notification failed: CONSTRUCTION_FAILED'))
     }
-    const entry = { native, identity, kind, sessionId: notification.session.id, pending: true,
+    const entry = { native, identity, kind, sessionId: notification.session.id,
+      routable: kind !== 'UP_TO_DATE', pending: true,
       released: false, ackTimer: undefined, retentionTimer: undefined, listeners: {},
       resolve: () => {}, reject: (_error) => {}, delivery: Promise.resolve() }
     entry.delivery = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject })
@@ -208,6 +214,17 @@ export function createDesktopNotificationProvider({
     notifyCompleted: (notification) => deliver('COMPLETED', notification),
     notifyFailed: (notification) => deliver('FAILED', notification),
     notifyHumanRequired: (notification) => deliver('HUMAN_REQUIRED', notification),
+    notifyUpToDate(version) {
+      if (typeof version !== 'string' || version.length === 0) {
+        return Promise.reject(new Error('Desktop update notification requires a version'))
+      }
+      updaterNotificationSequence++
+      return deliver('UP_TO_DATE', {
+        session: { id: UPDATER_NOTIFICATION_SESSION },
+        notificationId: `${version}:${updaterNotificationSequence}`,
+        version,
+      })
+    },
     activateNotification,
     snapshot() {
       const entries = [...active.values()]
