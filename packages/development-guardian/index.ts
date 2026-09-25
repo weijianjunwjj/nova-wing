@@ -103,6 +103,7 @@ export type {
   GuardianProgressStatus,
 } from './progress.js'
 export * from './work-session/index.js'
+export * from './decision-shadow/index.js'
 export {
   buildVerificationResult,
   environmentVerificationFailure,

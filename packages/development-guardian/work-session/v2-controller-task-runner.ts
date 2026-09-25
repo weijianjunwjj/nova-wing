@@ -8,6 +8,8 @@ import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
 import { RECOVERY_ACTION_BUDGET } from './autonomous-diagnosis.js'
+import { buildJevShadowStateProjection } from '../decision-shadow/jev-state-projection.js'
+import type { ShadowDecisionObserver } from '../decision-shadow/jev-shadow-observer.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
@@ -223,6 +225,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     maxActions?: number
     progressObserver?: GuardianProgressObserver
     directPath?: { enabled: boolean; repositoryRoot: string }
+    shadowDecisionObserver?: ShadowDecisionObserver
   }) {}
 
   async run(task: WorkSessionTask, resumeData?: unknown, _checkpoint?: unknown, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
@@ -465,6 +468,18 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles)
       if (violations.length) state = { ...state, blockers: [...new Set([...state.blockers, ...violations])] }
       const decision = controller.decide(state, { reconciliationRequired: !reconciliation.reconciled })
+      // The authoritative decision already exists. Shadow observation is a
+      // one-way, best-effort side effect and cannot feed an action back here.
+      try {
+        this.options.shadowDecisionObserver?.observe({
+          sessionId,
+          taskId,
+          projection: buildJevShadowStateProjection(state, { reconciliationRequired: !reconciliation.reconciled }),
+          reference: { action: decision.action, reasonCode: decision.reasonCode },
+        })
+      } catch {
+        // Even a faulty injected observer must never enter the task control path.
+      }
       state = { ...state, currentAction: decision.action,
         ...((decision.action === 'REQUEST_APPROVAL' || decision.action === 'SUSPEND') ? { status: 'SUSPENDED' as const } : {}) }
       note({ type: 'CONTROLLER_DECIDED', action: decision.action, reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, decision.action, {}, [], []) })

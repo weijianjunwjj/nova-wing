@@ -35,6 +35,7 @@ export function platformPaths(options: PlatformPathOptions = {}) {
     analytics: path.join(data, 'work-sessions', 'task-run-analytics.db'),
     runtimeRepairAudit: path.join(data, 'runtime-repair-audit.log'),
     repairAudit: path.join(data, 'repair-audit.log'),
+    jevShadowDecisions: path.join(data, 'jev-shadow-decisions.jsonl'),
     eta: path.join(data, 'runtime-ui', 'eta'),
   }
 }

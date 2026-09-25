@@ -63,6 +63,8 @@ import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalytic
 import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/task-eta.js'
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
+import { createJevShadowObserverFromEnv, type ShadowDecisionObserver } from '../decision-shadow/jev-shadow-observer.js'
+import { FileJevShadowStore, defaultJevShadowDecisionPath } from '../decision-shadow/jev-shadow-store.js'
 import {
   createCodexReviewerRuntime,
   createDeepSeekReviewerRuntime,
@@ -502,6 +504,8 @@ export interface ProductionWorkSessionDependencies {
     defaultDispatcher: V2ActionDispatcher
   }) => V2ActionDispatcher
   v2Agents?: readonly AgentCapabilityProfile[]
+  /** Observe-only Jev seam. It has no dispatcher or task mutation capability. */
+  shadowDecisionObserver?: ShadowDecisionObserver
   /** Provider-agnostic reviewer runtimes; default registers the read-only adapters. */
   createReviewerRegistry?: (input: { definition: WorkSessionDefinition; env: NodeJS.ProcessEnv; policy: RuntimeModelPolicy }) => ReviewerRuntimeRegistry
   /** Work Session startup seam; one immutable policy is resolved for this runtime lifecycle. */
@@ -666,6 +670,10 @@ export async function createProductionWorkSessionUi(
   }
   await mkdir(resolve(storagePath, '..'), { recursive: true })
   const verificationOutputDirectory = `${storagePath}.artifacts`
+  const shadowDecisionObserver = dependencies.shadowDecisionObserver ?? createJevShadowObserverFromEnv({
+    env,
+    store: new FileJevShadowStore(defaultJevShadowDecisionPath({ env })),
+  })
 
   const createExecutor = dependencies.createExecutor ?? ((options) => new DeepSeekExecutor(options))
   const taskModes = new Map(trusted.tasks.map((task) => [task.id,
@@ -857,10 +865,12 @@ export async function createProductionWorkSessionUi(
                     (args) => (dependencies.gitProcessRunner ?? defaultGitProcessRunner)('git', args, definition.targetRepo)),
                   readVerificationOutput: (result) => readAutonomousVerificationOutput(verificationOutputDirectory, result),
                 } }),
-              fallbackRunner: new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) }),
+              fallbackRunner: new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
+                ...(shadowDecisionObserver === undefined ? {} : { shadowDecisionObserver }), ...(eventSink === undefined ? {} : { progressObserver: eventSink }) }),
               ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
           : new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
               directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
+              ...(shadowDecisionObserver === undefined ? {} : { shadowDecisionObserver }),
               ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
         const repairNotifier = dependencies.runtimeRepair?.notifier ??
           createDesktopRuntimeRepairNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' })
