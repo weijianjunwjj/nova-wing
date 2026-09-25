@@ -71,6 +71,7 @@
     "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
     "analytics:backfill": "npm run build && node scripts/analytics-backfill.mjs",
     "decision-shadow:report": "npm run build && node scripts/decision-shadow-report.mjs",
+    "decision-shadow:benchmark": "npm run build && node scripts/decision-shadow-benchmark.mjs",
     "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform && npm run check:desktop",
     "check:platform": "node scripts/check-platform-boundaries.mjs",
     "desktop:package:dir": "npm run build && node scripts/platform/windows-package.mjs",
