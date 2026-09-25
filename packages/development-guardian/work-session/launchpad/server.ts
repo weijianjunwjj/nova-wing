@@ -1564,6 +1564,7 @@ export class NovaWingLaunchpad {
         autoPush: input.autoPush,
         ...(input.autoPush ? { pushRemote: input.pushRemote } : {}),
       },
+      runtimeConfig: { managed: true },
       executor: {
         defaultMode: input.executorMode,
         model: input.executorModel,

@@ -26,6 +26,13 @@ import {
   isSupportedCodexConfiguration,
   resolvePersistedCodexConfiguration,
 } from '../coding-executor-config.js'
+import { resolveRuntimeModelPolicy } from '../runtime-config/resolver.js'
+import {
+  BUILTIN_RUNTIME_MODEL_POLICY,
+  cloneRuntimeModelPolicy,
+  type ResolvedRuntimeModelPolicy,
+  type RuntimeModelPolicy,
+} from '../runtime-config/model-policy.js'
 import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-execution-store.js'
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
 import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
@@ -139,6 +146,9 @@ const TrustedConfigSchema = z.object({
     model: z.string().trim().min(1).optional(),
     reasoningEffort: z.string().trim().min(1).optional(),
     quotaProbeCooldownMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
+  }).strict().optional(),
+  runtimeConfig: z.object({
+    managed: z.literal(true),
   }).strict().optional(),
   notification: z.object({
     email: z.object({
@@ -493,7 +503,9 @@ export interface ProductionWorkSessionDependencies {
   }) => V2ActionDispatcher
   v2Agents?: readonly AgentCapabilityProfile[]
   /** Provider-agnostic reviewer runtimes; default registers the read-only adapters. */
-  createReviewerRegistry?: (input: { definition: WorkSessionDefinition; env: NodeJS.ProcessEnv }) => ReviewerRuntimeRegistry
+  createReviewerRegistry?: (input: { definition: WorkSessionDefinition; env: NodeJS.ProcessEnv; policy: RuntimeModelPolicy }) => ReviewerRuntimeRegistry
+  /** Work Session startup seam; one immutable policy is resolved for this runtime lifecycle. */
+  resolveRuntimeModelPolicy?: (input: { env: NodeJS.ProcessEnv }) => Promise<ResolvedRuntimeModelPolicy>
   /** v0.2.4: Runtime Repair seams (refresh/audit/notifier); engine + agents defaulted. */
   runtimeRepair?: {
     refreshProviderHealth?: () => Promise<RuntimeRepairRefresh>
@@ -585,6 +597,13 @@ export async function createProductionWorkSessionUi(
 ): Promise<ProductionWorkSessionUi> {
   const trusted = await validateTrustedWorkSessionConfig(config)
   const env = dependencies.env ?? process.env
+  const resolvedRuntimePolicy = trusted.runtimeConfig?.managed === true
+    ? await (dependencies.resolveRuntimeModelPolicy?.({ env }) ?? resolveRuntimeModelPolicy({ env }))
+        .catch(() => ({ source: 'builtin' as const, policy: cloneRuntimeModelPolicy(BUILTIN_RUNTIME_MODEL_POLICY) }))
+    : undefined
+  const runtimePolicy = resolvedRuntimePolicy?.policy
+  const implementationPolicy = runtimePolicy?.implementation
+  const reviewPolicy = runtimePolicy?.review
   const smtpNotifier = trusted.notification?.email.enabled === true
     ? createSmtpWorkSessionNotifierFromEnv({
         env,
@@ -650,7 +669,14 @@ export async function createProductionWorkSessionUi(
 
   const createExecutor = dependencies.createExecutor ?? ((options) => new DeepSeekExecutor(options))
   const taskModes = new Map(trusted.tasks.map((task) => [task.id,
-    task.executorMode ?? trusted.executor.defaultMode ?? (trusted.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)]))
+    task.executorMode ?? implementationPolicy?.adapter ?? trusted.executor.defaultMode ??
+      (trusted.session.scheduleSource === 'deepseek_off_peak' ? 'deepseek' : CODING_EXECUTOR_DEFAULTS.defaultMode)]))
+  const configuredCodex = implementationPolicy?.adapter === 'codex'
+    ? { model: implementationPolicy.model, reasoningEffort: implementationPolicy.reasoningEffort }
+    : resolvePersistedCodexConfiguration(trusted.codex)
+  const configuredDeepSeekModel = implementationPolicy?.adapter === 'deepseek'
+    ? implementationPolicy.model
+    : trusted.executor.model
   // One local coordinator even when sessions use different custom workflow storage URLs.
   // Injected executor tests stay isolated with their temporary session storage.
   const codingStore = new CodingExecutionStore(dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined
@@ -714,13 +740,24 @@ export async function createProductionWorkSessionUi(
         }
         // Reviewer runtimes are keyed by provider. Adding a provider is adding an
         // adapter here; the Controller never learns which provider reviews.
-        const reviewerRegistry = dependencies.createReviewerRegistry?.({ definition, env }) ?? new ReviewerRuntimeRegistry([
+        const reviewerRegistry = dependencies.createReviewerRegistry?.({
+          definition,
+          env,
+          policy: runtimePolicy ?? cloneRuntimeModelPolicy(BUILTIN_RUNTIME_MODEL_POLICY),
+        }) ?? new ReviewerRuntimeRegistry([
           createDeepSeekReviewerRuntime({
             cwd: definition.targetRepo,
-            model: trusted.agents?.find((agent) => agent.provider === 'deepseek')?.model ?? REVIEW_DEFAULT_MODEL,
+            model: reviewPolicy?.adapter === 'deepseek'
+              ? reviewPolicy.model
+              : trusted.agents?.find((agent) => agent.provider === 'deepseek')?.model ?? REVIEW_DEFAULT_MODEL,
             ...(env.NOVAWING_GIT_BASH_PATH?.trim() ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() } : {}),
           }),
-          createCodexReviewerRuntime({ cwd: definition.targetRepo }),
+          createCodexReviewerRuntime({
+            cwd: definition.targetRepo,
+            ...(reviewPolicy?.adapter === 'codex'
+              ? { model: reviewPolicy.model, reasoningEffort: reviewPolicy.reasoningEffort }
+              : {}),
+          }),
         ])
         const reviewDispatcher = createReviewDispatcher({ registry: reviewerRegistry, inspectRepository })
         const defaultDispatcher: V2ActionDispatcher = {
@@ -731,16 +768,19 @@ export async function createProductionWorkSessionUi(
             if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task: taskState })
             if (action === 'ANALYZE' || action === 'RECONCILE') return { status: 'BLOCKED' as const, blockers: [`production V2 action ${action} requires a configured dispatcher`] }
             if (action === 'REQUEST_APPROVAL' || action === 'SUSPEND') return { status: 'BLOCKED' as const, blockers: ['human decision required'] }
-            const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: trusted.executor.model, maxTurns: trusted.executor.maxTurns,
+            const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: configuredDeepSeekModel, maxTurns: trusted.executor.maxTurns,
               allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory, ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) }
             const router = new ExecutorRouter({
               taskKey: taskKey(taskState.identity.taskId), cwd: definition.targetRepo, store: codingStore,
               mode: taskModes.get(taskState.identity.taskId)!, codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
-              codexModel: resolvePersistedCodexConfiguration(trusted.codex).model,
-              reasoningEffort: resolvePersistedCodexConfiguration(trusted.codex).reasoningEffort,
+              codexModel: configuredCodex.model,
+              reasoningEffort: configuredCodex.reasoningEffort,
               quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
               createCodex(onThread) {
-                const codex = resolvePersistedCodexConfiguration(trusted.codex)
+                const persisted = codingStore.read(taskKey(taskState.identity.taskId))
+                const codex = persisted?.model !== undefined && persisted.reasoningEffort !== undefined
+                  ? resolvePersistedCodexConfiguration(persisted)
+                  : configuredCodex
                 return dependencies.createCodexExecutor?.({ ...options, env, onThread, codexModel: codex.model, reasoningEffort: codex.reasoningEffort }) ?? new CodexExecutor({ ...options, env, onThread, codexModel: codex.model, reasoningEffort: codex.reasoningEffort })
               },
               createDeepSeek(handoff) {
@@ -886,7 +926,7 @@ export async function createProductionWorkSessionUi(
         createExecutor(task, _resumeData, onProgress, approvedVerificationCommand) {
           const options: ClaudeCodeExecutorOptions = {
             cwd: definition.targetRepo,
-            model: trusted.executor.model,
+            model: configuredDeepSeekModel,
             maxTurns: trusted.executor.maxTurns,
             allowNpmInstall: trusted.executor.allowNpmInstall,
             allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
@@ -923,11 +963,14 @@ export async function createProductionWorkSessionUi(
             taskKey: taskKey(task.id), cwd: definition.targetRepo, store: codingStore,
             mode: taskModes.get(task.id)!,
             codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
-            codexModel: resolvePersistedCodexConfiguration(trusted.codex).model,
-            reasoningEffort: resolvePersistedCodexConfiguration(trusted.codex).reasoningEffort,
+            codexModel: configuredCodex.model,
+            reasoningEffort: configuredCodex.reasoningEffort,
             quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
             createCodex(onThread) {
-              const codex = resolvePersistedCodexConfiguration(trusted.codex)
+              const persisted = codingStore.read(taskKey(task.id))
+              const codex = persisted?.model !== undefined && persisted.reasoningEffort !== undefined
+                ? resolvePersistedCodexConfiguration(persisted)
+                : configuredCodex
               const codexOptions: CodexExecutorOptions = { ...options, env, onThread,
                 codexModel: codex.model, reasoningEffort: codex.reasoningEffort }
               return dependencies.createCodexExecutor?.(codexOptions) ?? new CodexExecutor(codexOptions)

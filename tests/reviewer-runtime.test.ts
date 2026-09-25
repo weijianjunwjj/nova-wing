@@ -230,12 +230,15 @@ test('the DeepSeek reviewer receives the local provider route and fails closed w
     env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_AUTH_TOKEN: 'test-token-value' },
   }), 'utf8')
   let capturedEnv: NodeJS.ProcessEnv | undefined
+  let capturedArgs: readonly string[] | undefined
   const adapter = createDeepSeekReviewerRuntime({
     cwd,
+    model: 'sonnet',
     platform: 'linux',
     routeAvailable: () => hasDeepSeekRoute(cwd, { CLAUDE_CONFIG_DIR: join(cwd, '.claude') }),
     commandRunner: async (request) => {
       capturedEnv = request.env
+      capturedArgs = request.args
       return {
         exitCode: 0, signal: null, stderr: '',
         stdout: JSON.stringify({ result: JSON.stringify({ verdict: 'PASS', findings: [], blockingFindings: [], summary: 'ok' }) }),
@@ -250,6 +253,7 @@ test('the DeepSeek reviewer receives the local provider route and fails closed w
   // The CLI needs the route on its own process environment; NovaWing may not have it.
   assert.equal(capturedEnv?.ANTHROPIC_BASE_URL, 'https://api.deepseek.com/anthropic')
   assert.equal(capturedEnv?.ANTHROPIC_AUTH_TOKEN, 'test-token-value')
+  assert.ok(capturedArgs?.some((value, index) => value === '--model' && capturedArgs?.[index + 1] === 'sonnet'))
 
   // Without a configured route the adapter refuses instead of using another provider.
   const unavailable = await createDeepSeekReviewerRuntime({ cwd, platform: 'linux', routeAvailable: async () => false })
