@@ -1,15 +1,7 @@
-import { buildJevSystemOneRequest, parseJevChoiceResponse, type JevChoiceDecision, type JevShadowStateProjection } from './jev-contract.js'
+import type { DecisionClient, DecisionClientOutcome } from '../client.js'
+import { buildSystemOneRequest, parseChoiceResponse, type DecisionShadowStateProjection } from '../contract.js'
 
-export type JevClientOutcome =
-  | { status: 'ok'; latencyMs: number; decision: JevChoiceDecision }
-  | { status: 'timeout' | 'http_error' | 'invalid_response' | 'exception'; latencyMs: number }
-
-export interface JevDecisionClient {
-  decide(state: JevShadowStateProjection): Promise<JevClientOutcome>
-}
-
-export interface JevClientOptions {
-  apiKey: string
+export interface LayaClientOptions {
   model?: string
   baseUrl?: string
   timeoutMs?: number
@@ -17,22 +9,23 @@ export interface JevClientOptions {
   now?: () => number
 }
 
-export class JevClient implements JevDecisionClient {
-  private readonly model: string
+/** Local/self-hosted Laya adapter for its Jev-compatible SystemOne endpoint. */
+export class LayaClient implements DecisionClient {
+  private readonly model: string | undefined
   private readonly baseUrl: string
   private readonly timeoutMs: number
   private readonly request: typeof fetch
   private readonly now: () => number
 
-  constructor(private readonly options: JevClientOptions) {
-    this.model = options.model?.trim() || 'jev-latest'
-    this.baseUrl = (options.baseUrl?.trim() || 'https://api.typesafe.ai').replace(/\/+$/u, '')
+  constructor(options: LayaClientOptions = {}) {
+    this.model = options.model?.trim() || undefined
+    this.baseUrl = (options.baseUrl?.trim() || 'http://127.0.0.1:8000').replace(/\/+$/u, '')
     this.timeoutMs = options.timeoutMs ?? 2_000
     this.request = options.fetch ?? fetch
     this.now = options.now ?? Date.now
   }
 
-  async decide(state: JevShadowStateProjection): Promise<JevClientOutcome> {
+  async decide(state: DecisionShadowStateProjection): Promise<DecisionClientOutcome> {
     const started = this.now()
     const controller = new AbortController()
     let timedOut = false
@@ -40,15 +33,15 @@ export class JevClient implements JevDecisionClient {
     try {
       const response = await this.request(`${this.baseUrl}/v1/systemone`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildJevSystemOneRequest(this.model, state)),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildSystemOneRequest(this.model, state)),
         signal: controller.signal,
       })
       const latencyMs = Math.max(0, this.now() - started)
       if (!response.ok) return { status: 'http_error', latencyMs }
       let body: unknown
       try { body = await response.json() } catch { return { status: 'invalid_response', latencyMs } }
-      const decision = parseJevChoiceResponse(body)
+      const decision = parseChoiceResponse(body)
       return decision === undefined ? { status: 'invalid_response', latencyMs } : { status: 'ok', latencyMs, decision }
     } catch {
       return { status: timedOut ? 'timeout' : 'exception', latencyMs: Math.max(0, this.now() - started) }

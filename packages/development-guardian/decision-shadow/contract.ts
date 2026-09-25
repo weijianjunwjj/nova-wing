@@ -2,9 +2,9 @@ import type { TaskAction } from '../work-session/task-controller.js'
 
 export const TASK_ACTIONS = ['ANALYZE', 'EXECUTE', 'VERIFY', 'REVIEW', 'REQUEST_APPROVAL', 'RECONCILE', 'SUSPEND', 'COMPLETE'] as const satisfies readonly TaskAction[]
 
-export type JevShadowStatus = 'ok' | 'disabled' | 'missing_api_key' | 'timeout' | 'http_error' | 'invalid_response' | 'exception'
+export type DecisionShadowStatus = 'ok' | 'disabled' | 'timeout' | 'http_error' | 'invalid_response' | 'exception'
 
-export interface JevShadowStateProjection {
+export interface DecisionShadowStateProjection {
   taskStatus: 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'COMPLETED' | 'FAILED'
   reconciliationRequired: boolean
   blockerCount: number
@@ -25,7 +25,7 @@ export interface JevShadowStateProjection {
   evidence: { passedCount: number; failedCount: number; missingCount: number; staleCount: number; nonDeterministicCount: number }
 }
 
-export interface JevChoiceDecision {
+export interface DecisionChoice {
   model: string
   action: TaskAction
   confidence: number
@@ -34,9 +34,9 @@ export interface JevChoiceDecision {
   outputTokens: number
 }
 
-export interface JevSystemOneRequest {
-  model: string
-  state: JevShadowStateProjection
+export interface SystemOneRequest {
+  model?: string
+  state: DecisionShadowStateProjection
   questions: {
     next_action: {
       type: 'choice'
@@ -63,9 +63,9 @@ export const NEXT_ACTION_CRITERIA: Record<TaskAction, string> = {
   COMPLETE: 'All acceptance bindings have fresh deterministic passing evidence and every required review and approval is satisfied.',
 }
 
-export function buildJevSystemOneRequest(model: string, state: JevShadowStateProjection): JevSystemOneRequest {
+export function buildSystemOneRequest(model: string | undefined, state: DecisionShadowStateProjection): SystemOneRequest {
   return {
-    model,
+    ...(model === undefined ? {} : { model }),
     state,
     questions: {
       next_action: {
@@ -82,7 +82,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Strictly validates the one response shape this experiment accepts. */
-export function parseJevChoiceResponse(value: unknown): JevChoiceDecision | undefined {
+export function parseChoiceResponse(value: unknown): DecisionChoice | undefined {
   const response = object(value)
   const answers = object(response?.answers)
   const answer = object(answers?.next_action)

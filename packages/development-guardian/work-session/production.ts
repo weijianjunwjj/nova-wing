@@ -63,8 +63,9 @@ import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsProjector, TaskRunAnalytic
 import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/task-eta.js'
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
-import { createJevShadowObserverFromEnv, type ShadowDecisionObserver } from '../decision-shadow/jev-shadow-observer.js'
-import { FileJevShadowStore, defaultJevShadowDecisionPath } from '../decision-shadow/jev-shadow-store.js'
+import { createDecisionShadowObserverFromEnv } from '../decision-shadow/factory.js'
+import type { ShadowDecisionObserver } from '../decision-shadow/observer.js'
+import { FileDecisionShadowStore, defaultDecisionShadowPath } from '../decision-shadow/store.js'
 import {
   createCodexReviewerRuntime,
   createDeepSeekReviewerRuntime,
@@ -504,7 +505,7 @@ export interface ProductionWorkSessionDependencies {
     defaultDispatcher: V2ActionDispatcher
   }) => V2ActionDispatcher
   v2Agents?: readonly AgentCapabilityProfile[]
-  /** Observe-only Jev seam. It has no dispatcher or task mutation capability. */
+  /** Observe-only Decision Shadow seam. It has no dispatcher or task mutation capability. */
   shadowDecisionObserver?: ShadowDecisionObserver
   /** Provider-agnostic reviewer runtimes; default registers the read-only adapters. */
   createReviewerRegistry?: (input: { definition: WorkSessionDefinition; env: NodeJS.ProcessEnv; policy: RuntimeModelPolicy }) => ReviewerRuntimeRegistry
@@ -670,9 +671,9 @@ export async function createProductionWorkSessionUi(
   }
   await mkdir(resolve(storagePath, '..'), { recursive: true })
   const verificationOutputDirectory = `${storagePath}.artifacts`
-  const shadowDecisionObserver = dependencies.shadowDecisionObserver ?? createJevShadowObserverFromEnv({
+  const shadowDecisionObserver = dependencies.shadowDecisionObserver ?? createDecisionShadowObserverFromEnv({
     env,
-    store: new FileJevShadowStore(defaultJevShadowDecisionPath({ env })),
+    store: new FileDecisionShadowStore(defaultDecisionShadowPath({ env })),
   })
 
   const createExecutor = dependencies.createExecutor ?? ((options) => new DeepSeekExecutor(options))

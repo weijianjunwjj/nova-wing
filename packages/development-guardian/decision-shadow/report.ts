@@ -1,8 +1,8 @@
 import type { TaskAction } from '../work-session/task-controller.js'
-import { TASK_ACTIONS } from './jev-contract.js'
-import type { JevShadowRecord } from './jev-shadow-observer.js'
+import { TASK_ACTIONS } from './contract.js'
+import type { DecisionShadowRecord } from './observer.js'
 
-export interface JevShadowReport {
+export interface DecisionShadowReport {
   samples: number
   successful: number
   errors: number
@@ -28,10 +28,10 @@ function percentile(values: readonly number[], fraction: number): number | null 
   return ordered[Math.max(0, Math.ceil(ordered.length * fraction) - 1)] ?? null
 }
 
-export function buildJevShadowReport(records: readonly JevShadowRecord[]): JevShadowReport {
+export function buildDecisionShadowReport(records: readonly DecisionShadowRecord[]): DecisionShadowReport {
   const ok = records.filter((record) => record.shadow.status === 'ok' && record.shadow.action !== null && record.match !== null)
-  const byReference = Object.fromEntries(TASK_ACTIONS.map((action) => [action, { samples: 0, successful: 0, matches: 0, match_rate: null as number | null }])) as JevShadowReport['by_reference_action']
-  const confusion = Object.fromEntries(TASK_ACTIONS.map((action) => [action, {}])) as JevShadowReport['confusion_matrix']
+  const byReference = Object.fromEntries(TASK_ACTIONS.map((action) => [action, { samples: 0, successful: 0, matches: 0, match_rate: null as number | null }])) as DecisionShadowReport['by_reference_action']
+  const confusion = Object.fromEntries(TASK_ACTIONS.map((action) => [action, {}])) as DecisionShadowReport['confusion_matrix']
   for (const record of records) byReference[record.reference.action].samples++
   for (const record of ok) {
     const row = byReference[record.reference.action]

@@ -1,14 +1,13 @@
 import type { DecisionReasonCode } from '../work-session/task-observability.js'
 import type { TaskAction } from '../work-session/task-controller.js'
-import type { JevDecisionClient } from './jev-client.js'
-import { JevClient } from './jev-client.js'
-import type { JevShadowStateProjection, JevShadowStatus } from './jev-contract.js'
-import { FileJevShadowStore, type JevShadowStore } from './jev-shadow-store.js'
+import type { DecisionClient } from './client.js'
+import type { DecisionShadowStateProjection, DecisionShadowStatus } from './contract.js'
+import { FileDecisionShadowStore, type DecisionShadowStore } from './store.js'
 
 export interface ShadowDecisionObservation {
   sessionId: string
   taskId: string
-  projection: JevShadowStateProjection
+  projection: DecisionShadowStateProjection
   reference: { action: TaskAction; reasonCode: DecisionReasonCode }
 }
 
@@ -17,7 +16,7 @@ export interface ShadowDecisionObserver {
   observe(input: ShadowDecisionObservation): void
 }
 
-export interface JevShadowRecord {
+export interface DecisionShadowRecord {
   schemaVersion: 1
   timestamp: string
   sessionId: string
@@ -25,7 +24,8 @@ export interface JevShadowRecord {
   decisionPoint: 'task-controller.next-action'
   reference: { action: TaskAction; reasonCode: DecisionReasonCode }
   shadow: {
-    status: JevShadowStatus
+    status: DecisionShadowStatus
+    provider: string
     model: string
     action: TaskAction | null
     confidence: number | null
@@ -35,27 +35,27 @@ export interface JevShadowRecord {
     outputTokens: number | null
   }
   match: boolean | null
-  projection: JevShadowStateProjection
+  projection: DecisionShadowStateProjection
 }
 
-export interface JevShadowObserverOptions {
+export interface DecisionShadowObserverOptions {
   enabled: boolean
+  provider: string
   model?: string
-  apiKey?: string
-  client?: JevDecisionClient
-  store?: JevShadowStore
+  client?: DecisionClient
+  store?: DecisionShadowStore
   now?: () => Date
 }
 
-export class JevShadowObserver implements ShadowDecisionObserver {
+export class DecisionShadowObserver implements ShadowDecisionObserver {
   private readonly model: string
-  private readonly store: JevShadowStore
+  private readonly store: DecisionShadowStore
   private readonly now: () => Date
   private readonly pending = new Set<Promise<void>>()
 
-  constructor(private readonly options: JevShadowObserverOptions) {
-    this.model = options.model?.trim() || 'jev-latest'
-    this.store = options.store ?? new FileJevShadowStore()
+  constructor(private readonly options: DecisionShadowObserverOptions) {
+    this.model = options.model?.trim() || 'router'
+    this.store = options.store ?? new FileDecisionShadowStore()
     this.now = options.now ?? (() => new Date())
   }
 
@@ -68,7 +68,7 @@ export class JevShadowObserver implements ShadowDecisionObserver {
   /** Test/CLI lifecycle hook; the task runner never waits on this. */
   async settled(): Promise<void> { await Promise.all([...this.pending]) }
 
-  private base(input: ShadowDecisionObservation, status: JevShadowStatus): JevShadowRecord {
+  private base(input: ShadowDecisionObservation, status: DecisionShadowStatus): DecisionShadowRecord {
     return {
       schemaVersion: 1,
       timestamp: this.now().toISOString(),
@@ -76,7 +76,7 @@ export class JevShadowObserver implements ShadowDecisionObserver {
       taskId: input.taskId,
       decisionPoint: 'task-controller.next-action',
       reference: { ...input.reference },
-      shadow: { status, model: this.model, action: null, confidence: null, probabilities: null, latencyMs: null, inputTokens: null, outputTokens: null },
+      shadow: { status, provider: this.options.provider, model: this.model, action: null, confidence: null, probabilities: null, latencyMs: null, inputTokens: null, outputTokens: null },
       match: null,
       projection: input.projection,
     }
@@ -84,14 +84,14 @@ export class JevShadowObserver implements ShadowDecisionObserver {
 
   private async capture(input: ShadowDecisionObservation): Promise<void> {
     if (!this.options.enabled) { await this.store.append(this.base(input, 'disabled')); return }
-    if (!this.options.apiKey?.trim() && this.options.client === undefined) { await this.store.append(this.base(input, 'missing_api_key')); return }
-    const client = this.options.client ?? new JevClient({ apiKey: this.options.apiKey!, model: this.model })
-    let outcome: Awaited<ReturnType<JevDecisionClient['decide']>>
+    const client = this.options.client
+    if (client === undefined) { await this.store.append(this.base(input, 'exception')); return }
+    let outcome: Awaited<ReturnType<DecisionClient['decide']>>
     try { outcome = await client.decide(input.projection) } catch { outcome = { status: 'exception', latencyMs: 0 } }
     const record = this.base(input, outcome.status)
     if (outcome.status === 'ok') {
       record.shadow = {
-        status: 'ok', model: outcome.decision.model, action: outcome.decision.action, confidence: outcome.decision.confidence,
+        status: 'ok', provider: this.options.provider, model: outcome.decision.model, action: outcome.decision.action, confidence: outcome.decision.confidence,
         probabilities: outcome.decision.probabilities, latencyMs: outcome.latencyMs,
         inputTokens: outcome.decision.inputTokens, outputTokens: outcome.decision.outputTokens,
       }
@@ -99,17 +99,4 @@ export class JevShadowObserver implements ShadowDecisionObserver {
     } else record.shadow.latencyMs = outcome.latencyMs
     await this.store.append(record)
   }
-}
-
-export function createJevShadowObserverFromEnv(options: { env?: NodeJS.ProcessEnv; store?: JevShadowStore; client?: JevDecisionClient } = {}): JevShadowObserver | undefined {
-  const env = options.env ?? process.env
-  if (env.NOVAWING_JEV_SHADOW !== '1') return undefined
-  const model = env.NOVAWING_JEV_MODEL?.trim() || 'jev-latest'
-  const apiKey = env.TYPESAFE_API_KEY?.trim() || undefined
-  const client = options.client ?? (apiKey === undefined ? undefined : new JevClient({
-    apiKey,
-    model,
-    baseUrl: env.NOVAWING_JEV_BASE_URL?.trim() || 'https://api.typesafe.ai',
-  }))
-  return new JevShadowObserver({ enabled: true, model, ...(apiKey === undefined ? {} : { apiKey }), ...(client === undefined ? {} : { client }), ...(options.store === undefined ? {} : { store: options.store }) })
 }

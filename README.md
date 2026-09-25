@@ -162,19 +162,27 @@ ACL，macOS/Linux 使用 `0700` 目录和 `0600` 文件。保护失败不会写�
 保留旧文件。此保护不是静态加密。完整 7 个 SMTP 环境变量优先，部分配置 fail closed。
 桌面通知是可选能力：Windows Toast；macOS/Linux 无此 adapter 时返回 SKIPPED，不阻断任务或邮件。
 
-V2 Controller 可显式启用 Jev next-action shadow（只观察，不参与 dispatch）：
+V2 Controller 可显式启用本地 Laya next-action Decision Shadow（只观察，不参与 dispatch）：
 
 ```bash
-export NOVAWING_JEV_SHADOW=1
-export TYPESAFE_API_KEY='...'
-export NOVAWING_JEV_MODEL='jev-latest'              # 可选
-export NOVAWING_JEV_BASE_URL='https://api.typesafe.ai' # 可选，测试可指向本地 server
+export NOVAWING_DECISION_SHADOW=laya
+export NOVAWING_LAYA_BASE_URL='http://127.0.0.1:8000' # 可选，默认值如左
+export NOVAWING_LAYA_MODEL='english'                 # 可选；留空使用 Laya router
 ```
 
-Shadow 记录以 JSONL 追加到 data 根目录的 `jev-shadow-decisions.jsonl`；请求只包含结构化
-allowlist，不包含源码、prompt、路径、原始 evidence/provider 输出或密钥。网络、鉴权、限流、
-超时与响应校验失败全部 fail open，不改变 `TaskController` 的权威动作。运行
-`npm run jev:shadow:report` 可查看 match、混淆矩阵、p50/p95、confidence 与 token 汇总；
+先按 Laya 官方方式安装并启动本地服务：
+
+```bash
+pip install "laya[serve]"
+LAYA_HOST=127.0.0.1 LAYA_PORT=8000 LAYA_MODELS=english laya-serve
+```
+
+服务默认端口为 `8000`，健康检查为 `GET /health`；NovaWing 只调用 Jev-compatible `POST /v1/systemone`，
+不需要 TypeSafe API Key 或 hosted API。Shadow 记录以 JSONL 追加到 data 根目录的
+`decision-shadow.jsonl`；请求只包含结构化 allowlist，不包含源码、prompt、路径、原始
+evidence/provider 输出或权威答案。网络、超时与响应校验失败全部 fail open，不改变
+`TaskController` 的权威动作。运行 `npm run decision-shadow:report` 可查看 match、混淆矩阵、
+p50/p95、confidence 与 token 汇总；
 报告只保存 token 数，不在 runtime 中固化价格。
 
 旧版本错误写入 POSIX `~/AppData` 或 `~/.novawing/NovaWing` 的数据不会自动合并或删除。

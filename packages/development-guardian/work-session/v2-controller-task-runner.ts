@@ -8,8 +8,8 @@ import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
 import { RECOVERY_ACTION_BUDGET } from './autonomous-diagnosis.js'
-import { buildJevShadowStateProjection } from '../decision-shadow/jev-state-projection.js'
-import type { ShadowDecisionObserver } from '../decision-shadow/jev-shadow-observer.js'
+import { buildDecisionShadowStateProjection } from '../decision-shadow/state-projection.js'
+import type { ShadowDecisionObserver } from '../decision-shadow/observer.js'
 import type { WorkSessionTask } from './model.js'
 import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskRunner } from './task-runner.js'
 import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
@@ -474,7 +474,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         this.options.shadowDecisionObserver?.observe({
           sessionId,
           taskId,
-          projection: buildJevShadowStateProjection(state, { reconciliationRequired: !reconciliation.reconciled }),
+          projection: buildDecisionShadowStateProjection(state, { reconciliationRequired: !reconciliation.reconciled }),
           reference: { action: decision.action, reasonCode: decision.reasonCode },
         })
       } catch {

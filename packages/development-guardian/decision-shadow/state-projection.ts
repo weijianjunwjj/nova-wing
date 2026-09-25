@@ -3,11 +3,11 @@ import { canonicalVerificationFailure } from '../work-session/task-controller.js
 import type { ControllerRuntimeState } from '../work-session/task-controller.js'
 import { approvalSatisfied, assessRisk, evidenceIsStale, reviewSatisfied, unmappedAcceptanceCriteria } from '../work-session/risk-evidence.js'
 import type { TaskStateV2 } from '../work-session/task-state-v2.js'
-import type { JevShadowStateProjection } from './jev-contract.js'
+import type { DecisionShadowStateProjection } from './contract.js'
 
 /** A scalar-only allowlist. No source text, paths, prompts, payloads, or raw evidence cross this boundary. */
-export function buildJevShadowStateProjection(task: TaskStateV2, runtime: ControllerRuntimeState = {}): JevShadowStateProjection {
-  const classifications: JevShadowStateProjection['verification']['classifications'] = {
+export function buildDecisionShadowStateProjection(task: TaskStateV2, runtime: ControllerRuntimeState = {}): DecisionShadowStateProjection {
+  const classifications: DecisionShadowStateProjection['verification']['classifications'] = {
     CODE_FAILURE: 0,
     ENVIRONMENT_FAILURE: 0,
     VERIFIER_CONFIGURATION_FAILURE: 0,
