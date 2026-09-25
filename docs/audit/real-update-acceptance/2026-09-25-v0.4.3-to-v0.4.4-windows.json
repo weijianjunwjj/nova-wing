@@ -1,0 +1,65 @@
+{
+  "schema": "novawing.real-update-acceptance.v1",
+  "appendOnly": true,
+  "recordedAt": "2026-09-25T02:01:59.065Z",
+  "platform": "win32",
+  "architecture": "x64",
+  "source": {
+    "version": "0.4.3",
+    "pid": 27388,
+    "startupAt": "2026-09-24T13:34:03.759Z"
+  },
+  "candidate": {
+    "version": "0.4.4",
+    "readyAt": "2026-09-25T01:49:17.912Z"
+  },
+  "shutdown": {
+    "event": "strict-quit-drained",
+    "at": "2026-09-25T01:51:27.578Z",
+    "activeCount": 0,
+    "blockerActive": false
+  },
+  "target": {
+    "version": "0.4.4",
+    "pid": 39908,
+    "startupAt": "2026-09-25T01:52:20.217Z"
+  },
+  "continuity": {
+    "installPath": "C:\\Users\\Administrator\\AppData\\Local\\Programs\\nova-wing",
+    "sameInstallPath": true,
+    "userData": "C:\\Users\\Administrator\\AppData\\Roaming\\NovaWing",
+    "sameUserData": true
+  },
+  "result": {
+    "realAutoUpdateE2E": "PASS",
+    "versionTransition": "0.4.3 -> 0.4.4",
+    "manualInstallerLaunch": false
+  },
+  "evidence": {
+    "eventsFile": "C:\\Users\\Administrator\\AppData\\Local\\NovaWing\\desktop\\events.jsonl",
+    "eventsSnapshotBytes": 224999,
+    "eventsSnapshotSha256": "b0efeb2407e2123785af02ca77c0c90dde81804f2563cfd10093c7d505666c28",
+    "sourceStartupLine": 642,
+    "availableLine": 674,
+    "downloadingLine": 675,
+    "readyLine": 676,
+    "strictQuitDrainedLine": 677,
+    "targetStartupLine": 678,
+    "targetFirstFrameReadyLine": 689,
+    "targetReadyLine": 690,
+    "installedExecutable": "C:\\Users\\Administrator\\AppData\\Local\\Programs\\nova-wing\\NovaWing.exe",
+    "installedExecutableFileVersion": "0.4.4",
+    "installedExecutableProductVersion": "0.4.4.0",
+    "installedExecutableSha256": "100ba44bd911593864d8bb977a1196c6732f7fc74115848bfb3c4b09cf4f6ca2"
+  },
+  "telemetryLimitation": {
+    "classification": "OBSERVABILITY_GAP",
+    "isE2EFailure": false,
+    "unobservedCounters": [
+      "installRequests",
+      "installAuthorizations"
+    ],
+    "reason": "Updater observations are not automatically emitted after requestRestartAndInstall() advances into the shutdown/install path; events.jsonl therefore has no direct post-request counter snapshot.",
+    "interpretation": "The missing post-request counters must not be interpreted as zero. The drained strict quit and the new packaged 0.4.4 startup from the same install and userData paths establish the accepted update outcome."
+  }
+}
