@@ -68,51 +68,74 @@ export class PlanningService {
     const emit = (type: NovaWingEvent['type'], actorRole: NovaWingEvent['actorRole'], metadata: NovaWingEvent['metadata'] = {}): Promise<void> => this.events.append({ planningSessionId: id, type, actorRole, metadata })
     if (previous === undefined) await emit('requirement.received', 'customer')
     await emit('planning.started', 'planning', { planVersion: (previous?.version ?? 0) + 1 })
-    const started = Date.now()
-    const response = await this.provider({ requirement: text, ...(requirement.revisionNotes.length === 0 ? {} : { revisionFeedback: requirement.revisionNotes.join('\n\n') }) })
-    const body = response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
-    let raw: unknown
-    try { raw = JSON.parse(body) as unknown } catch { throw new PlanningInputError('Planning model returned invalid JSON.') }
-    const parsed = planDraftSchema.safeParse(raw)
-    if (!parsed.success) throw new PlanningInputError(`Planning model returned an invalid plan: ${parsed.error.issues[0]?.path.join('.') ?? 'unknown field'}`)
-    await emit('requirement.analyzed', 'planning', { clauseCount: parsed.data.clauses.length })
-    // Keep source quotes exact. A model can double-escape line breaks or append
-    // a later sentence while omitting an intervening one. In the latter case,
-    // retain only a sufficiently long verbatim prefix; otherwise validation fails.
-    const sources = [requirement.text, ...requirement.revisionNotes]
-    for (const clause of parsed.data.clauses) {
-      if (sources.some((source) => source.includes(clause.source.excerpt))) continue
-      const normalized = clause.source.excerpt.replaceAll('\\r\\n', '\n').replaceAll('\\n', '\n')
-      if (sources.some((source) => source.includes(normalized))) { clause.source.excerpt = normalized; continue }
-      let longest = ''
-      for (const source of sources) {
-        const anchor = normalized.slice(0, Math.min(30, normalized.length))
-        const start = source.indexOf(anchor)
-        if (start < 0) continue
-        let length = 0
-        while (length < normalized.length && source[start + length] === normalized[length]) length += 1
-        if (length > longest.length) longest = normalized.slice(0, length).trimEnd()
+    let validationFeedback: string | undefined
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const started = Date.now()
+      const response = await this.provider({
+        requirement: text,
+        ...(requirement.revisionNotes.length === 0 ? {} : { revisionFeedback: requirement.revisionNotes.join('\n\n') }),
+        ...(validationFeedback === undefined ? {} : { validationFeedback }),
+      })
+      const body = response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
+      let raw: unknown
+      try { raw = JSON.parse(body) as unknown } catch {
+        await emit('plan.validation_failed', 'validator', { issueCount: 1 })
+        if (attempt === 0) { validationFeedback = 'Return one valid JSON object matching the required schema.'; continue }
+        throw new PlanningInputError('Planning model returned invalid JSON after retry.')
       }
-      if (longest.length >= 60 && longest.length / normalized.length >= 0.75) clause.source.excerpt = longest
+      const parsed = planDraftSchema.safeParse(raw)
+      if (!parsed.success) {
+        await emit('plan.validation_failed', 'validator', { issueCount: parsed.error.issues.length })
+        if (attempt === 0) {
+          validationFeedback = parsed.error.issues.slice(0, 20).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('\n')
+          continue
+        }
+        throw new PlanningInputError('Planning model returned an invalid plan after retry.')
+      }
+      await emit('requirement.analyzed', 'planning', { clauseCount: parsed.data.clauses.length })
+      // Keep source quotes exact. A model can double-escape line breaks or append
+      // a later sentence while omitting an intervening one. In the latter case,
+      // retain only a sufficiently long verbatim prefix; otherwise validation fails.
+      const sources = [requirement.text, ...requirement.revisionNotes]
+      for (const clause of parsed.data.clauses) {
+        if (sources.some((source) => source.includes(clause.source.excerpt))) continue
+        const normalized = clause.source.excerpt.replaceAll('\\r\\n', '\n').replaceAll('\\n', '\n')
+        if (sources.some((source) => source.includes(normalized))) { clause.source.excerpt = normalized; continue }
+        let longest = ''
+        for (const source of sources) {
+          const anchor = normalized.slice(0, Math.min(30, normalized.length))
+          const start = source.indexOf(anchor)
+          if (start < 0) continue
+          let length = 0
+          while (length < normalized.length && source[start + length] === normalized[length]) length += 1
+          if (length > longest.length) longest = normalized.slice(0, length).trimEnd()
+        }
+        if (longest.length >= 60 && longest.length / normalized.length >= 0.75) clause.source.excerpt = longest
+      }
+      const plan = createDevelopmentPlan(parsed.data, requirement, id, (previous?.version ?? 0) + 1)
+      const validation = validateDevelopmentPlan(plan)
+      await this.events.append({
+        planningSessionId: id, type: 'development_plan.generated', actorRole: 'planning',
+        ...(response.provider === undefined ? {} : { provider: response.provider }),
+        ...(response.model === undefined ? {} : { model: response.model }),
+        durationMs: Date.now() - started,
+        usage: { ...(response.inputTokens === undefined ? {} : { inputTokens: response.inputTokens }), ...(response.outputTokens === undefined ? {} : { outputTokens: response.outputTokens }), ...(response.cachedTokens === undefined ? {} : { cachedTokens: response.cachedTokens }) },
+        ...(response.estimatedCost === undefined ? {} : { estimatedCost: response.estimatedCost }),
+        metadata: { planVersion: plan.version, taskCount: plan.tasks.length },
+      })
+      await emit(validation.pass ? 'plan.validation_passed' : 'plan.validation_failed', 'validator', { issueCount: validation.issues.length })
+      if (!validation.pass && attempt === 0) {
+        validationFeedback = validation.issues.slice(0, 30).map((issue) => `${issue.code} at ${issue.path}: ${issue.message}`).join('\n')
+        continue
+      }
+      plan.status = validation.pass
+        ? plan.customerQuestions.some((question) => question.blocking) ? 'needs_customer_input' : 'ready_for_approval'
+        : 'draft'
+      await this.store.save(plan)
+      if (plan.status === 'needs_customer_input') await emit('customer_question.required', 'planning', { questionCount: plan.customerQuestions.filter((question) => question.blocking).length })
+      return { plan, validation }
     }
-    const plan = createDevelopmentPlan(parsed.data, requirement, id, (previous?.version ?? 0) + 1)
-    const validation = validateDevelopmentPlan(plan)
-    plan.status = validation.pass
-      ? plan.customerQuestions.some((question) => question.blocking) ? 'needs_customer_input' : 'ready_for_approval'
-      : 'draft'
-    await this.store.save(plan)
-    await this.events.append({
-      planningSessionId: id, type: 'development_plan.generated', actorRole: 'planning',
-      ...(response.provider === undefined ? {} : { provider: response.provider }),
-      ...(response.model === undefined ? {} : { model: response.model }),
-      durationMs: Date.now() - started,
-      usage: { ...(response.inputTokens === undefined ? {} : { inputTokens: response.inputTokens }), ...(response.outputTokens === undefined ? {} : { outputTokens: response.outputTokens }), ...(response.cachedTokens === undefined ? {} : { cachedTokens: response.cachedTokens }) },
-      ...(response.estimatedCost === undefined ? {} : { estimatedCost: response.estimatedCost }),
-      metadata: { planVersion: plan.version, taskCount: plan.tasks.length },
-    })
-    await emit(validation.pass ? 'plan.validation_passed' : 'plan.validation_failed', 'validator', { issueCount: validation.issues.length })
-    if (plan.status === 'needs_customer_input') await emit('customer_question.required', 'planning', { questionCount: plan.customerQuestions.filter((question) => question.blocking).length })
-    return { plan, validation }
+    throw new PlanningInputError('Planning could not produce a valid plan.')
   }
 
   async approve(id: string, version: number): Promise<DevelopmentPlan> {

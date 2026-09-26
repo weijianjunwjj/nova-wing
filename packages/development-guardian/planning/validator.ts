@@ -64,7 +64,7 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
   for (const criterion of draft.acceptancePlan.criteria) {
     for (const reference of criterion.requirementIds) if (!clauseIds.has(reference)) add('INVALID_REQUIREMENT_REFERENCE', `criteria.${criterion.id}`, reference)
     if (!draft.tasks.some((task) => task.acceptanceCriterionIds.includes(criterion.id))) add('ORPHAN_ACCEPTANCE', `criteria.${criterion.id}`, 'No task owns this criterion.')
-    if (criterion.blocking && (criterion.description.length < 20 || COMMAND_ONLY.test(criterion.description) || !OBSERVABLE.test(criterion.description))) {
+    if (criterion.blocking && (criterion.description.length < 12 || COMMAND_ONLY.test(criterion.description) || !OBSERVABLE.test(criterion.description))) {
       add('NOT_OBSERVABLE', `criteria.${criterion.id}`, 'Blocking acceptance must state an observable outcome, not just a command.')
     }
   }

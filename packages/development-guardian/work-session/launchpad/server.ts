@@ -78,6 +78,11 @@ import {
 } from './repair-audit.js'
 import { createDesktopRepairNotifier, type RepairNotifier } from './repair-notifier.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsStore } from '../task-run-analytics.js'
+import { createCodexPlanningProvider } from '../../planning/provider.js'
+import { PlanningInputError, PlanningService, PlanningStore } from '../../planning/service.js'
+import { PlanningEventStore } from '../../planning/telemetry.js'
+import { validateDevelopmentPlan } from '../../planning/validator.js'
+import { CUSTOMER_APP_JS, CUSTOMER_STYLES_CSS, renderCustomerHtml } from '../../planning/customer-view.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
 
@@ -264,6 +269,8 @@ export interface NovaWingLaunchpadDependencies {
   repairNotifier?: RepairNotifier
   /** Injectable analytics database for isolated tests and alternate local profiles. */
   analyticsPath?: string
+  /** Isolated planning service; its approval never creates a Work Session. */
+  planningService?: PlanningService
 }
 
 interface LaunchResult {
@@ -589,6 +596,7 @@ export class NovaWingLaunchpad {
   private readonly repairAudit: RepairAuditSink
   private readonly repairNotifier: RepairNotifier
   private readonly analyticsPath: string
+  private readonly planningService: PlanningService
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
@@ -653,6 +661,11 @@ export class NovaWingLaunchpad {
     this.repairAudit = dependencies.repairAudit ?? createFileRepairAuditSink()
     this.repairNotifier = dependencies.repairNotifier ?? createDesktopRepairNotifier({ shutdownMode: this.shutdownMode })
     this.analyticsPath = dependencies.analyticsPath ?? defaultTaskRunAnalyticsPath()
+    this.planningService = dependencies.planningService ?? new PlanningService(
+      createCodexPlanningProvider(),
+      new PlanningStore(join(platformPaths().data, 'planning', 'plans')),
+      new PlanningEventStore(join(platformPaths().data, 'planning', 'events.jsonl')),
+    )
     this.server = createServer((request, response) => {
       if (this.closed) {
         response.setHeader('Connection', 'close')
@@ -929,8 +942,41 @@ export class NovaWingLaunchpad {
 
     const method = request.method ?? 'GET'
     const path = pathOf(request)
-    if (method === 'GET' && path === '/') {
+    if (method === 'GET' && (path === '/' || path === '/advanced')) {
       this.serveHtml(response)
+      return
+    }
+    if (method === 'GET' && path === '/customer') {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" })
+      response.end(renderCustomerHtml(this.token))
+      return
+    }
+    if (method === 'GET' && path === '/customer/app.js') {
+      this.serveAsset(response, 'text/javascript; charset=utf-8', CUSTOMER_APP_JS)
+      return
+    }
+    if (method === 'GET' && path === '/customer/styles.css') {
+      this.serveAsset(response, 'text/css; charset=utf-8', CUSTOMER_STYLES_CSS)
+      return
+    }
+    if (method === 'GET' && path === '/api/planning/plans') {
+      const plans = await this.planningService.list()
+      this.respondJson(response, 200, plans.map((plan) => ({ id: plan.id, version: plan.version, status: plan.status, productGoal: plan.analysis.productGoal, updatedAt: plan.updatedAt })))
+      return
+    }
+    if (method === 'GET' && /^\/api\/planning\/plans\/[a-f0-9-]{36}$/u.test(path)) {
+      const plan = await this.planningService.get(path.slice('/api/planning/plans/'.length))
+      this.respondJson(response, plan === undefined ? 404 : 200,
+        plan === undefined ? { error: 'not found' } : { plan, validation: validateDevelopmentPlan(plan) })
+      return
+    }
+    if (method === 'POST' && path === '/api/planning/generate') {
+      await this.servePlanningGenerate(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/planning/approve') {
+      await this.servePlanningApprove(request, response)
       return
     }
     if (method === 'GET' && path === '/app.js') {
@@ -975,7 +1021,9 @@ export class NovaWingLaunchpad {
     }
 
     const knownPaths = new Set([
-      '/', '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
+      '/', '/advanced', '/customer', '/customer/app.js', '/customer/styles.css',
+      '/api/planning/plans', '/api/planning/generate', '/api/planning/approve',
+      '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
       '/api/session/repair', '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
     ])
     this.respondJson(response, knownPaths.has(path) ? 405 : 404, {
@@ -1033,6 +1081,58 @@ export class NovaWingLaunchpad {
   private serveAsset(response: ServerResponse, contentType: string, body: string): void {
     response.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-store' })
     response.end(body)
+  }
+
+  private async planningBody(request: IncomingMessage, response: ServerResponse): Promise<Record<string, unknown> | undefined> {
+    if (!this.authorizeMutation(request, response)) return undefined
+    if (request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+      this.respondJson(response, 415, { error: 'content type must be application/json' })
+      return undefined
+    }
+    const body = await readBodyWithLimit(request).catch(() => undefined)
+    if (body === undefined) { this.respondJson(response, 413, { error: 'payload too large' }); return undefined }
+    try {
+      const parsed: unknown = JSON.parse(body)
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
+    } catch { /* malformed request */ }
+    this.respondJson(response, 400, { error: 'invalid JSON object' })
+    return undefined
+  }
+
+  private async servePlanningGenerate(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const body = await this.planningBody(request, response)
+    if (body === undefined) return
+    if (typeof body.requirement !== 'string' || (body.planId !== undefined && typeof body.planId !== 'string') ||
+      (body.feedback !== undefined && typeof body.feedback !== 'string') ||
+      ((body.planId === undefined) !== (body.feedback === undefined))) {
+      this.respondJson(response, 400, { error: 'requirement and optional planId/feedback are required' })
+      return
+    }
+    try {
+      const revision = typeof body.planId === 'string' && typeof body.feedback === 'string'
+        ? { planId: body.planId, feedback: body.feedback } : undefined
+      this.respondJson(response, 200, await this.planningService.generate(body.requirement, revision))
+    } catch (error) {
+      this.respondJson(response, error instanceof PlanningInputError ? 400 : 503, {
+        error: error instanceof PlanningInputError ? error.message : 'Planning provider unavailable; the requirement was not approved.',
+      })
+    }
+  }
+
+  private async servePlanningApprove(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const body = await this.planningBody(request, response)
+    if (body === undefined) return
+    if (typeof body.planId !== 'string' || typeof body.version !== 'number' || !Number.isSafeInteger(body.version)) {
+      this.respondJson(response, 400, { error: 'planId and integer version are required' })
+      return
+    }
+    try {
+      this.respondJson(response, 200, await this.planningService.approve(body.planId, body.version))
+    } catch (error) {
+      this.respondJson(response, error instanceof PlanningInputError ? 409 : 503, {
+        error: error instanceof PlanningInputError ? error.message : 'Planning approval unavailable.',
+      })
+    }
   }
 
   private async serveStart(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -2043,6 +2143,11 @@ export async function createNovaWingLaunchpad(options: {
   const launchpadDependencies: NovaWingLaunchpadDependencies = {
     ...dependencies,
     ...(options.shutdownMode === undefined ? {} : { shutdownMode: options.shutdownMode }),
+    planningService: dependencies?.planningService ?? new PlanningService(
+      createCodexPlanningProvider(options.env === undefined ? {} : { env: options.env }),
+      new PlanningStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'plans')),
+      new PlanningEventStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'events.jsonl')),
+    ),
     analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),
     resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>

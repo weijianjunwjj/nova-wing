@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M4 minimal Customer Mode UI and HTTP integration.
+M5 telemetry and integrated acceptance.
 
 ## Baseline
 
@@ -22,6 +22,7 @@ M4 minimal Customer Mode UI and HTTP integration.
 - M1 planning domain model and read-only model provider complete; `npm run typecheck` PASS.
 - M2 validator checks MUST coverage, references, task DAG, orphan acceptance, observable outcomes, and customer question policy. Negative and positive planning tests PASS.
 - M3 service persists versioned plans and redacted events. Requirement 001 real model sample: 22 MUST clauses, 8 tasks, 22 acceptance criteria, 100% task and blocking acceptance coverage, no customer questions; deterministic validation PASS after exact-source normalization.
+- M4 Customer Mode entry, progress, full plan rendering, recent-plan recovery, revision, and approval are wired to the Launchpad planning API. HTTP tests prove no Work Session creation; live browser navigation, input, generation, and plan display verified. A bounded automatic regeneration now repairs validation failures before exposing a draft.
 
 ## Decisions
 
@@ -41,8 +42,9 @@ M4 minimal Customer Mode UI and HTTP integration.
 - M0 baseline/docs: `67347f1`.
 - M1 model/provider: `a5a01f7`.
 - M2 validator: `5ef3d54`.
-- M3 service/benchmark: pending commit.
+- M3 service/benchmark: `0f40d30`.
+- M4 UI/API/tests: pending commit.
 
 ## Next
 
-Verify Customer Mode UI, approval and revision in a browser, then complete telemetry and integrated checks.
+Complete live browser approval smoke, full project check, and self-review.
