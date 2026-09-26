@@ -43,6 +43,7 @@ Complete — Phase 1 acceptance and self-review passed.
 - Planning focused tests: 8 PASS, including actual Requirement 001 model sample, negative gates, HTTP isolation, business-question blocking, telemetry redaction and revision/approval race.
 - Final Node 24 `npm run check`: PASS (1200 Node tests, 193 Desktop tests, typecheck, unused, migration, exports, boundaries and platform). Baseline `npm run check` also passed before implementation.
 - Live browser smoke: Customer entry, generation, revision, recent-plan reload and approval verified on isolated temporary planning data. Runtime creation was separately instrumented in HTTP tests and remained at zero calls.
+- Final diff hygiene: Requirement 001 fixture EOF whitespace corrected; 8 focused tests rerun and PASS.
 
 ## Commits
 
@@ -53,6 +54,7 @@ Complete — Phase 1 acceptance and self-review passed.
 - M4 UI/API/tests: `69a22b6`.
 - M5 telemetry/self-review: `6b28064`.
 - M6 acceptance closeout: this status update.
+- Fixture diff hygiene: follow-up closeout commit.
 
 ## Next
 
