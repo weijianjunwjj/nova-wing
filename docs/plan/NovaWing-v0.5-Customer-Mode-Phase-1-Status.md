@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M2 deterministic coverage, graph and approval validation.
+M3 Requirement 001 benchmark and durable planning service.
 
 ## Baseline
 
@@ -20,6 +20,7 @@ M2 deterministic coverage, graph and approval validation.
 - Authorized task and repository rules reviewed.
 - Existing Launchpad is local HTTP HTML/JS; its Work Session create path starts the runtime. Customer Mode will use a separate planning route and service.
 - M1 planning domain model and read-only model provider complete; `npm run typecheck` PASS.
+- M2 validator checks MUST coverage, references, task DAG, orphan acceptance, observable outcomes, and customer question policy. Negative and positive planning tests PASS.
 
 ## Decisions
 
@@ -37,8 +38,9 @@ M2 deterministic coverage, graph and approval validation.
 ## Commits
 
 - M0 baseline/docs: `67347f1`.
-- M1 model/provider: pending commit.
+- M1 model/provider: `a5a01f7`.
+- M2 validator: pending commit.
 
 ## Next
 
-Validate M2 negative cases, then continue Requirement 001 benchmark and UI integration.
+Persist plans and benchmark Requirement 001 with real model output before Customer Mode UI acceptance.
