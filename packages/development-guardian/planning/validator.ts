@@ -3,9 +3,10 @@ import { buildCoverage, planDraftSchema, type DevelopmentPlan, type PlanDraft } 
 export interface PlanIssue { code: string; path: string; message: string }
 export interface PlanValidation { pass: boolean; issues: PlanIssue[]; mustTaskCoverage: number; mustAcceptanceCoverage: number }
 
-const TECHNICAL_QUESTION = /\b(?:React|Vue|Angular|Svelte|SQLite|PostgreSQL|MySQL|MongoDB|REST|GraphQL|Codex|Claude|GPT|DeepSeek|reviewer|executor|agent|model|framework|database|db|API|shell|command|verification|test runner|Docker|Kubernetes)\b|技术栈|数据库|模型|评审器|执行器|验证命令|框架|前端框架|后端框架|用什么语言|什么语言开发/iu
+const TECHNICAL_QUESTION = /\b(?:React|Vue|Angular|Svelte|SQLite|PostgreSQL|MySQL|MongoDB|REST|GraphQL|Codex|Claude|GPT|DeepSeek|reviewer|executor|agent|model|framework|database|db|shell|command|verification|test runner|Docker|Kubernetes)\b|技术栈|技术方案|数据库|模型|评审器|执行器|验证命令|测试命令|框架|前端框架|后端框架|前端技术|后端技术|接口协议|编程语言|用什么语言|什么语言开发|用什么开发|部署方式/iu
+const RUNTIME_WIRING = /\b(?:Codex|Claude|DeepSeek|Reviewer|Executor|Agent|shell|npm\s+run|npx|pnpm|yarn|pytest|tsc)\b|评审器|执行器|验证命令|测试命令|模型分配|模型选择/iu
 const COMMAND_ONLY = /^(?:npm|npx|pnpm|yarn|node|python|pytest|go|cargo|make|git|tsc|bash)\s+[^。.!?]+(?:\s+(?:passes?|成功|通过))?[。.!?]?$/iu
-const OBSERVABLE = /(?:能够|可以|可(?:选择|访问|新增|创建|编辑|查看|执行|重复|通过|由|从|见)|显示|看到|展示|返回|保存|持久|状态|收到|创建|更新|拒绝|阻止|成功|失败|完成|等于|一致|包含|记录|生成|可见|可查询|不存在|数值|覆盖|提供|进入|切换|appears?|returns?|persists?|rejects?|shows?|contains?|matches?|is visible|can )/iu
+const OBSERVABLE = /(?:能够|可以|可(?:选择|访问|新增|创建|编辑|查看|执行|重复|通过|由|从|见|填写|确认|提交|打开|加入|下单|支付|修改|删除|接单|制作|配送|查询)|显示|看到|展示|返回|保存|持久|状态|收到|创建|更新|拒绝|阻止|成功|失败|完成|等于|一致|包含|记录|生成|可见|可查询|不存在|数值|覆盖|提供|进入|切换|appears?|returns?|persists?|rejects?|shows?|contains?|matches?|is visible|can )/iu
 
 function duplicates(values: readonly string[]): string[] {
   const seen = new Set<string>()
@@ -28,6 +29,15 @@ export function validateCustomerQuestion(question: PlanDraft['customerQuestions'
 export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
   const issues: PlanIssue[] = []
   const add = (code: string, path: string, message: string): void => { issues.push({ code, path, message }) }
+  if (plan === null || typeof plan !== 'object' || typeof plan.id !== 'string' || !plan.id.trim() ||
+    !Number.isSafeInteger(plan.version) || plan.version < 1 ||
+    plan.requirement === null || typeof plan.requirement !== 'object' ||
+    typeof plan.requirement.id !== 'string' || !plan.requirement.id.trim() ||
+    typeof plan.requirement.text !== 'string' || !plan.requirement.text.trim() ||
+    !Array.isArray(plan.coverage) || !Array.isArray(plan.dependencies)) {
+    add('INVALID_PLAN_IDENTITY', 'requirement', 'Plan, version, coverage and original requirement must be present.')
+    return { pass: false, issues, mustTaskCoverage: 0, mustAcceptanceCoverage: 0 }
+  }
   const parsed = planDraftSchema.safeParse({
     clauses: plan.clauses, analysis: plan.analysis, productScope: plan.productScope,
     architecture: plan.architecture, tasks: plan.tasks, acceptancePlan: plan.acceptancePlan,
@@ -36,9 +46,6 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
   if (!parsed.success) {
     for (const error of parsed.error.issues) add('INVALID_STRUCTURE', error.path.join('.'), error.message)
     return { pass: false, issues, mustTaskCoverage: 0, mustAcceptanceCoverage: 0 }
-  }
-  if (plan.id.trim().length === 0 || plan.requirement.id.trim().length === 0 || plan.requirement.text.trim().length === 0 || plan.version < 1) {
-    add('INVALID_PLAN_IDENTITY', 'requirement', 'Plan, version and original requirement must be present.')
   }
   const draft = parsed.data
   const clauseIds = new Set(draft.clauses.map((clause) => clause.id))
@@ -86,11 +93,26 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
   }
   for (const task of draft.tasks) visit(task.id)
   for (const question of draft.customerQuestions) issues.push(...validateCustomerQuestion(question))
+  const planningText = [
+    draft.analysis.productGoal, draft.analysis.summary,
+    ...draft.analysis.userRoles.flatMap((role) => [role.name, ...role.goals]),
+    ...draft.analysis.businessFlows.flatMap((flow) => [flow.title, ...flow.steps]),
+    ...draft.productScope.inScope, ...draft.productScope.outOfScope,
+    draft.architecture.summary, ...draft.architecture.components, ...draft.architecture.decisions,
+    ...draft.tasks.flatMap((task) => [task.title, task.objective, ...task.outputs]),
+    ...draft.acceptancePlan.criteria.flatMap((criterion) => [criterion.description, criterion.expectedEvidence]),
+    ...draft.risks.flatMap((risk) => [risk.description, risk.mitigation]),
+    ...draft.assumptions.flatMap((assumption) => [assumption.statement, assumption.impactIfFalse]),
+  ]
+  if (planningText.some((value) => RUNTIME_WIRING.test(value))) {
+    add('RUNTIME_WIRING', 'plan', 'Customer plan may not assign agents, models, reviewers or verification commands.')
+  }
   const coverage = buildCoverage(draft)
   if (JSON.stringify(coverage) !== JSON.stringify(plan.coverage)) add('STALE_COVERAGE', 'coverage', 'Coverage must be derived from current tasks and acceptance.')
   const dependencies = draft.tasks.flatMap((task) => task.dependencyIds.map((dependencyId) => ({ fromTaskId: dependencyId, toTaskId: task.id })))
   if (JSON.stringify(dependencies) !== JSON.stringify(plan.dependencies)) add('STALE_DEPENDENCIES', 'dependencies', 'Dependency list must match task graph.')
   const must = draft.clauses.filter((clause) => clause.priority === 'must')
+  if (must.length === 0) add('NO_MUST_REQUIREMENT', 'clauses', 'A plan ready for approval needs at least one MUST requirement.')
   let taskCovered = 0
   let acceptanceCovered = 0
   for (const clause of must) {

@@ -11,7 +11,7 @@ export function renderCustomerHtml(token: string): string {
   <section id="recent" class="panel" hidden><h2>最近的方案</h2><ul id="recent-list"></ul></section>
   <section id="plan" hidden aria-label="开发方案"><div class="plan-head"><div><p class="eyebrow">DEVELOPMENT PLAN</p><h2 id="plan-title">开发方案</h2><p id="plan-status"></p></div><span id="coverage" class="coverage"></span></div><div id="plan-sections"></div>
     <section id="validation" class="panel" hidden><h3>完整性检查</h3><ul id="validation-issues"></ul></section>
-    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><div id="question-list"></div></section>
+    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请在下方“要求修改”中写下你的选择，再生成下一版方案。</p><div id="question-list"></div></section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
   </section><footer>规划批准不会启动执行。</footer>
 </main><script id="customer-bootstrap" type="application/json">${bootstrap}</script><script src="/customer/app.js"></script></body></html>`

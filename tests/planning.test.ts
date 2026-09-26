@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
 import { validateCustomerQuestion, validateDevelopmentPlan } from '../packages/development-guardian/planning/validator.js'
 import { PlanningEventStore } from '../packages/development-guardian/planning/telemetry.js'
-import { PlanningService, PlanningStore } from '../packages/development-guardian/planning/service.js'
+import { PlanningInputError, PlanningService, PlanningStore } from '../packages/development-guardian/planning/service.js'
 import { createNovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
 
 const requirementPath = join(process.cwd(), 'tests/fixtures/requirement-001.txt')
@@ -173,6 +173,16 @@ test('validator rejects uncovered requirements, invalid graph, orphan acceptance
     assert.ok(validation.issues.some((issue) => issue.code === code), code)
   }
   assert.ok(validateCustomerQuestion({ id: 'Q2', question: '已经制作的订单允许取消吗？', reason: '决定订单状态规则', decisionType: 'business_rule', options: ['允许', '不允许'], blocking: true }).length === 0)
+  for (const question of ['Vue 还是 React？', 'SQLite 还是 PostgreSQL？', 'REST 还是 GraphQL？', 'Codex 还是 Claude？', '使用什么 Reviewer？', 'verification command 怎么写？']) {
+    assert.ok(validateCustomerQuestion({ id: 'Q3', question, reason: '技术选型', decisionType: 'scope', options: ['A', 'B'], blocking: true }).some((issue) => issue.code === 'TECHNICAL_CUSTOMER_QUESTION'), question)
+  }
+  const clean = requirement001Draft(text)
+  clean.tasks[0]!.objective = 'Assign Codex Executor to implement catalog.'
+  const wired = validateDevelopmentPlan(createDevelopmentPlan(clean, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(wired.issues.some((issue) => issue.code === 'RUNTIME_WIRING'))
+  const optionalOnly = requirement001Draft(text)
+  for (const clause of optionalOnly.clauses) clause.priority = 'should'
+  assert.ok(validateDevelopmentPlan(createDevelopmentPlan(optionalOnly, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan')).issues.some((issue) => issue.code === 'NO_MUST_REQUIREMENT'))
 })
 
 test('Customer Mode HTTP flow generates, revises and approves without starting a Work Session', async () => {
@@ -241,4 +251,51 @@ test('telemetry persists only closed numeric metadata and safe model identifiers
   assert.equal(event.estimatedCost, 0.02)
   assert.ok(!raw.includes('API_KEY_123'))
   assert.ok(!raw.includes('access_token'))
+  await events.append({
+    planningSessionId: '00000000-0000-0000-0000-000000000000', type: 'development_plan.generated', actorRole: 'planning',
+    provider: 'codex', model: 'gpt-5.6-terra', metadata: { planVersion: 2 },
+  })
+  const valid = JSON.parse((await readFile(events.path, 'utf8')).trim().split('\n')[1]!) as Record<string, unknown>
+  assert.equal(valid.provider, 'codex')
+  assert.equal(valid.model, 'gpt-5.6-terra')
+})
+
+test('approval cannot race an in-flight revision of the same planning session', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-race-'))
+  let release!: () => void
+  let entered!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const started = new Promise<void>((resolve) => { entered = resolve })
+  let calls = 0
+  const service = new PlanningService(async () => {
+    calls += 1
+    if (calls === 2) { entered(); await gate }
+    return { text: JSON.stringify(requirement001Draft(text)) }
+  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')))
+  const first = await service.generate(text)
+  const revising = service.generate(text, { planId: first.plan.id, feedback: '确认业务范围。' })
+  await started
+  await assert.rejects(service.approve(first.plan.id, 1), PlanningInputError)
+  release()
+  assert.equal((await revising).plan.version, 2)
+})
+
+test('a genuine blocking business question requires customer input before approval', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-question-'))
+  const events = new PlanningEventStore(join(directory, 'events.jsonl'))
+  const service = new PlanningService(async () => {
+    const draft = requirement001Draft(text)
+    draft.customerQuestions.push({
+      id: 'Q1', question: '已经开始制作的订单允许取消吗？', reason: '决定订单取消业务规则',
+      decisionType: 'business_rule', options: ['允许并记录原因', '不允许'], blocking: true,
+    })
+    return { text: JSON.stringify(draft) }
+  }, new PlanningStore(join(directory, 'plans')), events)
+  const { plan, validation } = await service.generate(text)
+  assert.equal(validation.pass, true)
+  assert.equal(plan.status, 'needs_customer_input')
+  await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
+  assert.ok((await readFile(events.path, 'utf8')).includes('customer_question.required'))
 })

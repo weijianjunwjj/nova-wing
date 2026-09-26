@@ -40,8 +40,12 @@ export class PlanningEventStore {
   constructor(readonly path: string) {}
 
   async append(event: Omit<NovaWingEvent, 'id' | 'timestamp'>): Promise<void> {
-    const safeIdentifier = (value: string | undefined): string | undefined =>
-      value !== undefined && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/u.test(value) ? value : undefined
+    // Only registered provider names and model ID grammars may enter long-lived
+    // telemetry. Arbitrary runner strings can contain credentials or diagnostics.
+    const safeProvider = (value: string | undefined): string | undefined =>
+      value !== undefined && /^(?:codex|openai|deepseek|anthropic)$/u.test(value) ? value : undefined
+    const safeModel = (value: string | undefined): string | undefined =>
+      value !== undefined && /^(?:gpt-[0-9]+(?:\.[0-9]+)?-[a-z][a-z0-9-]*|o[0-9]+(?:-[a-z0-9-]+)?|deepseek-[a-z0-9-]+|claude-[a-z0-9-]+)$/u.test(value) && value.length <= 80 ? value : undefined
     const safeCount = (value: number | undefined): number | undefined =>
       value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined
     const safeMoney = (value: number | undefined): number | undefined =>
@@ -49,8 +53,8 @@ export class PlanningEventStore {
     const safeEvent: NovaWingEvent = {
       id: randomUUID(), timestamp: new Date().toISOString(), planningSessionId: event.planningSessionId,
       type: event.type, actorRole: event.actorRole,
-      ...(safeIdentifier(event.provider) === undefined ? {} : { provider: safeIdentifier(event.provider)! }),
-      ...(safeIdentifier(event.model) === undefined ? {} : { model: safeIdentifier(event.model)! }),
+      ...(safeProvider(event.provider) === undefined ? {} : { provider: safeProvider(event.provider)! }),
+      ...(safeModel(event.model) === undefined ? {} : { model: safeModel(event.model)! }),
       ...(safeCount(event.durationMs) === undefined ? {} : { durationMs: safeCount(event.durationMs)! }),
       ...(event.usage === undefined ? {} : { usage: {
         ...(safeCount(event.usage.inputTokens) === undefined ? {} : { inputTokens: safeCount(event.usage.inputTokens)! }),
