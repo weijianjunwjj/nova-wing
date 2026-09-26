@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M3 Requirement 001 benchmark and durable planning service.
+M4 minimal Customer Mode UI and HTTP integration.
 
 ## Baseline
 
@@ -21,6 +21,7 @@ M3 Requirement 001 benchmark and durable planning service.
 - Existing Launchpad is local HTTP HTML/JS; its Work Session create path starts the runtime. Customer Mode will use a separate planning route and service.
 - M1 planning domain model and read-only model provider complete; `npm run typecheck` PASS.
 - M2 validator checks MUST coverage, references, task DAG, orphan acceptance, observable outcomes, and customer question policy. Negative and positive planning tests PASS.
+- M3 service persists versioned plans and redacted events. Requirement 001 real model sample: 22 MUST clauses, 8 tasks, 22 acceptance criteria, 100% task and blocking acceptance coverage, no customer questions; deterministic validation PASS after exact-source normalization.
 
 ## Decisions
 
@@ -39,8 +40,9 @@ M3 Requirement 001 benchmark and durable planning service.
 
 - M0 baseline/docs: `67347f1`.
 - M1 model/provider: `a5a01f7`.
-- M2 validator: pending commit.
+- M2 validator: `5ef3d54`.
+- M3 service/benchmark: pending commit.
 
 ## Next
 
-Persist plans and benchmark Requirement 001 with real model output before Customer Mode UI acceptance.
+Verify Customer Mode UI, approval and revision in a browser, then complete telemetry and integrated checks.

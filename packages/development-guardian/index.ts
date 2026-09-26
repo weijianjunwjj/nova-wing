@@ -103,6 +103,15 @@ export type {
   GuardianProgressStatus,
 } from './progress.js'
 export * from './work-session/index.js'
+export { createDevelopmentPlan, buildCoverage, planDraftSchema, requirementClauseSchema } from './planning/model.js'
+export type { DevelopmentPlan, DevelopmentPlanStatus, RequirementInput, RequirementClause, RequirementAnalysis, PlannedTask, AcceptanceCriterion, RequirementCoverage, PlanDraft } from './planning/model.js'
+export { validateDevelopmentPlan, validateCustomerQuestion } from './planning/validator.js'
+export type { PlanIssue, PlanValidation } from './planning/validator.js'
+export { PlanningService, PlanningStore, PlanningInputError } from './planning/service.js'
+export { PlanningEventStore } from './planning/telemetry.js'
+export type { NovaWingEvent, ModelInvocation, PlanningEventType } from './planning/telemetry.js'
+export { createCodexPlanningProvider } from './planning/provider.js'
+export type { PlanningModelProvider, PlanningModelResponse } from './planning/provider.js'
 export {
   buildVerificationResult,
   environmentVerificationFailure,
