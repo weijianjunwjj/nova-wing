@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M1 planning domain model and generation boundary.
+M2 deterministic coverage, graph and approval validation.
 
 ## Baseline
 
@@ -19,6 +19,7 @@ M1 planning domain model and generation boundary.
 
 - Authorized task and repository rules reviewed.
 - Existing Launchpad is local HTTP HTML/JS; its Work Session create path starts the runtime. Customer Mode will use a separate planning route and service.
+- M1 planning domain model and read-only model provider complete; `npm run typecheck` PASS.
 
 ## Decisions
 
@@ -35,8 +36,9 @@ M1 planning domain model and generation boundary.
 
 ## Commits
 
-- M0 baseline/docs: pending commit.
+- M0 baseline/docs: `67347f1`.
+- M1 model/provider: pending commit.
 
 ## Next
 
-Implement M1 in an isolated planning module with a model provider seam and deterministic validator.
+Validate M2 negative cases, then continue Requirement 001 benchmark and UI integration.
