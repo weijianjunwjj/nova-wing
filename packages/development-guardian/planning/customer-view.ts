@@ -12,7 +12,9 @@ export function renderCustomerHtml(token: string): string {
   <section id="plan" hidden aria-label="开发方案"><div class="plan-head"><div><p class="eyebrow">DEVELOPMENT PLAN</p><h2 id="plan-title">开发方案</h2><p id="plan-status"></p></div><span id="coverage" class="coverage"></span></div><div id="plan-sections"></div>
     <section id="validation" class="panel" hidden><h3>完整性检查</h3><ul id="validation-issues"></ul></section>
     <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请选择业务规则，或写下你自己的准确规则。提交后会生成新版方案，并重新检查质量。</p><div id="question-list"></div><div class="actions"><button id="answer-revise" type="button">提交回答并重新生成方案</button></div></section>
-    <section id="freeze-result" class="panel" hidden><h3>PLAN FROZEN</h3><p id="freeze-details"></p><p>此版本已固定。后续修改须创建新版本。</p></section>
+    <section id="freeze-result" class="panel" hidden><h3>PLAN FROZEN</h3><p id="freeze-details"></p><p>此版本已固定。后续修改须创建新版本。</p>
+      <div id="delivery" hidden><h4>准备交付</h4><label for="delivery-folder">交付项目文件夹</label><input id="delivery-folder" type="text" autocomplete="off" placeholder="选择或输入本机 Git 项目文件夹"><div class="actions"><button id="delivery-prepare" type="button" class="secondary">检查交付准备情况</button><button id="delivery-start" type="button" hidden>开始交付</button></div><p id="delivery-status" role="status"></p><ul id="delivery-blockers"></ul></div>
+    </section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
   </section><footer>规划批准不会启动执行。</footer>
 </main><script id="customer-bootstrap" type="application/json">${bootstrap}</script><script src="/customer/app.js"></script></body></html>`
@@ -36,7 +38,14 @@ export const CUSTOMER_APP_JS = `(() => {
   const validationIssues = document.getElementById('validation-issues')
   const freezeResult = document.getElementById('freeze-result')
   const freezeDetails = document.getElementById('freeze-details')
+  const delivery = document.getElementById('delivery')
+  const deliveryFolder = document.getElementById('delivery-folder')
+  const deliveryStatus = document.getElementById('delivery-status')
+  const deliveryBlockers = document.getElementById('delivery-blockers')
+  const deliveryStart = document.getElementById('delivery-start')
   let current = null
+  let prepared = null
+  let deliverySerial = 0
   let busy = false
   const steps = ['理解需求', '识别角色与业务流程', '规划功能与架构', '拆解任务与依赖', '制定验收标准', '完整性检查']
   const node = (tag, value, className) => {
@@ -62,6 +71,28 @@ export const CUSTOMER_APP_JS = `(() => {
     document.getElementById('plan-title').textContent = '开发方案 v' + plan.version
     document.getElementById('plan-status').textContent = ({ draft: '草稿：完整性检查未通过', planning_failed: '规划质量检查未通过，请查看问题并要求修改', needs_customer_input: '等待业务决定', ready_for_approval: plan.version > 1 ? '基于你的回答已更新，等待批准' : '等待批准', approved: '已批准', frozen: 'PLAN FROZEN · 不可修改', superseded: '已由新版替代' })[plan.status] || plan.status
     freezeResult.hidden = plan.status !== 'frozen'
+    delivery.hidden = plan.status !== 'frozen'
+    deliverySerial += 1
+    prepared = null
+    deliveryStart.hidden = true
+    deliveryStatus.textContent = ''
+    deliveryBlockers.replaceChildren()
+    if (plan.status === 'frozen') {
+      const key = 'novawing-delivery-' + plan.id + '-v' + plan.version
+      deliveryFolder.value = localStorage.getItem(key + '-folder') || ''
+      const savedPlanId = localStorage.getItem(key)
+      const restoreSerial = deliverySerial
+      if (savedPlanId) void fetch('/api/delivery/plans/' + encodeURIComponent(savedPlanId) + '?planId=' + encodeURIComponent(plan.id) + '&version=' + plan.version)
+        .then(async response => { if (!response.ok) throw new Error('readiness unavailable'); return response.json() })
+        .then(result => {
+          if (deliverySerial !== restoreSerial || current?.id !== plan.id || current.version !== plan.version) return
+          prepared = result
+          deliveryStatus.textContent = result.admission.status === 'READY' ? 'DELIVERY READY' : 'DELIVERY BLOCKED'
+          deliveryStart.hidden = result.admission.status !== 'READY'
+          deliveryBlockers.replaceChildren()
+          for (const item of result.admission.blockers) deliveryBlockers.append(node('li', item.message))
+        }).catch(() => { if (deliverySerial === restoreSerial) deliveryStatus.textContent = '请重新检查交付准备情况。' })
+    }
     freezeDetails.textContent = plan.status === 'frozen' ? '方案 v' + plan.version + ' · 冻结时间 ' + plan.frozenAt + ' · 指纹 ' + (plan.approval?.contentHash || '').slice(0, 12) : ''
     const must = plan.clauses.filter(item => item.priority === 'must')
     const coveredTasks = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && row.taskIds.length > 0)).length
@@ -183,9 +214,51 @@ export const CUSTOMER_APP_JS = `(() => {
     catch (failure) { error.textContent = failure.message || '批准失败' }
     finally { busy = false }
   })
+  document.getElementById('delivery-prepare').addEventListener('click', async () => {
+    if (!current || current.status !== 'frozen' || busy) return
+    const requestSerial = ++deliverySerial
+    prepared = null
+    busy = true; error.textContent = ''; deliveryStatus.textContent = '正在检查交付准备情况…'; deliveryStart.hidden = true
+    try {
+      const response = await fetch('/api/planning/plans/' + encodeURIComponent(current.id) + '/snapshots/' + current.version)
+      if (!response.ok) throw new Error('冻结方案无法读取。')
+      const snapshot = await response.json()
+      prepared = await post('/api/delivery/prepare', { planId: current.id, version: current.version,
+        snapshotId: snapshot.id, repositoryRoot: deliveryFolder.value.trim() })
+      if (requestSerial !== deliverySerial) { prepared = null; return }
+      localStorage.setItem('novawing-delivery-' + current.id + '-v' + current.version, prepared.runtimePlanId)
+      localStorage.setItem('novawing-delivery-' + current.id + '-v' + current.version + '-folder', deliveryFolder.value.trim())
+      deliveryBlockers.replaceChildren()
+      if (prepared.admission.status === 'READY') { deliveryStatus.textContent = 'DELIVERY READY'; deliveryStart.hidden = false }
+      else { deliveryStatus.textContent = 'DELIVERY BLOCKED';
+        for (const item of prepared.admission.blockers) deliveryBlockers.append(node('li', item.message)) }
+    } catch (failure) { if (requestSerial === deliverySerial) {
+      prepared = null; deliveryStatus.textContent = 'DELIVERY BLOCKED'; error.textContent = failure.message || '交付检查失败'
+    } }
+    finally { busy = false }
+  })
+  deliveryFolder.addEventListener('input', () => {
+    deliverySerial += 1; prepared = null; deliveryStart.hidden = true
+    deliveryStatus.textContent = '请检查交付准备情况。'; deliveryBlockers.replaceChildren()
+  })
+  deliveryStart.addEventListener('click', async () => {
+    if (!current || !prepared || busy) return
+    busy = true; error.textContent = ''
+    try {
+      const response = await fetch('/api/planning/plans/' + encodeURIComponent(current.id) + '/snapshots/' + current.version)
+      if (!response.ok) throw new Error('冻结方案无法读取。')
+      const snapshot = await response.json()
+      const result = await post('/api/delivery/start', { planId: current.id, version: current.version,
+        snapshotId: snapshot.id, sourcePlanHash: snapshot.planHash.value, runtimePlanId: prepared.runtimePlanId,
+        runtimePlanHash: prepared.runtimePlanHash, targetBindingId: prepared.targetBindingId })
+      deliveryStatus.textContent = '交付已开始 · 工作会话 ' + result.workSessionId.slice(0, 12)
+      deliveryStart.hidden = true
+    } catch (failure) { error.textContent = failure.message || '开始交付失败'; deliveryStatus.textContent = 'DELIVERY BLOCKED'; deliveryStart.hidden = true }
+    finally { busy = false }
+  })
   const saved = sessionStorage.getItem('novawing-customer-requirement')
   if (saved) { requirement.value = saved; sessionStorage.removeItem('novawing-customer-requirement') }
   void loadRecent()
 })()`
 
-export const CUSTOMER_STYLES_CSS = `:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#eef3fb;background:#0c111a}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:radial-gradient(circle at 10% 0%,#1c3551 0,transparent 35%),#0c111a}.shell{max-width:1100px;margin:auto;padding:42px 24px 60px}header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:24px}h1{font-size:clamp(32px,5vw,54px);margin:6px 0}h2{margin:8px 0}h3{margin-top:0}h4{margin:20px 0 6px}p,li{line-height:1.65}.intro,.muted,footer{color:#a5b3c7}.eyebrow{letter-spacing:.16em;color:#89bcf5;font-size:12px;font-weight:700}a{color:#98c9ff;padding:12px}.input-card,.panel{background:#151d2a;border:1px solid #304056;border-radius:16px;padding:24px;margin:16px 0;box-shadow:0 12px 36px #0002}label{display:block;font-weight:700;margin-bottom:12px}textarea,select{width:100%;padding:15px;border:1px solid #52647c;border-radius:10px;color:#f2f6ff;background:#0d1520;font:inherit;line-height:1.5}textarea{resize:vertical}button{background:#71b8ff;border:0;border-radius:10px;color:#091321;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}.secondary{background:#273b52;color:#e4f2ff}.recent-button{background:transparent;color:#bce0ff;text-align:left;padding:6px 0;font-weight:500}.recent-button:hover{text-decoration:underline}.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:16px}.error{color:#ff9d9d;min-height:1.5em}.plan-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:32px}.coverage{background:#163b35;color:#b5f5dc;padding:10px 14px;border-radius:999px;font-size:13px}.panel ul{padding-left:22px}footer{text-align:center;margin-top:40px;font-size:12px}@media(max-width:650px){header,.plan-head{display:block}.shell{padding:24px 14px}.input-card,.panel{padding:18px}.actions{flex-wrap:wrap}.coverage{display:inline-block}}`
+export const CUSTOMER_STYLES_CSS = `:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#eef3fb;background:#0c111a}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:radial-gradient(circle at 10% 0%,#1c3551 0,transparent 35%),#0c111a}.shell{max-width:1100px;margin:auto;padding:42px 24px 60px}header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:24px}h1{font-size:clamp(32px,5vw,54px);margin:6px 0}h2{margin:8px 0}h3{margin-top:0}h4{margin:20px 0 6px}p,li{line-height:1.65}.intro,.muted,footer{color:#a5b3c7}.eyebrow{letter-spacing:.16em;color:#89bcf5;font-size:12px;font-weight:700}a{color:#98c9ff;padding:12px}.input-card,.panel{background:#151d2a;border:1px solid #304056;border-radius:16px;padding:24px;margin:16px 0;box-shadow:0 12px 36px #0002}label{display:block;font-weight:700;margin-bottom:12px}textarea,select,input{width:100%;padding:15px;border:1px solid #52647c;border-radius:10px;color:#f2f6ff;background:#0d1520;font:inherit;line-height:1.5}textarea{resize:vertical}button{background:#71b8ff;border:0;border-radius:10px;color:#091321;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}.secondary{background:#273b52;color:#e4f2ff}.recent-button{background:transparent;color:#bce0ff;text-align:left;padding:6px 0;font-weight:500}.recent-button:hover{text-decoration:underline}.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:16px}.error{color:#ff9d9d;min-height:1.5em}.plan-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:32px}.coverage{background:#163b35;color:#b5f5dc;padding:10px 14px;border-radius:999px;font-size:13px}.panel ul{padding-left:22px}footer{text-align:center;margin-top:40px;font-size:12px}@media(max-width:650px){header,.plan-head{display:block}.shell{padding:24px 14px}.input-card,.panel{padding:18px}.actions{flex-wrap:wrap}.coverage{display:inline-block}}`

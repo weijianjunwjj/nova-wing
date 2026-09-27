@@ -4,7 +4,8 @@ import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type EvidenceStatus = 'PASSED' | 'FAILED' | 'MISSING' | 'STALE'
 export interface EvidenceV2 { type: string; status: EvidenceStatus; source: string; repositoryIdentity?: string; branch?: string; headSha?: string; workspaceIdentity?: string; timestamp: string; details?: string }
-export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string }
+export interface AssertionReviewVerdict { assertionId: string; verdict: 'PASS' | 'FAIL'; evidence: string }
+export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string; assertionVerdicts?: readonly AssertionReviewVerdict[] }
 export interface ApprovalEvidence { approved: boolean; repositoryIdentity?: string; branch?: string; workspaceIdentity: string; reviewedCommit?: string; risk: RiskLevel; riskContext?: string; timestamp: string }
 export interface VerifierCommandCanonicalization {
   sourceText: string
@@ -19,6 +20,10 @@ export interface AcceptanceEvidenceBinding {
   commandCanonicalizations?: readonly VerifierCommandCanonicalization[] | undefined
 }
 export interface RiskAssessment { level: RiskLevel; factors: readonly string[] }
+
+export function acceptanceAssertionIds(criteria: readonly string[]): string[] {
+  return criteria.flatMap((criterion) => /^AcceptanceAssertion ([A-Za-z][A-Za-z0-9_-]*): /u.exec(criterion)?.[1] ?? [])
+}
 
 /** Criteria without one exact, non-empty trusted evidence contract. */
 export function unmappedAcceptanceCriteria(task: Pick<TaskStateV2, 'acceptanceCriteria' | 'completion'>): readonly string[] {
@@ -80,7 +85,11 @@ export function approvalSatisfied(task: TaskStateV2): boolean {
 export function reviewSatisfied(task: TaskStateV2): boolean {
   const r = task.completion.review
   const i = task.implementer
+  const assertionIds = acceptanceAssertionIds(task.acceptanceCriteria)
+  const assertionVerdicts = r?.assertionVerdicts ?? []
   return r?.passed === true && r.blockingFindings.length === 0 && i !== undefined &&
+    (assertionIds.length === 0 || (assertionVerdicts.length === assertionIds.length &&
+      assertionIds.every((id) => assertionVerdicts.filter((item) => item.assertionId === id && item.verdict === 'PASS' && item.evidence.trim()).length === 1))) &&
     [i.agent, i.provider, i.runtimeIdentity, r.reviewer.agent, r.reviewer.provider, r.reviewer.runtimeIdentity].every(Boolean) &&
     r.implementer.agent === i.agent && r.implementer.provider === i.provider && r.implementer.runtimeIdentity === i.runtimeIdentity &&
     r.reviewer.runtimeIdentity !== i.runtimeIdentity &&

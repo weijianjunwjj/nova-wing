@@ -21,6 +21,7 @@ import { TaskController } from '../packages/development-guardian/work-session/ta
 import type { AgentCapabilityProfile } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import type { RepositoryReality } from '../packages/development-guardian/work-session/reconciliation.js'
 import type { TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { reviewSatisfied } from '../packages/development-guardian/work-session/risk-evidence.js'
 
 const REALITY: RepositoryReality = {
   repositoryIdentity: 'repo', branch: 'main', headSha: 'h1', changedFiles: ['src/a.ts'], worktreeFingerprint: 'w1',
@@ -195,6 +196,33 @@ test('parseReviewVerdict is fail-closed', () => {
   const pass = parseReviewVerdict('```json\n{"verdict":"PASS","findings":["ok"],"blockingFindings":[],"summary":"fine"}\n```')
   assert.equal(pass.ok, true)
   assert.equal(pass.ok && pass.verdict.passed, true)
+})
+
+test('delivery review PASS requires a verdict with evidence for every AcceptanceAssertion ID', async () => {
+  const criterion = 'AcceptanceAssertion A1: customer cart quantity and exact total remain correct'
+  const task = reviewedTask({
+    reviewer: { agent: 'acme-reviewer', provider: 'acme', runtimeIdentity: 'R9' },
+    implementer: { agent: 'alpha', provider: 'other-provider', runtimeIdentity: 'R1' },
+  })
+  const pending: TaskStateV2 = { ...task, acceptanceCriteria: [criterion], completion: {
+    ...task.completion, bindings: [{ criterion, requiredEvidence: ['test'] }], review: undefined,
+  } }
+  let includeAssertion = false
+  const runtime: ReviewerRuntime = { provider: 'acme', async review(): Promise<ReviewerOutcome> {
+    return { kind: 'VERDICT', passed: true, findings: [], blockingFindings: [], summary: 'reviewed', provider: 'acme',
+      ...(includeAssertion ? { assertionVerdicts: [{ assertionId: 'A1', verdict: 'PASS', evidence: 'Observed quantity mutation and exact persisted total.' }] } : {}) }
+  } }
+  const dispatcher = createReviewDispatcher({ registry: new ReviewerRuntimeRegistry([runtime]), inspectRepository: async () => REALITY })
+  const agent = profile({ id: 'acme-reviewer', provider: 'acme', runtimeIdentity: 'R9', review: true })
+  const missing = await dispatcher.dispatch({ agent, task: pending })
+  assert.equal(missing.review?.passed, false)
+  assert.equal(reviewSatisfied({ ...pending, completion: { ...pending.completion, review: missing.review } }), false)
+  includeAssertion = true
+  const explicit = await dispatcher.dispatch({ agent, task: pending })
+  assert.equal(explicit.review?.passed, true)
+  assert.deepEqual(explicit.review?.assertionVerdicts?.map((item) => item.assertionId), ['A1'])
+  assert.equal(reviewSatisfied({ ...pending, completion: { ...pending.completion, review: explicit.review } }), true)
+  assert.equal(parseReviewVerdict('{"verdict":"PASS","summary":"ok","assertionVerdicts":[{"assertionId":"A1","verdict":"PASS","evidence":"observed"}]}').ok, true)
 })
 
 test('reviewer independence requires a distinct runtime identity and a distinct provider', () => {

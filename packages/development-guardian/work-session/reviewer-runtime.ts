@@ -18,6 +18,7 @@ import type { TaskActorIdentity } from './task-state-v2.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { VerificationResult } from '../model.js'
 import type { EvidenceV2 } from './risk-evidence.js'
+import type { AssertionReviewVerdict } from './risk-evidence.js'
 
 /** Reviewer 收到的、只读的 Task 上下文。 */
 export interface ReviewerTaskContext {
@@ -49,6 +50,7 @@ export interface ReviewerVerdictOutcome {
   blockingFindings: readonly string[]
   summary: string
   provider: string
+  assertionVerdicts?: readonly AssertionReviewVerdict[]
 }
 
 /** Reviewer runtime 本身失败：这是环境问题，不是对实现的判定。 */

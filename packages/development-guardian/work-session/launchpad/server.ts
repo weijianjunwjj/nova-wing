@@ -84,6 +84,11 @@ import { PlanningInputError, PlanningService, PlanningStore } from '../../planni
 import { PlanningEventStore } from '../../planning/telemetry.js'
 import { validateDevelopmentPlan } from '../../planning/validator.js'
 import { CUSTOMER_APP_JS, CUSTOMER_STYLES_CSS, renderCustomerHtml } from '../../planning/customer-view.js'
+import { DeliveryEventStore, DeliveryService, DeliveryStore } from '../../delivery/service.js'
+import { conservativeCapabilityResolver, inspectDeliveryTarget,
+  type CompiledRuntimePlan, type VerificationCapabilityResolver } from '../../delivery/runtime-plan.js'
+import type { WorkSessionPlanBinding } from '../../delivery/service.js'
+import type { WorkSessionDefinition } from '../model.js'
 
 const LAUNCHPAD_RUNTIME_LOADED_AT_MS = Date.now()
 
@@ -272,6 +277,11 @@ export interface NovaWingLaunchpadDependencies {
   analyticsPath?: string
   /** Isolated planning service; its approval never creates a Work Session. */
   planningService?: PlanningService
+  deliveryService?: DeliveryService
+  /** Trusted host integration only; Customer Mode never supplies verification wiring. */
+  deliveryResolver?: VerificationCapabilityResolver
+  deliveryPolicyVersion?: string
+  deliveryDataRoot?: string
 }
 
 interface LaunchResult {
@@ -598,6 +608,8 @@ export class NovaWingLaunchpad {
   private readonly repairNotifier: RepairNotifier
   private readonly analyticsPath: string
   private readonly planningService: PlanningService
+  private readonly deliveryStore: DeliveryStore
+  private readonly deliveryService: DeliveryService
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
   private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
@@ -667,6 +679,19 @@ export class NovaWingLaunchpad {
       new PlanningStore(join(platformPaths().data, 'planning', 'plans')),
       new PlanningEventStore(join(platformPaths().data, 'planning', 'events.jsonl')),
       createCodexPlanningSemanticReviewer(),
+    )
+    this.deliveryStore = new DeliveryStore(dependencies.deliveryDataRoot ?? join(platformPaths().data, 'delivery'))
+    this.deliveryService = dependencies.deliveryService ?? new DeliveryService(
+      this.deliveryStore,
+      new DeliveryEventStore(join(dependencies.deliveryDataRoot ?? join(platformPaths().data, 'delivery'), 'events.jsonl')),
+      { configured: async (target) => target.branch !== null,
+        executorAvailable: async (target) => {
+          try { await this.assertDependenciesReady(target.canonicalPath, 'v2'); return true } catch { return false }
+        },
+        reviewerAvailable: async (target) => this.resolveReviewerRouteAvailable(target.canonicalPath).catch(() => false),
+        createAndStart: (definition, binding, plan) => this.createDeliveryWorkSession(definition, binding, plan) },
+      dependencies.deliveryResolver ?? conservativeCapabilityResolver,
+      dependencies.deliveryPolicyVersion ?? 'runtime-policy-v1',
     )
     this.server = createServer((request, response) => {
       if (this.closed) {
@@ -979,12 +1004,63 @@ export class NovaWingLaunchpad {
       this.respondJson(response, snapshot === undefined ? 404 : 200, snapshot ?? { error: 'not found' })
       return
     }
+    const runtimePlanPath = /^\/api\/delivery\/plans\/([a-f0-9]{64})$/u.exec(path)
+    if (method === 'GET' && runtimePlanPath !== null) {
+      const query = new URL(request.url ?? path, this.origin()).searchParams
+      const planId = query.get('planId') ?? ''
+      const version = Number(query.get('version'))
+      if (!/^[a-f0-9-]{36}$/u.test(planId) || !Number.isSafeInteger(version) || version < 1) {
+        this.respondJson(response, 400, { error: 'Exact frozen plan reference is required.' }); return
+      }
+      try {
+        const snapshot = await this.planningService.getSnapshot(planId, version)
+        if (snapshot === undefined) { this.respondJson(response, 404, { error: 'not found' }); return }
+        const { plan, admission } = await this.deliveryService.readiness(snapshot, runtimePlanPath[1]!)
+        this.respondJson(response, 200, { snapshotId: plan.sourceSnapshotId, runtimePlanId: plan.id,
+          runtimePlanHash: plan.runtimePlanHash, targetBindingId: plan.targetBinding.id, admission })
+      } catch { this.respondJson(response, 409, { error: '交付准备状态无法恢复。' }) }
+      return
+    }
     if (method === 'POST' && path === '/api/planning/generate') {
       await this.servePlanningGenerate(request, response)
       return
     }
     if (method === 'POST' && path === '/api/planning/approve') {
       await this.servePlanningApprove(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/delivery/prepare') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) ||
+        typeof body.snapshotId !== 'string' || typeof body.repositoryRoot !== 'string') {
+        this.respondJson(response, 400, { error: 'Exact snapshot and project folder are required.' }); return
+      }
+      try {
+        const snapshot = await this.planningService.getSnapshot(body.planId, body.version as number)
+        if (snapshot === undefined || snapshot.id !== body.snapshotId) { this.respondJson(response, 409, { error: 'Frozen snapshot mismatch.' }); return }
+        const plan = await this.deliveryService.prepare(snapshot, body.repositoryRoot)
+        this.respondJson(response, 200, { runtimePlanId: plan.id, runtimePlanHash: plan.runtimePlanHash,
+          targetBindingId: plan.targetBinding.id, admission: plan.admission })
+      } catch { this.respondJson(response, 409, { error: '交付项目无法绑定或方案完整性检查未通过。' }) }
+      return
+    }
+    if (method === 'POST' && path === '/api/delivery/start') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) ||
+        typeof body.snapshotId !== 'string' || typeof body.sourcePlanHash !== 'string' || typeof body.runtimePlanId !== 'string' ||
+        typeof body.runtimePlanHash !== 'string' || typeof body.targetBindingId !== 'string') {
+        this.respondJson(response, 400, { error: 'Exact delivery identities are required.' }); return
+      }
+      try {
+        const snapshot = await this.planningService.getSnapshot(body.planId, body.version as number)
+        if (snapshot === undefined || snapshot.id !== body.snapshotId || snapshot.planHash.value !== body.sourcePlanHash) {
+          this.respondJson(response, 409, { error: 'Frozen snapshot mismatch.' }); return
+        }
+        const binding = await this.deliveryService.startDelivery(snapshot, body.runtimePlanId, body.runtimePlanHash, body.targetBindingId)
+        this.respondJson(response, 202, binding)
+      } catch { this.respondJson(response, 409, { error: '交付准备状态已变化，请重新检查后再开始。' }) }
       return
     }
     if (method === 'POST' && path === '/api/planning/answers') {
@@ -1060,6 +1136,7 @@ export class NovaWingLaunchpad {
     const knownPaths = new Set([
       '/', '/advanced', '/customer', '/customer/app.js', '/customer/styles.css',
       '/api/planning/plans', '/api/planning/generate', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
+      '/api/delivery/prepare', '/api/delivery/start',
       '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
       '/api/session/repair', '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
     ])
@@ -1493,6 +1570,53 @@ export class NovaWingLaunchpad {
     return configPath
   }
 
+  private async createDeliveryWorkSession(
+    definition: WorkSessionDefinition, binding: WorkSessionPlanBinding, plan: CompiledRuntimePlan,
+  ): Promise<void> {
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    if (!current.clean || current.baselineCommit !== binding.targetBaselineCommit ||
+      current.gitRepositoryIdentity !== plan.targetBinding.gitRepositoryIdentity ||
+      current.branch !== plan.targetBinding.branch) throw new Error('Delivery target drifted before runtime creation.')
+    if (definition.id !== binding.workSessionId || definition.targetRepo !== plan.targetBinding.canonicalPath ||
+      definition.branch !== plan.targetBinding.branch || plan.admission.status !== 'READY') {
+      throw new Error('Delivery runtime definition is not bound to the admitted plan.')
+    }
+    const config = await validateTrustedWorkSessionConfig({
+      session: { id: definition.id, targetRepo: definition.targetRepo, branch: definition.branch,
+        createdAt: binding.createdAt, controlPlane: 'v2', directPath: { enabled: false },
+        goldenPath: { enabled: false }, limits: definition.limits },
+      agents: composerAgentProfiles(definition.id, true),
+      tasks: definition.tasks.map((task) => ({ id: task.id, goal: task.goal,
+        guardian: { constraints: [...(task.constraints ?? [])], acceptanceCriteria: [...(task.acceptanceCriteria ?? [])],
+          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], allowedPaths: [...(task.allowedPaths ?? [])],
+          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths] },
+        acceptanceEvidenceBindings: [...(task.acceptanceEvidenceBindings ?? [])], risk: 'HIGH' })),
+      gitCheckpoint: { autoCommit: true, autoPush: false }, runtimeConfig: { managed: true },
+      executor: { defaultMode: 'codex', model: 'deepseek-chat', maxTurns: 10,
+        allowNpmInstall: false, allowPythonBootstrap: false },
+      codex: { model: CODING_EXECUTOR_DEFAULTS.codex.model,
+        reasoningEffort: CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort },
+      notification: { email: { enabled: false } },
+    })
+    const configPath = await persistComposedTrustedWorkSessionConfig(this.configDirectory, config)
+    const configId = config.session.id
+    this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
+    await this.startWorkSession(configId)
+  }
+
+  private async assertDeliveryStartBaseline(configId: string): Promise<void> {
+    const binding = await this.deliveryStore.getSession(configId)
+    if (binding === undefined) throw new Error('Delivery WorkSession has no source binding.')
+    if (binding.status !== 'STARTING') return // Existing Runtime owns later restart reconciliation.
+    const plan = await this.deliveryStore.getPlan(binding.runtimePlanId)
+    if (plan === undefined || plan.runtimePlanHash !== binding.runtimePlanHash ||
+      plan.targetBinding.id !== binding.targetBindingId) throw new Error('Delivery RuntimePlan binding is unavailable.')
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    if (!current.clean || current.baselineCommit !== binding.targetBaselineCommit ||
+      current.gitRepositoryIdentity !== plan.targetBinding.gitRepositoryIdentity ||
+      current.branch !== plan.targetBinding.branch) throw new Error('Delivery target drifted before WorkSession start.')
+  }
+
   private async launchWorkSession(
     configId: string,
     discovered: DiscoveredLaunchpadConfig,
@@ -1544,6 +1668,7 @@ export class NovaWingLaunchpad {
         await this.closeOwnedApp(app)
         throw new Error('Launchpad is closed')
       }
+      if (configId.startsWith('delivery-')) await this.assertDeliveryStartBaseline(configId)
       const result = app.controller.start()
       this.liveApps.set(configId, { app, controlUrl: address.url })
       if (this.closed) this.closeOwnedApp(app)
@@ -2190,6 +2315,8 @@ export async function createNovaWingLaunchpad(options: {
       new PlanningEventStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'events.jsonl')),
       createCodexPlanningSemanticReviewer(options.env === undefined ? {} : { env: options.env }),
     ),
+    ...(dependencies?.deliveryService === undefined ? {} : { deliveryService: dependencies.deliveryService }),
+    deliveryDataRoot: join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'delivery'),
     analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),
     resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>

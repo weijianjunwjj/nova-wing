@@ -18,6 +18,7 @@ import {
   type RepairModelRunner,
 } from './launchpad/repair-model.js'
 import type { ReviewerOutcome, ReviewerReviewInput, ReviewerRuntime, ReviewerTaskContext } from './reviewer-runtime.js'
+import { acceptanceAssertionIds, type AssertionReviewVerdict } from './risk-evidence.js'
 
 /** A real repository review is slower than a contract repair turn. */
 export const REVIEW_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
@@ -62,6 +63,7 @@ export const REVIEWER_SYSTEM_PROMPT = [
   '',
   'Answer with ONE JSON object and nothing else:',
   '{"verdict":"PASS"|"FAIL","findings":["..."],"blockingFindings":["..."],"summary":"<one or two sentences>"}',
+  'When the Task contains AcceptanceAssertion IDs, also include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL","evidence":"specific observed evidence"}] for every ID. Missing or unproved IDs cannot PASS.',
   'A FAIL with at least one blockingFinding means the implementation must be revised.',
   'No prose, no markdown fences, no comments.',
 ].join('\n')
@@ -71,6 +73,7 @@ export interface ReviewVerdict {
   findings: readonly string[]
   blockingFindings: readonly string[]
   summary: string
+  assertionVerdicts?: readonly AssertionReviewVerdict[]
 }
 
 /** Fail-closed verdict parser. Any shape deviation is a reviewer protocol failure. */
@@ -119,6 +122,24 @@ export function parseReviewVerdict(text: string): { ok: true; verdict: ReviewVer
   if (typeof record.summary !== 'string' || record.summary.length === 0) {
     return { ok: false, reason: 'reviewer summary must be a non-empty string' }
   }
+  let assertionVerdicts: AssertionReviewVerdict[] | undefined
+  if (record.assertionVerdicts !== undefined) {
+    const validAssertionVerdict = (item: unknown): boolean => {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) return false
+      const row = item as Record<string, unknown>
+      return typeof row.assertionId === 'string' && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(row.assertionId) &&
+        (row.verdict === 'PASS' || row.verdict === 'FAIL') &&
+        typeof row.evidence === 'string' && row.evidence.trim().length > 0 && row.evidence.length <= 2_000
+    }
+    if (!Array.isArray(record.assertionVerdicts) || record.assertionVerdicts.length > 100 ||
+      !record.assertionVerdicts.every(validAssertionVerdict)) {
+      return { ok: false, reason: 'reviewer assertion verdicts are invalid' }
+    }
+    assertionVerdicts = record.assertionVerdicts as AssertionReviewVerdict[]
+    if (new Set(assertionVerdicts.map((item) => item.assertionId)).size !== assertionVerdicts.length) {
+      return { ok: false, reason: 'reviewer assertion verdicts are duplicated' }
+    }
+  }
   const passed = record.verdict === 'PASS'
   // A PASS cannot carry blocking findings, and a FAIL must say what blocks completion.
   if (passed && blockingFindings.length > 0) {
@@ -127,7 +148,8 @@ export function parseReviewVerdict(text: string): { ok: true; verdict: ReviewVer
   if (!passed && blockingFindings.length === 0) {
     return { ok: false, reason: 'reviewer FAIL carries no blocking finding' }
   }
-  return { ok: true, verdict: { passed, findings, blockingFindings, summary: record.summary.slice(0, 2_000) } }
+  return { ok: true, verdict: { passed, findings, blockingFindings, summary: record.summary.slice(0, 2_000),
+    ...(assertionVerdicts === undefined ? {} : { assertionVerdicts }) } }
 }
 
 /** First balanced `{...}` region that parses, ignoring quoted braces. */
@@ -163,6 +185,10 @@ export function buildReviewPrompt(context: ReviewerTaskContext): string {
     `Goal:\n${context.goal}`,
     `Constraints:\n${list(context.constraints)}`,
     `Acceptance criteria:\n${list(context.acceptanceCriteria)}`,
+    ...(acceptanceAssertionIds(context.acceptanceCriteria).length === 0 ? [] : [
+      `Return one assertionVerdict for each of these exact IDs: ${acceptanceAssertionIds(context.acceptanceCriteria).join(', ')}.`,
+      'For every PASS, cite specific verification or repository evidence in its evidence field. If any assertion is unproved, return FAIL.',
+    ]),
     `Implementer identity: ${context.implementer === undefined ? '(none)' : JSON.stringify(context.implementer)}`,
     `Providers that produced the implementation: ${context.implementerProviders.join(', ') || '(none)'}`,
     `Risk: ${context.risk}`,
@@ -351,6 +377,7 @@ export function createDeepSeekReviewerRuntime(options: DeepSeekReviewerRuntimeOp
         blockingFindings,
         summary: parsed.verdict.summary,
         provider: 'deepseek',
+        ...(parsed.verdict.assertionVerdicts === undefined ? {} : { assertionVerdicts: parsed.verdict.assertionVerdicts }),
       }
     },
   }
@@ -401,6 +428,7 @@ export function createCodexReviewerRuntime(options: CodexReviewerRuntimeOptions)
         blockingFindings: [...parsed.verdict.blockingFindings],
         summary: parsed.verdict.summary,
         provider: 'codex',
+        ...(parsed.verdict.assertionVerdicts === undefined ? {} : { assertionVerdicts: parsed.verdict.assertionVerdicts }),
       }
     },
   }

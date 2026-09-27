@@ -112,6 +112,13 @@ export type { PlanIssue, PlanValidation } from './planning/validator.js'
 export { PlanningService, PlanningStore, PlanningInputError } from './planning/service.js'
 export { PlanningEventStore } from './planning/telemetry.js'
 export type { NovaWingEvent, ModelInvocation, PlanningEventType } from './planning/telemetry.js'
+export { bindDeliveryTarget, inspectDeliveryTarget, compileRuntimePlan, admitRuntimePlan,
+  verifyRuntimePlanCoverage, verifyRuntimePlanIdentity, workSessionDefinitionFor,
+  conservativeCapabilityResolver, COMPILER_SCHEMA_VERSION, COMPILER_IMPLEMENTATION_VERSION } from './delivery/runtime-plan.js'
+export type { DeliveryTargetBinding, CompiledRuntimePlan, RuntimeTaskBinding, AcceptanceBinding,
+  RuntimeAdmission, CapabilityResolution, VerificationCapability, VerificationCapabilityResolver } from './delivery/runtime-plan.js'
+export { DeliveryStore, DeliveryEventStore, DeliveryService } from './delivery/service.js'
+export type { WorkSessionPlanBinding, DeliveryRuntimeAdapter, DeliveryEventType } from './delivery/service.js'
 export { createCodexPlanningProvider } from './planning/provider.js'
 export type { PlanningModelProvider, PlanningModelResponse } from './planning/provider.js'
 export { createCodexPlanningSemanticReviewer } from './planning/semantic-reviewer.js'
