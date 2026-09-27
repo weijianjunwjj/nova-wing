@@ -600,6 +600,28 @@ test('Phase 2 fixture-only answers revise through both gates, freeze, and surviv
   assert.ok(!telemetry.includes('按支付日统计已支付订单'))
 })
 
+test('answer metadata plus deleted question cannot masquerade as a revised business plan', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-empty-answer-revision-'))
+  let calls = 0
+  const service = new PlanningService(async () => {
+    calls += 1
+    const draft = requirement001Draft(text)
+    if (calls === 1) draft.customerQuestions = [{ id: 'Q1', question: '今日订单数按什么口径统计？',
+      reason: '创建与支付日期不同。', decisionType: 'business_rule',
+      options: ['按创建日统计所有订单', '按支付日统计已支付订单'], blocking: true }]
+    return { text: JSON.stringify(draft) }
+  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
+  const first = await service.generate(text)
+  assert.equal(first.plan.status, 'needs_customer_input')
+  await service.answerQuestions(first.plan.id, 1, [{ questionId: 'Q1', selectedOptionId: 'option-2' }])
+  const revised = await service.generate(text, { planId: first.plan.id, expectedVersion: 1 })
+  assert.equal(revised.plan.status, 'planning_failed')
+  assert.ok(revised.validation.issues.some((issue) => issue.code === 'CUSTOMER_DECISIONS_NOT_INCORPORATED'))
+  assert.equal(calls, 4) // first draft plus bounded three-attempt revision
+  await assert.rejects(service.approve(first.plan.id, 2), PlanningInputError)
+})
+
 test('snapshot canonical hash, tampering controls, immutability and change request', async () => {
   const text = await readFile(requirementPath, 'utf8')
   const directory = await mkdtemp(join(tmpdir(), 'nw-freeze-integrity-'))

@@ -266,6 +266,18 @@ export class PlanningService {
           ? (await this.store.getSnapshot(previous.id, previous.version))?.id ?? null
           : previous?.supersedesSnapshotId ?? null
         const validation = validateDevelopmentPlan(plan)
+        if (previous !== undefined && pendingAnswers !== undefined && pendingAnswers.length > 0) {
+          const businessContract = (item: DevelopmentPlan): string => JSON.stringify({
+            clauses: item.clauses, analysis: item.analysis, productScope: item.productScope,
+            architecture: item.architecture, tasks: item.tasks, acceptancePlan: item.acceptancePlan,
+            risks: item.risks, assumptions: item.assumptions,
+          })
+          if (businessContract(plan) === businessContract(previous)) {
+            validation.pass = false
+            validation.issues.push({ code: 'CUSTOMER_DECISIONS_NOT_INCORPORATED', path: 'plan',
+              message: 'Customer answers require a substantive revised planning contract before approval.' })
+          }
+        }
         await this.events.append({
           planningSessionId: id, type: 'development_plan.generated', actorRole: 'planning',
           ...(response.provider === undefined ? {} : { provider: response.provider }),
