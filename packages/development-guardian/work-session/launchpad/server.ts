@@ -30,7 +30,7 @@ import {
   resolvePersistedCodexConfiguration,
   type ExecutorMode,
 } from '../../coding-executor-config.js'
-import { hasDeepSeekRoute } from '../../deepseek-executor.js'
+import { hasClaudeRoute, hasDeepSeekRoute } from '../../deepseek-executor.js'
 import {
   CodingExecutionStore,
   defaultCodingExecutionStorePath,
@@ -270,6 +270,8 @@ export interface NovaWingLaunchpadDependencies {
    * reviewer profile is declared), never guess that a reviewer exists.
    */
   resolveReviewerRouteAvailable?: (targetRepo: string) => Promise<boolean>
+  /** Exact provider for newly composed sessions; legacy boolean test seams retain DeepSeek identity. */
+  resolveReviewerProvider?: (targetRepo: string) => Promise<'deepseek' | 'claude' | undefined>
   /** AI Repair & Retry: deterministic agent, optional LLM agent, audit sink, notifier. */
   repairAgent?: RepairAgent
   repairLlmAgent?: RepairAgent
@@ -487,11 +489,10 @@ function summaryFromConfig(configId: string, config: TrustedWorkSessionConfig): 
  * Codex executor from reviewing its own work.
  */
 const COMPOSER_EXECUTOR_AGENT_ID = 'executor-router'
-const COMPOSER_REVIEWER_AGENT_ID = 'deepseek-reviewer'
 
 function composerAgentProfiles(
   sessionId: string,
-  reviewerRouteAvailable: boolean,
+  reviewerProvider: 'deepseek' | 'claude' | undefined,
 ): NonNullable<TrustedWorkSessionConfig['agents']> {
   const executor = {
     id: COMPOSER_EXECUTOR_AGENT_ID,
@@ -499,11 +500,12 @@ function composerAgentProfiles(
     runtimeIdentity: `session:${sessionId}:${COMPOSER_EXECUTOR_AGENT_ID}`,
     capabilities: { coding: true, reasoning: true, verification: true, review: false },
   }
-  if (!reviewerRouteAvailable) return [executor]
+  if (reviewerProvider === undefined) return [executor]
+  const reviewerAgentId = `${reviewerProvider}-reviewer`
   return [executor, {
-    id: COMPOSER_REVIEWER_AGENT_ID,
-    provider: 'deepseek',
-    runtimeIdentity: `session:${sessionId}:${COMPOSER_REVIEWER_AGENT_ID}`,
+    id: reviewerAgentId,
+    provider: reviewerProvider,
+    runtimeIdentity: `session:${sessionId}:${reviewerAgentId}`,
     capabilities: { review: true, reasoning: true },
   }]
 }
@@ -603,6 +605,7 @@ export class NovaWingLaunchpad {
   private readonly preflight: NovaWingLaunchpadDependencies['preflight']
   private readonly readCodexAvailability: () => CodexAvailability | Promise<CodexAvailability>
   private readonly resolveReviewerRouteAvailable: (targetRepo: string) => Promise<boolean>
+  private readonly resolveReviewerProvider: (targetRepo: string) => Promise<'deepseek' | 'claude' | undefined>
   private readonly repairAgent: RepairAgent
   private readonly activityObserver: WorkSessionActivityObserver | undefined
   private readonly repairLlmAgent: RepairAgent
@@ -665,8 +668,13 @@ export class NovaWingLaunchpad {
     this.preflight = dependencies.preflight
     this.readCodexAvailability = dependencies.readCodexAvailability ?? (() =>
       new CodingExecutionStore(defaultCodingExecutionStorePath()).availability())
+    this.resolveReviewerProvider = dependencies.resolveReviewerProvider ??
+      (dependencies.resolveReviewerRouteAvailable
+        ? async (targetRepo) => await dependencies.resolveReviewerRouteAvailable!(targetRepo) ? 'deepseek' : undefined
+        : async (targetRepo) => await hasDeepSeekRoute(targetRepo) ? 'deepseek' :
+          await hasClaudeRoute(targetRepo) ? 'claude' : undefined)
     this.resolveReviewerRouteAvailable = dependencies.resolveReviewerRouteAvailable ??
-      ((targetRepo) => hasDeepSeekRoute(targetRepo))
+      (async (targetRepo) => await this.resolveReviewerProvider(targetRepo) !== undefined)
     this.repairAgent = dependencies.repairAgent ?? createDeterministicRepairAgent()
     this.repairLlmAgent = dependencies.repairLlmAgent ?? createLlmRepairAgent()
     this.repairProvider = dependencies.repairProvider ?? {
@@ -1584,11 +1592,13 @@ export class NovaWingLaunchpad {
       definition.branch !== plan.targetBinding.branch || plan.admission.status !== 'READY') {
       throw new Error('Delivery runtime definition is not bound to the admitted plan.')
     }
+    const reviewerProvider = await this.resolveReviewerProvider(definition.targetRepo)
+    if (reviewerProvider === undefined) throw new Error('Independent reviewer route is unavailable before runtime creation.')
     const config = await validateTrustedWorkSessionConfig({
       session: { id: definition.id, targetRepo: definition.targetRepo, branch: definition.branch,
         createdAt: binding.createdAt, controlPlane: 'v2', directPath: { enabled: false },
         goldenPath: { enabled: false }, limits: definition.limits },
-      agents: composerAgentProfiles(definition.id, true),
+      agents: composerAgentProfiles(definition.id, reviewerProvider),
       tasks: definition.tasks.map((task) => ({ id: task.id, goal: task.goal,
         guardian: { constraints: [...(task.constraints ?? [])], acceptanceCriteria: [...(task.acceptanceCriteria ?? [])],
           doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], allowedPaths: [...(task.allowedPaths ?? [])],
@@ -1798,9 +1808,9 @@ export class NovaWingLaunchpad {
     const sessionId = createSessionId(targetRepo)
     // Fail closed: a missing or throwing probe declares no reviewer at all rather
     // than claiming a review capability this machine cannot actually serve.
-    const reviewerRouteAvailable = await Promise.resolve()
-      .then(() => this.resolveReviewerRouteAvailable(targetRepo))
-      .catch(() => false)
+    const reviewerProvider = await Promise.resolve()
+      .then(() => this.resolveReviewerProvider(targetRepo))
+      .catch(() => undefined)
     return validateTrustedWorkSessionConfig({
       session: {
         id: sessionId,
@@ -1817,7 +1827,7 @@ export class NovaWingLaunchpad {
       },
       // A production Session must carry its real capability profiles; relying on the
       // implicit single-agent fallback leaves REVIEW with no eligible candidate.
-      agents: composerAgentProfiles(sessionId, reviewerRouteAvailable),
+      agents: composerAgentProfiles(sessionId, reviewerProvider),
       tasks: input.tasks.map((task) => ({
         id: task.id,
         goal: task.goal,
@@ -2331,7 +2341,12 @@ export async function createNovaWingLaunchpad(options: {
     readCodexAvailability: dependencies?.readCodexAvailability ?? (() =>
       new CodingExecutionStore(defaultCodingExecutionStorePath(options.env)).availability()),
     resolveReviewerRouteAvailable: dependencies?.resolveReviewerRouteAvailable ??
-      ((targetRepo) => hasDeepSeekRoute(targetRepo, options.env)),
+      (async (targetRepo) => await hasDeepSeekRoute(targetRepo, options.env) || await hasClaudeRoute(targetRepo, options.env)),
+    resolveReviewerProvider: dependencies?.resolveReviewerProvider ??
+      (dependencies?.resolveReviewerRouteAvailable
+        ? async (targetRepo) => await dependencies.resolveReviewerRouteAvailable!(targetRepo) ? 'deepseek' : undefined
+        : async (targetRepo) => await hasDeepSeekRoute(targetRepo, options.env) ? 'deepseek' :
+          await hasClaudeRoute(targetRepo, options.env) ? 'claude' : undefined),
   }
   return new NovaWingLaunchpad(discovered, configDirectory, launchpadDependencies)
 }

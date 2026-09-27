@@ -15,7 +15,7 @@ import { ADMISSION_MODEL_VERSION, stagedVerificationContract, type StagedVerific
 
 const git = promisify(execFile)
 export const COMPILER_SCHEMA_VERSION = 3
-export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase5.1'
+export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase5.2'
 export { conservativeCapabilityResolver }
 export type { CapabilityResolution, VerificationCapabilityResolver }
 export type VerificationCapability = CapabilityResolution['capability']

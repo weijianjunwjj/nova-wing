@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { bindDeliveryTarget, compileRuntimePlan } from '../dist/packages/development-guardian/delivery/runtime-plan.js'
 import { CAPABILITY_REGISTRY } from '../dist/packages/development-guardian/delivery/capability-layer.js'
-import { hasDeepSeekRoute } from '../dist/packages/development-guardian/deepseek-executor.js'
+import { hasClaudeRoute, hasDeepSeekRoute } from '../dist/packages/development-guardian/deepseek-executor.js'
 import { runProductionDependencyPreflight } from '../dist/packages/development-guardian/work-session/dependency-health.js'
 
 const [snapshotPath, targetPath] = process.argv.slice(2)
@@ -17,7 +17,7 @@ const target = await bindDeliveryTarget(snapshot, resolve(targetPath), 'trusted_
 const [preflight, reviewerAvailable] = await Promise.all([
   runProductionDependencyPreflight({ targetRepo: target.canonicalPath, controlPlane: 'v2',
     timeoutMs: 3_000, shutdownMode: 'strict' }),
-  hasDeepSeekRoute(target.canonicalPath),
+  Promise.all([hasDeepSeekRoute(target.canonicalPath), hasClaudeRoute(target.canonicalPath)]).then((routes) => routes.some(Boolean)),
 ])
 const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'runtime-policy-v1',
   runtimeConfigured: target.branch !== null, executorAvailable: preflight.canStart, reviewerAvailable })

@@ -29,6 +29,19 @@ export async function hasDeepSeekRoute(cwd: string, env: NodeJS.ProcessEnv = pro
   } catch { return false }
 }
 
+/** A Claude CLI route is independent of Codex only when it names a Claude model and has credentials. */
+export async function hasClaudeRoute(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  try {
+    const effective = await resolveClaudeProviderEnvironment(cwd, env)
+    if (['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some((key) => effective[key] === '1')) return false
+    const endpoint = new URL(effective.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com')
+    return endpoint.protocol === 'https:' && endpoint.hostname !== 'api.deepseek.com' &&
+      endpoint.username === '' && endpoint.password === '' &&
+      Boolean(effective.ANTHROPIC_AUTH_TOKEN?.trim() || effective.ANTHROPIC_API_KEY?.trim()) &&
+      /^claude-[A-Za-z0-9-]+$/u.test(effective.ANTHROPIC_MODEL ?? '')
+  } catch { return false }
+}
+
 /**
  * Merge the local Claude CLI settings' `env` block into the given environment.
  *

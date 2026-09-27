@@ -64,6 +64,7 @@ import { createRuntimeTaskEtaService, type TaskEtaService } from './control-ui/t
 import { ReviewerRuntimeRegistry } from './reviewer-runtime.js'
 import { createReviewDispatcher } from './review-dispatcher.js'
 import {
+  createClaudeReviewerRuntime,
   createCodexReviewerRuntime,
   createDeepSeekReviewerRuntime,
   REVIEW_DEFAULT_MODEL,
@@ -745,6 +746,7 @@ export async function createProductionWorkSessionUi(
           env,
           policy: runtimePolicy ?? cloneRuntimeModelPolicy(BUILTIN_RUNTIME_MODEL_POLICY),
         }) ?? new ReviewerRuntimeRegistry([
+          createClaudeReviewerRuntime({ cwd: definition.targetRepo }),
           createDeepSeekReviewerRuntime({
             cwd: definition.targetRepo,
             model: reviewPolicy?.adapter === 'deepseek'

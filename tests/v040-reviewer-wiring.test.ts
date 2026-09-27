@@ -47,6 +47,7 @@ function fakeWorkSessionFactory(state: ComposerState) {
 /** Composer create needs only a trusted config directory and a branch read. */
 async function composeSession(
   reviewerRoute: () => Promise<boolean>,
+  reviewerProvider?: () => Promise<'deepseek' | 'claude' | undefined>,
 ): Promise<{ directory: string; launchpad: NovaWingLaunchpad; config: TrustedWorkSessionConfig; persistedJson: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'novawing-reviewer-'))
   const state: ComposerState = { receivedConfigs: [] }
@@ -57,6 +58,7 @@ async function composeSession(
       resolveEnvironment: async () => ({}),
       gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
       resolveReviewerRouteAvailable: reviewerRoute,
+      ...(reviewerProvider === undefined ? {} : { resolveReviewerProvider: reviewerProvider }),
     },
   })
   const address = await launchpad.start()
@@ -144,6 +146,23 @@ test('v040: a confirmed DeepSeek route makes the Composer declare an independent
     assert.deepEqual(calls.filter((call) => call.action === 'REVIEW'), [{ action: 'REVIEW', agent: 'deepseek-reviewer' }])
     assert.equal(result.status, 'COMPLETED')
     assert.equal(result.taskStateV2?.completion.review?.reviewer.provider, 'deepseek')
+  } finally {
+    await composed.launchpad.close()
+    await rm(composed.directory, { recursive: true, force: true })
+  }
+})
+
+test('a confirmed Claude route persists an independent Claude reviewer profile', async () => {
+  const composed = await composeSession(async () => true, async () => 'claude')
+  try {
+    assert.deepEqual(composed.config.agents?.map((agent) => [agent.id, agent.provider]),
+      [['executor-router', 'codex-or-deepseek'], ['claude-reviewer', 'claude']])
+    assert.match(composed.persistedJson, /"claude-reviewer"/u)
+    const profiles = trustedAgents(composed.config, composed.config.session.id)!
+    const calls: Array<{ action: string; agent: string }> = []
+    const result = await reviewRunner(composed.config, profiles, calls).run(highRiskTask)
+    assert.deepEqual(calls.filter((call) => call.action === 'REVIEW'), [{ action: 'REVIEW', agent: 'claude-reviewer' }])
+    assert.equal(result.status, 'COMPLETED')
   } finally {
     await composed.launchpad.close()
     await rm(composed.directory, { recursive: true, force: true })

@@ -206,6 +206,7 @@ const expectedRuntimeExports = {
     'buildReviewPrompt',
     'classifyReviewerProviderFailure',
     'createCodexReviewerRuntime',
+    'createClaudeReviewerRuntime',
     'createDeepSeekReviewerRuntime',
     'createReviewDispatcher',
     'implementerProvidersOf',

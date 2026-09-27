@@ -19,6 +19,8 @@ export interface VerificationProvisioningBinding {
   strategy: 'assertion_scoped_test' | 'loopback_http_predicate' | 'scoped_artifact_predicate' | 'owned_process_predicate'
   strategyVersion: '1'
   requiredInputs: readonly string[]
+  /** HTTP port 0 means the exact loopback port is supplied by the owned runtime at binding time. */
+  plannedVerifier: BoundVerifier
   verifierLifecycle: 'PROVISION_THEN_BIND_AND_EXECUTE'
   completionRequirement: 'EXACT_EVIDENCE_AND_INDEPENDENT_REVIEW'
 }
@@ -50,17 +52,22 @@ export function stagedVerificationContract(input: { assertionId: string; runtime
   const family = capability.family
   const strategy = strategies[family]
   const provider = CAPABILITY_REGISTRY[family]
-  if (!strategy || provider.trustLevel !== 'TRUSTED_LOCAL' ||
+  if (!strategy || capability.provisioningVerifier === undefined || provider.trustLevel !== 'TRUSTED_LOCAL' ||
     capability.providerId !== provider.providerId || capability.providerVersion !== provider.providerVersion) {
-    return { readiness: 'UNRESOLVED', prerequisite, policy: 'no-trusted-provisioning-strategy-v1' }
+    return { readiness: 'UNRESOLVED', prerequisite, policy: 'no-exact-trusted-provisioning-verifier-v1' }
   }
   const content = { assertionId, runtimeTaskId, capabilityFamily: family, providerId: provider.providerId,
     providerVersion: provider.providerVersion, intendedEvidenceType: provider.evidenceType,
     strategy: strategy.name, strategyVersion: '1' as const, requiredInputs: strategy.inputs,
+    plannedVerifier: capability.provisioningVerifier,
     verifierLifecycle: 'PROVISION_THEN_BIND_AND_EXECUTE' as const,
     completionRequirement: 'EXACT_EVIDENCE_AND_INDEPENDENT_REVIEW' as const }
   const id = createHash('sha256').update('novawing-verification-obligation-v1\0')
     .update(canonicalSerialize(content)).digest('hex')
+  const checkVerifier = capability.provisioningVerifier.family === 'http_api' && capability.provisioningVerifier.port === 0
+    ? { ...capability.provisioningVerifier, port: 1 } : capability.provisioningVerifier
+  try { bindProvisionedVerifier({ runtimePlanHash: '0'.repeat(64), obligation: { id, ...content }, verifier: checkVerifier }) }
+  catch { return { readiness: 'UNRESOLVED', prerequisite, policy: 'invalid-exact-provisioning-verifier-v1' } }
   return { readiness: 'PROVISIONABLE', prerequisite, policy: 'trusted-provisioning-obligation-v1',
     provisioning: { id, ...content } }
 }
@@ -94,9 +101,13 @@ function safeRelative(path: string): boolean {
 export function bindProvisionedVerifier(input: { runtimePlanHash: string; obligation: VerificationProvisioningBinding;
   verifier: BoundVerifier }): VerificationBindingTransition {
   const { obligation, verifier } = input
+  const planned = obligation.plannedVerifier.family === 'http_api' && obligation.plannedVerifier.port === 0 &&
+    verifier.family === 'http_api' ? { ...obligation.plannedVerifier, port: verifier.port } : obligation.plannedVerifier
   if (!/^[a-f0-9]{64}$/u.test(input.runtimePlanHash) || verifier.assertionId !== obligation.assertionId ||
     verifier.family !== obligation.capabilityFamily || verifier.providerId !== obligation.providerId ||
-    verifier.providerVersion !== obligation.providerVersion) throw new Error('Verifier does not match the exact trusted obligation.')
+    verifier.providerVersion !== obligation.providerVersion ||
+    canonicalSerialize(verifier) !== canonicalSerialize(planned))
+    throw new Error('Verifier does not match the exact trusted obligation.')
   if (verifier.family === 'command' && (scopedNodeTestPath(verifier.command) === undefined ||
     assessVerificationCommand(verifier.command).status !== 'ALLOWED')) throw new Error('Unsafe assertion verifier command.')
   if (verifier.family === 'http_api' && (verifier.method !== 'GET' || verifier.requestFixture !== 'NONE' ||

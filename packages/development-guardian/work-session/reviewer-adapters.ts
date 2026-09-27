@@ -8,7 +8,7 @@ import { commandEnvironment } from '../platform/environment.js'
 
 import { spawn } from 'node:child_process'
 
-import { hasDeepSeekRoute, resolveClaudeProviderEnvironment } from '../deepseek-executor.js'
+import { hasClaudeRoute, hasDeepSeekRoute, resolveClaudeProviderEnvironment } from '../deepseek-executor.js'
 import { guardianShellCommand, type GuardianShellContractOptions } from '../shell-contract.js'
 import { CODING_EXECUTOR_DEFAULTS } from '../coding-executor-config.js'
 import type { GuardianCommandRequest, GuardianCommandResult, GuardianCommandRunner } from '../claude-code-executor.js'
@@ -303,22 +303,34 @@ export interface DeepSeekReviewerRuntimeOptions {
  * instead of silently using another provider.
  */
 export function createDeepSeekReviewerRuntime(options: DeepSeekReviewerRuntimeOptions): ReviewerRuntime {
+  return createClaudeCliReviewerRuntime(options, 'deepseek',
+    options.routeAvailable ?? ((): Promise<boolean> => hasDeepSeekRoute(options.cwd)))
+}
+
+/** Claude CLI reviewer through its configured Claude model route; credentials remain in the CLI environment. */
+export function createClaudeReviewerRuntime(options: DeepSeekReviewerRuntimeOptions): ReviewerRuntime {
+  return createClaudeCliReviewerRuntime(options, 'claude',
+    options.routeAvailable ?? ((): Promise<boolean> => hasClaudeRoute(options.cwd)))
+}
+
+function createClaudeCliReviewerRuntime(options: DeepSeekReviewerRuntimeOptions,
+  provider: 'deepseek' | 'claude', routeAvailable: () => Promise<boolean>): ReviewerRuntime {
   const timeoutMs = options.timeoutMs ?? REVIEW_DEFAULT_TIMEOUT_MS
   const maxTurns = options.maxTurns ?? REVIEW_DEFAULT_MAX_TURNS
   const runner = options.commandRunner ?? spawnReviewCommand
-  const routeAvailable = options.routeAvailable ?? ((): Promise<boolean> => hasDeepSeekRoute(options.cwd))
+  const label = provider === 'deepseek' ? 'DeepSeek' : 'Claude'
   return {
-    provider: 'deepseek',
+    provider,
     async review(input: ReviewerReviewInput): Promise<ReviewerOutcome> {
       if (!(await routeAvailable())) {
         return {
-          kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: 'OFFLINE',
-          reason: 'DeepSeek reviewer route is not configured; NovaWing will not silently use another provider',
+          kind: 'RUNTIME_FAILURE', provider, status: 'OFFLINE',
+          reason: `${label} reviewer route is not configured; NovaWing will not silently use another provider`,
         }
       }
       const effectiveTimeoutMs = input.timeoutMs ?? timeoutMs
       const prompt = `${REVIEWER_SYSTEM_PROMPT}\n\n${buildReviewPrompt(input.task)}`
-      const args = reviewClaudeArgs(options.model ?? REVIEW_DEFAULT_MODEL, prompt, maxTurns)
+      const args = reviewClaudeArgs(options.model ?? (provider === 'deepseek' ? REVIEW_DEFAULT_MODEL : undefined), prompt, maxTurns)
       const spec = guardianShellCommand('exec claude "$@"', exportShellOptions(options))
       // The provider route needs its credentials on the CLI process environment even
       // when NovaWing itself was launched without them. They stay in memory only.
@@ -345,28 +357,28 @@ export function createDeepSeekReviewerRuntime(options: DeepSeekReviewerRuntimeOp
         })
       } catch (error) {
         const detail = redactReason(error instanceof Error ? error.message : String(error))
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: classifyReviewerProviderFailure(detail), reason: `DeepSeek reviewer failed: ${detail}` }
+        return { kind: 'RUNTIME_FAILURE', provider, status: classifyReviewerProviderFailure(detail), reason: `${label} reviewer failed: ${detail}` }
       }
       if (result.exitCode === null && result.signal === 'SIGTERM') {
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: 'TIMEOUT', reason: `DeepSeek reviewer timed out after ${effectiveTimeoutMs}ms` }
+        return { kind: 'RUNTIME_FAILURE', provider, status: 'TIMEOUT', reason: `${label} reviewer timed out after ${effectiveTimeoutMs}ms` }
       }
       if (result.exitCode !== 0) {
         const detail = redactReason(result.stderr.trim() || result.stdout.trim() || `exit ${String(result.exitCode)}`)
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: classifyReviewerProviderFailure(detail), reason: `DeepSeek reviewer failed: ${detail}` }
+        return { kind: 'RUNTIME_FAILURE', provider, status: classifyReviewerProviderFailure(detail), reason: `${label} reviewer failed: ${detail}` }
       }
       let payload: { result?: unknown; is_error?: unknown; permission_denials?: unknown }
       try {
         payload = JSON.parse(result.stdout.trim()) as typeof payload
       } catch {
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: 'DEGRADED', reason: 'DeepSeek reviewer returned invalid JSON output' }
+        return { kind: 'RUNTIME_FAILURE', provider, status: 'DEGRADED', reason: `${label} reviewer returned invalid JSON output` }
       }
       if (payload.is_error === true || typeof payload.result !== 'string') {
         const detail = redactReason(typeof payload.result === 'string' ? payload.result : 'reviewer produced no result payload')
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: classifyReviewerProviderFailure(detail), reason: `DeepSeek reviewer failed: ${detail}` }
+        return { kind: 'RUNTIME_FAILURE', provider, status: classifyReviewerProviderFailure(detail), reason: `${label} reviewer failed: ${detail}` }
       }
       const parsed = parseReviewVerdict(payload.result)
       if (!parsed.ok) {
-        return { kind: 'RUNTIME_FAILURE', provider: 'deepseek', status: 'DEGRADED', reason: `DeepSeek reviewer protocol failure: ${parsed.reason}` }
+        return { kind: 'RUNTIME_FAILURE', provider, status: 'DEGRADED', reason: `${label} reviewer protocol failure: ${parsed.reason}` }
       }
       // A denied write attempt is a real safety event and must stay visible.
       const deniedWrites = Array.isArray(payload.permission_denials)
@@ -386,7 +398,7 @@ export function createDeepSeekReviewerRuntime(options: DeepSeekReviewerRuntimeOp
         findings: [...parsed.verdict.findings],
         blockingFindings,
         summary: parsed.verdict.summary,
-        provider: 'deepseek',
+        provider,
         ...(parsed.verdict.assertionVerdicts === undefined ? {} : { assertionVerdicts: parsed.verdict.assertionVerdicts }),
       }
     },

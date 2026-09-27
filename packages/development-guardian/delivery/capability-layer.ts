@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import type { AcceptanceAssertion, AcceptanceCriterion, RequirementClause } from '../planning/model.js'
 import { assessVerificationCommand, scopedNodeTestPath } from '../verification-command-policy.js'
 import type { DeliveryTargetBinding } from './runtime-plan.js'
+import type { BoundVerifier } from './staged-verification.js'
 
 export const CAPABILITY_SCHEMA_VERSION = 1
 export type CapabilityFamily = 'command' | 'http_api' | 'browser_ui' | 'filesystem' | 'git' |
@@ -145,6 +146,8 @@ export interface CapabilityResolution {
   availability?: ProviderAvailability
   /** Explicit trusted policy: a missing external dependency may block implementation itself. */
   startPrerequisite?: 'EXECUTION' | 'COMPLETION'
+  /** An exact assertion-scoped verifier blueprint, supplied only by a trusted resolver. */
+  provisioningVerifier?: BoundVerifier
 }
 export interface ResolvedCapability extends CapabilityResolution {
   family: CapabilityFamily
@@ -205,6 +208,11 @@ export function resolveCapability(input: Parameters<VerificationCapabilityResolv
       assessVerificationCommand(raw.verificationCommand).status !== 'ALLOWED')) ||
     (raw.capability !== 'SUPPORTED' && raw.verificationCommand !== undefined)) {
     throw new Error('Invalid trusted capability resolution.')
+  }
+  if (raw.provisioningVerifier !== undefined && (raw.capability !== 'UNSUPPORTED' ||
+    raw.provisioningVerifier.assertionId !== input.assertion.id || raw.provisioningVerifier.family !== family ||
+    raw.provisioningVerifier.providerId !== providerId || raw.provisioningVerifier.providerVersion !== providerVersion)) {
+    throw new Error('Invalid trusted provisioning verifier identity.')
   }
   return { ...raw, family, classificationRule,
     providerId, providerVersion,
