@@ -3,40 +3,20 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { realpath } from 'node:fs/promises'
 import { canonicalSerialize, verifyPlanSnapshot, type PlanSnapshot } from '../planning/freeze.js'
-import type { AcceptanceAssertion, AcceptanceCriterion, RequirementClause } from '../planning/model.js'
+import type { AcceptanceCriterion, RequirementClause } from '../planning/model.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
 import { assessVerificationCommand } from '../verification-command-policy.js'
 import { planVerification } from '../work-session/verification-planner.js'
+import { CAPABILITY_REGISTRY, CAPABILITY_SCHEMA_VERSION, capabilityCoverage, capabilityPolicyFingerprint, conservativeCapabilityResolver,
+  resolveCapability, type CapabilityResolution, type ProviderAvailability, type ResolvedCapability,
+  type VerificationCapabilityResolver } from './capability-layer.js'
 
 const git = promisify(execFile)
-export const COMPILER_SCHEMA_VERSION = 1
-export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase3.4'
-
-export type VerificationCapability = 'SUPPORTED' | 'UNSUPPORTED' | 'REQUIRES_EXTERNAL_ENVIRONMENT' | 'REQUIRES_HUMAN'
-export interface CapabilityResolution {
-  capability: VerificationCapability
-  /** Stable trusted capability identifier, not a shell command or a claim of PASS. */
-  capabilityId: string
-  reason: string
-  /** Only a trusted resolver may provide this exact Existing Runtime verifier. */
-  verificationCommand?: string
-}
-export type VerificationCapabilityResolver = (input: {
-  assertion: AcceptanceAssertion; criterion: AcceptanceCriterion; requirement: RequirementClause
-}) => CapabilityResolution
-
-/** No generic command or model review can prove an arbitrary customer outcome. */
-export const conservativeCapabilityResolver: VerificationCapabilityResolver = ({ criterion }) =>
-  criterion.level === 'platform' ? {
-    capability: 'REQUIRES_EXTERNAL_ENVIRONMENT', capabilityId: 'external-platform-evidence-v1',
-    reason: '当前缺少该平台的真实编译和验收环境。',
-  } : criterion.level === 'ui' ? {
-    capability: 'REQUIRES_EXTERNAL_ENVIRONMENT', capabilityId: 'external-ui-evidence-v1',
-    reason: '当前缺少可信的界面行为验证环境。',
-  } : {
-    capability: 'UNSUPPORTED', capabilityId: 'unresolved-business-evidence-v1',
-    reason: '当前尚无可证明该业务结果的验证能力。',
-  }
+export const COMPILER_SCHEMA_VERSION = 2
+export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase4.1'
+export { conservativeCapabilityResolver }
+export type { CapabilityResolution, VerificationCapabilityResolver }
+export type VerificationCapability = CapabilityResolution['capability']
 
 export interface DeliveryTargetBinding {
   id: string
@@ -107,19 +87,22 @@ export interface AcceptanceBinding {
   expectedOutcome: string
   expectedEvidence: string
   blocking: boolean
-  verificationCapability: CapabilityResolution
+  verificationCapability: ResolvedCapability
   evidenceStatus: 'NOT_COLLECTED'
 }
 export interface RuntimeAdmission {
   status: 'READY' | 'ADMISSION_BLOCKED'
   blockers: Array<{ code: string; assertionId?: string; message: string }>
   coverage: { plannedTaskRuntime: number; mustRuntime: number; blockingAssertionRuntime: number }
+  capabilityCoverage: ReturnType<typeof capabilityCoverage>
   checkedAt: string
 }
 export interface CompiledRuntimePlan {
   id: string
   runtimePlanHash: string
-  compilerSchemaVersion: 1
+  compilerSchemaVersion: 2
+  capabilitySchemaVersion: 1
+  capabilityPolicyFingerprint: string
   compilerImplementationVersion: string
   runtimePolicyVersion: string
   sourceSnapshotId: string
@@ -143,16 +126,26 @@ function semanticRuntimePlan(plan: CompiledRuntimePlan): unknown {
     target: { canonicalPath: plan.targetBinding.canonicalPath, gitRepositoryIdentity: plan.targetBinding.gitRepositoryIdentity,
       baselineCommit: plan.targetBinding.baselineCommit, branch: plan.targetBinding.branch, clean: plan.targetBinding.clean },
     compilerSchemaVersion: plan.compilerSchemaVersion, compilerImplementationVersion: plan.compilerImplementationVersion,
+    capabilitySchemaVersion: plan.capabilitySchemaVersion, capabilityPolicyFingerprint: plan.capabilityPolicyFingerprint,
     runtimePolicyVersion: plan.runtimePolicyVersion, tasks: plan.tasks, requirements: plan.requirements,
     acceptanceCriteria: plan.acceptanceCriteria,
-    customerDecisions: plan.customerDecisions, acceptanceBindings: plan.acceptanceBindings }
+    customerDecisions: plan.customerDecisions, acceptanceBindings: semanticAcceptanceBindings(plan.acceptanceBindings) }
+}
+
+function semanticAcceptanceBindings(bindings: readonly AcceptanceBinding[]): unknown[] {
+  return bindings.map((binding) => {
+    const { availability: _availability, ...stableCapability } = binding.verificationCapability
+    return { ...binding, verificationCapability: stableCapability }
+  })
 }
 
 export function verifyRuntimePlanIdentity(plan: CompiledRuntimePlan): void {
   const hash = createHash('sha256').update('novawing-runtime-plan-v1\0')
     .update(canonicalSerialize(semanticRuntimePlan(plan))).digest('hex')
   if (hash !== plan.runtimePlanHash || plan.id !== hash || plan.compilerSchemaVersion !== COMPILER_SCHEMA_VERSION ||
-    plan.compilerImplementationVersion !== COMPILER_IMPLEMENTATION_VERSION) {
+    plan.compilerImplementationVersion !== COMPILER_IMPLEMENTATION_VERSION ||
+    plan.capabilitySchemaVersion !== CAPABILITY_SCHEMA_VERSION ||
+    plan.capabilityPolicyFingerprint !== capabilityPolicyFingerprint()) {
     throw new Error('Runtime plan identity or compiler version mismatch.')
   }
 }
@@ -220,9 +213,24 @@ export function verifyRuntimePlanCoverage(snapshotInput: PlanSnapshot, plan: Com
 }
 
 export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: CompiledRuntimePlan,
-  options: { runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean }): Promise<RuntimeAdmission> {
+  options: { runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean;
+    resolver?: VerificationCapabilityResolver; providerAvailability?: (providerId: string) => ProviderAvailability }): Promise<RuntimeAdmission> {
   verifyRuntimePlanIdentity(plan)
   const coverage = verifyRuntimePlanCoverage(snapshotInput, plan)
+  const capabilityMetrics = capabilityCoverage(plan.acceptanceBindings, options.providerAvailability)
+  if (options.resolver) {
+    for (const binding of plan.acceptanceBindings) {
+      const criterion = snapshotInput.content.acceptancePlan.criteria.find((item) => item.id === binding.criterionId)
+      const assertion = criterion?.assertions.find((item) => item.id === binding.assertionId)
+      const requirement = snapshotInput.content.clauses.find((item) => item.id === binding.requirementId)
+      if (!criterion || !assertion || !requirement ||
+        canonicalSerialize(semanticAcceptanceBindings([{ ...binding,
+          verificationCapability: resolveCapability({ criterion, assertion, requirement }, options.resolver) }])) !==
+        canonicalSerialize(semanticAcceptanceBindings([binding]))) {
+        throw new Error(`Trusted capability policy changed for assertion ${binding.assertionId}; recompile the frozen plan.`)
+      }
+    }
+  }
   const blockers: RuntimeAdmission['blockers'] = []
   if (plan.targetBinding.snapshotId !== plan.sourceSnapshotId || plan.targetBinding.targetType !== 'existing_repository')
     blockers.push({ code: 'TARGET_BINDING_INVALID', message: '交付项目绑定无效。' })
@@ -243,8 +251,16 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
     blockers.push({ code: 'VERIFICATION_COMMAND_UNAVAILABLE', assertionId: binding.assertionId,
       message: '该验收结果没有可安全运行的精确验证方式。' })
   }
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.verificationCapability.capability === 'SUPPORTED') {
+    const capability = binding.verificationCapability
+    const availability = options.providerAvailability?.(capability.providerId) ??
+      (capability.family === 'command' ? 'AVAILABLE' : CAPABILITY_REGISTRY[capability.family].availability)
+    if (availability !== 'AVAILABLE') blockers.push({ code: 'VERIFICATION_PROVIDER_UNAVAILABLE', assertionId: binding.assertionId,
+      message: '受信验证 provider 当前不可用。' })
+  }
   if (!blockers.some((item) => item.code === 'VERIFICATION_CAPABILITY_GAP' || item.code === 'VERIFICATION_COMMAND_UNAVAILABLE')) {
     const definition = workSessionDefinitionFor({ ...plan, admission: { status: 'READY', blockers: [], coverage,
+      capabilityCoverage: capabilityMetrics,
       checkedAt: new Date().toISOString() } }, 'admission-probe')
     for (const task of definition.tasks) {
       if (!task.acceptanceCriteria?.length) {
@@ -260,7 +276,8 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
   if (!options.runtimeConfigured) blockers.push({ code: 'RUNTIME_CONFIG_UNAVAILABLE', message: '交付运行配置尚未就绪。' })
   if (!options.executorAvailable) blockers.push({ code: 'EXECUTOR_UNAVAILABLE', message: '执行能力尚未就绪。' })
   if (!options.reviewerAvailable) blockers.push({ code: 'REVIEWER_UNAVAILABLE', message: '独立评审能力尚未就绪。' })
-  return { status: blockers.length === 0 ? 'READY' : 'ADMISSION_BLOCKED', blockers, coverage, checkedAt: new Date().toISOString() }
+  return { status: blockers.length === 0 ? 'READY' : 'ADMISSION_BLOCKED', blockers, coverage,
+    capabilityCoverage: capabilityMetrics, checkedAt: new Date().toISOString() }
 }
 
 export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBinding: DeliveryTargetBinding,
@@ -282,13 +299,7 @@ export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBind
       .filter((task) => task.acceptanceCriterionIds.includes(criterion.id) && task.requirementIds.includes(assertion.requirementId))
       .map((task) => {
         const requirement = snapshot.content.clauses.find((item) => item.id === assertion.requirementId)!
-        const verificationCapability = resolver({ assertion, criterion, requirement })
-        if (!verificationCapability.capabilityId.trim() || !verificationCapability.reason.trim() ||
-          (verificationCapability.capability === 'SUPPORTED' &&
-            (verificationCapability.verificationCommand === undefined ||
-              assessVerificationCommand(verificationCapability.verificationCommand).status !== 'ALLOWED'))) {
-          throw new Error('Invalid verification capability resolution.')
-        }
+        const verificationCapability = resolveCapability({ assertion, criterion, requirement }, resolver)
         return { assertionId: assertion.id, criterionId: criterion.id, requirementId: assertion.requirementId,
           plannedTaskId: task.id, runtimeTaskId: task.id, observableBehavior: assertion.observableBehavior,
           expectedOutcome: assertion.expectedOutcome, expectedEvidence: assertion.expectedEvidence,
@@ -299,20 +310,23 @@ export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBind
     target: { canonicalPath: targetBinding.canonicalPath, gitRepositoryIdentity: targetBinding.gitRepositoryIdentity,
       baselineCommit: targetBinding.baselineCommit, branch: targetBinding.branch, clean: targetBinding.clean },
     compilerSchemaVersion: COMPILER_SCHEMA_VERSION, compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION,
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(),
     runtimePolicyVersion: options.runtimePolicyVersion, tasks, requirements: snapshot.content.clauses,
     acceptanceCriteria: snapshot.content.acceptancePlan.criteria,
-    customerDecisions: snapshot.content.customerAnswers, acceptanceBindings }
+    customerDecisions: snapshot.content.customerAnswers, acceptanceBindings: semanticAcceptanceBindings(acceptanceBindings) }
   const runtimePlanHash = createHash('sha256').update('novawing-runtime-plan-v1\0').update(canonicalSerialize(semantic)).digest('hex')
-  const plan: CompiledRuntimePlan = { id: runtimePlanHash, runtimePlanHash, compilerSchemaVersion: 1,
+  const plan: CompiledRuntimePlan = { id: runtimePlanHash, runtimePlanHash, compilerSchemaVersion: 2,
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(),
     compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION, runtimePolicyVersion: options.runtimePolicyVersion,
     sourceSnapshotId: snapshot.id, sourcePlanId: snapshot.sourcePlanId, sourcePlanVersion: snapshot.sourcePlanVersion,
     sourcePlanHash: snapshot.planHash.value, sourceCanonicalSchemaVersion: 1, targetBinding,
     targetBaselineCommit: targetBinding.baselineCommit, tasks, requirements: snapshot.content.clauses,
     acceptanceCriteria: snapshot.content.acceptancePlan.criteria,
     customerDecisions: snapshot.content.customerAnswers, acceptanceBindings,
-    admission: { status: 'ADMISSION_BLOCKED', blockers: [], coverage: { plannedTaskRuntime: 0, mustRuntime: 0, blockingAssertionRuntime: 0 }, checkedAt: '' },
+    admission: { status: 'ADMISSION_BLOCKED', blockers: [], coverage: { plannedTaskRuntime: 0, mustRuntime: 0, blockingAssertionRuntime: 0 },
+      capabilityCoverage: capabilityCoverage(acceptanceBindings), checkedAt: '' },
     createdAt: new Date().toISOString() }
-  plan.admission = await admitRuntimePlan(snapshot, plan, options)
+  plan.admission = await admitRuntimePlan(snapshot, plan, { ...options, resolver })
   return plan
 }
 
@@ -333,7 +347,8 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
   }
   for (const task of plan.tasks) visit(task)
   const criterionFor = (binding: AcceptanceBinding): string =>
-    `AcceptanceAssertion ${binding.assertionId}: ${binding.observableBehavior} → ${binding.expectedOutcome} | Expected evidence: ${binding.expectedEvidence}`
+    `AcceptanceAssertion ${binding.assertionId}: ${binding.observableBehavior} → ${binding.expectedOutcome} | Expected evidence: ${binding.expectedEvidence}` +
+    ` | CapabilityContract: ${binding.verificationCapability.family}/${binding.verificationCapability.providerId}@${binding.verificationCapability.providerVersion}`
   return { id: sessionId, targetRepo: plan.targetBinding.canonicalPath, branch: plan.targetBinding.branch ?? '',
     controlPlane: 'v2', directPath: { enabled: false }, goldenPath: { enabled: false },
     limits: { softMinutes: 60, hardMinutes: 240, maxTasks: plan.tasks.length },

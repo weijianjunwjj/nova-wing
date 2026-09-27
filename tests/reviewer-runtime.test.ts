@@ -225,6 +225,32 @@ test('delivery review PASS requires a verdict with evidence for every Acceptance
   assert.equal(parseReviewVerdict('{"verdict":"PASS","summary":"ok","assertionVerdicts":[{"assertionId":"A1","verdict":"PASS","evidence":"observed"}]}').ok, true)
 })
 
+test('Phase 4 Reviewer verdict is bound to provider, collector and actual passed step ID', async () => {
+  const criterion = 'AcceptanceAssertion A1: total is exact | CapabilityContract: command/existing-guarded-verifier@1'
+  const source = reviewedTask({ reviewer: { agent: 'acme-reviewer', provider: 'acme', runtimeIdentity: 'R9' },
+    implementer: { agent: 'alpha', provider: 'other-provider', runtimeIdentity: 'R1' } })
+  const task: TaskStateV2 = { ...source, acceptanceCriteria: [criterion],
+    verificationState: { results: [{ name: 'cart assertion', command: 'node --test tests/cart.test.js',
+      stepId: 'step-1', status: 'passed' }] },
+    completion: { ...source.completion, bindings: [{ criterion, requiredEvidence: ['node --test tests/cart.test.js'] }], review: undefined } }
+  let evidenceId = 'missing'
+  const runtime: ReviewerRuntime = { provider: 'acme', async review(): Promise<ReviewerOutcome> {
+    return { kind: 'VERDICT', passed: true, findings: [], blockingFindings: [], summary: 'reviewed', provider: 'acme',
+      assertionVerdicts: [{ assertionId: 'A1', verdict: 'PASS', evidence: 'Observed the exact cart totals.',
+        capabilityEvidence: { family: 'command', providerId: 'existing-guarded-verifier', providerVersion: '1',
+          collector: 'existing-guarded-verifier', evidenceIds: [evidenceId], verificationResult: 'OBSERVED' } }] }
+  } }
+  const dispatcher = createReviewDispatcher({ registry: new ReviewerRuntimeRegistry([runtime]), inspectRepository: async () => REALITY })
+  const agent = profile({ id: 'acme-reviewer', provider: 'acme', runtimeIdentity: 'R9', review: true })
+  const unbound = await dispatcher.dispatch({ agent, task })
+  assert.equal(unbound.review?.passed, false)
+  evidenceId = 'step-1'
+  const bound = await dispatcher.dispatch({ agent, task })
+  assert.equal(bound.review?.passed, true)
+  assert.equal(reviewSatisfied({ ...task, completion: { ...task.completion, review: bound.review } }), true)
+  assert.equal(parseReviewVerdict('{"verdict":"PASS","summary":"ok","assertionVerdicts":[{"assertionId":"A1","verdict":"PASS","evidence":"observed","capabilityEvidence":{"family":"command","providerId":"p","providerVersion":"1","collector":"p","evidenceIds":["step-1"],"verificationResult":"OBSERVED"}}]}').ok, true)
+})
+
 test('reviewer independence requires a distinct runtime identity and a distinct provider', () => {
   const reviewer = profile({ id: 'r', provider: 'deepseek', runtimeIdentity: 'R2', review: true })
   const implementer = { agent: 'i', provider: 'codex', runtimeIdentity: 'R1' }

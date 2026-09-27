@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
+import { verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
 import {
   admitRuntimePlan, bindDeliveryTarget, compileRuntimePlan, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity,
   workSessionDefinitionFor, type CompiledRuntimePlan, type DeliveryTargetBinding, type RuntimeAdmission,
@@ -46,7 +47,7 @@ export class DeliveryEventStore {
 
 export class DeliveryStore {
   constructor(readonly directory: string) {}
-  private path(kind: 'binding' | 'plan' | 'session', id: string): string {
+  private path(kind: 'binding' | 'plan' | 'session' | 'evidence', id: string): string {
     if (!/^[a-z0-9-]{36,120}$/u.test(id)) throw new Error('Invalid delivery artifact ID.')
     return join(this.directory, `${kind}-${id}.json`)
   }
@@ -84,6 +85,35 @@ export class DeliveryStore {
     if (plan !== undefined) verifyRuntimePlanIdentity(plan)
     return plan
   }
+  async saveCapabilityEvidence(plan: CompiledRuntimePlan, item: CapabilityEvidence): Promise<void> {
+    verifyRuntimePlanIdentity(plan)
+    verifyCapabilityEvidence(item)
+    if (!plan.acceptanceBindings.some((binding) => binding.assertionId === item.assertionId &&
+      binding.verificationCapability.family === item.family &&
+      binding.verificationCapability.providerId === item.providerId &&
+      binding.verificationCapability.providerVersion === item.providerVersion)) {
+      throw new Error('Evidence does not belong to a compiled assertion capability.')
+    }
+    const path = this.path('evidence', createHash('sha256').update(`${plan.id}\0${item.id}`).digest('hex'))
+    const existing = await this.read<{ runtimePlanHash: string; evidence: CapabilityEvidence }>(path)
+    if (existing !== undefined) {
+      if (existing.runtimePlanHash !== plan.runtimePlanHash || JSON.stringify(existing.evidence) !== JSON.stringify(item))
+        throw new Error('Persisted capability evidence identity collision.')
+      return
+    }
+    await this.writeOnce(path, { runtimePlanHash: plan.runtimePlanHash, evidence: item })
+  }
+  async getCapabilityEvidence(plan: CompiledRuntimePlan, id: string): Promise<CapabilityEvidence | undefined> {
+    verifyRuntimePlanIdentity(plan)
+    const key = createHash('sha256').update(`${plan.id}\0${id}`).digest('hex')
+    const stored = await this.read<{ runtimePlanHash: string; evidence: CapabilityEvidence }>(this.path('evidence', key))
+    if (stored === undefined) return undefined
+    verifyCapabilityEvidence(stored.evidence)
+    if (stored.runtimePlanHash !== plan.runtimePlanHash || stored.evidence.id !== id) {
+      throw new Error('Capability evidence is bound to another RuntimePlan.')
+    }
+    return stored.evidence
+  }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
     try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }
     catch (error) {
@@ -108,7 +138,8 @@ export interface DeliveryRuntimeAdapter {
 export class DeliveryService {
   constructor(private readonly store: DeliveryStore, private readonly events: DeliveryEventStore,
     private readonly runtime: DeliveryRuntimeAdapter, private readonly resolver: VerificationCapabilityResolver,
-    private readonly policyVersion: string) {}
+    private readonly policyVersion: string,
+    private readonly providerAvailability?: (providerId: string) => ProviderAvailability) {}
 
   private async options(target: DeliveryTargetBinding): Promise<{ runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean }> {
     const [runtimeConfigured, executorAvailable, reviewerAvailable] = await Promise.all([
@@ -157,7 +188,9 @@ export class DeliveryService {
     if (storedBinding === undefined || JSON.stringify(storedBinding) !== JSON.stringify(plan.targetBinding)) {
       throw new Error('Delivery target binding mismatch.')
     }
-    const admission = await admitRuntimePlan(snapshot, plan, await this.options(plan.targetBinding))
+    const admission = await admitRuntimePlan(snapshot, plan, { ...await this.options(plan.targetBinding),
+      resolver: this.resolver,
+      ...(this.providerAvailability === undefined ? {} : { providerAvailability: this.providerAvailability }) })
     return { plan, admission }
   }
 

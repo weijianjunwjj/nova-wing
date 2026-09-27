@@ -117,6 +117,11 @@ export { bindDeliveryTarget, inspectDeliveryTarget, compileRuntimePlan, admitRun
   conservativeCapabilityResolver, COMPILER_SCHEMA_VERSION, COMPILER_IMPLEMENTATION_VERSION } from './delivery/runtime-plan.js'
 export type { DeliveryTargetBinding, CompiledRuntimePlan, RuntimeTaskBinding, AcceptanceBinding,
   RuntimeAdmission, CapabilityResolution, VerificationCapability, VerificationCapabilityResolver } from './delivery/runtime-plan.js'
+export { CAPABILITY_SCHEMA_VERSION, CAPABILITY_REGISTRY, classifyCapability, resolveCapability,
+  capabilityCoverage, capabilityPolicyFingerprint, collectFilesystemEvidence, collectGitEvidence, collectHttpEvidence,
+  verifyCapabilityEvidence, TrustedCapabilityRegistry, trustedCapabilityRegistry } from './delivery/capability-layer.js'
+export type { CapabilityFamily, CapabilityDefinition, CapabilityEvidence, ResolvedCapability,
+  ProviderAvailability, CapabilityCollectionRequest } from './delivery/capability-layer.js'
 export { DeliveryStore, DeliveryEventStore, DeliveryService } from './delivery/service.js'
 export type { WorkSessionPlanBinding, DeliveryRuntimeAdapter, DeliveryEventType } from './delivery/service.js'
 export { createCodexPlanningProvider } from './planning/provider.js'

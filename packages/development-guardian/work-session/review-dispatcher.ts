@@ -14,7 +14,7 @@
 import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
-import { acceptanceAssertionIds, type ReviewEvidence } from './risk-evidence.js'
+import { acceptanceAssertionIds, assertionCapabilityEvidenceValid, type ReviewEvidence } from './risk-evidence.js'
 import type { RepositoryReality } from './reconciliation.js'
 import {
   ReviewerRuntimeRegistry,
@@ -160,7 +160,8 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
       const requiredAssertionIds = acceptanceAssertionIds(task.acceptanceCriteria)
       const assertionVerdicts = outcome.assertionVerdicts ?? []
       const unprovedAssertionIds = requiredAssertionIds.filter((id) =>
-        assertionVerdicts.filter((item) => item.assertionId === id && item.verdict === 'PASS' && item.evidence.trim()).length !== 1)
+        assertionVerdicts.filter((item) => item.assertionId === id && item.verdict === 'PASS' && item.evidence.trim() &&
+          assertionCapabilityEvidenceValid(task, item)).length !== 1)
       const blockingFindings = [...outcome.blockingFindings,
         ...unprovedAssertionIds.map((id) => `AcceptanceAssertion ${id} lacks an explicit PASS with evidence.`),
         ...(requiredAssertionIds.length > 0 && assertionVerdicts.some((item) => !requiredAssertionIds.includes(item.assertionId))

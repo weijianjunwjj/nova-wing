@@ -6,11 +6,16 @@ import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createServer } from 'node:http'
+import { symlink } from 'node:fs/promises'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
 import { canonicalPlanContent, createPlanSnapshot, planContentHash, type PlanSnapshot } from '../packages/development-guardian/planning/freeze.js'
 import { DeliveryEventStore, DeliveryService, DeliveryStore, type DeliveryRuntimeAdapter } from '../packages/development-guardian/delivery/service.js'
-import { bindDeliveryTarget, compileRuntimePlan, conservativeCapabilityResolver, verifyRuntimePlanCoverage, workSessionDefinitionFor,
+import { bindDeliveryTarget, compileRuntimePlan, conservativeCapabilityResolver, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity, workSessionDefinitionFor,
   type CompiledRuntimePlan, type VerificationCapabilityResolver } from '../packages/development-guardian/delivery/runtime-plan.js'
+import { CAPABILITY_REGISTRY, classifyCapability, collectFilesystemEvidence, collectGitEvidence, collectHttpEvidence,
+  trustedCapabilityRegistry,
+  resolveCapability, verifyCapabilityEvidence } from '../packages/development-guardian/delivery/capability-layer.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { FakeTaskRunner } from '../packages/development-guardian/work-session/fake-task-runner.js'
 import { NovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
@@ -52,7 +57,8 @@ function snapshotFixture(): PlanSnapshot {
 }
 
 const supported: VerificationCapabilityResolver = () => ({ capability: 'SUPPORTED', capabilityId: 'fixture-business-observation-v1',
-  verificationCommand: 'npm test', reason: '隔离 fixture 收集行为前后业务状态。' })
+  contractAssertionId: 'A1', verificationCommand: 'node --test tests/cart.test.js',
+  reason: '隔离 fixture 收集行为前后业务状态。' })
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'nw-delivery-'))
@@ -62,8 +68,9 @@ async function fixture() {
   await git(repo, 'config', 'user.name', 'Fixture')
   await git(repo, 'config', 'user.email', 'fixture@example.invalid')
   await writeFile(join(repo, 'README.md'), 'fixture\n')
-  await writeFile(join(repo, 'package.json'), JSON.stringify({ private: true, scripts: { test: 'node verify.js' } }))
-  await writeFile(join(repo, 'verify.js'), "if (2 + 2 !== 4) throw new Error('fixture')\n")
+  await (await import('node:fs/promises')).mkdir(join(repo, 'tests'))
+  await writeFile(join(repo, 'package.json'), JSON.stringify({ private: true, scripts: { test: 'node --test tests/cart.test.js' } }))
+  await writeFile(join(repo, 'tests/cart.test.js'), "const items = [{ price: 12, count: 2 }, { price: 5, count: 1 }]; items.pop(); if (items.reduce((sum, item) => sum + item.price * item.count, 0) !== 24) throw new Error('cart total')\n")
   await git(repo, 'add', '.')
   await git(repo, 'commit', '-qm', 'fixture baseline')
   return { root, repo, snapshot: snapshotFixture() }
@@ -111,11 +118,120 @@ test('admission blocks unsupported evidence, dirty target and baseline drift', a
     capabilityId: 'human-acceptance-v1', reason: '需要客户现场验收。' }), runtimePolicyVersion: 'fixture-policy-v1',
     runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
   assert.equal(human.admission.status, 'ADMISSION_BLOCKED')
+  assert.equal(human.admission.capabilityCoverage.human, 1)
+  const external = await compileRuntimePlan({ ...snapshot, content: { ...snapshot.content,
+    acceptancePlan: { ...snapshot.content.acceptancePlan, criteria: [{ ...criterion, level: 'ui' }] } } }, target,
+  { runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true }).catch(() => undefined)
+  assert.equal(external, undefined, 'a changed criterion cannot bypass the frozen snapshot hash')
   await writeFile(join(repo, 'untracked.txt'), 'dirty')
   const dirty = await compileRuntimePlan(snapshot, target, { resolver: supported, runtimePolicyVersion: 'fixture-policy-v1',
     runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
   assert.ok(dirty.admission.blockers.some((blocker) => blocker.code === 'TARGET_DRIFT'))
   assert.ok(dirty.admission.blockers.some((blocker) => blocker.code === 'TARGET_DIRTY'))
+})
+
+test('Requirement 001 audit guard rejects a different snapshot before inspecting a target', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const path = join(root, 'other.snapshot.json')
+  await writeFile(path, JSON.stringify(snapshot))
+  await assert.rejects(exec('node', ['scripts/requirement-001-capability-audit.mjs', path, repo],
+    { cwd: process.cwd(), timeout: 10_000 }), /not the approved frozen Requirement 001 snapshot/)
+})
+
+test('capability registry classifies all families without claiming unsupported assertions pass', async () => {
+  const snapshot = snapshotFixture()
+  const criterion = snapshot.content.acceptancePlan.criteria[0]!
+  const assertion = criterion.assertions[0]!
+  const requirement = snapshot.content.clauses[0]!
+  assert.deepEqual(Object.keys(CAPABILITY_REGISTRY).sort(),
+    ['command', 'http_api', 'browser_ui', 'filesystem', 'git', 'process', 'desktop_ui', 'external_platform', 'human'].sort())
+  const input = { criterion, assertion, requirement }
+  assert.equal(classifyCapability(input).family, 'http_api')
+  assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'ui' } }).family, 'browser_ui')
+  assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'platform' } }).family, 'external_platform')
+  assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'delivery' },
+    assertion: { ...assertion, expectedEvidence: '交付文件清单' } }).family, 'filesystem')
+  assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'delivery' },
+    assertion: { ...assertion, expectedEvidence: '客户人工验收' } }).family, 'human')
+  const defaultResolution = resolveCapability(input, conservativeCapabilityResolver)
+  assert.equal(defaultResolution.capability, 'UNSUPPORTED')
+  assert.equal(defaultResolution.family, 'http_api')
+  assert.equal(defaultResolution.schemaVersion, 1)
+  assert.throws(() => resolveCapability(input, () => ({ capability: 'SUPPORTED', capabilityId: 'unsafe',
+    verificationCommand: 'node -e "process.exit(0)"', reason: 'unsafe' })))
+  assert.throws(() => resolveCapability(input, () => ({ capability: 'SUPPORTED', capabilityId: 'generic',
+    contractAssertionId: 'A1', verificationCommand: 'npm test', reason: 'A root suite is insufficient.' })))
+  assert.throws(() => resolveCapability(input, () => ({ capability: 'SUPPORTED', capabilityId: 'exact',
+    providerId: 'bad/provider', contractAssertionId: 'A1', verificationCommand: 'node --test tests/cart.test.js',
+    reason: 'Provider identity cannot evade Reviewer binding.' })))
+  assert.throws(() => resolveCapability(input, () => ({ capability: 'SUPPORTED', capabilityId: 'unwired',
+    family: 'filesystem', reason: 'No existing runtime adapter.' })))
+})
+
+test('read-only collectors stay scoped and persist evidence against an exact plan', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { resolver: () => ({ capability: 'UNSUPPORTED',
+    capabilityId: 'scoped-filesystem-read-v1', family: 'filesystem', reason: 'Explicit contract is not bound to runtime.' }),
+    runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const file = await trustedCapabilityRegistry.collect({ family: 'filesystem', target, assertionId: 'A1',
+    relativePath: 'README.md', expectation: 'contains', contains: 'fixture' })
+  assert.equal(file.facts.observedMatch, true)
+  assert.equal(file.result, 'OBSERVED')
+  assert.equal((await collectFilesystemEvidence({ target, assertionId: 'A1', relativePath: 'absent.txt',
+    expectation: 'file_missing' })).facts.observedMatch, true)
+  await assert.rejects(collectFilesystemEvidence({ target, assertionId: 'A1', relativePath: '../outside', expectation: 'file_exists' }))
+  await symlink(root, join(repo, 'escape'))
+  await assert.rejects(collectFilesystemEvidence({ target, assertionId: 'A1', relativePath: 'escape/file', expectation: 'file_exists' }))
+  const observedGit = await collectGitEvidence({ target, assertionId: 'A1', fact: 'head', expected: target.baselineCommit })
+  assert.equal(observedGit.facts.observedMatch, true)
+  verifyCapabilityEvidence(file)
+  assert.throws(() => verifyCapabilityEvidence({ ...file, facts: { ...file.facts, observedMatch: false } }))
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.savePlan(plan)
+  await store.saveCapabilityEvidence(plan, file)
+  assert.deepEqual(await new DeliveryStore(join(root, 'delivery')).getCapabilityEvidence(plan, file.id), file)
+  await assert.rejects(store.saveCapabilityEvidence(plan, observedGit), /does not belong/)
+})
+
+test('loopback HTTP collector bounds target and response without treating status as assertion PASS', async () => {
+  const server = createServer((_request, response) => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{"ok":true}') })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const observed = await collectHttpEvidence({ assertionId: 'A1', port: address.port, route: '/health', expectedStatus: 200 })
+    assert.equal(observed.result, 'OBSERVED')
+    assert.equal(observed.facts.observedMatch, true)
+    assert.equal(Object.hasOwn(observed.facts, 'body'), false)
+    await assert.rejects(collectHttpEvidence({ assertionId: 'A1', port: address.port, route: '//example.com', expectedStatus: 200 }))
+  } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
+})
+
+test('capability policy and provider availability drift fail closed after restart', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const store = new DeliveryStore(join(root, 'delivery'))
+  const events = new DeliveryEventStore(join(root, 'delivery', 'events.jsonl'))
+  const adapter: DeliveryRuntimeAdapter = { configured: async () => true, executorAvailable: async () => true,
+    reviewerAvailable: async () => true, createAndStart: async () => undefined }
+  const service = new DeliveryService(store, events, adapter, supported, 'fixture-policy-v1')
+  const plan = await service.prepare(snapshot, repo, 'trusted_test')
+  assert.equal(plan.admission.capabilityCoverage.trustedProvider, 1)
+  assert.equal((await new DeliveryService(new DeliveryStore(join(root, 'delivery')), events, adapter, supported,
+    'fixture-policy-v1').readiness(snapshot, plan.id)).admission.status, 'READY')
+  const unavailable = new DeliveryService(store, events, adapter, supported, 'fixture-policy-v1', () => 'UNAVAILABLE')
+  const unavailableAdmission = (await unavailable.readiness(snapshot, plan.id)).admission
+  assert.ok(unavailableAdmission.blockers.some((item) => item.code === 'VERIFICATION_PROVIDER_UNAVAILABLE'))
+  assert.equal(unavailableAdmission.capabilityCoverage.executableOnCurrentHost, 0)
+  const changed: VerificationCapabilityResolver = () => ({ capability: 'SUPPORTED', capabilityId: 'different-provider-v2',
+    contractAssertionId: 'A1', verificationCommand: 'node --test tests/cart.test.js', reason: 'Different policy.' })
+  await assert.rejects(new DeliveryService(store, events, adapter, changed, 'fixture-policy-v1').readiness(snapshot, plan.id),
+    /capability policy changed/)
+  const corrupted: CompiledRuntimePlan = { ...plan, acceptanceBindings: plan.acceptanceBindings.map((binding) => ({ ...binding,
+    verificationCapability: { ...binding.verificationCapability, providerVersion: '99' } })) }
+  assert.throws(() => verifyRuntimePlanIdentity(corrupted))
+  assert.throws(() => verifyRuntimePlanCoverage(snapshot, { ...plan, acceptanceBindings: [...plan.acceptanceBindings, plan.acceptanceBindings[0]!] }))
 })
 
 test('fixture delivery creates one exact WorkSession, persists binding and rejects later drift', async () => {

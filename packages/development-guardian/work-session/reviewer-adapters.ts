@@ -64,6 +64,7 @@ export const REVIEWER_SYSTEM_PROMPT = [
   'Answer with ONE JSON object and nothing else:',
   '{"verdict":"PASS"|"FAIL","findings":["..."],"blockingFindings":["..."],"summary":"<one or two sentences>"}',
   'When the Task contains AcceptanceAssertion IDs, also include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL","evidence":"specific observed evidence"}] for every ID. Missing or unproved IDs cannot PASS.',
+  'For a CapabilityContract assertion, each PASS verdict also needs capabilityEvidence with family, providerId, providerVersion, collector, evidenceIds (actual passed verification stepIds), and verificationResult="OBSERVED". A command or HTTP status alone does not prove the expected business outcome.',
   'A FAIL with at least one blockingFinding means the implementation must be revised.',
   'No prose, no markdown fences, no comments.',
 ].join('\n')
@@ -129,7 +130,16 @@ export function parseReviewVerdict(text: string): { ok: true; verdict: ReviewVer
       const row = item as Record<string, unknown>
       return typeof row.assertionId === 'string' && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(row.assertionId) &&
         (row.verdict === 'PASS' || row.verdict === 'FAIL') &&
-        typeof row.evidence === 'string' && row.evidence.trim().length > 0 && row.evidence.length <= 2_000
+        typeof row.evidence === 'string' && row.evidence.trim().length > 0 && row.evidence.length <= 2_000 &&
+        (row.capabilityEvidence === undefined || (() => {
+          if (row.capabilityEvidence === null || typeof row.capabilityEvidence !== 'object' || Array.isArray(row.capabilityEvidence)) return false
+          const trace = row.capabilityEvidence as Record<string, unknown>
+          return ['family', 'providerId', 'providerVersion', 'collector'].every((key) =>
+            typeof trace[key] === 'string' && /^[A-Za-z0-9_.-]{1,120}$/u.test(trace[key] as string)) &&
+            (trace.verificationResult === 'OBSERVED' || trace.verificationResult === 'FAILED') &&
+            Array.isArray(trace.evidenceIds) && trace.evidenceIds.length > 0 && trace.evidenceIds.length <= 20 &&
+            trace.evidenceIds.every((id: unknown) => typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/u.test(id))
+        })())
     }
     if (!Array.isArray(record.assertionVerdicts) || record.assertionVerdicts.length > 100 ||
       !record.assertionVerdicts.every(validAssertionVerdict)) {
