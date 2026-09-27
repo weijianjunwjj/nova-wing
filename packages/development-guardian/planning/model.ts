@@ -8,7 +8,10 @@ export const requirementClauseSchema = z.object({
   statement: bounded(),
   type: z.enum(['functional', 'business-rule', 'constraint', 'quality', 'delivery']),
   priority: z.enum(['must', 'should', 'could']),
-  source: z.object({ excerpt: bounded(1_000), location: bounded(200) }),
+  source: z.object({
+    excerpt: bounded(1_000), location: bounded(200),
+    origin: z.enum(['customer_requirement', 'customer_revision', 'derived_assumption']),
+  }).strict(),
   ambiguity: z.object({ ambiguous: z.boolean(), note: z.string().max(1_000) }),
 }).strict()
 
@@ -33,6 +36,11 @@ export const planDraftSchema = z.object({
     id, requirementIds: z.array(id).min(1), description: bounded(),
     level: z.enum(['unit', 'integration', 'api', 'ui', 'platform', 'delivery']),
     expectedEvidence: bounded(), blocking: z.boolean(),
+    assertions: z.array(z.object({
+      id, requirementId: id,
+      observableBehavior: bounded(1_000), expectedOutcome: bounded(1_000),
+      expectedEvidence: bounded(1_000), blocking: z.boolean(),
+    }).strict()).min(1).max(100),
   }).strict()).min(1).max(150) }).strict(),
   risks: z.array(z.object({ id, description: bounded(), mitigation: bounded() }).strict()),
   assumptions: z.array(z.object({ id, statement: bounded(), impactIfFalse: bounded() }).strict()),
@@ -48,6 +56,23 @@ export type RequirementAnalysis = z.infer<typeof analysisSchema>
 export type PlanDraft = z.infer<typeof planDraftSchema>
 export type PlannedTask = PlanDraft['tasks'][number]
 export type AcceptanceCriterion = PlanDraft['acceptancePlan']['criteria'][number]
+export type AcceptanceAssertion = AcceptanceCriterion['assertions'][number]
+
+export const semanticReviewIssueCodeSchema = z.enum([
+  'MISSING_EXPLICIT_REQUIREMENT', 'INVENTED_BUSINESS_SCOPE', 'WEAK_ACCEPTANCE',
+  'UNSUPPORTED_BUSINESS_ASSUMPTION', 'INAPPROPRIATE_CUSTOMER_QUESTION',
+  'MISSING_CUSTOMER_QUESTION', 'TASK_TOO_VAGUE', 'TASK_REQUIREMENT_MISMATCH',
+  'ACCEPTANCE_REQUIREMENT_MISMATCH', 'UNSUPPORTED_PROVENANCE',
+  'REVIEW_UNAVAILABLE',
+])
+export const semanticReviewSchema = z.object({
+  verdict: z.enum(['PASS', 'REVISION_REQUIRED']),
+  issues: z.array(z.object({
+    code: semanticReviewIssueCodeSchema, path: bounded(200),
+    message: bounded(1_000), sourceExcerpt: z.string().max(1_000),
+  }).strict()).max(100),
+}).strict()
+export type SemanticReview = z.infer<typeof semanticReviewSchema>
 
 export interface RequirementInput {
   id: string
@@ -62,9 +87,11 @@ export interface RequirementCoverage {
   taskIds: string[]
   acceptanceCriterionIds: string[]
   blockingAcceptanceCriterionIds: string[]
+  assertionIds: string[]
+  blockingAssertionIds: string[]
 }
 
-export type DevelopmentPlanStatus = 'draft' | 'needs_customer_input' | 'ready_for_approval' | 'approved'
+export type DevelopmentPlanStatus = 'draft' | 'planning_failed' | 'needs_customer_input' | 'ready_for_approval' | 'approved'
 
 export interface DevelopmentPlan extends PlanDraft {
   id: string
@@ -73,6 +100,7 @@ export interface DevelopmentPlan extends PlanDraft {
   requirement: RequirementInput
   dependencies: Array<{ fromTaskId: string; toTaskId: string }>
   coverage: RequirementCoverage[]
+  semanticReview: SemanticReview | null
   /** Reserved for a later explicit Plan Freeze implementation. */
   frozenAt: string | null
   createdAt: string
@@ -86,6 +114,8 @@ export function buildCoverage(draft: PlanDraft): RequirementCoverage[] {
     taskIds: draft.tasks.filter((task) => task.requirementIds.includes(clause.id)).map((task) => task.id),
     acceptanceCriterionIds: draft.acceptancePlan.criteria.filter((criterion) => criterion.requirementIds.includes(clause.id)).map((criterion) => criterion.id),
     blockingAcceptanceCriterionIds: draft.acceptancePlan.criteria.filter((criterion) => criterion.blocking && criterion.requirementIds.includes(clause.id)).map((criterion) => criterion.id),
+    assertionIds: draft.acceptancePlan.criteria.flatMap((criterion) => criterion.assertions.filter((assertion) => assertion.requirementId === clause.id).map((assertion) => assertion.id)),
+    blockingAssertionIds: draft.acceptancePlan.criteria.flatMap((criterion) => criterion.assertions.filter((assertion) => assertion.requirementId === clause.id && assertion.blocking).map((assertion) => assertion.id)),
   }))
 }
 
@@ -98,6 +128,7 @@ export function createDevelopmentPlan(draft: PlanDraft, requirement: Requirement
     requirement,
     dependencies: draft.tasks.flatMap((task) => task.dependencyIds.map((dependencyId) => ({ fromTaskId: dependencyId, toTaskId: task.id }))),
     coverage: buildCoverage(draft),
+    semanticReview: null,
     frozenAt: null,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),

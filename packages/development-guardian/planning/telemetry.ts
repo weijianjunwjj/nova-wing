@@ -6,6 +6,8 @@ export type PlanningEventType =
   | 'requirement.received' | 'planning.started' | 'requirement.analyzed'
   | 'development_plan.generated' | 'plan.validation_failed' | 'plan.validation_passed'
   | 'customer_question.required' | 'plan.approved'
+  | 'planning.semantic_review.started' | 'planning.semantic_review.passed' | 'planning.semantic_review.failed'
+  | 'planning.repair.started' | 'planning.repair.completed'
 
 export interface ModelInvocation {
   purpose: 'development_planning'
@@ -33,7 +35,7 @@ export interface NovaWingEvent {
   usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number }
   estimatedCost?: number
   /** Closed, numeric metadata only. Requirement text and provider diagnostics never enter this field. */
-  metadata: { planVersion?: number; clauseCount?: number; taskCount?: number; issueCount?: number; questionCount?: number }
+  metadata: { planVersion?: number; clauseCount?: number; taskCount?: number; issueCount?: number; questionCount?: number; repairCount?: number }
 }
 
 export class PlanningEventStore {
@@ -68,6 +70,7 @@ export class PlanningEventStore {
         ...(safeCount(event.metadata.taskCount) === undefined ? {} : { taskCount: safeCount(event.metadata.taskCount)! }),
         ...(safeCount(event.metadata.issueCount) === undefined ? {} : { issueCount: safeCount(event.metadata.issueCount)! }),
         ...(safeCount(event.metadata.questionCount) === undefined ? {} : { questionCount: safeCount(event.metadata.questionCount)! }),
+        ...(safeCount(event.metadata.repairCount) === undefined ? {} : { repairCount: safeCount(event.metadata.repairCount)! }),
       },
     }
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })

@@ -57,11 +57,11 @@ export const CUSTOMER_APP_JS = `(() => {
     planElement.hidden = false
     sections.replaceChildren()
     document.getElementById('plan-title').textContent = '开发方案 v' + plan.version
-    document.getElementById('plan-status').textContent = ({ draft: '草稿：完整性检查未通过', needs_customer_input: '等待业务决定', ready_for_approval: '等待批准', approved: '已批准' })[plan.status] || plan.status
+    document.getElementById('plan-status').textContent = ({ draft: '草稿：完整性检查未通过', planning_failed: '规划质量检查未通过，请查看问题并要求修改', needs_customer_input: '等待业务决定', ready_for_approval: '等待批准', approved: '已批准' })[plan.status] || plan.status
     const must = plan.clauses.filter(item => item.priority === 'must')
     const coveredTasks = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && row.taskIds.length > 0)).length
-    const coveredAcceptance = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && row.blockingAcceptanceCriterionIds.length > 0)).length
-    document.getElementById('coverage').textContent = 'MUST 任务覆盖 ' + coveredTasks + '/' + must.length + ' · 验收覆盖 ' + coveredAcceptance + '/' + must.length
+    const coveredAcceptance = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && (row.blockingAssertionIds || []).length > 0)).length
+    document.getElementById('coverage').textContent = 'MUST 任务覆盖 ' + coveredTasks + '/' + must.length + ' · 独立验收断言覆盖 ' + coveredAcceptance + '/' + must.length
     let panel = section('产品目标')
     panel.append(node('p', plan.analysis.productGoal), node('p', plan.analysis.summary))
     panel = section('范围与非目标')
@@ -79,7 +79,7 @@ export const CUSTOMER_APP_JS = `(() => {
     for (const task of plan.tasks) { panel.append(node('h4', task.id + ' · ' + task.title)); panel.append(node('p', task.objective)); appendList(panel, ['关联需求：' + task.requirementIds.join(', '), '依赖：' + (task.dependencyIds.join(', ') || '无'), '产出：' + task.outputs.join('；'), '验收：' + task.acceptanceCriterionIds.join(', ')]) }
     panel = section('验收方案')
     panel.append(node('p', plan.acceptancePlan.strategy))
-    for (const item of plan.acceptancePlan.criteria) { panel.append(node('h4', item.id + ' · ' + item.level + (item.blocking ? ' · 必须通过' : ''))); panel.append(node('p', item.description)); panel.append(node('p', '预期证据：' + item.expectedEvidence, 'muted')) }
+    for (const item of plan.acceptancePlan.criteria) { panel.append(node('h4', item.id + ' · ' + item.level + (item.blocking ? ' · 必须通过' : ''))); panel.append(node('p', item.description)); panel.append(node('p', '预期证据：' + item.expectedEvidence, 'muted')); for (const assertion of item.assertions || []) { panel.append(node('h4', assertion.id + ' · ' + assertion.requirementId + (assertion.blocking ? ' · 必须证明' : ''))); panel.append(node('p', assertion.observableBehavior + ' → ' + assertion.expectedOutcome)); panel.append(node('p', '证据：' + assertion.expectedEvidence, 'muted')) } }
     panel = section('风险与假设')
     appendList(panel, plan.risks.map(item => item.description + '；应对：' + item.mitigation))
     appendList(panel, plan.assumptions.map(item => item.statement + '；若不成立：' + item.impactIfFalse))
@@ -87,7 +87,7 @@ export const CUSTOMER_APP_JS = `(() => {
     questions.hidden = plan.customerQuestions.length === 0
     for (const item of plan.customerQuestions) { questionList.append(node('h4', item.question)); questionList.append(node('p', item.reason)); appendList(questionList, item.options) }
     validationIssues.replaceChildren()
-    const issues = result.validation ? result.validation.issues : []
+    const issues = [...(result.validation ? result.validation.issues : []), ...(plan.semanticReview ? plan.semanticReview.issues : [])]
     validationElement.hidden = issues.length === 0
     for (const item of issues) validationIssues.append(node('li', item.code + '：' + item.message))
     document.getElementById('approve').disabled = plan.status !== 'ready_for_approval'

@@ -42,6 +42,7 @@
     "check:desktop": "node --test \"desktop/tests/*.test.mjs\"",
     "benchmark:v1v2": "node dist-tests/tests/benchmark/run-benchmark.js",
     "benchmark:v028": "npm run build:tests && node dist-tests/tests/benchmark/run-architecture-benchmark.js",
+    "benchmark:planning-quality": "npm run build && node scripts/planning-quality-benchmark.mjs",
     "dogfood:v028": "npm run build && node scripts/dogfood-v028-direct-path.mjs",
     "reliability:v030": "npm run build && node scripts/v030-golden-path-reliability.mjs",
     "certify:v0.2": "npm run build && npm run build:tests && node dist-tests/tests/certification/v0.2/run-certification.js",

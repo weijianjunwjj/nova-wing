@@ -79,6 +79,7 @@ import {
 import { createDesktopRepairNotifier, type RepairNotifier } from './repair-notifier.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsStore } from '../task-run-analytics.js'
 import { createCodexPlanningProvider } from '../../planning/provider.js'
+import { createCodexPlanningSemanticReviewer } from '../../planning/semantic-reviewer.js'
 import { PlanningInputError, PlanningService, PlanningStore } from '../../planning/service.js'
 import { PlanningEventStore } from '../../planning/telemetry.js'
 import { validateDevelopmentPlan } from '../../planning/validator.js'
@@ -665,6 +666,7 @@ export class NovaWingLaunchpad {
       createCodexPlanningProvider(),
       new PlanningStore(join(platformPaths().data, 'planning', 'plans')),
       new PlanningEventStore(join(platformPaths().data, 'planning', 'events.jsonl')),
+      createCodexPlanningSemanticReviewer(),
     )
     this.server = createServer((request, response) => {
       if (this.closed) {
@@ -2147,6 +2149,7 @@ export async function createNovaWingLaunchpad(options: {
       createCodexPlanningProvider(options.env === undefined ? {} : { env: options.env }),
       new PlanningStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'plans')),
       new PlanningEventStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'events.jsonl')),
+      createCodexPlanningSemanticReviewer(options.env === undefined ? {} : { env: options.env }),
     ),
     analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),
     resolveEnvironment: dependencies?.resolveEnvironment ?? ((config) => resolveProductionSmtpEnvironment(config, options.env)),

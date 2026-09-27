@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
+import { createDevelopmentPlan, planDraftSchema, type PlanDraft } from '../packages/development-guardian/planning/model.js'
 import { validateCustomerQuestion, validateDevelopmentPlan } from '../packages/development-guardian/planning/validator.js'
 import { PlanningEventStore } from '../packages/development-guardian/planning/telemetry.js'
 import { PlanningInputError, PlanningService, PlanningStore } from '../packages/development-guardian/planning/service.js'
+import type { PlanningSemanticReviewer } from '../packages/development-guardian/planning/semantic-reviewer.js'
 import { createNovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
 
 const requirementPath = join(process.cwd(), 'tests/fixtures/requirement-001.txt')
+const passReview: PlanningSemanticReviewer = async () => ({ review: { verdict: 'PASS', issues: [] } })
 
 function requirement001Draft(text: string): PlanDraft {
   const specs = [
@@ -30,7 +32,7 @@ function requirement001Draft(text: string): PlanDraft {
   ] as const
   for (const [, excerpt] of specs) assert.ok(text.includes(excerpt), `missing fixture source: ${excerpt}`)
   const clauses: PlanDraft['clauses'] = specs.map(([id, excerpt, statement, type]) => ({
-    id, statement, type, priority: 'must', source: { excerpt, location: 'Requirement 001' }, ambiguity: { ambiguous: false, note: '' },
+    id, statement, type, priority: 'must', source: { excerpt, location: 'Requirement 001', origin: 'customer_requirement' }, ambiguity: { ambiguous: false, note: '' },
   }))
   const acceptanceDescriptions = [
     '顾客在空本地环境完成模拟登录后能够进入商品列表，无需外部账号。',
@@ -52,6 +54,9 @@ function requirement001Draft(text: string): PlanDraft {
     id: `A${index + 1}`, requirementIds: [id], description: acceptanceDescriptions[index]!,
     level: index === 13 ? 'delivery' : index === 0 || index === 1 || index === 7 || index === 11 ? 'ui' : 'integration',
     expectedEvidence: `Isolated fresh-data scenario for ${id} with observable state before and after`, blocking: true,
+    assertions: [{ id: `AS${index + 1}`, requirementId: id,
+      observableBehavior: acceptanceDescriptions[index]!, expectedOutcome: acceptanceDescriptions[index]!,
+      expectedEvidence: `隔离的新数据环境中记录 ${id} 行为前后状态及业务结果。`, blocking: true }],
   }))
   const taskDefs = [
     ['T1', '商品目录与管理', ['R2', 'R3', 'R9'], []],
@@ -101,7 +106,7 @@ test('Requirement 001 planning benchmark produces a valid, scoped, traceable pla
   const service = new PlanningService(async ({ requirement }) => {
     assert.equal(requirement, text)
     return { text: JSON.stringify(draft), provider: 'fixture', model: 'requirement-001', inputTokens: 100, outputTokens: 200 }
-  }, store, events)
+  }, store, events, passReview)
   const { plan, validation } = await service.generate(text)
   assert.equal(validation.pass, true, JSON.stringify(validation.issues))
   assert.equal(validation.mustTaskCoverage, 100)
@@ -119,22 +124,11 @@ test('Requirement 001 planning benchmark produces a valid, scoped, traceable pla
   assert.ok(!eventText.includes('API_KEY'))
 })
 
-test('a real Requirement 001 model sample passes deterministic validation without scope invention', async () => {
-  const requirement = await readFile(requirementPath, 'utf8')
+test('legacy Requirement 001 model sample cannot claim assertion-level approval', async () => {
   const output = await readFile(join(process.cwd(), 'tests/fixtures/requirement-001-model-output.json'), 'utf8')
-  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-model-sample-'))
-  const service = new PlanningService(async () => ({ text: output, provider: 'codex', model: 'gpt-5.6-terra' }),
-    new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')))
-  const { plan, validation } = await service.generate(requirement)
-  assert.equal(validation.pass, true, JSON.stringify(validation.issues))
-  assert.equal(plan.status, 'ready_for_approval')
-  assert.equal(plan.clauses.filter((clause) => clause.priority === 'must').length, 22)
-  assert.equal(validation.mustTaskCoverage, 100)
-  assert.equal(validation.mustAcceptanceCoverage, 100)
-  assert.equal(plan.customerQuestions.length, 0)
-  for (const excluded of ['多商户平台', '骑手独立 App', '智能派单', '地图路线规划', '优惠券系统', '真实微信支付', '云端生产部署']) {
-    assert.ok(plan.productScope.outOfScope.includes(excluded), excluded)
-  }
+  const raw = JSON.parse(output) as { clauses: unknown[]; tasks: unknown[]; acceptancePlan: { criteria: unknown[] } }
+  assert.deepEqual([raw.clauses.length, raw.tasks.length, raw.acceptancePlan.criteria.length], [22, 8, 22])
+  assert.equal(planDraftSchema.safeParse(raw).success, false)
 })
 
 test('planning retries a model draft that fails deterministic validation before approval readiness', async () => {
@@ -148,7 +142,7 @@ test('planning retries a model draft that fails deterministic validation before 
     if (calls === 1) draft.acceptancePlan.criteria[0]!.description = 'npm run build passes'
     else assert.ok(validationFeedback?.includes('NOT_OBSERVABLE'))
     return { text: JSON.stringify(draft) }
-  }, new PlanningStore(join(directory, 'plans')), events)
+  }, new PlanningStore(join(directory, 'plans')), events, passReview)
   const result = await service.generate(text)
   assert.equal(calls, 2)
   assert.equal(result.validation.pass, true)
@@ -193,7 +187,7 @@ test('Customer Mode HTTP flow generates, revises and approves without starting a
   const service = new PlanningService(async () => {
     modelCalls += 1
     return { text: JSON.stringify(requirement001Draft(text)) }
-  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')))
+  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
   const launchpad = await createNovaWingLaunchpad({
     configDirectory: join(directory, 'configs'),
     dependencies: {
@@ -272,7 +266,7 @@ test('approval cannot race an in-flight revision of the same planning session', 
     calls += 1
     if (calls === 2) { entered(); await gate }
     return { text: JSON.stringify(requirement001Draft(text)) }
-  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')))
+  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
   const first = await service.generate(text)
   const revising = service.generate(text, { planId: first.plan.id, feedback: '确认业务范围。' })
   await started
@@ -292,10 +286,178 @@ test('a genuine blocking business question requires customer input before approv
       decisionType: 'business_rule', options: ['允许并记录原因', '不允许'], blocking: true,
     })
     return { text: JSON.stringify(draft) }
-  }, new PlanningStore(join(directory, 'plans')), events)
+  }, new PlanningStore(join(directory, 'plans')), events, passReview)
   const { plan, validation } = await service.generate(text)
   assert.equal(validation.pass, true)
   assert.equal(plan.status, 'needs_customer_input')
   await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
   assert.ok((await readFile(events.path, 'utf8')).includes('customer_question.required'))
+})
+
+test('one criterion citing multiple MUST clauses needs a separate assertion for each', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  draft.acceptancePlan.criteria[0]!.requirementIds.push('R2')
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.equal(result.pass, false)
+  assert.ok(result.issues.some((issue) => issue.code === 'CRITERION_REQUIREMENT_WITHOUT_ASSERTION'))
+})
+
+test('explicit source bullet items cannot hide behind one blocking assertion', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  const cart = draft.clauses.find((clause) => clause.statement.includes('购物车'))!
+  cart.source.excerpt = '- 加入商品\n- 修改数量\n- 删除商品\n- 查看合计金额'
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(result.issues.some((issue) => issue.code === 'EXPLICIT_SOURCE_ATOMS_UNCOVERED'))
+})
+
+test('business assertion cannot be only a successful build command', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  const assertion = draft.acceptancePlan.criteria[0]!.assertions[0]!
+  assertion.observableBehavior = 'npm run build succeeds'
+  assertion.expectedOutcome = 'npm run build succeeds'
+  assertion.expectedEvidence = 'npm run build command exit code zero'
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.equal(result.pass, false)
+  assert.ok(result.issues.some((issue) => issue.code === 'COMMAND_ONLY_ASSERTION' || issue.code === 'WEAK_ASSERTION'))
+})
+
+test('duplicate, orphan and dangling assertion references fail before approval', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  draft.acceptancePlan.criteria[1]!.assertions[0]!.id = draft.acceptancePlan.criteria[0]!.assertions[0]!.id
+  draft.acceptancePlan.criteria[2]!.assertions[0]!.requirementId = 'MISSING'
+  draft.tasks[3]!.acceptanceCriterionIds = ['A1']
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  for (const code of ['DUPLICATE_ASSERTION_ID', 'DANGLING_ASSERTION_REQUIREMENT', 'ORPHAN_ASSERTION']) {
+    assert.ok(result.issues.some((issue) => issue.code === code), code)
+  }
+})
+
+test('MUST clause cannot promote an unsupported or derived statement into customer provenance', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  draft.clauses[0]!.source.origin = 'derived_assumption'
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(result.issues.some((issue) => issue.code === 'UNSUPPORTED_MUST_PROVENANCE'))
+  draft.clauses[0]!.source.origin = 'customer_requirement'
+  draft.clauses[0]!.source.excerpt = '客户从未说过的库存能力'
+  const result2 = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(result2.issues.some((issue) => issue.code === 'UNTRACEABLE_CLAUSE'))
+})
+
+test('unrequested cancellation question is rejected but an explicitly requested ambiguous cancellation may be asked', async () => {
+  const original = await readFile(requirementPath, 'utf8')
+  const question = { id: 'Q1', question: '顾客可以在哪些阶段取消订单？', reason: '决定取消业务规则',
+    decisionType: 'business_rule' as const, options: ['支付前', '开始制作前'], blocking: true }
+  const withoutCancellation = original.replace('`CANCELLED`', '`ARCHIVED`')
+  const draft = requirement001Draft(withoutCancellation)
+  draft.customerQuestions.push(question)
+  const rejected = validateDevelopmentPlan(createDevelopmentPlan(draft,
+    { id: 'req', text: withoutCancellation, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(rejected.issues.some((issue) => issue.code === 'UNREQUESTED_CUSTOMER_QUESTION'))
+  const requested = validateDevelopmentPlan(createDevelopmentPlan(draft,
+    { id: 'req', text: original, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(!requested.issues.some((issue) => issue.code === 'UNREQUESTED_CUSTOMER_QUESTION'))
+})
+
+test('silent paid-only daily count flagged by semantic review cannot reach approval after bounded repair', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-business-rule-'))
+  let generated = 0
+  const events = new PlanningEventStore(join(directory, 'events.jsonl'))
+  const service = new PlanningService(async () => {
+    generated += 1
+    const draft = requirement001Draft(text)
+    draft.assumptions.push({ id: 'S2', statement: '今日订单数只统计已支付订单。', impactIfFalse: '数量会改变。' })
+    return { text: JSON.stringify(draft) }
+  }, new PlanningStore(join(directory, 'plans')), events, async () => ({ review: {
+    verdict: 'REVISION_REQUIRED', issues: [{ code: 'UNSUPPORTED_BUSINESS_ASSUMPTION', path: 'assumptions.S2',
+      message: 'Customer did not choose paid-only order count.', sourceExcerpt: '今日订单数' }],
+  } }))
+  const { plan, validation } = await service.generate(text)
+  assert.equal(validation.pass, true)
+  assert.equal(generated, 3)
+  assert.equal(plan.status, 'planning_failed')
+  assert.equal(plan.semanticReview?.issues[0]?.code, 'UNSUPPORTED_BUSINESS_ASSUMPTION')
+  await assert.rejects(service.approve(plan.id, plan.version), PlanningInputError)
+  const raw = await readFile(events.path, 'utf8')
+  assert.equal(raw.match(/planning\.repair\.started/gu)?.length, 2)
+  assert.ok(!raw.includes('今日订单数只统计已支付订单'))
+})
+
+test('semantic repair feedback can produce a plan ready for approval on the second generation', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-semantic-repair-'))
+  let generated = 0
+  let reviewed = 0
+  const service = new PlanningService(async ({ validationFeedback, priorDraft }) => {
+    generated += 1
+    if (generated === 2) {
+      assert.ok(validationFeedback?.includes('WEAK_ACCEPTANCE'))
+      assert.ok(priorDraft?.includes('"AS1"'))
+    }
+    return { text: JSON.stringify(requirement001Draft(text)) }
+  }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), async () => {
+    reviewed += 1
+    return reviewed === 1 ? { review: { verdict: 'REVISION_REQUIRED', issues: [{ code: 'WEAK_ACCEPTANCE',
+      path: 'acceptancePlan.criteria.A1', message: 'Strengthen the business outcome.', sourceExcerpt: '' }] } }
+      : { review: { verdict: 'PASS', issues: [] } }
+  })
+  const result = await service.generate(text)
+  assert.equal(generated, 2)
+  assert.equal(reviewed, 2)
+  assert.equal(result.validation.pass, true)
+  assert.equal(result.plan.semanticReview?.verdict, 'PASS')
+  assert.equal(result.plan.status, 'ready_for_approval')
+})
+
+test('semantic reviewer can block a vague task despite complete assertion IDs', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-vague-task-'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)) }),
+    new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')),
+    async () => ({ review: { verdict: 'REVISION_REQUIRED', issues: [{ code: 'TASK_TOO_VAGUE', path: 'tasks.T1',
+      message: 'Task objective does not guide implementation.', sourceExcerpt: '' }] } }))
+  const result = await service.generate(text)
+  assert.equal(result.validation.mustAcceptanceCoverage, 100)
+  assert.equal(result.plan.status, 'planning_failed')
+  assert.equal(result.plan.semanticReview?.issues[0]?.code, 'TASK_TOO_VAGUE')
+})
+
+test('pre-hardening persisted ready plans are no longer shown as approvable', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-old-ready-'))
+  const store = new PlanningStore(join(directory, 'plans'))
+  const plan = createDevelopmentPlan(requirement001Draft(text),
+    { id: 'req', text, receivedAt: new Date().toISOString() }, '00000000-0000-0000-0000-000000000001')
+  plan.status = 'ready_for_approval'
+  await store.save(plan)
+  assert.equal((await store.get(plan.id))?.status, 'planning_failed')
+  const service = new PlanningService(async () => ({ text: '{}' }), store,
+    new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
+  await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
+})
+
+test('contradictory or unavailable semantic verdict fails closed without leaking requirement into telemetry', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-planning-review-failure-'))
+  const events = new PlanningEventStore(join(directory, 'events.jsonl'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)),
+    provider: 'codex', model: 'gpt-5.6-terra' }),
+  new PlanningStore(join(directory, 'plans')), events,
+  async () => ({ review: { verdict: 'PASS', issues: [{ code: 'WEAK_ACCEPTANCE', path: 'acceptancePlan.criteria.A1',
+    message: 'A business outcome is missing.', sourceExcerpt: '' }] } }))
+  const { plan, validation } = await service.generate(text)
+  assert.equal(validation.pass, true)
+  assert.equal(plan.status, 'planning_failed')
+  assert.equal(plan.semanticReview?.issues[0]?.code, 'REVIEW_UNAVAILABLE')
+  const raw = await readFile(events.path, 'utf8')
+  const entries = raw.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+  assert.ok(entries.some((entry) => entry.type === 'planning.semantic_review.failed'))
+  assert.equal(entries.find((entry) => entry.type === 'development_plan.generated')?.usage, undefined)
+  assert.ok(!raw.includes(text))
+  assert.ok(!raw.includes('Mock Payment'))
 })

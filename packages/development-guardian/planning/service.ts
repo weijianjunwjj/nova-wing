@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { planDraftSchema, createDevelopmentPlan, type DevelopmentPlan } from './model.js'
+import { planDraftSchema, semanticReviewSchema, createDevelopmentPlan, type DevelopmentPlan } from './model.js'
 import { validateDevelopmentPlan, type PlanValidation } from './validator.js'
 import { PlanningEventStore, type NovaWingEvent } from './telemetry.js'
 import type { PlanningModelProvider } from './provider.js'
+import type { PlanningSemanticReviewer } from './semantic-reviewer.js'
 
 const MAX_REQUIREMENT_CHARS = 20_000
 const MAX_FEEDBACK_CHARS = 4_000
@@ -38,7 +39,15 @@ export class PlanningStore {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
       throw error
     })
-    return raw === undefined ? undefined : JSON.parse(raw) as DevelopmentPlan
+    if (raw === undefined) return undefined
+    const plan = JSON.parse(raw) as DevelopmentPlan
+    // A Phase 1 draft persisted before assertion/semantic gates must not keep a
+    // historical ready-for-approval badge after the quality contract changes.
+    if (plan.status === 'ready_for_approval' &&
+      (plan.semanticReview?.verdict !== 'PASS' || !validateDevelopmentPlan(plan).pass)) {
+      return { ...plan, status: 'planning_failed' }
+    }
+    return plan
   }
 
   async list(): Promise<DevelopmentPlan[]> {
@@ -53,7 +62,12 @@ export class PlanningStore {
 
 export class PlanningService {
   private readonly activePlanIds = new Set<string>()
-  constructor(private readonly provider: PlanningModelProvider, private readonly store: PlanningStore, private readonly events: PlanningEventStore) {}
+  constructor(
+    private readonly provider: PlanningModelProvider,
+    private readonly store: PlanningStore,
+    private readonly events: PlanningEventStore,
+    private readonly semanticReviewer: PlanningSemanticReviewer,
+  ) {}
 
   async generate(text: string, revision?: { planId: string; feedback: string }): Promise<{ plan: DevelopmentPlan; validation: PlanValidation }> {
     if (text.trim().length < 20 || text.length > MAX_REQUIREMENT_CHARS) throw new PlanningInputError('Requirement must be 20–20,000 characters.')
@@ -73,24 +87,30 @@ export class PlanningService {
       if (previous === undefined) await emit('requirement.received', 'customer')
       await emit('planning.started', 'planning', { planVersion: (previous?.version ?? 0) + 1 })
       let validationFeedback: string | undefined
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      let priorDraft: string | undefined
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) await emit('planning.repair.started', 'planning', { repairCount: attempt })
         const started = Date.now()
         const response = await this.provider({
           requirement: text,
           ...(requirement.revisionNotes.length === 0 ? {} : { revisionFeedback: requirement.revisionNotes.join('\n\n') }),
           ...(validationFeedback === undefined ? {} : { validationFeedback }),
+          ...(priorDraft === undefined ? {} : { priorDraft }),
         })
+        if (attempt > 0) await this.events.append({ planningSessionId: id, type: 'planning.repair.completed', actorRole: 'planning',
+          durationMs: Date.now() - started, metadata: { repairCount: attempt } })
         const body = response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
+        priorDraft = body.slice(0, 64_000)
         let raw: unknown
         try { raw = JSON.parse(body) as unknown } catch {
           await emit('plan.validation_failed', 'validator', { issueCount: 1 })
-          if (attempt === 0) { validationFeedback = 'Return one valid JSON object matching the required schema.'; continue }
+          if (attempt < 2) { validationFeedback = 'Return one valid JSON object matching the required schema.'; continue }
           throw new PlanningInputError('Planning model returned invalid JSON after retry.')
         }
         const parsed = planDraftSchema.safeParse(raw)
         if (!parsed.success) {
           await emit('plan.validation_failed', 'validator', { issueCount: parsed.error.issues.length })
-          if (attempt === 0) {
+          if (attempt < 2) {
             validationFeedback = parsed.error.issues.slice(0, 20).map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('\n')
             continue
           }
@@ -123,18 +143,65 @@ export class PlanningService {
           ...(response.provider === undefined ? {} : { provider: response.provider }),
           ...(response.model === undefined ? {} : { model: response.model }),
           durationMs: Date.now() - started,
-          usage: { ...(response.inputTokens === undefined ? {} : { inputTokens: response.inputTokens }), ...(response.outputTokens === undefined ? {} : { outputTokens: response.outputTokens }), ...(response.cachedTokens === undefined ? {} : { cachedTokens: response.cachedTokens }) },
+          ...(response.inputTokens === undefined && response.outputTokens === undefined && response.cachedTokens === undefined ? {} : { usage: {
+            ...(response.inputTokens === undefined ? {} : { inputTokens: response.inputTokens }),
+            ...(response.outputTokens === undefined ? {} : { outputTokens: response.outputTokens }),
+            ...(response.cachedTokens === undefined ? {} : { cachedTokens: response.cachedTokens }),
+          } }),
           ...(response.estimatedCost === undefined ? {} : { estimatedCost: response.estimatedCost }),
           metadata: { planVersion: plan.version, taskCount: plan.tasks.length },
         })
         await emit(validation.pass ? 'plan.validation_passed' : 'plan.validation_failed', 'validator', { issueCount: validation.issues.length })
-        if (!validation.pass && attempt === 0) {
-          validationFeedback = validation.issues.slice(0, 30).map((issue) => `${issue.code} at ${issue.path}: ${issue.message}`).join('\n')
+        if (!validation.pass) {
+          if (attempt < 2) {
+            validationFeedback = validation.issues.slice(0, 30).map((issue) => `${issue.code} at ${issue.path}: ${issue.message}`).join('\n')
+            continue
+          }
+          plan.status = 'planning_failed'
+          await this.store.save(plan)
+          return { plan, validation }
+        }
+        await emit('planning.semantic_review.started', 'planning', { planVersion: plan.version })
+        const reviewStarted = Date.now()
+        try {
+          const result = await this.semanticReviewer({ requirement: text, plan })
+          const reviewed = semanticReviewSchema.parse(result.review)
+          if ((reviewed.verdict === 'PASS') !== (reviewed.issues.length === 0)) throw new Error('Contradictory planning review.')
+          plan.semanticReview = reviewed
+          await this.events.append({
+            planningSessionId: id,
+            type: result.review.verdict === 'PASS' ? 'planning.semantic_review.passed' : 'planning.semantic_review.failed',
+            actorRole: 'planning',
+            ...(result.provider === undefined ? {} : { provider: result.provider }),
+            ...(result.model === undefined ? {} : { model: result.model }),
+            durationMs: Date.now() - reviewStarted,
+            ...(result.inputTokens === undefined && result.outputTokens === undefined && result.cachedTokens === undefined ? {} : { usage: {
+              ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
+              ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
+              ...(result.cachedTokens === undefined ? {} : { cachedTokens: result.cachedTokens }),
+            } }),
+            ...(result.estimatedCost === undefined ? {} : { estimatedCost: result.estimatedCost }),
+            metadata: { planVersion: plan.version, issueCount: result.review.issues.length },
+          })
+        } catch {
+          plan.semanticReview = { verdict: 'REVISION_REQUIRED', issues: [{
+            code: 'REVIEW_UNAVAILABLE', path: 'semanticReview',
+            message: 'Planning semantic review was unavailable; approval is blocked.', sourceExcerpt: '',
+          }] }
+          await this.events.append({ planningSessionId: id, type: 'planning.semantic_review.failed', actorRole: 'planning',
+            durationMs: Date.now() - reviewStarted, metadata: { issueCount: 1 } })
+          plan.status = 'planning_failed'
+          await this.store.save(plan)
+          return { plan, validation }
+        }
+        if (plan.semanticReview.verdict === 'REVISION_REQUIRED' && attempt < 2) {
+          validationFeedback = plan.semanticReview.issues.slice(0, 30).map((issue) =>
+            `${issue.code} at ${issue.path}: ${issue.message}${issue.sourceExcerpt ? ` [source: ${issue.sourceExcerpt}]` : ''}`).join('\n')
           continue
         }
-        plan.status = validation.pass
+        plan.status = plan.semanticReview.verdict === 'PASS'
           ? plan.customerQuestions.some((question) => question.blocking) ? 'needs_customer_input' : 'ready_for_approval'
-          : 'draft'
+          : 'planning_failed'
         await this.store.save(plan)
         if (plan.status === 'needs_customer_input') await emit('customer_question.required', 'planning', { questionCount: plan.customerQuestions.filter((question) => question.blocking).length })
         return { plan, validation }
@@ -151,7 +218,9 @@ export class PlanningService {
     try {
       const plan = await this.store.get(id)
       if (plan === undefined || plan.version !== version) throw new PlanningInputError('Plan or version is unavailable.')
-      if (plan.status !== 'ready_for_approval' || !validateDevelopmentPlan(plan).pass) throw new PlanningInputError('Plan is not ready for approval.')
+      if (plan.status !== 'ready_for_approval' || plan.semanticReview?.verdict !== 'PASS' || !validateDevelopmentPlan(plan).pass) {
+        throw new PlanningInputError('Plan is not ready for approval.')
+      }
       plan.status = 'approved'
       plan.approvedAt = new Date().toISOString()
       plan.updatedAt = plan.approvedAt
