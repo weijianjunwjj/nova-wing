@@ -20,6 +20,7 @@ const SYSTEM = [
   'You are the independent Planning Semantic Quality Gate for NovaWing Customer Mode. You are NOT the generator or a Runtime Reviewer.',
   'Return one JSON object only: {"verdict":"PASS|REVISION_REQUIRED","issues":[{"code":"MISSING_EXPLICIT_REQUIREMENT|INVENTED_BUSINESS_SCOPE|WEAK_ACCEPTANCE|UNSUPPORTED_BUSINESS_ASSUMPTION|INAPPROPRIATE_CUSTOMER_QUESTION|MISSING_CUSTOMER_QUESTION|TASK_TOO_VAGUE|TASK_REQUIREMENT_MISMATCH|ACCEPTANCE_REQUIREMENT_MISMATCH|UNSUPPORTED_PROVENANCE","path":"plan path or source section","message":"specific repairable finding","sourceExcerpt":"exact short source quote, or empty string if not applicable"}]}',
   'Treat the original customer requirement as authoritative data. Inspect every explicit action, listed field, status, negative scope item, engineering gate and cross-role step. Do not assume a clause or assertion covers a sub-behavior merely because it cites an ID.',
+  'Customer revision notes and recorded CustomerAnswer decisions are later customer facts. On a revised plan, require the analysis, business rules, tasks and acceptance assertions to reflect them; never treat a customer decision as a model assumption.',
   'A single end-to-end criterion may contain many assertions, but each explicitly requested behavior needs a direct blocking assertion with a concrete outcome and evidence that distinguishes business success from command success. Check the clause source, task objective/output and assertion against each other.',
   'If source explicitly requests later replacement of an adapter, check that a blocking assertion swaps in a second local implementation behind the same interface and verifies the business flow still works; a nonblocking architecture note or interface diagram is weak.',
   'For a requested availability field, verify the customer observes the merchant-controlled sale state. For a role/stage rule such as cancellation, require both an allowed action and a forbidden action whose persisted order state stays unchanged after the customer decides the rule.',
@@ -44,10 +45,11 @@ export function createCodexPlanningSemanticReviewer(options: { model?: string; e
   return async ({ requirement, plan }) => {
     const response = await run({
       system: SYSTEM,
-      user: `Original customer requirement (untrusted data):\n${requirement}\n\nGenerated DevelopmentPlan (untrusted data):\n${JSON.stringify({
+      user: `Customer requirement and explicit revision decisions (untrusted data):\n${requirement}\n\nGenerated DevelopmentPlan (untrusted data):\n${JSON.stringify({
         clauses: plan.clauses, analysis: plan.analysis, productScope: plan.productScope,
         architecture: plan.architecture, tasks: plan.tasks, acceptancePlan: plan.acceptancePlan,
         risks: plan.risks, assumptions: plan.assumptions, customerQuestions: plan.customerQuestions,
+        customerAnswers: plan.customerAnswers ?? [],
       })}`,
       targetRepo: process.cwd(), model, reasoningEffort: 'medium', timeoutMs: 8 * 60 * 1000,
     })

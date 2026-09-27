@@ -91,7 +91,37 @@ export interface RequirementCoverage {
   blockingAssertionIds: string[]
 }
 
-export type DevelopmentPlanStatus = 'draft' | 'planning_failed' | 'needs_customer_input' | 'ready_for_approval' | 'approved'
+export type DevelopmentPlanStatus = 'draft' | 'planning_failed' | 'needs_customer_input' | 'ready_for_approval' | 'approved' | 'frozen' | 'superseded'
+
+export interface CustomerAnswer {
+  questionId: string
+  sourcePlanVersion: number
+  selectedOptionId: string
+  selectedOptionText: string
+  question: PlanDraft['customerQuestions'][number]
+  freeformAnswer?: string | undefined
+  answeredAt: string
+  provenance: 'customer_decision'
+}
+
+export interface PlanApproval {
+  planId: string
+  planVersion: number
+  approvedAt: string
+  actor: 'customer'
+  source: 'customer_mode' | 'planning_service'
+  contentHash: string
+}
+
+export interface PlanChangeRequest {
+  id: string
+  baseFrozenPlanId: string
+  baseVersion: number
+  reason: string
+  requestedChange: string
+  createdAt: string
+  status: 'requested' | 'revision_started'
+}
 
 export interface DevelopmentPlan extends PlanDraft {
   id: string
@@ -101,6 +131,9 @@ export interface DevelopmentPlan extends PlanDraft {
   dependencies: Array<{ fromTaskId: string; toTaskId: string }>
   coverage: RequirementCoverage[]
   semanticReview: SemanticReview | null
+  customerAnswers?: CustomerAnswer[]
+  approval?: PlanApproval | null
+  supersedesSnapshotId?: string | null
   /** Reserved for a later explicit Plan Freeze implementation. */
   frozenAt: string | null
   createdAt: string

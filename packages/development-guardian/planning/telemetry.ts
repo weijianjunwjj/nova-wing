@@ -5,7 +5,10 @@ import { dirname } from 'node:path'
 export type PlanningEventType =
   | 'requirement.received' | 'planning.started' | 'requirement.analyzed'
   | 'development_plan.generated' | 'plan.validation_failed' | 'plan.validation_passed'
-  | 'customer_question.required' | 'plan.approved'
+  | 'customer_question.required' | 'customer_question.answered'
+  | 'plan.revision.started' | 'plan.revision.completed' | 'plan.ready_for_approval'
+  | 'plan.approved' | 'plan.freeze.started' | 'plan.frozen' | 'plan.freeze_failed'
+  | 'plan.change_requested' | 'plan.superseded'
   | 'planning.semantic_review.started' | 'planning.semantic_review.passed' | 'planning.semantic_review.failed'
   | 'planning.repair.started' | 'planning.repair.completed'
 
@@ -35,7 +38,7 @@ export interface NovaWingEvent {
   usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number }
   estimatedCost?: number
   /** Closed, numeric metadata only. Requirement text and provider diagnostics never enter this field. */
-  metadata: { planVersion?: number; clauseCount?: number; taskCount?: number; issueCount?: number; questionCount?: number; repairCount?: number }
+  metadata: { planVersion?: number; clauseCount?: number; taskCount?: number; issueCount?: number; questionCount?: number; repairCount?: number; questionId?: string; selectedOptionId?: string }
 }
 
 export class PlanningEventStore {
@@ -71,6 +74,8 @@ export class PlanningEventStore {
         ...(safeCount(event.metadata.issueCount) === undefined ? {} : { issueCount: safeCount(event.metadata.issueCount)! }),
         ...(safeCount(event.metadata.questionCount) === undefined ? {} : { questionCount: safeCount(event.metadata.questionCount)! }),
         ...(safeCount(event.metadata.repairCount) === undefined ? {} : { repairCount: safeCount(event.metadata.repairCount)! }),
+        ...(typeof event.metadata.questionId === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(event.metadata.questionId) ? { questionId: event.metadata.questionId } : {}),
+        ...(typeof event.metadata.selectedOptionId === 'string' && /^option-[1-6]$/u.test(event.metadata.selectedOptionId) ? { selectedOptionId: event.metadata.selectedOptionId } : {}),
       },
     }
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })

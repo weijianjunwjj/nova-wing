@@ -11,7 +11,8 @@ export function renderCustomerHtml(token: string): string {
   <section id="recent" class="panel" hidden><h2>最近的方案</h2><ul id="recent-list"></ul></section>
   <section id="plan" hidden aria-label="开发方案"><div class="plan-head"><div><p class="eyebrow">DEVELOPMENT PLAN</p><h2 id="plan-title">开发方案</h2><p id="plan-status"></p></div><span id="coverage" class="coverage"></span></div><div id="plan-sections"></div>
     <section id="validation" class="panel" hidden><h3>完整性检查</h3><ul id="validation-issues"></ul></section>
-    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请在下方“要求修改”中写下你的选择，再生成下一版方案。</p><div id="question-list"></div></section>
+    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请选择业务规则。提交后会生成新版方案，并重新检查质量。</p><div id="question-list"></div><div class="actions"><button id="answer-revise" type="button">提交回答并重新生成方案</button></div></section>
+    <section id="freeze-result" class="panel" hidden><h3>PLAN FROZEN</h3><p id="freeze-details"></p><p>此版本已固定。后续修改须创建新版本。</p></section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
   </section><footer>规划批准不会启动执行。</footer>
 </main><script id="customer-bootstrap" type="application/json">${bootstrap}</script><script src="/customer/app.js"></script></body></html>`
@@ -33,6 +34,8 @@ export const CUSTOMER_APP_JS = `(() => {
   const recentList = document.getElementById('recent-list')
   const validationElement = document.getElementById('validation')
   const validationIssues = document.getElementById('validation-issues')
+  const freezeResult = document.getElementById('freeze-result')
+  const freezeDetails = document.getElementById('freeze-details')
   let current = null
   let busy = false
   const steps = ['理解需求', '识别角色与业务流程', '规划功能与架构', '拆解任务与依赖', '制定验收标准', '完整性检查']
@@ -57,7 +60,9 @@ export const CUSTOMER_APP_JS = `(() => {
     planElement.hidden = false
     sections.replaceChildren()
     document.getElementById('plan-title').textContent = '开发方案 v' + plan.version
-    document.getElementById('plan-status').textContent = ({ draft: '草稿：完整性检查未通过', planning_failed: '规划质量检查未通过，请查看问题并要求修改', needs_customer_input: '等待业务决定', ready_for_approval: '等待批准', approved: '已批准' })[plan.status] || plan.status
+    document.getElementById('plan-status').textContent = ({ draft: '草稿：完整性检查未通过', planning_failed: '规划质量检查未通过，请查看问题并要求修改', needs_customer_input: '等待业务决定', ready_for_approval: plan.version > 1 ? '基于你的回答已更新，等待批准' : '等待批准', approved: '已批准', frozen: 'PLAN FROZEN · 不可修改', superseded: '已由新版替代' })[plan.status] || plan.status
+    freezeResult.hidden = plan.status !== 'frozen'
+    freezeDetails.textContent = plan.status === 'frozen' ? '方案 v' + plan.version + ' · 冻结时间 ' + plan.frozenAt + ' · 指纹 ' + (plan.approval?.contentHash || '').slice(0, 12) : ''
     const must = plan.clauses.filter(item => item.priority === 'must')
     const coveredTasks = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && row.taskIds.length > 0)).length
     const coveredAcceptance = must.filter(item => plan.coverage.some(row => row.requirementId === item.id && (row.blockingAssertionIds || []).length > 0)).length
@@ -84,14 +89,22 @@ export const CUSTOMER_APP_JS = `(() => {
     appendList(panel, plan.risks.map(item => item.description + '；应对：' + item.mitigation))
     appendList(panel, plan.assumptions.map(item => item.statement + '；若不成立：' + item.impactIfFalse))
     questionList.replaceChildren()
-    questions.hidden = plan.customerQuestions.length === 0
-    for (const item of plan.customerQuestions) { questionList.append(node('h4', item.question)); questionList.append(node('p', item.reason)); appendList(questionList, item.options) }
+    questions.hidden = plan.status !== 'needs_customer_input'
+    for (const item of plan.customerQuestions.filter(item => item.blocking)) {
+      const label = node('label', item.question)
+      const select = node('select')
+      select.dataset.questionId = item.id
+      select.append(node('option', '请选择'))
+      select.firstChild.value = ''
+      item.options.forEach((option, index) => { const choice = node('option', option); choice.value = 'option-' + (index + 1); select.append(choice) })
+      questionList.append(label, node('p', item.reason), select)
+    }
     validationIssues.replaceChildren()
     const issues = [...(result.validation ? result.validation.issues : []), ...(plan.semanticReview ? plan.semanticReview.issues : [])]
     validationElement.hidden = issues.length === 0
     for (const item of issues) validationIssues.append(node('li', item.code + '：' + item.message))
     document.getElementById('approve').disabled = plan.status !== 'ready_for_approval'
-    document.getElementById('revise').disabled = plan.status === 'approved'
+    document.getElementById('revise').disabled = plan.status === 'approved' || plan.status === 'frozen'
     planElement.scrollIntoView({ behavior: 'smooth' })
   }
   const loadRecent = async () => {
@@ -127,7 +140,7 @@ export const CUSTOMER_APP_JS = `(() => {
     const timer = setInterval(() => { step = Math.min(step + 1, steps.length - 1); progressStep.textContent = steps[step] }, 2500)
     try {
       const body = { requirement: requirement.value }
-      if (revision) { body.planId = current.id; body.feedback = feedback.value }
+      if (revision) { body.planId = current.id; body.expectedVersion = current.version; body.feedback = feedback.value }
       const result = await post('/api/planning/generate', body)
       render(result)
       feedback.value = ''
@@ -137,6 +150,18 @@ export const CUSTOMER_APP_JS = `(() => {
   }
   document.getElementById('generate').addEventListener('click', () => run(false))
   document.getElementById('revise').addEventListener('click', () => { if (!feedback.value.trim()) { error.textContent = '请先写下修改意见。'; return }; run(true) })
+  document.getElementById('answer-revise').addEventListener('click', async () => {
+    if (!current || busy) return
+    const answers = [...questionList.querySelectorAll('select')].map(select => ({ questionId: select.dataset.questionId, selectedOptionId: select.value }))
+    if (answers.some(answer => !answer.selectedOptionId)) { error.textContent = '请回答所有业务问题。'; return }
+    busy = true; error.textContent = ''; progress.hidden = false
+    try {
+      await post('/api/planning/answers', { planId: current.id, version: current.version, answers })
+      const result = await post('/api/planning/generate', { requirement: current.requirement.text, planId: current.id, expectedVersion: current.version })
+      render(result); await loadRecent()
+    } catch (failure) { error.textContent = failure.message || '回答或重新规划失败' }
+    finally { busy = false; progress.hidden = true }
+  })
   document.getElementById('approve').addEventListener('click', async () => {
     if (!current || busy) return
     busy = true; error.textContent = ''
@@ -149,4 +174,4 @@ export const CUSTOMER_APP_JS = `(() => {
   void loadRecent()
 })()`
 
-export const CUSTOMER_STYLES_CSS = `:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#eef3fb;background:#0c111a}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:radial-gradient(circle at 10% 0%,#1c3551 0,transparent 35%),#0c111a}.shell{max-width:1100px;margin:auto;padding:42px 24px 60px}header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:24px}h1{font-size:clamp(32px,5vw,54px);margin:6px 0}h2{margin:8px 0}h3{margin-top:0}h4{margin:20px 0 6px}p,li{line-height:1.65}.intro,.muted,footer{color:#a5b3c7}.eyebrow{letter-spacing:.16em;color:#89bcf5;font-size:12px;font-weight:700}a{color:#98c9ff;padding:12px}.input-card,.panel{background:#151d2a;border:1px solid #304056;border-radius:16px;padding:24px;margin:16px 0;box-shadow:0 12px 36px #0002}label{display:block;font-weight:700;margin-bottom:12px}textarea{width:100%;padding:15px;border:1px solid #52647c;border-radius:10px;color:#f2f6ff;background:#0d1520;font:inherit;resize:vertical;line-height:1.5}button{background:#71b8ff;border:0;border-radius:10px;color:#091321;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}.secondary{background:#273b52;color:#e4f2ff}.recent-button{background:transparent;color:#bce0ff;text-align:left;padding:6px 0;font-weight:500}.recent-button:hover{text-decoration:underline}.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:16px}.error{color:#ff9d9d;min-height:1.5em}.plan-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:32px}.coverage{background:#163b35;color:#b5f5dc;padding:10px 14px;border-radius:999px;font-size:13px}.panel ul{padding-left:22px}footer{text-align:center;margin-top:40px;font-size:12px}@media(max-width:650px){header,.plan-head{display:block}.shell{padding:24px 14px}.input-card,.panel{padding:18px}.actions{flex-wrap:wrap}.coverage{display:inline-block}}`
+export const CUSTOMER_STYLES_CSS = `:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#eef3fb;background:#0c111a}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:radial-gradient(circle at 10% 0%,#1c3551 0,transparent 35%),#0c111a}.shell{max-width:1100px;margin:auto;padding:42px 24px 60px}header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:24px}h1{font-size:clamp(32px,5vw,54px);margin:6px 0}h2{margin:8px 0}h3{margin-top:0}h4{margin:20px 0 6px}p,li{line-height:1.65}.intro,.muted,footer{color:#a5b3c7}.eyebrow{letter-spacing:.16em;color:#89bcf5;font-size:12px;font-weight:700}a{color:#98c9ff;padding:12px}.input-card,.panel{background:#151d2a;border:1px solid #304056;border-radius:16px;padding:24px;margin:16px 0;box-shadow:0 12px 36px #0002}label{display:block;font-weight:700;margin-bottom:12px}textarea,select{width:100%;padding:15px;border:1px solid #52647c;border-radius:10px;color:#f2f6ff;background:#0d1520;font:inherit;line-height:1.5}textarea{resize:vertical}button{background:#71b8ff;border:0;border-radius:10px;color:#091321;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}.secondary{background:#273b52;color:#e4f2ff}.recent-button{background:transparent;color:#bce0ff;text-align:left;padding:6px 0;font-weight:500}.recent-button:hover{text-decoration:underline}.actions{display:flex;justify-content:flex-end;gap:12px;margin-top:16px}.error{color:#ff9d9d;min-height:1.5em}.plan-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:32px}.coverage{background:#163b35;color:#b5f5dc;padding:10px 14px;border-radius:999px;font-size:13px}.panel ul{padding-left:22px}footer{text-align:center;margin-top:40px;font-size:12px}@media(max-width:650px){header,.plan-head{display:block}.shell{padding:24px 14px}.input-card,.panel{padding:18px}.actions{flex-wrap:wrap}.coverage{display:inline-block}}`

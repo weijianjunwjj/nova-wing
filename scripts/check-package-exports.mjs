@@ -34,6 +34,7 @@ const expectedRuntimeExports = {
     'PlanningEventStore', 'PlanningInputError', 'PlanningService', 'PlanningStore',
     'buildCoverage', 'createCodexPlanningProvider', 'createCodexPlanningSemanticReviewer', 'createDevelopmentPlan',
     'planDraftSchema', 'requirementClauseSchema', 'semanticReviewSchema', 'validateCustomerQuestion', 'validateDevelopmentPlan',
+    'canonicalSerialize', 'canonicalPlanContent', 'planContentHash', 'createPlanSnapshot', 'verifyPlanSnapshot',
     'createDesktopRepairNotifier', 'createDesktopRuntimeRepairNotifier', 'createDesktopTaskRunNotifier',
     'platformPaths', 'resolveHostArgumentPath', 'workspacePathKey', 'pythonRuntime',
     'BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE',

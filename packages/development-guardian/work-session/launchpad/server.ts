@@ -973,12 +973,47 @@ export class NovaWingLaunchpad {
         plan === undefined ? { error: 'not found' } : { plan, validation: validateDevelopmentPlan(plan) })
       return
     }
+    const snapshotPath = /^\/api\/planning\/plans\/([a-f0-9-]{36})\/snapshots\/([1-9][0-9]*)$/u.exec(path)
+    if (method === 'GET' && snapshotPath !== null) {
+      const snapshot = await this.planningService.getSnapshot(snapshotPath[1]!, Number(snapshotPath[2]))
+      this.respondJson(response, snapshot === undefined ? 404 : 200, snapshot ?? { error: 'not found' })
+      return
+    }
     if (method === 'POST' && path === '/api/planning/generate') {
       await this.servePlanningGenerate(request, response)
       return
     }
     if (method === 'POST' && path === '/api/planning/approve') {
       await this.servePlanningApprove(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/planning/answers') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) || !Array.isArray(body.answers)) {
+        this.respondJson(response, 400, { error: 'planId, version and answers are required' }); return
+      }
+      const answers = body.answers as unknown[]
+      if (answers.some((item) => item === null || typeof item !== 'object' || Array.isArray(item) ||
+        typeof (item as Record<string, unknown>).questionId !== 'string' || typeof (item as Record<string, unknown>).selectedOptionId !== 'string' ||
+        ((item as Record<string, unknown>).freeformAnswer !== undefined && typeof (item as Record<string, unknown>).freeformAnswer !== 'string'))) {
+        this.respondJson(response, 400, { error: 'invalid customer answer' }); return
+      }
+      try { this.respondJson(response, 200, await this.planningService.answerQuestions(body.planId, body.version as number,
+        answers as Array<{ questionId: string; selectedOptionId: string; freeformAnswer?: string }>)) }
+      catch (error) { this.respondJson(response, error instanceof PlanningInputError ? 409 : 503,
+        { error: error instanceof PlanningInputError ? error.message : 'Customer answer could not be saved.' }) }
+      return
+    }
+    if (method === 'POST' && path === '/api/planning/change-requests') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) || typeof body.reason !== 'string' || typeof body.requestedChange !== 'string') {
+        this.respondJson(response, 400, { error: 'planId, version, reason and requestedChange are required' }); return
+      }
+      try { this.respondJson(response, 200, await this.planningService.requestChange(body.planId, body.version as number, body.reason, body.requestedChange)) }
+      catch (error) { this.respondJson(response, error instanceof PlanningInputError ? 409 : 503,
+        { error: error instanceof PlanningInputError ? error.message : 'Change request could not be saved.' }) }
       return
     }
     if (method === 'GET' && path === '/app.js') {
@@ -1024,7 +1059,7 @@ export class NovaWingLaunchpad {
 
     const knownPaths = new Set([
       '/', '/advanced', '/customer', '/customer/app.js', '/customer/styles.css',
-      '/api/planning/plans', '/api/planning/generate', '/api/planning/approve',
+      '/api/planning/plans', '/api/planning/generate', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
       '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
       '/api/session/repair', '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
     ])
@@ -1106,13 +1141,17 @@ export class NovaWingLaunchpad {
     if (body === undefined) return
     if (typeof body.requirement !== 'string' || (body.planId !== undefined && typeof body.planId !== 'string') ||
       (body.feedback !== undefined && typeof body.feedback !== 'string') ||
-      ((body.planId === undefined) !== (body.feedback === undefined))) {
-      this.respondJson(response, 400, { error: 'requirement and optional planId/feedback are required' })
+      (body.expectedVersion !== undefined && !Number.isSafeInteger(body.expectedVersion)) ||
+      (body.changeRequestId !== undefined && typeof body.changeRequestId !== 'string') ||
+      (body.planId === undefined && (body.feedback !== undefined || body.expectedVersion !== undefined || body.changeRequestId !== undefined))) {
+      this.respondJson(response, 400, { error: 'requirement and valid revision context are required' })
       return
     }
     try {
-      const revision = typeof body.planId === 'string' && typeof body.feedback === 'string'
-        ? { planId: body.planId, feedback: body.feedback } : undefined
+      const revision = typeof body.planId === 'string'
+        ? { planId: body.planId, ...(typeof body.feedback === 'string' ? { feedback: body.feedback } : {}),
+          ...(typeof body.expectedVersion === 'number' ? { expectedVersion: body.expectedVersion } : {}),
+          ...(typeof body.changeRequestId === 'string' ? { changeRequestId: body.changeRequestId } : {}) } : undefined
       this.respondJson(response, 200, await this.planningService.generate(body.requirement, revision))
     } catch (error) {
       this.respondJson(response, error instanceof PlanningInputError ? 400 : 503, {

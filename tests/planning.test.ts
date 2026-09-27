@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDevelopmentPlan, planDraftSchema, type PlanDraft } from '../packages/development-guardian/planning/model.js'
 import { validateCustomerQuestion, validateDevelopmentPlan } from '../packages/development-guardian/planning/validator.js'
 import { PlanningEventStore } from '../packages/development-guardian/planning/telemetry.js'
 import { PlanningInputError, PlanningService, PlanningStore } from '../packages/development-guardian/planning/service.js'
+import { canonicalPlanContent, canonicalSerialize, planContentHash, verifyPlanSnapshot, type PlanSnapshot } from '../packages/development-guardian/planning/freeze.js'
 import type { PlanningSemanticReviewer } from '../packages/development-guardian/planning/semantic-reviewer.js'
 import { createNovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
 
@@ -116,7 +117,7 @@ test('Requirement 001 planning benchmark produces a valid, scoped, traceable pla
   assert.ok(plan.productScope.outOfScope.includes('多商户平台'))
   assert.equal(plan.customerQuestions.length, 0)
   assert.equal((await service.list()).length, 1)
-  assert.equal((await service.approve(plan.id, 1)).status, 'approved')
+  assert.equal((await service.approve(plan.id, 1)).status, 'frozen')
   const eventText = await readFile(events.path, 'utf8')
   for (const kind of ['requirement.received', 'planning.started', 'requirement.analyzed', 'development_plan.generated', 'plan.validation_passed', 'plan.approved']) assert.ok(eventText.includes(kind))
   assert.ok(!eventText.includes('模拟登录'))
@@ -224,7 +225,7 @@ test('Customer Mode HTTP flow generates, revises and approves without starting a
     assert.equal((await post('/api/planning/approve', { planId: first.plan.id, version: 1 }, tokenHeader)).status, 409)
     const approved = await post('/api/planning/approve', { planId: first.plan.id, version: 2 }, tokenHeader)
     assert.equal(approved.status, 200)
-    assert.equal(((await approved.json()) as { status: string }).status, 'approved')
+    assert.equal(((await approved.json()) as { status: string }).status, 'frozen')
     assert.equal((await post('/api/planning/generate', { requirement: text, planId: first.plan.id, feedback: '再改一次' }, tokenHeader)).status, 400)
     assert.equal(((await (await fetch(`${address.url}/api/planning/plans`)).json()) as unknown[]).length, 1)
     assert.equal(modelCalls, 2)
@@ -516,3 +517,142 @@ test('contradictory or unavailable semantic verdict fails closed without leaking
   assert.ok(!raw.includes(text))
   assert.ok(!raw.includes('Mock Payment'))
 })
+
+test('Phase 2 fixture-only answers revise through both gates, freeze, and survive restart without Runtime', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-freeze-fixture-only-'))
+  const store = new PlanningStore(join(directory, 'plans'))
+  const events = new PlanningEventStore(join(directory, 'events.jsonl'))
+  let modelCalls = 0
+  let reviewCalls = 0
+  let runtimeCalls = 0
+  const service = new PlanningService(async ({ revisionFeedback }) => {
+    modelCalls += 1
+    const draft = requirement001Draft(text)
+    if (modelCalls === 1) {
+      draft.customerQuestions = [{ id: 'Q1', question: '今日订单数按哪种业务口径统计？', reason: '创建与支付日期可能不同。',
+        decisionType: 'business_rule', options: ['按创建日统计所有已创建订单', '按支付日统计已支付订单'], blocking: true }]
+    } else {
+      assert.ok(revisionFeedback?.includes('按支付日统计已支付订单'))
+      draft.analysis.summary += ' 今日订单数按支付日统计已支付订单。'
+      draft.acceptancePlan.criteria[11]!.assertions[0]!.expectedOutcome += ' 今日订单数按支付日统计已支付订单。'
+    }
+    return { text: JSON.stringify(draft) }
+  }, store, events, async ({ plan }) => {
+    reviewCalls += 1
+    if (plan.version === 2) assert.equal(plan.customerAnswers?.[0]?.selectedOptionId, 'option-2')
+    return { review: { verdict: 'PASS', issues: [] } }
+  })
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: join(directory, 'configs'), dependencies: {
+    planningService: service, createWorkSession: async () => { runtimeCalls += 1; throw new Error('Runtime boundary crossed') },
+  } })
+  let planId = ''
+  try {
+    const address = await launchpad.start()
+    const customerHtml = await (await fetch(`${address.url}/customer`)).text()
+    const customerJs = await (await fetch(`${address.url}/customer/app.js`)).text()
+    assert.ok(customerHtml.includes('提交回答并重新生成方案'))
+    assert.ok(customerJs.includes('/api/planning/answers'))
+    const headers = { 'Content-Type': 'application/json', Origin: address.url,
+      'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() }
+    const post = async (path: string, body: unknown) => fetch(`${address.url}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+    const first = await (await post('/api/planning/generate', { requirement: text })).json() as { plan: { id: string; version: number; status: string } }
+    planId = first.plan.id
+    assert.equal(first.plan.status, 'needs_customer_input')
+    assert.equal((await post('/api/planning/approve', { planId, version: 1 })).status, 409)
+    assert.equal((await post('/api/planning/answers', { planId, version: 2,
+      answers: [{ questionId: 'Q1', selectedOptionId: 'option-2' }] })).status, 409)
+    assert.equal((await post('/api/planning/answers', { planId, version: 1,
+      answers: [{ questionId: 'missing', selectedOptionId: 'option-2' }] })).status, 409)
+    assert.equal((await post('/api/planning/answers', { planId, version: 1,
+      answers: [{ questionId: 'Q1', selectedOptionId: 'option-2' }] })).status, 200)
+    const second = await (await post('/api/planning/generate', { requirement: text, planId, expectedVersion: 1 })).json() as {
+      plan: { version: number; status: string; customerAnswers: Array<{ provenance: string; sourcePlanVersion: number }> }
+      validation: { pass: boolean }
+    }
+    assert.equal(second.plan.version, 2)
+    assert.equal(second.validation.pass, true)
+    assert.equal(second.plan.status, 'ready_for_approval')
+    assert.equal(second.plan.customerAnswers[0]?.provenance, 'customer_decision')
+    assert.equal(second.plan.customerAnswers[0]?.sourcePlanVersion, 1)
+    assert.equal((await post('/api/planning/approve', { planId, version: 1 })).status, 409)
+    const approved = await (await post('/api/planning/approve', { planId, version: 2 })).json() as { status: string; approval: { contentHash: string } }
+    assert.equal(approved.status, 'frozen')
+    assert.equal((await post('/api/planning/approve', { planId, version: 2 })).status, 200)
+    assert.equal((await post('/api/planning/generate', { requirement: text, planId, expectedVersion: 2, feedback: '静默改旧计划' })).status, 400)
+    const snapshot = await (await fetch(`${address.url}/api/planning/plans/${planId}/snapshots/2`)).json() as PlanSnapshot
+    assert.equal(verifyPlanSnapshot(snapshot).planHash.value, approved.approval.contentHash)
+    const alteredAnswer = structuredClone(snapshot)
+    alteredAnswer.content.customerAnswers[0]!.selectedOptionText = '按创建日统计所有已创建订单'
+    assert.throws(() => verifyPlanSnapshot(alteredAnswer), /integrity failure/u)
+    assert.equal(runtimeCalls, 0)
+  } finally { await launchpad.close() }
+  const restartedStore = new PlanningStore(join(directory, 'plans'))
+  assert.equal((await restartedStore.get(planId))?.status, 'frozen')
+  assert.equal((await restartedStore.getVersion(planId, 1))?.status, 'needs_customer_input')
+  assert.equal((await restartedStore.getAnswers(planId, 1))?.[0]?.selectedOptionText, '按支付日统计已支付订单')
+  assert.ok(await restartedStore.getSnapshot(planId, 2))
+  assert.equal(modelCalls, 2)
+  assert.equal(reviewCalls, 2)
+  const telemetry = await readFile(events.path, 'utf8')
+  for (const type of ['customer_question.answered', 'plan.revision.started', 'plan.revision.completed',
+    'plan.ready_for_approval', 'plan.approved', 'plan.freeze.started', 'plan.frozen']) assert.ok(telemetry.includes(type), type)
+  assert.ok(!telemetry.includes('按支付日统计已支付订单'))
+})
+
+test('snapshot canonical hash, tampering controls, immutability and change request', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-freeze-integrity-'))
+  const store = new PlanningStore(join(directory, 'plans'))
+  const events = new PlanningEventStore(join(directory, 'events.jsonl'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)) }), store, events, passReview)
+  const { plan } = await service.generate(text)
+  const frozen = await service.approve(plan.id, 1)
+  const snapshot = (await store.getSnapshot(plan.id, 1))!
+  assert.equal(frozen.status, 'frozen')
+  assert.equal(canonicalSerialize({ z: 1, a: { y: 2, b: 3 } }), canonicalSerialize({ a: { b: 3, y: 2 }, z: 1 }))
+  assert.equal(planContentHash(canonicalPlanContent(plan)), snapshot.planHash.value)
+  const tamper = (change: (copy: PlanSnapshot) => void): void => {
+    const copy = structuredClone(snapshot)
+    change(copy)
+    assert.throws(() => verifyPlanSnapshot(copy), /integrity failure/u)
+  }
+  tamper((copy) => { copy.content.tasks[0]!.title += ' changed' })
+  tamper((copy) => { copy.content.acceptancePlan.criteria[0]!.assertions[0]!.expectedOutcome += ' changed' })
+  tamper((copy) => { copy.content.dependencies.push({ fromTaskId: 'T1', toTaskId: 'T8' }) })
+  const auditChanged = structuredClone(snapshot)
+  auditChanged.frozenAt = new Date(Date.now() + 1_000).toISOString()
+  auditChanged.approval.approvedAt = auditChanged.frozenAt
+  assert.equal(verifyPlanSnapshot(auditChanged).planHash.value, snapshot.planHash.value)
+  const currentPath = join(store.directory, `${plan.id}.json`)
+  const frozenCurrent = await readFile(currentPath, 'utf8')
+  await writeFile(currentPath, JSON.stringify({ ...frozen, tasks: frozen.tasks.map((task, index) => index === 0 ? { ...task, title: 'tampered current' } : task) }))
+  await assert.rejects(store.get(plan.id), /integrity failure/u)
+  await writeFile(currentPath, JSON.stringify(plan))
+  assert.equal((await store.get(plan.id))?.status, 'frozen') // interrupted after exclusive snapshot creation
+  await writeFile(currentPath, frozenCurrent)
+  await assert.rejects(store.save({ ...frozen, tasks: frozen.tasks.map((task, index) => index === 0 ? { ...task, title: 'changed' } : task) }), /Frozen plan/u)
+  const change = await service.requestChange(plan.id, 1, 'fixture-only change', 'fixture-only updated behavior')
+  assert.equal(change.baseVersion, 1)
+  assert.equal((await restartedChange(store, plan.id, change.id))?.requestedChange, 'fixture-only updated behavior')
+  const revised = await service.generate(text, { planId: plan.id, expectedVersion: 1, changeRequestId: change.id })
+  assert.equal(revised.plan.version, 2)
+  assert.equal((await store.getChange(plan.id, change.id))?.status, 'revision_started')
+  assert.equal(revised.plan.supersedesSnapshotId, snapshot.id)
+  assert.equal((await service.approve(plan.id, 2)).status, 'frozen')
+  const successor = (await store.getSnapshot(plan.id, 2))!
+  assert.equal(successor.supersedesSnapshotId, snapshot.id)
+  assert.equal((await store.getSnapshot(plan.id, 1))?.id, snapshot.id)
+  assert.equal((await store.getVersion(plan.id, 1))?.status, 'superseded')
+  await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
+  const path = join(store.directory, `${plan.id}.v2.snapshot.json`)
+  const changedSnapshot = structuredClone(successor)
+  changedSnapshot.content.tasks[0]!.title += ' disk tamper'
+  await writeFile(path, JSON.stringify(changedSnapshot))
+  await assert.rejects(store.getSnapshot(plan.id, 2), /integrity failure/u)
+  await assert.rejects(store.get(plan.id), /integrity failure/u)
+})
+
+async function restartedChange(store: PlanningStore, planId: string, changeId: string) {
+  return new PlanningStore(store.directory).getChange(planId, changeId)
+}
