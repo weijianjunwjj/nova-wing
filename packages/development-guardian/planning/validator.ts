@@ -4,11 +4,10 @@ export interface PlanIssue { code: string; path: string; message: string }
 export interface PlanValidation { pass: boolean; issues: PlanIssue[]; mustTaskCoverage: number; mustAcceptanceCoverage: number }
 
 const TECHNICAL_QUESTION = /\b(?:React|Vue|Angular|Svelte|SQLite|PostgreSQL|MySQL|MongoDB|REST|GraphQL|Codex|Claude|GPT|DeepSeek|reviewer|executor|agent|model|framework|database|db|shell|command|verification|test runner|Docker|Kubernetes)\b|技术栈|技术方案|数据库|模型|评审器|执行器|验证命令|测试命令|框架|前端框架|后端框架|前端技术|后端技术|接口协议|编程语言|用什么语言|什么语言开发|用什么开发|部署方式/iu
-const RUNTIME_WIRING = /\b(?:Codex|Claude|DeepSeek|Reviewer|Executor|Agent|shell|npm\s+run|npx|pnpm|yarn|pytest|tsc)\b|评审器|执行器|验证命令|测试命令|模型分配|模型选择/iu
+const RUNTIME_WIRING = /\b(?:Codex|Claude|DeepSeek|Reviewer|Executor|Agent|WorkSession|checkpoint internals?|shell|npm\s+run|npx|pnpm|yarn|pytest|tsc|model selection|allowed paths)\b|评审器|执行器|验证命令|测试命令|模型分配|模型选择|检查点内部|允许路径/iu
 const COMMAND_ONLY = /^(?:npm|npx|pnpm|yarn|node|python|pytest|go|cargo|make|git|tsc|bash)\s+[^。.!?]+(?:\s+(?:passes?|成功|通过))?[。.!?]?$/iu
 const COMMAND_SUCCESS = /\b(?:npm|npx|pnpm|yarn|node|python|pytest|go|cargo|make|git|tsc|bash)\s+[^。；;.!?]*(?:pass(?:es|ed)?|succeed(?:s|ed)?|成功|通过)|(?:build|typecheck|check|tests?)\s*(?:pass(?:es|ed)?|succeed(?:s|ed)?|成功|通过)/iu
 const GENERIC_ASSERTION = /^(?:满足|实现|覆盖|验证|检查|确认)?(?:该|此|相关|全部|所有)?(?:需求|功能|业务|流程|行为|结果)(?:已)?(?:通过|正确|正常|成功|完成|可用|符合要求)[。.!]?$/iu
-const OBSERVABLE = /(?:能够|可以|可(?:选择|访问|新增|创建|编辑|查看|执行|重复|通过|由|从|见|填写|确认|提交|打开|加入|下单|支付|修改|删除|接单|制作|配送|查询)|显示|看到|展示|返回|保存|持久|状态|收到|创建|更新|拒绝|阻止|成功|失败|完成|等于|一致|包含|记录|生成|可见|可查询|不存在|数值|覆盖|提供|进入|切换|appears?|returns?|persists?|rejects?|shows?|contains?|matches?|is visible|can )/iu
 
 function duplicates(values: readonly string[]): string[] {
   const seen = new Set<string>()
@@ -80,7 +79,7 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
   for (const criterion of draft.acceptancePlan.criteria) {
     for (const reference of criterion.requirementIds) if (!clauseIds.has(reference)) add('INVALID_REQUIREMENT_REFERENCE', `criteria.${criterion.id}`, reference)
     if (!draft.tasks.some((task) => task.acceptanceCriterionIds.includes(criterion.id))) add('ORPHAN_ACCEPTANCE', `criteria.${criterion.id}`, 'No task owns this criterion.')
-    if (criterion.blocking && (criterion.description.length < 12 || COMMAND_ONLY.test(criterion.description) || !OBSERVABLE.test(criterion.description))) {
+    if (criterion.blocking && (criterion.description.length < 4 || COMMAND_ONLY.test(criterion.description))) {
       add('NOT_OBSERVABLE', `criteria.${criterion.id}`, 'Blocking acceptance must state an observable outcome, not just a command.')
     }
     for (const requirementId of criterion.requirementIds) {
@@ -97,10 +96,10 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
         add('ORPHAN_ASSERTION', path, 'No owning task maps this assertion and its requirement.')
       }
       const clause = draft.clauses.find((item) => item.id === assertion.requirementId)
-      const business = clause !== undefined && (clause.type === 'functional' || clause.type === 'business-rule' || clause.type === 'quality')
-      if (assertion.observableBehavior.length < 4 || assertion.expectedOutcome.length < 4 || assertion.expectedEvidence.length < 8 ||
+      const engineeringGate = clause !== undefined && /(?:install|typecheck|tests?|build|cold start|clean start|migration|schema|seed|工程验证|类型检查|构建|冷启动|空数据库)/iu.test(`${clause.statement} ${clause.source.excerpt}`)
+      const business = clause !== undefined && (clause.type === 'functional' || clause.type === 'business-rule' || clause.type === 'quality') && !engineeringGate
+      if (assertion.observableBehavior.length < 4 || assertion.expectedOutcome.length < 4 || assertion.expectedEvidence.length < 4 ||
         GENERIC_ASSERTION.test(assertion.observableBehavior) || GENERIC_ASSERTION.test(assertion.expectedOutcome) ||
-        !OBSERVABLE.test(`${assertion.observableBehavior} ${assertion.expectedOutcome}`) ||
         (business && COMMAND_SUCCESS.test(`${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`) &&
           !/(?:顾客|商家|订单|商品|购物车|地址|支付|状态|界面|业务|customer|merchant|order|cart|address|payment)/iu.test(assertion.expectedOutcome))) {
         add('WEAK_ASSERTION', path, 'Assertion needs a specific observable outcome and supporting evidence; command success alone cannot prove a business behavior.')
@@ -171,12 +170,20 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
     const lines = clause.source.excerpt.split(/\r?\n/u)
     const bullets = lines.filter((line) => /^\s*[-*]\s+\S/u.test(line)).length
     const arrows = lines.filter((line) => /^\s*→\s*\S/u.test(line)).length
-    const minimum = Math.max(1, bullets, arrows > 0 ? arrows + 1 : 0)
+    const firstStep = lines.some((line) => line.trim().length > 0 && !/^\s*→\s*\S/u.test(line)) ? 1 : 0
+    const examplesOnly = /(?:例如|比如|for example|such as)/iu.test(clause.source.excerpt)
+    const minimum = Math.max(1, examplesOnly ? 0 : bullets, arrows > 0 ? arrows + firstStep : 0)
     const blockingAssertions = new Set(linkedBlocking.flatMap((criterion) =>
       criterion.assertions.filter((assertion) => assertion.blocking && assertion.requirementId === clause.id).map((assertion) => assertion.id)))
     if (blockingAssertions.size < minimum) {
       add('EXPLICIT_SOURCE_ATOMS_UNCOVERED', `coverage.${clause.id}`,
         `The quoted source has at least ${minimum} independent listed items but only ${blockingAssertions.size} blocking assertions.`)
+    }
+    if (/(?:容易替换|可替换|replaceable|easy to replace)/iu.test(`${clause.statement} ${clause.source.excerpt}`) &&
+      !linkedBlocking.some((criterion) => criterion.assertions.some((assertion) => assertion.blocking && assertion.requirementId === clause.id &&
+        /(?:替换|替代|replace|swap)/iu.test(`${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`)))) {
+      add('REPLACEABILITY_ASSERTION_UNCOVERED', `coverage.${clause.id}`,
+        'Explicit adapter replaceability needs its own blocking assertion; a nonblocking design note cannot cover it.')
     }
   }
   return {

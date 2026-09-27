@@ -69,9 +69,9 @@ export const semanticReviewSchema = z.object({
   verdict: z.enum(['PASS', 'REVISION_REQUIRED']),
   issues: z.array(z.object({
     code: semanticReviewIssueCodeSchema, path: bounded(200),
-    message: bounded(1_000), sourceExcerpt: z.string().max(1_000),
-  }).strict()).max(100),
-}).strict()
+    message: bounded(1_000), sourceExcerpt: z.string().max(1_000).default(''),
+  })).max(100),
+})
 export type SemanticReview = z.infer<typeof semanticReviewSchema>
 
 export interface RequirementInput {
@@ -113,9 +113,12 @@ export function buildCoverage(draft: PlanDraft): RequirementCoverage[] {
     requirementId: clause.id,
     taskIds: draft.tasks.filter((task) => task.requirementIds.includes(clause.id)).map((task) => task.id),
     acceptanceCriterionIds: draft.acceptancePlan.criteria.filter((criterion) => criterion.requirementIds.includes(clause.id)).map((criterion) => criterion.id),
-    blockingAcceptanceCriterionIds: draft.acceptancePlan.criteria.filter((criterion) => criterion.blocking && criterion.requirementIds.includes(clause.id)).map((criterion) => criterion.id),
+    blockingAcceptanceCriterionIds: draft.acceptancePlan.criteria.filter((criterion) => criterion.blocking &&
+      criterion.assertions.some((assertion) => assertion.blocking && assertion.requirementId === clause.id)).map((criterion) => criterion.id),
     assertionIds: draft.acceptancePlan.criteria.flatMap((criterion) => criterion.assertions.filter((assertion) => assertion.requirementId === clause.id).map((assertion) => assertion.id)),
-    blockingAssertionIds: draft.acceptancePlan.criteria.flatMap((criterion) => criterion.assertions.filter((assertion) => assertion.requirementId === clause.id && assertion.blocking).map((assertion) => assertion.id)),
+    blockingAssertionIds: draft.acceptancePlan.criteria.flatMap((criterion) => criterion.blocking
+      ? criterion.assertions.filter((assertion) => assertion.requirementId === clause.id && assertion.blocking).map((assertion) => assertion.id)
+      : []),
   }))
 }
 

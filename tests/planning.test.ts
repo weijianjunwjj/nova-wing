@@ -174,6 +174,10 @@ test('validator rejects uncovered requirements, invalid graph, orphan acceptance
   clean.tasks[0]!.objective = 'Assign Codex Executor to implement catalog.'
   const wired = validateDevelopmentPlan(createDevelopmentPlan(clean, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
   assert.ok(wired.issues.some((issue) => issue.code === 'RUNTIME_WIRING'))
+  const internal = requirement001Draft(text)
+  internal.architecture.decisions.push('Use model selection and WorkSession checkpoint internals for this task.')
+  const leaked = validateDevelopmentPlan(createDevelopmentPlan(internal, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(leaked.issues.some((issue) => issue.code === 'RUNTIME_WIRING'))
   const optionalOnly = requirement001Draft(text)
   for (const clause of optionalOnly.clauses) clause.priority = 'should'
   assert.ok(validateDevelopmentPlan(createDevelopmentPlan(optionalOnly, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan')).issues.some((issue) => issue.code === 'NO_MUST_REQUIREMENT'))
@@ -312,6 +316,15 @@ test('explicit source bullet items cannot hide behind one blocking assertion', a
   assert.ok(result.issues.some((issue) => issue.code === 'EXPLICIT_SOURCE_ATOMS_UNCOVERED'))
 })
 
+test('one quoted arrow step needs one assertion when the source path is split into clauses', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  draft.clauses[1]!.source.excerpt = '→ 浏览商品'
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft,
+    { id: 'requirement-001', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.ok(!result.issues.some((issue) => issue.code === 'EXPLICIT_SOURCE_ATOMS_UNCOVERED'), JSON.stringify(result.issues))
+})
+
 test('business assertion cannot be only a successful build command', async () => {
   const text = await readFile(requirementPath, 'utf8')
   const draft = requirement001Draft(text)
@@ -322,6 +335,34 @@ test('business assertion cannot be only a successful build command', async () =>
   const result = validateDevelopmentPlan(createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
   assert.equal(result.pass, false)
   assert.ok(result.issues.some((issue) => issue.code === 'COMMAND_ONLY_ASSERTION' || issue.code === 'WEAK_ASSERTION'))
+})
+
+test('explicit adapter replaceability cannot be covered only by a nonblocking note', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  draft.clauses[6]!.statement = '支付适配接口未来应容易替换。'
+  draft.clauses[6]!.source.excerpt = '未来应该容易替换为真实支付实现。'
+  const criterion = draft.acceptancePlan.criteria[6]!
+  criterion.assertions.push({ id: 'AS_REPLACE', requirementId: 'R7',
+    observableBehavior: '检查支付实现替换点', expectedOutcome: '接口可替换',
+    expectedEvidence: '支付适配接口设计记录', blocking: false })
+  const plan = createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan')
+  assert.ok(validateDevelopmentPlan(plan).issues.some((issue) => issue.code === 'REPLACEABILITY_ASSERTION_UNCOVERED'))
+  criterion.assertions[1]!.blocking = true
+  const repaired = createDevelopmentPlan(draft, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan')
+  assert.ok(!validateDevelopmentPlan(repaired).issues.some((issue) => issue.code === 'REPLACEABILITY_ASSERTION_UNCOVERED'))
+})
+
+test('concrete Chinese business states pass the deterministic assertion check', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const draft = requirement001Draft(text)
+  const assertion = draft.acceptancePlan.criteria[8]!.assertions[0]!
+  assertion.observableBehavior = '商家上架商品'
+  assertion.expectedOutcome = '商品变为可售'
+  assertion.expectedEvidence = '商家后台状态和顾客端可售商品记录'
+  const result = validateDevelopmentPlan(createDevelopmentPlan(draft,
+    { id: 'requirement-001', text, receivedAt: new Date().toISOString() }, 'plan'))
+  assert.equal(result.pass, true, JSON.stringify(result.issues))
 })
 
 test('duplicate, orphan and dangling assertion references fail before approval', async () => {
@@ -393,13 +434,16 @@ test('semantic repair feedback can produce a plan ready for approval on the seco
   const directory = await mkdtemp(join(tmpdir(), 'nw-planning-semantic-repair-'))
   let generated = 0
   let reviewed = 0
+  const completeDraft = JSON.stringify(requirement001Draft(text)).replace('"risks":', `${' '.repeat(70_000)}"risks":`)
   const service = new PlanningService(async ({ validationFeedback, priorDraft }) => {
     generated += 1
     if (generated === 2) {
       assert.ok(validationFeedback?.includes('WEAK_ACCEPTANCE'))
       assert.ok(priorDraft?.includes('"AS1"'))
+      assert.ok(priorDraft && priorDraft.length > 64_000)
+      assert.doesNotThrow(() => JSON.parse(priorDraft))
     }
-    return { text: JSON.stringify(requirement001Draft(text)) }
+    return { text: completeDraft }
   }, new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), async () => {
     reviewed += 1
     return reviewed === 1 ? { review: { verdict: 'REVISION_REQUIRED', issues: [{ code: 'WEAK_ACCEPTANCE',
@@ -438,6 +482,17 @@ test('pre-hardening persisted ready plans are no longer shown as approvable', as
   assert.equal((await store.get(plan.id))?.status, 'planning_failed')
   const service = new PlanningService(async () => ({ text: '{}' }), store,
     new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
+  await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
+  plan.semanticReview = { verdict: 'PASS', issues: [] }
+  plan.customerQuestions.push({ id: 'Q1', question: '今日订单数应统计哪些订单？', reason: '统计结果不同',
+    decisionType: 'business_rule', options: ['创建', '支付'], blocking: true })
+  await store.save(plan)
+  assert.equal((await store.get(plan.id))?.status, 'planning_failed')
+  await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
+  plan.customerQuestions = []
+  plan.semanticReview.issues.push({ code: 'WEAK_ACCEPTANCE', path: 'A1', message: 'Still weak.', sourceExcerpt: '' })
+  await store.save(plan)
+  assert.equal((await store.get(plan.id))?.status, 'planning_failed')
   await assert.rejects(service.approve(plan.id, 1), PlanningInputError)
 })
 

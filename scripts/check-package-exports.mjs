@@ -32,8 +32,8 @@ const expectedRuntimeExports = {
   'nova-wing/development-guardian': [
     'AskBridgeBrain',
     'PlanningEventStore', 'PlanningInputError', 'PlanningService', 'PlanningStore',
-    'buildCoverage', 'createCodexPlanningProvider', 'createDevelopmentPlan',
-    'planDraftSchema', 'requirementClauseSchema', 'validateCustomerQuestion', 'validateDevelopmentPlan',
+    'buildCoverage', 'createCodexPlanningProvider', 'createCodexPlanningSemanticReviewer', 'createDevelopmentPlan',
+    'planDraftSchema', 'requirementClauseSchema', 'semanticReviewSchema', 'validateCustomerQuestion', 'validateDevelopmentPlan',
     'createDesktopRepairNotifier', 'createDesktopRuntimeRepairNotifier', 'createDesktopTaskRunNotifier',
     'platformPaths', 'resolveHostArgumentPath', 'workspacePathKey', 'pythonRuntime',
     'BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE',

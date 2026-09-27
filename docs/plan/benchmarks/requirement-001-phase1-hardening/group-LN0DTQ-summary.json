@@ -1,0 +1,150 @@
+{
+  "startedAt": "2026-09-27T05:47:59.312Z",
+  "node": "v24.21.0",
+  "root": "/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-planning-quality-LN0DTQ",
+  "inputSha256": "16a0b09340e4f0f37ba53be7c02319605721a29e38a65acfac4ba137499a0fe8",
+  "runs": [
+    {
+      "run": 1,
+      "httpStatus": 200,
+      "planningSessionId": "bc16e738-adb9-46fc-954b-5476051a78bf",
+      "status": "needs_customer_input",
+      "requirementCount": 20,
+      "mustCount": 20,
+      "taskCount": 7,
+      "criterionCount": 12,
+      "assertionCount": 98,
+      "blockingAssertionCoverage": 100,
+      "deterministicPass": true,
+      "deterministicIssues": [],
+      "semanticVerdict": "PASS",
+      "semanticIssues": [],
+      "repairCount": 0,
+      "missingExplicitRequirementCount": 0,
+      "inventedBusinessScopeCount": 0,
+      "weakAcceptanceCount": 0,
+      "silentBusinessAssumptionCount": 0,
+      "telemetryContainsFullRequirement": false,
+      "customerQuestions": [
+        {
+          "id": "Q1",
+          "question": "“今日订单数”按哪种订单及事件日期统计？验收样本：O1 第 1 天创建、第 2 天支付、第 3 天完成；O2 第 1 天创建并支付、第 2 天完成；O3 第 2 天创建并支付、第 3 天取消；O4 第 2 天创建、未支付即取消；O5 第 3 天创建、支付并完成。",
+          "reason": "决定后台每日订单数及取消订单是否计入；不同口径在三个日期产生不同结果。",
+          "decisionType": "business_rule",
+          "options": [
+            "按创建日计全部订单，含已取消：第 1 天 2 单（O1、O2）；第 2 天 2 单（O3、O4）；第 3 天 1 单（O5）。",
+            "按成功支付日计已支付订单，含后来取消的订单：第 1 天 1 单（O2）；第 2 天 2 单（O1、O3）；第 3 天 1 单（O5）。",
+            "按完成日计已完成订单：第 1 天 0 单；第 2 天 1 单（O2）；第 3 天 2 单（O1、O5）。"
+          ],
+          "blocking": true
+        },
+        {
+          "id": "Q2",
+          "question": "“今日成交金额”按成功支付日还是完成日归属？已成功支付、随后取消的金额是否计入？验收样本金额为 O1 30 元、O2 12 元、O3 支付后取消 20 元、O4 未支付即取消 8 元、O5 5 元；事件日期同 Q1。",
+          "reason": "决定今日成交金额的日期、已支付后取消订单的处理，以及三个日期的精确金额；未支付的 O4 在所有选项中均不产生成交金额。",
+          "decisionType": "business_rule",
+          "options": [
+            "按成功支付日计所有成功支付金额，含后来取消的 O3：第 1 天 12 元（O2）；第 2 天 50 元（O1、O3）；第 3 天 5 元（O5）。",
+            "按成功支付日计未被取消的成功支付金额，排除 O3：第 1 天 12 元（O2）；第 2 天 30 元（O1）；第 3 天 5 元（O5）。",
+            "按完成日计已完成订单金额，排除 O3：第 1 天 0 元；第 2 天 12 元（O2）；第 3 天 35 元（O1、O5）。"
+          ],
+          "blocking": true
+        },
+        {
+          "id": "Q3",
+          "question": "哪些角色可在订单的哪些阶段取消？",
+          "reason": "决定 CANCELLED 的实际业务行为、可用操作，以及禁止操作后订单状态保持不变的验收范围。",
+          "decisionType": "business_rule",
+          "options": [
+            "顾客仅可取消待支付订单；商家可取消待支付或已支付未接单订单。",
+            "顾客可取消待支付或已支付未接单订单；商家可取消待支付、已支付未接单、已接单或制作中订单。"
+          ],
+          "blocking": true
+        }
+      ],
+      "businessAssumptions": [
+        {
+          "id": "S1",
+          "statement": "验收样本金额和日期仅用于区分统计规则及复算结果，不规定正式商品价格。",
+          "impactIfFalse": "需替换样本并重新给出能区分各口径的精确预期值。"
+        }
+      ],
+      "gatePass": true
+    },
+    {
+      "run": 2,
+      "httpStatus": 200,
+      "planningSessionId": "f80540b8-fad1-4d56-b52f-0affd0bc7b91",
+      "status": "needs_customer_input",
+      "requirementCount": 19,
+      "mustCount": 19,
+      "taskCount": 7,
+      "criterionCount": 11,
+      "assertionCount": 96,
+      "blockingAssertionCoverage": 100,
+      "deterministicPass": true,
+      "deterministicIssues": [],
+      "semanticVerdict": "PASS",
+      "semanticIssues": [],
+      "repairCount": 0,
+      "missingExplicitRequirementCount": 0,
+      "inventedBusinessScopeCount": 0,
+      "weakAcceptanceCount": 0,
+      "silentBusinessAssumptionCount": 0,
+      "telemetryContainsFullRequirement": false,
+      "customerQuestions": [
+        {
+          "id": "Q1",
+          "question": "“今日订单数”按哪种订单及事件日期统计？验收样本为 O1：第 1 天创建、第 2 天支付、第 3 天完成；O2：第 1 天创建并支付、第 2 天取消；O3：第 2 天创建且未支付；O4：第 2 天创建、支付并完成；O5：第 3 天创建、支付并完成。",
+          "reason": "不同口径会改变商家在第 1、2、3 天看到的订单数，必须先确定可阻断验收的精确预期。",
+          "decisionType": "business_rule",
+          "options": [
+            "按创建日统计所有订单：第 1 天 2（O1、O2），第 2 天 2（O3、O4），第 3 天 1（O5）。",
+            "按支付日统计所有成功支付订单，含后来取消的订单：第 1 天 1（O2），第 2 天 2（O1、O4），第 3 天 1（O5）。",
+            "按支付日统计成功支付且最终未取消的订单：第 1 天 0（无），第 2 天 2（O1、O4），第 3 天 1（O5）。",
+            "按完成日统计已完成订单：第 1 天 0（无），第 2 天 1（O4），第 3 天 2（O1、O5）。"
+          ],
+          "blocking": true
+        },
+        {
+          "id": "Q2",
+          "question": "“今日成交金额”按哪种已支付或已完成订单及事件日期统计？沿用 Q1 的 O1 至 O5，其中金额分别为 120、30、50、70、20 元；O2 支付成功后取消，其 30 元是否计入？",
+          "reason": "支付后取消订单的处理及归属日期会改变每日成交金额；未支付的 O3 不构成成交。",
+          "decisionType": "business_rule",
+          "options": [
+            "按支付日统计所有成功支付金额，包含后来取消的 O2：第 1 天 30 元（O2），第 2 天 190 元（O1、O4），第 3 天 20 元（O5）。",
+            "按支付日统计成功支付且最终未取消的金额，不包含 O2：第 1 天 0 元（无），第 2 天 190 元（O1、O4），第 3 天 20 元（O5）。",
+            "按完成日统计已完成订单金额，不包含未完成的 O2：第 1 天 0 元（无），第 2 天 70 元（O4），第 3 天 140 元（O1、O5）。"
+          ],
+          "blocking": true
+        },
+        {
+          "id": "Q3",
+          "question": "顾客和商家分别可以在哪些订单阶段取消？请确定允许的角色与阶段，以及开始配送后是否仍允许取消。",
+          "reason": "CANCELLED 被明确要求，但允许取消的角色和阶段未给出；它们决定订单能否进入取消状态以及禁止操作时是否必须保持原状态。",
+          "decisionType": "business_rule",
+          "options": [
+            "顾客可在待支付或已支付阶段取消；商家可在已支付、已接单或制作中阶段取消；开始配送后双方均不可取消。",
+            "顾客仅可在待支付阶段取消；商家可在已支付、已接单或制作中阶段取消；开始配送后双方均不可取消。"
+          ],
+          "blocking": true
+        }
+      ],
+      "businessAssumptions": [
+        {
+          "id": "S1",
+          "statement": "使用一组可重复生成的本地测试商品和订单验证业务流程。",
+          "impactIfFalse": "需要提供另一种可重复生成等效验收数据的方式。"
+        },
+        {
+          "id": "S2",
+          "statement": "验收中的第 1、2、3 天使用固定测试日期，以便重复验证跨日统计。",
+          "impactIfFalse": "需使用等效的时间控制方式复现相同订单事件顺序。"
+        }
+      ],
+      "gatePass": true
+    }
+  ],
+  "completedAt": "2026-09-27T05:59:17.659Z",
+  "gatePass": true
+}

@@ -1,0 +1,182 @@
+{
+  "source": "tests/fixtures/requirement-001.txt",
+  "sourceSha256": "16a0b09340e4f0f37ba53be7c02319605721a29e38a65acfac4ba137499a0fe8",
+  "benchmarkNode": "v24.21.0",
+  "groups": [
+    {
+      "file": "group-LN0DTQ-summary.json",
+      "sha256": "42183b5d9d634751b8962fd1ecbf74650a65c981ada1412ab16b0c35d63eea67"
+    },
+    {
+      "file": "group-N5zRQY-summary.json",
+      "sha256": "20ebd345bb7bdd2b4be3f82a471828041a387ddb6ba9760bdd2e68aa9aa3992b"
+    }
+  ],
+  "runs": [
+    {
+      "id": "run-01",
+      "planningSessionId": "bc16e738-adb9-46fc-954b-5476051a78bf",
+      "sourceGroup": "LN0DTQ",
+      "sourceRun": 1,
+      "modelAttempts": 1,
+      "semanticReviews": 1,
+      "result": {
+        "status": "needs_customer_input",
+        "requirementCount": 20,
+        "mustCount": 20,
+        "taskCount": 7,
+        "criterionCount": 12,
+        "assertionCount": 98,
+        "repairCount": 0,
+        "blockingAssertionCoverage": 100,
+        "deterministicPass": true,
+        "semanticVerdict": "PASS",
+        "missingExplicitRequirementCount": 0,
+        "inventedBusinessScopeCount": 0,
+        "weakAcceptanceCount": 0,
+        "silentBusinessAssumptionCount": 0,
+        "customerQuestionCount": 3,
+        "businessAssumptionCount": 1,
+        "gatePass": true
+      },
+      "files": {
+        "http-response.json": "92e93bc789fd44e7891a05f4c60b64532d0a383f822d55ee8d9e41f674ddf985",
+        "final-model-output.txt": "868efab25a0177bae81673ddeb0805f75ee54afedfdc2d7d86b75d41e399cdce",
+        "final-semantic-review.json": "ed9787b34083c08cb2f1284caeb263415411800d154b0ade0ea6c29af79f4a0e",
+        "telemetry-events.jsonl": "19855eccc55a6a474f8b7a83a999050fb80d121bbfe0aaa4b5ecb88c35ea13d3"
+      }
+    },
+    {
+      "id": "run-02",
+      "planningSessionId": "062e7c88-15fa-4527-b47d-d30b2850993d",
+      "sourceGroup": "N5zRQY",
+      "sourceRun": 1,
+      "modelAttempts": 2,
+      "semanticReviews": 1,
+      "result": {
+        "status": "needs_customer_input",
+        "requirementCount": 22,
+        "mustCount": 22,
+        "taskCount": 8,
+        "criterionCount": 12,
+        "assertionCount": 103,
+        "repairCount": 1,
+        "blockingAssertionCoverage": 100,
+        "deterministicPass": true,
+        "semanticVerdict": "PASS",
+        "missingExplicitRequirementCount": 0,
+        "inventedBusinessScopeCount": 0,
+        "weakAcceptanceCount": 0,
+        "silentBusinessAssumptionCount": 0,
+        "customerQuestionCount": 3,
+        "businessAssumptionCount": 1,
+        "gatePass": true
+      },
+      "files": {
+        "http-response.json": "f0f013a35c8c374dc2794e36602afb8bab3cbb11cd07b3d9e6f0545411e22b42",
+        "final-model-output.txt": "bc833aa4070bf14600624b25dec945f0efb86cada3208446f09407d27b14db45",
+        "final-semantic-review.json": "ed9787b34083c08cb2f1284caeb263415411800d154b0ade0ea6c29af79f4a0e",
+        "telemetry-events.jsonl": "948549995709af04526f72c4858d4105da240f339314976cad262cc829180520"
+      }
+    },
+    {
+      "id": "run-03",
+      "planningSessionId": "f80540b8-fad1-4d56-b52f-0affd0bc7b91",
+      "sourceGroup": "LN0DTQ",
+      "sourceRun": 2,
+      "modelAttempts": 1,
+      "semanticReviews": 1,
+      "result": {
+        "status": "needs_customer_input",
+        "requirementCount": 19,
+        "mustCount": 19,
+        "taskCount": 7,
+        "criterionCount": 11,
+        "assertionCount": 96,
+        "repairCount": 0,
+        "blockingAssertionCoverage": 100,
+        "deterministicPass": true,
+        "semanticVerdict": "PASS",
+        "missingExplicitRequirementCount": 0,
+        "inventedBusinessScopeCount": 0,
+        "weakAcceptanceCount": 0,
+        "silentBusinessAssumptionCount": 0,
+        "customerQuestionCount": 3,
+        "businessAssumptionCount": 2,
+        "gatePass": true
+      },
+      "files": {
+        "http-response.json": "fb60f48272a77290e007bd62ad8cda2e6234ca9e5f592a52e7fb4de0b4cf4e9a",
+        "final-model-output.txt": "ab589e4c4bd3eb96bbf545f1c51e74ec878daed41fd913668b7f148763c55ce0",
+        "final-semantic-review.json": "ed9787b34083c08cb2f1284caeb263415411800d154b0ade0ea6c29af79f4a0e",
+        "telemetry-events.jsonl": "8f08424341bf10a753c28562ac4ee92629197f9ef89ddc2f1d470533e6605443"
+      }
+    },
+    {
+      "id": "run-04",
+      "planningSessionId": "425001e2-e81c-4751-8dd9-f28f1f90bc1b",
+      "sourceGroup": "N5zRQY",
+      "sourceRun": 2,
+      "modelAttempts": 2,
+      "semanticReviews": 1,
+      "result": {
+        "status": "needs_customer_input",
+        "requirementCount": 21,
+        "mustCount": 21,
+        "taskCount": 7,
+        "criterionCount": 10,
+        "assertionCount": 102,
+        "repairCount": 1,
+        "blockingAssertionCoverage": 100,
+        "deterministicPass": true,
+        "semanticVerdict": "PASS",
+        "missingExplicitRequirementCount": 0,
+        "inventedBusinessScopeCount": 0,
+        "weakAcceptanceCount": 0,
+        "silentBusinessAssumptionCount": 0,
+        "customerQuestionCount": 3,
+        "businessAssumptionCount": 2,
+        "gatePass": true
+      },
+      "files": {
+        "http-response.json": "8b6b54a8b7936025569b31c3d9149aea47a4876d9aea9b1e41f6ee575708f655",
+        "final-model-output.txt": "d3aa1d150678c4915d0d2fd17d54327fdeff3f5c89236b9bfa036f4b6ee60532",
+        "final-semantic-review.json": "ed9787b34083c08cb2f1284caeb263415411800d154b0ade0ea6c29af79f4a0e",
+        "telemetry-events.jsonl": "b97b302203d81e3d0a9391f366f8c47c71dc05a891b4abe3d1609e8df8c9a88e"
+      }
+    },
+    {
+      "id": "run-05",
+      "planningSessionId": "332c9caa-d61d-4cb3-bd80-a81c5f347335",
+      "sourceGroup": "N5zRQY",
+      "sourceRun": 3,
+      "modelAttempts": 1,
+      "semanticReviews": 1,
+      "result": {
+        "status": "needs_customer_input",
+        "requirementCount": 20,
+        "mustCount": 20,
+        "taskCount": 7,
+        "criterionCount": 9,
+        "assertionCount": 95,
+        "repairCount": 0,
+        "blockingAssertionCoverage": 100,
+        "deterministicPass": true,
+        "semanticVerdict": "PASS",
+        "missingExplicitRequirementCount": 0,
+        "inventedBusinessScopeCount": 0,
+        "weakAcceptanceCount": 0,
+        "silentBusinessAssumptionCount": 0,
+        "customerQuestionCount": 3,
+        "businessAssumptionCount": 2,
+        "gatePass": true
+      },
+      "files": {
+        "http-response.json": "bb0f2a7d0081fac91a620f304fc1af068c3ea4fe40a16da0e3ea74da2a8e7d6d",
+        "final-model-output.txt": "5c5fa8b1a776aa2af3c40b64877ff5ed44df937bb4c657b2d7560a777fd58fbf",
+        "final-semantic-review.json": "ed9787b34083c08cb2f1284caeb263415411800d154b0ade0ea6c29af79f4a0e",
+        "telemetry-events.jsonl": "6882f2ba2203e2991c6dab02f09b18098d2bce65661fb9912411c4b7c73825a0"
+      }
+    }
+  ]
+}

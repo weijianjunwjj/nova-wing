@@ -12,6 +12,12 @@ const MAX_FEEDBACK_CHARS = 4_000
 
 export class PlanningInputError extends Error {}
 
+function hasPassedApprovalGates(plan: DevelopmentPlan): boolean {
+  return plan.semanticReview?.verdict === 'PASS' && plan.semanticReview.issues.length === 0 &&
+    Array.isArray(plan.customerQuestions) && !plan.customerQuestions.some((question) => question.blocking) &&
+    validateDevelopmentPlan(plan).pass
+}
+
 export class PlanningStore {
   constructor(readonly directory: string) {}
 
@@ -43,8 +49,7 @@ export class PlanningStore {
     const plan = JSON.parse(raw) as DevelopmentPlan
     // A Phase 1 draft persisted before assertion/semantic gates must not keep a
     // historical ready-for-approval badge after the quality contract changes.
-    if (plan.status === 'ready_for_approval' &&
-      (plan.semanticReview?.verdict !== 'PASS' || !validateDevelopmentPlan(plan).pass)) {
+    if (plan.status === 'ready_for_approval' && !hasPassedApprovalGates(plan)) {
       return { ...plan, status: 'planning_failed' }
     }
     return plan
@@ -100,7 +105,9 @@ export class PlanningService {
         if (attempt > 0) await this.events.append({ planningSessionId: id, type: 'planning.repair.completed', actorRole: 'planning',
           durationMs: Date.now() - started, metadata: { repairCount: attempt } })
         const body = response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
-        priorDraft = body.slice(0, 64_000)
+        // A detailed assertion plan can exceed 64 KB. Truncating it would turn
+        // the repair context into invalid JSON and encourage lossy regeneration.
+        priorDraft = body
         let raw: unknown
         try { raw = JSON.parse(body) as unknown } catch {
           await emit('plan.validation_failed', 'validator', { issueCount: 1 })
@@ -117,25 +124,6 @@ export class PlanningService {
           throw new PlanningInputError('Planning model returned an invalid plan after retry.')
         }
         await emit('requirement.analyzed', 'planning', { clauseCount: parsed.data.clauses.length })
-        // Keep source quotes exact. A model can double-escape line breaks or append
-        // a later sentence while omitting an intervening one. In the latter case,
-        // retain only a sufficiently long verbatim prefix; otherwise validation fails.
-        const sources = [requirement.text, ...requirement.revisionNotes]
-        for (const clause of parsed.data.clauses) {
-          if (sources.some((source) => source.includes(clause.source.excerpt))) continue
-          const normalized = clause.source.excerpt.replaceAll('\\r\\n', '\n').replaceAll('\\n', '\n')
-          if (sources.some((source) => source.includes(normalized))) { clause.source.excerpt = normalized; continue }
-          let longest = ''
-          for (const source of sources) {
-            const anchor = normalized.slice(0, Math.min(30, normalized.length))
-            const start = source.indexOf(anchor)
-            if (start < 0) continue
-            let length = 0
-            while (length < normalized.length && source[start + length] === normalized[length]) length += 1
-            if (length > longest.length) longest = normalized.slice(0, length).trimEnd()
-          }
-          if (longest.length >= 60 && longest.length / normalized.length >= 0.75) clause.source.excerpt = longest
-        }
         const plan = createDevelopmentPlan(parsed.data, requirement, id, (previous?.version ?? 0) + 1)
         const validation = validateDevelopmentPlan(plan)
         await this.events.append({
@@ -218,7 +206,7 @@ export class PlanningService {
     try {
       const plan = await this.store.get(id)
       if (plan === undefined || plan.version !== version) throw new PlanningInputError('Plan or version is unavailable.')
-      if (plan.status !== 'ready_for_approval' || plan.semanticReview?.verdict !== 'PASS' || !validateDevelopmentPlan(plan).pass) {
+      if (plan.status !== 'ready_for_approval' || !hasPassedApprovalGates(plan)) {
         throw new PlanningInputError('Plan is not ready for approval.')
       }
       plan.status = 'approved'

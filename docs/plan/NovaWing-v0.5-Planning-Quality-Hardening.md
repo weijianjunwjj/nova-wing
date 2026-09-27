@@ -1,0 +1,129 @@
+# NovaWing v0.5 Phase 1 — Planning Quality Hardening and Product Re-audit
+
+## Scope and failed baseline
+
+This work continues `feat/v0.5-customer-mode` from `4e245b0ab7c1e700bbc59b1580af67bcb0f55c27`. The original [Requirement 001 Product Acceptance Audit](NovaWing-v0.5-Requirement-001-Product-Acceptance.md) remains unchanged as the FAIL baseline. That real run had 21 MUST clauses, 6 tasks, 6 criteria and 100% ID coverage, yet all six criteria could pass with a requested behavior unproved. Counts are observations, not target shapes.
+
+Phase 1 only: no Plan Freeze, RuntimePlanCompiler, Runtime behavior change, execution start, merge, push or tag.
+
+## Quality contract
+
+1. An `AcceptanceCriterion` may group a scenario but owns `AcceptanceAssertion[]`. Each assertion has a unique ID, one requirement reference, observable behavior, expected outcome, expected evidence and a blocking bit.
+2. MUST acceptance coverage now requires a blocking assertion inside a blocking criterion, owned by a task that maps the same clause. Criterion-level ID links alone do not count.
+3. Deterministic validation rejects duplicate/orphan/dangling assertions, a multi-requirement criterion missing any direct assertion, command-only business proof, and an explicit source list with fewer blocking assertions than listed items. The source-list check is a syntactic lower bound; it does not claim full natural-language understanding.
+4. Clause source records customer requirement, customer revision or derived assumption provenance. A derived assumption cannot become a MUST customer requirement; customer/revision quotes must occur verbatim in the corresponding source.
+5. An independent read-only **Planning Semantic Quality Gate** compares the original requirement, analysis, tasks, assumptions, questions and assertion evidence. Its structured verdict is `PASS` or `REVISION_REQUIRED`, with issues for omissions, invented scope, weak acceptance, unsupported business assumptions, question policy and task/trace mismatches. It does not use the Runtime Reviewer.
+6. Generation follows `Generate → Validate → Semantic Review → Repair → Revalidate → Re-review`, with an initial attempt and at most two repairs. A remaining failure is `planning_failed`; review unavailability also fails closed. `ready_for_approval` requires both gates to pass. Genuine blocking business questions yield `needs_customer_input` instead. Old persisted Phase 1 plans are no longer displayed as ready under the new gate.
+7. Customer Mode renders the assertions and gate issues. Approval remains separate from Work Session creation.
+
+## Business-question policy
+
+Implementation choices stay inside planning. A proposed customer-visible rule for counts, amounts, cancellation permission or similar behavior needs source support or a blocking customer question; a question cannot introduce an unrequested feature. Requirement 001 itself explicitly permits a reasonable `CANCELLED` state, so actor/stage ambiguity is real. If a source lacks cancellation entirely, asking about it is rejected. Real refunds, discounts, delivery fees, inventory, multiple merchants and an independent courier product are not added through questions.
+
+The semantic reviewer is responsible for meaning beyond deterministic syntax. A semantic `PASS` is not treated as proof that a future implementation works: it establishes a plan with specific, independently checkable outcomes. Customer answers remain required before approval whenever business rules are unresolved.
+
+## Telemetry boundary
+
+Planning emits semantic-review start/pass/fail and repair start/complete events. Events carry closed numeric counts, duration and allowlisted provider/model identifiers; token or cost fields appear only when the provider supplies actual values. Raw requirement, revision notes, prompts, model responses, secret strings and review issue prose do not enter telemetry. Benchmark diagnostic raw model drafts are first written to isolated temporary run directories and passed to the planning service unchanged; the final five are then copied byte-for-byte into the audit evidence directory.
+
+## Verification before real benchmark
+
+- Node v24.21.0; focused planning regressions: 22 PASS.
+- Full `npm run check`: PASS, including 1,214 Node tests, 193 Desktop tests, typecheck, unused, migration, exports, repository and platform boundaries. The check was rerun on the final source while the final five-run benchmark was in progress.
+- Existing Runtime regression suite is part of that full check. The Customer Mode HTTP test still proves approval makes zero Work Session creation calls.
+- Isolated exploratory runs uncovered a Node client response-header wait limit, schema format drift for `CustomerQuestion`, lossy full-draft repair, overstrict observable-word heuristics and the original four-minute model deadline. The benchmark client, repair context, validation heuristics and planning-only timeout were adjusted; none of these runs is counted as a PASS benchmark.
+- A later exploratory raw draft (31 clauses, 10 tasks, 10 criteria, 107 assertions) passed the corrected deterministic gate, but the independent semantic reviewer returned `REVISION_REQUIRED`: its cart-total assertion could pass with only one SKU checked. This is a concrete false positive that ID and assertion counts alone missed. The generator now requests multi-item arithmetic evidence and recalculation after cart mutations. The exploratory draft is not counted toward the final five runs.
+- Another exploratory draft (20 clauses, 8 tasks, 8 criteria, 110 assertions) passed deterministic validation, but semantic review required repair. A separate read-only review of the same untouched draft identified two concrete risks: SKU examples introduced with “例如” were promoted into mandatory product variants, and the date event defining “today” for statistics was undecided. Generator and reviewer guidance now distinguish illustrative examples from MUST scope and require a blocking decision for a business-changing date basis. This draft is not counted toward the final five runs.
+- Its first repair removed the example promotion and asked about count/amount dates, but a separate review found the independently offered status and date choices could form impossible combinations (for example, counting an unpaid order by payment date). The statistics evidence also did not separate payment and completion dates on different natural days. The final guidance asks for coherent metric definitions and cross-date evidence; this repair is not counted as a PASS benchmark.
+- That exploratory session reached deterministic `PASS` and a model-review `PASS` after two repairs, but manual product inspection still found the statistics sample could not distinguish an implementation using payment date from one using completion date. It is excluded from the product-PASS count despite its automated green verdict. This is evidence that the final product re-audit must remain independent of the planning gate.
+- After strengthening the reviewer instruction, a fresh independent review of that *unchanged* green plan returned `REVISION_REQUIRED / WEAK_ACCEPTANCE` for precisely the payment-date versus completion-date false positive. This checks that the revised semantic gate recognizes the known failure without editing the plan.
+- One later draft split the ordered core path into individual clauses. Validation exposed a syntax bug: a source excerpt consisting of one line beginning `→` was counted as two steps. The lower bound now counts an initial non-arrow step only when one is actually quoted. A focused regression protects this split-source case; the semantic reviewer still checks the full path meaning.
+- A further untouched draft with 21 clauses, 8 tasks, 9 criteria and 99 assertions passed both automated gates without repair. Manual re-audit found its daily-statistics assertions listed creation, payment and completion date fields but did not require those events to occur on different days. It therefore could still pass with a wrong event-date rule. The reviewer now explicitly rejects field lists without a three-day discriminating case, and the generator requests that case. This green draft is also excluded from the product-PASS count.
+- A fresh review of that same unchanged draft under the stricter reviewer returned two `WEAK_ACCEPTANCE` findings, one for each statistic. Both requested a same-order case with creation, payment and completion on distinct days and a specific classification under each candidate rule. The latest isolated generation uses this revised gate.
+- A subsequent raw draft included the three-day case and exact alternative totals, but its cancellation example had never been paid and both turnover options excluded cancellations. That leaves post-payment cancellation treatment untested and effectively selected without a customer decision. Guidance now requires a distinct paid-then-cancelled order, an explicit decision on its amount, and evidence that distinguishes inclusion from exclusion. This draft remains an exploratory failure until repaired and independently re-audited.
+- The same draft's automated semantic review independently found two further weaknesses: no blocking proof that customers see a product's sale status, and no negative cancellation case proving an unauthorized actor or stage cannot change the order. A separate review found its adapter-replacement assertion was nonblocking. These findings reinforce that each independent behavior needs its own blocking proof, including negative permissions and requested replaceability.
+- A later draft included coherent cross-day and paid-then-cancelled statistics with independently calculated exact alternatives. Deterministic validation then blocked the adapter-replacement behavior because its only assertion was nonblocking; repair made the second local implementation and same business result a blocking assertion. Semantic review also found the requested mini-program had become a generic customer UI, and merchant product editing did not prove image/price changes on the customer side. Its third finding incorrectly demanded the `needs_customer_input` status inside a draft that has no status field; the service already applies that gate. The reviewer now receives that boundary explicitly. This draft is not counted in the final five.
+- A subsequent provisional five-run batch was also excluded. Manual review found a daily-count acceptance sample where creation-date and payment-date options both produced the same number on the only checked day. The assertion could pass with the wrong date rule even if a per-order worksheet listed dates. Generator and semantic reviewer now require exact displayed results and contributing orders on all three distinct event days, with a day that distinguishes every competing date basis. The provisional green runs are not carried into the final five after this prompt change.
+- The next provisional batch produced a question option that labelled the face value of all created orders, including an unpaid order, as `今日成交金额`. This is not a transaction amount. A new independent review of the untouched raw draft returned `REVISION_REQUIRED / INAPPROPRIATE_CUSTOMER_QUESTION` for that option. The provisional batch was stopped, the question policy was tightened to paid or completed transactions, and five new sessions were started. None of the stopped runs counts toward the final result.
+
+## Five independent Requirement 001 generations
+
+Source: `tests/fixtures/requirement-001.txt` (SHA-256 `16a0b09340e4f0f37ba53be7c02319605721a29e38a65acfac4ba137499a0fe8`). Each run uses a new planning session and isolated data/config directory through the real local Customer Mode HTTP route. The benchmark saves exact HTTP responses and model drafts, with no hand editing.
+
+All five runs below were generated after the final generator and semantic-review policy changes. The earlier completed-but-rejected and stopped provisional batches and exploratory drafts are excluded. The final batch ran as two independent processes with three and two new planning sessions; each session had its own empty config and data directory. No run used feedback or a manually edited model draft. A semantic `PASS` plus a genuine blocking question correctly produces `needs_customer_input`, rather than `ready_for_approval`.
+
+| Run and complete returned plan | Session ID | MUST / tasks / criteria / assertions | Repairs | MUST blocking assertion coverage | Deterministic / semantic / manual | Questions / assumptions | Status |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+| [01](benchmarks/requirement-001-phase1-hardening/run-01/http-response.json) | `bc16e738-adb9-46fc-954b-5476051a78bf` | 20 / 7 / 12 / 98 | 0 | 100% | PASS / PASS / PASS | 3 / 1 | `needs_customer_input` |
+| [02](benchmarks/requirement-001-phase1-hardening/run-02/http-response.json) | `062e7c88-15fa-4527-b47d-d30b2850993d` | 22 / 8 / 12 / 103 | 1 | 100% | PASS / PASS / PASS | 3 / 1 | `needs_customer_input` |
+| [03](benchmarks/requirement-001-phase1-hardening/run-03/http-response.json) | `f80540b8-fad1-4d56-b52f-0affd0bc7b91` | 19 / 7 / 11 / 96 | 0 | 100% | PASS / PASS / PASS | 3 / 2 | `needs_customer_input` |
+| [04](benchmarks/requirement-001-phase1-hardening/run-04/http-response.json) | `425001e2-e81c-4751-8dd9-f28f1f90bc1b` | 21 / 7 / 10 / 102 | 1 | 100% | PASS / PASS / PASS | 3 / 2 | `needs_customer_input` |
+| [05](benchmarks/requirement-001-phase1-hardening/run-05/http-response.json) | `332c9caa-d61d-4cb3-bd80-a81c5f347335` | 20 / 7 / 9 / 95 | 0 | 100% | PASS / PASS / PASS | 3 / 2 | `needs_customer_input` |
+
+[Evidence manifest](benchmarks/requirement-001-phase1-hardening/manifest.json) records every session and SHA-256 for each copied byte stream. Each run directory contains the exact HTTP response, untouched final model text, final structured semantic review and telemetry events. Both original group summaries are also retained. An artifact check parsed each final raw draft through the actual planning schema and compared every resulting draft field to its returned plan; all five matched. It also confirmed distinct session IDs, the same source hash, and no fabricated usage or cost fields in the events.
+
+## Product acceptance re-audit
+
+Audit method: for each returned plan, compare the untouched Requirement 001 fixture with every quoted clause source; follow each MUST clause through its owning task and blocking assertion; read the asserted outcome and evidence, rather than treating IDs or assertion counts as proof. Inspect the entire task DAG, all assumptions and questions, the customer-visible architecture, and the event log. In particular, a core-flow scenario must identify the same order across customer and merchant observations. Numeric totals must be recomputable from source items and after requested mutations.
+
+The audit uses the 22 source themes from the unchanged FAIL baseline as a checklist. Generated clause IDs and grouping may differ; each final plan's exact clause, task, criterion and assertion links are preserved in the evidence artifacts.
+
+| Source theme | Required semantic proof in each generated plan |
+| --- | --- |
+| B-R1 Single merchant | One merchant's customer and merchant surfaces share the same orders; no platform tenant flow. |
+| B-R2 Local simulated login | Customer can enter the ordering flow without third-party account, key or real WeChat AppID. |
+| B-R3 Catalog fields | Customer-visible category, name, image, description, price and sale status each have concrete evidence. |
+| B-R4 SKU price | At least two configured SKU prices can be selected and the shown unit price follows the selection. Illustrative cup/spice examples do not become mandatory variants. |
+| B-R5 Cart | Add, change quantity, delete and independently recompute a multi-item total after both mutations. |
+| B-R6 Address | Create, edit and select among addresses; contact, phone and address survive into the chosen order. |
+| B-R7 Order snapshot | Product, SKU, quantity, unit price, total, selected delivery address, contact, phone, status and creation time are individually observable on the persisted order. |
+| B-R8 Mock payment and Adapter | The same order goes from awaiting payment to simulated success and appears in merchant pending work; a second local implementation behind the same interface preserves that business result. |
+| B-R9 Customer order lookup | List, detail and current status reflect the persisted order after merchant actions. |
+| B-R10 Merchant Web | A usable Web management surface is a stated deliverable and is exercised. |
+| B-R11 Catalog management | Merchant creates/edits and lists/delists products, maintains category/SKU, and customer-visible image, price and availability change accordingly. |
+| B-R12 Order handling | Merchant sees list/detail and advances the same order through paid, accepted, preparing, delivering and completed stages. |
+| B-R13 Cancellation | Explicit blocking question chooses actor/stage rules; allowed and forbidden attempts have distinct persisted outcomes. |
+| B-R14 Self delivery | Merchant advances delivery and completion without a courier app or third-party dispatch dependency. |
+| B-R15 Two daily metrics | Separate blocking questions choose coherent order inclusion, payment/cancellation treatment and event dates; fixed orders on distinct creation, payment and completion days yield exact three-day displayed counts and amounts for each option. Unpaid amounts never become transactions. |
+| B-R16 Explicit non-goals | Each of the 15 listed exclusions has a separately checkable scope assertion. |
+| B-R17 Ordered core path | Every customer-specified arrow from login through final customer completion is observed, with one order ID across roles. |
+| B-R18 Real state closure | Refresh or reread confirms persistent transitions, not just a sequence of static pages. |
+| B-R19 Repeatable validation mechanism | A documented, rerunnable delivery check exists and leads to actual business evidence. |
+| B-R20 Engineering gates | Install, typecheck, tests, build, cold/clean start and core flow have separate results; command success never substitutes for a business assertion. |
+| B-R21 Conditional fresh database | If a database is chosen, empty initialization, schema/migration, seed/equivalent data and fresh database startup are verified. |
+| B-R22 No dirty data dependency | A new isolated data environment starts and creates a new order without relying on development leftovers. |
+
+The following are the highest-risk source-to-task-to-blocking-assertion traces in the **actual returned plans**. `AS` IDs are local to each run. The full returned `coverage` arrays and all other source links are in the five unmodified response artifacts.
+
+| Run | Cart: source theme → task → assertions and exact totals | Address and order snapshot | Payment to merchant and full same-order path | Daily metrics |
+| --- | --- | --- | --- | --- |
+| 01 | B-R5 → R5/T3/AS12–15; 45 → 69 → 48 after quantity change and deletion | B-R6–7 → R6–R8/T3–T4/AS16–33; create, edit, select, three address fields and ten persisted order fields | B-R8/B-R17 → R9/T4/AS34–37 and R18/T7/AS61–73; second local Adapter and 13 ordered steps | B-R15 → R15/T6/AS59–60; five orders, three days, paid-then-cancelled amount |
+| 02 | B-R5 → R6/T3/AS19–22; 63 → 81 → 54 | B-R6–7 → R7–R8/T3–T4/AS23–38 | B-R8/B-R17 → R9/T4/AS39–43 and R18/T7/AS79–91 | B-R15 → R16/T6/AS60–61; four orders, three days, paid-then-cancelled amount |
+| 03 | B-R5 → R5/T3/AS17–20; 49 → 61 → 36 | B-R6–7 → R6–R7/T3–T4/AS21–36 | B-R8/B-R17 → R8/T4/AS37–40 and R17/T7/AS74–86 | B-R15 → R15/T6/AS57–58; five orders, three days, paid-then-cancelled amount |
+| 04 | B-R5 → R5/T3/AS17–20; 43 → 55 → 36 | B-R6–7 → R6–R7/T3–T4/AS21–38 | B-R8/B-R17 → R8/T4/AS39–42 and R17/T5/AS56–68 | B-R15 → R15/T6/AS69–70; five orders, three days, paid-then-cancelled amount |
+| 05 | B-R5 → R4/T3/AS10–13; 23 → 30 → 21 | B-R6–7 → R5–R7/T3–T4/AS14–29 | B-R8/B-R17 → R8/T4/AS30–33 and R17/T7/AS58–70 | B-R15 → R15/T6/AS56–57; four orders, three days, paid-then-cancelled amount |
+
+Across all five plans, each generated MUST clause has an exact customer-source excerpt, an owning task, and at least one blocking assertion in a blocking criterion. There are no nonblocking criteria or assertions. Clause grouping varies from 19 to 22 but no source theme disappears. The six visible catalog fields, ten persisted order fields, fifteen explicit non-goals and thirteen ordered cross-role actions remain individually checkable. The order path uses the same order ID for payment, merchant receipt and each state change; the customer rereads completion. Merchant image, price and availability edits are checked on the customer surface. Adapter replaceability is proved by a second local implementation producing the same paid-order and merchant-pending result, without adding real payment integration.
+
+The daily-statistics assertions point to blocking questions whose options contain exact values and contributing order IDs for all three days. For example, run 03's count sample yields `(2,2,1)` by creation day, `(1,2,1)` by successful-payment day including later cancellation, and `(0,1,2)` by completion day. Its turnover sample yields `(30,190,20)` by payment day including later cancellation, `(0,190,20)` excluding it, and `(0,70,140)` by completion day. The day-1 and day-3 differences detect an implementation using the wrong date, while the paid-then-cancelled order distinguishes cancellation treatment. Unpaid orders contribute zero transaction amount in every final plan. The amounts were recomputed from the listed orders during this manual review.
+
+**Requirement understanding:** product goal, two roles, local mini-program and Web delivery surfaces, included scope and all exclusions match the source. SKU examples remain examples. No assumption was promoted into a customer MUST: the recorded assumptions concern local persistence or repeatable test data and date control. **Task DAG:** all five are acyclic, broadly follow local foundation → catalog/checkout → payment → merchant fulfillment → statistics → final validation, and name deliverable outputs and blocking acceptance. A future Executor has an implementable handoff once the three business decisions are answered; the tasks do not rely on ID-only mapping. **Acceptance:** the prior cart, address, merchant-receipt, status-path and command-only false positives are closed by explicit observed outcomes and evidence. `WEAK_ACCEPTANCE = 0`, `MISSING_REQUIREMENTS = 0`, `INVENTED_SCOPE = 0`, `SILENT_BUSINESS_ASSUMPTIONS = 0` in the five final plans after manual review.
+
+**Customer question policy:** every final plan has exactly three blocking questions: cancellation actor/stage, today's order-count population/date, and today's transaction-amount population/date including payment followed by cancellation. This is justified by the *actual* original source, which explicitly says `同时允许合理的：CANCELLED`; the instruction's example assertion that Requirement 001 did not mention cancellation is inconsistent with the fixture and is not used to suppress a real source ambiguity. No plan asks about refunds, delivery fees/distance, multi-merchant operation, independent couriers, discounts, inventory, real payment or implementation technology. Customer answers are still required before approval; alternatives in the plans are examples for a customer decision, not selected business rules.
+
+**Architecture and telemetry:** customer plan content has no Codex, Claude, DeepSeek, model selection, Reviewer/Executor, WorkSession, shell, allowed-path or checkpoint wiring. `Payment Adapter` is in the customer's requirement. Each final event stream was checked against the exact input and contains no requirement text, prompt, response, secret, usage value or cost. It contains allowlisted provider/model identifiers, durations and numeric counts only. The telemetry writer and planning tests additionally cover revision-note exclusion; these five initial-generation sessions had no revision note.
+
+## Final verdict and limits
+
+| Decision | Result |
+| --- | --- |
+| `PHASE1_HARDENING_STATUS` | **PASS** |
+| `PRODUCT_REAUDIT` | **PASS** for the quality of the generated Development Plans |
+| Five real independent Requirement 001 generations | **5/5 PASS** with the original fixture and isolated sessions |
+| MUST blocking assertion coverage | **100% in each run** |
+| Weak acceptance / missing explicit requirement / invented business scope / silent business assumption | **0 / 0 / 0 / 0** in each final run, including manual re-audit |
+| Customer decisions | Three genuine blocking business questions per plan; all five remain `needs_customer_input` and cannot be approved yet |
+| Full project check | `npm run check` **PASS** on Node v24.21.0: 1,214 Node tests and 193 Desktop tests, zero failures; typecheck, unused, migration, exports, repository boundaries and platform checks also pass |
+| Runtime boundary | Existing Runtime regression included in the full check; no Runtime behavior source changed and approval still creates zero Work Sessions |
+
+The plan-quality gates evaluate a proposed future build. They do not assert that the restaurant product has been implemented. A semantic model review is not a formal proof for arbitrary future customer prose, which is why the deterministic gate, independent review, manual benchmark re-audit and fail-closed status remain separate. Provider unavailability or exhaustion of the two-repair limit leaves `planning_failed`, never a green approval badge. The customer must answer the cancellation and two statistic definitions before a plan can move from `needs_customer_input` to approval. This work did not enter Phase 2, freeze a plan, compile a Runtime plan, start an Executor, merge, push or tag.

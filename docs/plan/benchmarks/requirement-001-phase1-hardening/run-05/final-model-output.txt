@@ -1,0 +1,1531 @@
+{
+  "clauses": [
+    {
+      "id": "R1",
+      "statement": "顾客可登录；首版使用无需第三方账号和密钥即可完整本地运行的模拟登录，本次不接入真实微信 AppID。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "1. 登录系统\n\n首版必须支持无需第三方账号和密钥即可完整本地运行的模拟登录。\n\n未来可以接微信登录，但本次 Requirement 001 不要求接入真实微信 AppID。",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R2",
+      "statement": "顾客可浏览商品，并看到分类、名称、图片、描述、价格和可售状态。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "2. 浏览商品\n\n能够看到：\n\n- 商品分类\n- 商品名称\n- 图片\n- 描述\n- 价格\n- 可售状态",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R3",
+      "statement": "部分商品可配置 SKU 或规格；顾客选择不同 SKU 时可看到不同价格。列举的规格仅作示例。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "3. 商品规格\n\n部分商品允许存在 SKU / 规格，例如：\n\n- 大杯 / 中杯\n- 微辣 / 中辣\n- 不同套餐\n\n选择不同 SKU 后价格可以不同。",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R4",
+      "statement": "顾客可加入商品、修改数量、删除商品并查看正确的购物车合计金额。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "4. 购物车\n\n用户能够：\n\n- 加入商品\n- 修改数量\n- 删除商品\n- 查看合计金额",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R5",
+      "statement": "顾客可新建、编辑地址，并选择本次订单的配送地址。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "5. 配送地址\n\n用户能够：\n\n- 新建地址\n- 编辑地址\n- 选择本次订单配送地址",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R6",
+      "statement": "配送地址至少包含联系人、手机号和地址。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "至少包括：\n\n- 联系人\n- 手机号\n- 地址",
+        "location": "顾客端／配送地址",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R7",
+      "statement": "提交的订单至少记录商品、SKU、数量、单价、总金额、配送地址、联系人、手机号、订单状态和创建时间。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "6. 提交订单\n\n订单至少包含：\n\n- 商品\n- SKU\n- 数量\n- 单价\n- 总金额\n- 配送地址\n- 联系人\n- 手机号\n- 订单状态\n- 创建时间",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R8",
+      "statement": "通过 Mock Payment／Payment Adapter 完成下单、模拟支付成功、商家收到待处理订单的流程；支付实现以后可替换，本次不接真实支付渠道。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "7. 支付\n\nRequirement 001 不要求接真实支付渠道。\n\n使用 Mock Payment / Payment Adapter。\n\n用户应该能够完成：\n\n下单 → 模拟支付成功 → 商家收到待处理订单\n\n未来应该容易替换为真实支付实现。",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R9",
+      "statement": "顾客可查看订单列表、订单详情和当前订单状态。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "8. 查看订单\n\n用户可以：\n\n- 查看订单列表\n- 查看订单详情\n- 查看当前订单状态",
+        "location": "顾客端",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R10",
+      "statement": "商家使用 Web 管理后台。",
+      "type": "delivery",
+      "priority": "must",
+      "source": {
+        "excerpt": "商家需要一个 Web 管理后台。",
+        "location": "商家后台",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R11",
+      "statement": "商家可创建和编辑商品、上架和下架商品、管理商品分类及 SKU。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "## 商品管理\n\n商家可以：\n\n- 创建商品\n- 编辑商品\n- 上架 / 下架商品\n- 管理商品分类\n- 管理 SKU",
+        "location": "商家后台／商品管理",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R12",
+      "statement": "商家可查看订单列表和订单详情。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "商家可以看到订单列表和订单详情。",
+        "location": "商家后台／订单管理",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R13",
+      "statement": "商家可推进订单状态，覆盖待支付、已支付、已接单、制作中、配送中、已完成的完整闭环，并支持合理的取消状态。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "商家能够推进订单状态。\n\n建议业务状态至少覆盖：\n\n`PENDING_PAYMENT`\n→ `PAID`\n→ `ACCEPTED`\n→ `PREPARING`\n→ `DELIVERING`\n→ `COMPLETED`\n\n同时允许合理的：\n\n`CANCELLED`\n\n具体状态模型可以由系统规划阶段优化，但最终必须支持完整业务闭环。",
+        "location": "商家后台／订单管理",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": true,
+        "note": "取消的可操作角色和阶段未指定，见 Q1；具体状态名称可优化，业务阶段不得缺失。"
+      }
+    },
+    {
+      "id": "R14",
+      "statement": "商家自行配送，并能在后台将订单推进至配送中和已完成。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "## 自营配送\n\n本项目不是第三方配送平台。\n\n商家自己跑腿配送。\n\nRequirement 001 不需要独立骑手 App。\n\n后台能够将订单推进到：\n\n- 配送中\n- 已完成\n\n即可。",
+        "location": "商家后台／自营配送",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R15",
+      "statement": "后台显示今日订单数和今日成交金额，不要求复杂 BI。",
+      "type": "functional",
+      "priority": "must",
+      "source": {
+        "excerpt": "## 基础统计\n\n后台至少能够看到：\n\n- 今日订单数\n- 今日成交金额\n\n不要求复杂 BI。",
+        "location": "商家后台／基础统计",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": true,
+        "note": "两项指标各自的计入订单及归属日期未指定，见 Q2、Q3。"
+      }
+    },
+    {
+      "id": "R16",
+      "statement": "首版排除列明的十五项非目标，不扩张业务范围。",
+      "type": "constraint",
+      "priority": "must",
+      "source": {
+        "excerpt": "Requirement 001 明确不做：\n\n- 多商户平台\n- 骑手独立 App\n- 智能派单\n- 地图路线规划\n- 优惠券系统\n- 积分\n- 会员等级\n- 分销\n- 营销中心\n- 复杂 RBAC\n- 真实微信支付\n- 真实微信登录\n- 云端生产部署\n- 高并发架构\n- 微服务\n\n不要主动扩张范围。",
+        "location": "非目标",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R17",
+      "statement": "顾客在可运行的小程序中从登录走到支付，商家在 Web 后台完成接单、制作、配送和完成，顾客最终看到订单完成；流程必须有真实持久状态闭环。",
+      "type": "delivery",
+      "priority": "must",
+      "source": {
+        "excerpt": "必须能够实际执行：\n\n顾客登录\n→ 浏览商品\n→ 选择 SKU\n→ 加入购物车\n→ 创建 / 选择地址\n→ 创建订单\n→ 模拟支付\n→ 商家后台出现订单\n→ 商家接单\n→ 商家开始制作\n→ 商家开始配送\n→ 商家完成订单\n→ 顾客端看到订单完成\n\n任何只做页面、没有真实状态闭环的实现都不算通过。",
+        "location": "最终核心验收路径",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R18",
+      "statement": "交付明确、可重复执行的安装、类型检查、测试、构建、冷启动和核心业务流程验证机制。",
+      "type": "quality",
+      "priority": "must",
+      "source": {
+        "excerpt": "最终项目至少需要存在明确且可重复执行的验证机制。\n\nNovaWing 应自行确定合理工程方案，但最终至少验证：\n\n- install\n- typecheck\n- tests\n- build\n- cold start / clean start\n- 核心业务流程",
+        "location": "工程验收",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R19",
+      "statement": "若采用数据库，验证空环境初始化、schema／migration、seed 或等效测试数据以及全新数据库启动，不依赖遗留脏数据。",
+      "type": "quality",
+      "priority": "must",
+      "source": {
+        "excerpt": "如果项目采用数据库，需要验证：\n\n- 空环境初始化\n- schema / migration\n- seed 或等效测试数据方案\n- fresh database 可以启动\n\n不能依赖开发过程中遗留下来的本地脏数据才能运行。",
+        "location": "工程验收",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    },
+    {
+      "id": "R20",
+      "statement": "交付单商户餐饮点餐系统，包含顾客小程序和商家管理后台，不采用平台型多商户模式。",
+      "type": "delivery",
+      "priority": "must",
+      "source": {
+        "excerpt": "我要一个单商户餐饮点餐系统。\n\n顾客通过小程序完成浏览商品、选择规格、加入购物车、填写配送地址、下单和查看订单状态。\n\n商家有一个管理后台，可以维护商品、处理订单，并完成自己的跑腿配送流程。\n\n目前只有一个商户，不考虑平台型多商户模式。",
+        "location": "产品背景",
+        "origin": "customer_requirement"
+      },
+      "ambiguity": {
+        "ambiguous": false,
+        "note": ""
+      }
+    }
+  ],
+  "analysis": {
+    "productGoal": "交付可在本地完整运行的单商户餐饮点餐系统，让同一订单在顾客小程序与商家 Web 后台之间完成支付、制作和自营配送闭环。",
+    "summary": "顾客浏览和选择商品、管理购物车与地址、创建并模拟支付订单、查看状态；商家维护目录、处理订单并查看基础统计。",
+    "userRoles": [
+      {
+        "id": "U1",
+        "name": "顾客",
+        "goals": [
+          "在小程序完成点餐和模拟支付",
+          "管理配送地址",
+          "查看自己的订单与状态"
+        ]
+      },
+      {
+        "id": "U2",
+        "name": "商家",
+        "goals": [
+          "在 Web 后台维护商品、分类和 SKU",
+          "接单、制作并自行配送",
+          "查看今日订单数和成交金额"
+        ]
+      }
+    ],
+    "businessFlows": [
+      {
+        "id": "F1",
+        "title": "顾客点餐至商家配送完成",
+        "steps": [
+          "顾客登录小程序",
+          "浏览商品",
+          "选择 SKU",
+          "加入购物车",
+          "创建或选择地址",
+          "创建订单",
+          "模拟支付成功",
+          "商家后台出现待处理订单",
+          "商家接单",
+          "商家开始制作",
+          "商家开始配送",
+          "商家完成订单",
+          "顾客看到订单完成"
+        ],
+        "requirementIds": [
+          "R1",
+          "R2",
+          "R3",
+          "R4",
+          "R5",
+          "R7",
+          "R8",
+          "R9",
+          "R12",
+          "R13",
+          "R14",
+          "R17"
+        ]
+      }
+    ]
+  },
+  "productScope": {
+    "inScope": [
+      "单商户顾客小程序",
+      "商家 Web 管理后台",
+      "商品、分类、SKU 和可售状态",
+      "购物车、配送地址、订单和模拟支付",
+      "商家自营配送状态闭环",
+      "今日订单数和今日成交金额",
+      "本地冷启动与重复验证"
+    ],
+    "outOfScope": [
+      "多商户平台",
+      "骑手独立 App",
+      "智能派单",
+      "地图路线规划",
+      "优惠券系统",
+      "积分",
+      "会员等级",
+      "分销",
+      "营销中心",
+      "复杂 RBAC",
+      "真实微信支付",
+      "真实微信登录",
+      "云端生产部署",
+      "高并发架构",
+      "微服务",
+      "复杂 BI",
+      "第三方配送平台"
+    ]
+  },
+  "architecture": {
+    "summary": "顾客小程序与商家 Web 后台共用本地业务服务和持久化订单状态；支付通过可替换接口提供本地模拟实现。",
+    "components": [
+      "顾客小程序",
+      "商家 Web 后台",
+      "商品、购物车、地址和订单业务服务",
+      "Payment Adapter 与本地 Mock Payment 实现",
+      "关系型数据库及迁移、测试数据方案",
+      "可重复执行的本地验收流程"
+    ],
+    "decisions": [
+      "采用单商户数据模型；不引入多租户概念。",
+      "订单保存下单时的商品、SKU、单价及配送联系信息快照，使后续商品和地址编辑不改写已创建订单。",
+      "订单金额由服务端按订单行的单价与数量计算，并在顾客和商家视图中读取同一订单结果。",
+      "Payment Adapter 通过统一接口调用；本地验收使用两个实现验证可替换性，不接真实支付渠道。",
+      "取消权限与阶段、统计口径在 Q1 至 Q3 确定后固化为状态规则和验收结果。"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "建立单商户业务服务与持久化",
+      "objective": "提供商品、地址、订单快照和状态流转所需的数据与接口，并支持全新数据库初始化。",
+      "requirementIds": [
+        "R7",
+        "R13",
+        "R19",
+        "R20"
+      ],
+      "outputs": [
+        "单商户数据模型与迁移",
+        "业务接口和状态流转规则",
+        "空库初始化及测试数据方案"
+      ],
+      "dependencyIds": [],
+      "acceptanceCriterionIds": [
+        "A3",
+        "A5",
+        "A9"
+      ],
+      "complexity": "large"
+    },
+    {
+      "id": "T2",
+      "title": "交付顾客小程序的登录与商品浏览",
+      "objective": "让顾客在无需第三方账号和密钥的本地环境中登录、浏览商品并选择可配置 SKU。",
+      "requirementIds": [
+        "R1",
+        "R2",
+        "R3",
+        "R20"
+      ],
+      "outputs": [
+        "可运行的顾客小程序",
+        "模拟登录与目录、SKU 页面"
+      ],
+      "dependencyIds": [
+        "T1"
+      ],
+      "acceptanceCriterionIds": [
+        "A1"
+      ],
+      "complexity": "medium"
+    },
+    {
+      "id": "T3",
+      "title": "交付购物车和地址",
+      "objective": "支持购物车项目及数量变更、金额重算和配送地址的创建、编辑、选择。",
+      "requirementIds": [
+        "R4",
+        "R5",
+        "R6"
+      ],
+      "outputs": [
+        "小程序购物车与地址流程",
+        "金额计算和地址保存接口"
+      ],
+      "dependencyIds": [
+        "T1",
+        "T2"
+      ],
+      "acceptanceCriterionIds": [
+        "A2"
+      ],
+      "complexity": "medium"
+    },
+    {
+      "id": "T4",
+      "title": "交付订单、模拟支付与顾客订单视图",
+      "objective": "形成可持久化订单，通过可替换支付接口完成模拟支付并展示订单状态。",
+      "requirementIds": [
+        "R7",
+        "R8",
+        "R9"
+      ],
+      "outputs": [
+        "下单与订单查询流程",
+        "Payment Adapter 及两个本地验收实现",
+        "顾客订单列表和详情"
+      ],
+      "dependencyIds": [
+        "T1",
+        "T3"
+      ],
+      "acceptanceCriterionIds": [
+        "A3"
+      ],
+      "complexity": "large"
+    },
+    {
+      "id": "T5",
+      "title": "交付商家 Web 商品与订单管理",
+      "objective": "让商家维护顾客可见的目录字段，并查看新订单及详情。",
+      "requirementIds": [
+        "R10",
+        "R11",
+        "R12"
+      ],
+      "outputs": [
+        "商家 Web 后台",
+        "商品、分类、SKU 管理",
+        "订单列表和详情"
+      ],
+      "dependencyIds": [
+        "T1",
+        "T4"
+      ],
+      "acceptanceCriterionIds": [
+        "A4"
+      ],
+      "complexity": "large"
+    },
+    {
+      "id": "T6",
+      "title": "交付商家履约与基础统计",
+      "objective": "实现接单至自营配送完成的状态闭环及经客户确认口径的两项今日统计。",
+      "requirementIds": [
+        "R13",
+        "R14",
+        "R15"
+      ],
+      "outputs": [
+        "商家状态操作",
+        "顾客同步可见的订单状态",
+        "今日订单数与今日成交金额"
+      ],
+      "dependencyIds": [
+        "T4",
+        "T5"
+      ],
+      "acceptanceCriterionIds": [
+        "A5",
+        "A6"
+      ],
+      "complexity": "large"
+    },
+    {
+      "id": "T7",
+      "title": "完成全流程与工程验收",
+      "objective": "在干净本地环境执行小程序到后台的同一订单闭环，验证全部非目标边界及重复启动机制。",
+      "requirementIds": [
+        "R16",
+        "R17",
+        "R18",
+        "R19"
+      ],
+      "outputs": [
+        "逐步可复现的验收记录",
+        "安装、检查、测试、构建与冷启动说明",
+        "非目标边界核查结果"
+      ],
+      "dependencyIds": [
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6"
+      ],
+      "acceptanceCriterionIds": [
+        "A7",
+        "A8",
+        "A9"
+      ],
+      "complexity": "medium"
+    }
+  ],
+  "acceptancePlan": {
+    "strategy": "在全新本地环境运行真实小程序和商家 Web 后台，使用同一订单 ID 追踪跨端持久状态。金额使用独立计算的多行数据核对；统计使用跨三日及支付后取消的固定订单组，按 Q1 至 Q3 的答案确定最终断言。",
+    "criteria": [
+      {
+        "id": "A1",
+        "requirementIds": [
+          "R1",
+          "R2",
+          "R3",
+          "R20"
+        ],
+        "description": "顾客在可运行的小程序登录并浏览单商户商品。",
+        "level": "platform",
+        "expectedEvidence": "小程序实际交互记录、同一目录数据的读取结果及商家配置对照。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS1",
+            "requirementId": "R20",
+            "observableBehavior": "打开顾客小程序并进入单商户点餐流程。",
+            "expectedOutcome": "可完成顾客点餐入口，商品均属于当前单一商户。",
+            "expectedEvidence": "小程序运行画面及对应目录记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS2",
+            "requirementId": "R1",
+            "observableBehavior": "在没有第三方账号、密钥和真实微信 AppID 的本地环境执行模拟登录。",
+            "expectedOutcome": "顾客获得可用于后续点餐的登录状态。",
+            "expectedEvidence": "小程序登录交互及随后以该顾客身份读取目录的记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS3",
+            "requirementId": "R2",
+            "observableBehavior": "浏览商品分类。",
+            "expectedOutcome": "小程序显示商家维护的分类。",
+            "expectedEvidence": "分类页面与后台分类记录对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS4",
+            "requirementId": "R2",
+            "observableBehavior": "查看商品名称。",
+            "expectedOutcome": "显示该商品的当前名称。",
+            "expectedEvidence": "小程序商品卡片与后台名称记录对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS5",
+            "requirementId": "R2",
+            "observableBehavior": "查看商品图片。",
+            "expectedOutcome": "显示该商品的当前图片。",
+            "expectedEvidence": "小程序实际渲染图片与后台图片配置对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS6",
+            "requirementId": "R2",
+            "observableBehavior": "查看商品描述。",
+            "expectedOutcome": "显示该商品的当前描述。",
+            "expectedEvidence": "小程序商品详情与后台描述记录对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS7",
+            "requirementId": "R2",
+            "observableBehavior": "查看商品价格。",
+            "expectedOutcome": "显示该商品当前配置的价格。",
+            "expectedEvidence": "小程序价格与后台价格记录对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS8",
+            "requirementId": "R2",
+            "observableBehavior": "查看商品可售状态。",
+            "expectedOutcome": "顾客能区分可售与不可售商品。",
+            "expectedEvidence": "上架和下架后的小程序实际状态记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS9",
+            "requirementId": "R3",
+            "observableBehavior": "商家为一个商品配置两个不同价格的 SKU，顾客逐一选择。",
+            "expectedOutcome": "两个 SKU 均可选择，顾客看到各自配置的价格。",
+            "expectedEvidence": "SKU 配置、两次小程序选择及价格对照。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A2",
+        "requirementIds": [
+          "R4",
+          "R5",
+          "R6"
+        ],
+        "description": "购物车和地址在顾客小程序中可实际操作。",
+        "level": "ui",
+        "expectedEvidence": "多商品购物车变更记录及地址创建、编辑、选用后的订单预览。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS10",
+            "requirementId": "R4",
+            "observableBehavior": "加入单价 7 元的 SKU 两件及单价 9 元的另一 SKU 一件。",
+            "expectedOutcome": "购物车保留两种商品行和对应数量。",
+            "expectedEvidence": "购物车行项目与数量记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS11",
+            "requirementId": "R4",
+            "observableBehavior": "将 7 元 SKU 的数量从两件改为三件。",
+            "expectedOutcome": "数量保存为三件，合计从独立计算的 2×7＋1×9＝23 元更新为 3×7＋1×9＝30 元。",
+            "expectedEvidence": "变更前后行项目、数量、显示金额及独立算式。",
+            "blocking": true
+          },
+          {
+            "id": "AS12",
+            "requirementId": "R4",
+            "observableBehavior": "删除 9 元 SKU。",
+            "expectedOutcome": "该行消失，合计重新计算为 3×7＝21 元。",
+            "expectedEvidence": "删除后的购物车行项目、显示金额及独立算式。",
+            "blocking": true
+          },
+          {
+            "id": "AS13",
+            "requirementId": "R4",
+            "observableBehavior": "查看含两种 SKU、数量分别为二和一的购物车合计。",
+            "expectedOutcome": "显示独立计算的 23 元；数量修改及删除后的值分别为 30 元和 21 元。",
+            "expectedEvidence": "三个阶段的行项目、单价、数量与独立算式对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS14",
+            "requirementId": "R5",
+            "observableBehavior": "新建配送地址。",
+            "expectedOutcome": "地址保存并可供当前顾客选择。",
+            "expectedEvidence": "新建提交与再次打开地址列表的记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS15",
+            "requirementId": "R5",
+            "observableBehavior": "编辑已保存地址。",
+            "expectedOutcome": "重新打开时显示修改后的地址内容。",
+            "expectedEvidence": "编辑前后地址详情记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS16",
+            "requirementId": "R5",
+            "observableBehavior": "为本次订单选择一个已保存地址。",
+            "expectedOutcome": "订单预览采用所选地址，而非其他已保存地址。",
+            "expectedEvidence": "地址列表选中项与订单预览对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS17",
+            "requirementId": "R6",
+            "observableBehavior": "新建并重新打开配送地址。",
+            "expectedOutcome": "联系人正确保存。",
+            "expectedEvidence": "地址表单与重新打开的联系人值对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS18",
+            "requirementId": "R6",
+            "observableBehavior": "新建并重新打开配送地址。",
+            "expectedOutcome": "手机号正确保存。",
+            "expectedEvidence": "地址表单与重新打开的手机号值对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS19",
+            "requirementId": "R6",
+            "observableBehavior": "新建并重新打开配送地址。",
+            "expectedOutcome": "地址正文正确保存。",
+            "expectedEvidence": "地址表单与重新打开的地址正文对照。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A3",
+        "requirementIds": [
+          "R7",
+          "R8",
+          "R9"
+        ],
+        "description": "订单字段完整，模拟支付后可在顾客端持续查询。",
+        "level": "integration",
+        "expectedEvidence": "同一订单 ID 的创建记录、支付前后记录、顾客列表和详情。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS20",
+            "requirementId": "R7",
+            "observableBehavior": "提交含两种商品行的订单并重新读取。",
+            "expectedOutcome": "每行记录所购商品。",
+            "expectedEvidence": "提交内容和订单详情中的商品对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS21",
+            "requirementId": "R7",
+            "observableBehavior": "提交含 SKU 的订单并重新读取。",
+            "expectedOutcome": "订单行保留所选 SKU。",
+            "expectedEvidence": "选择记录与订单详情中的 SKU 对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS22",
+            "requirementId": "R7",
+            "observableBehavior": "提交数量分别为二和一的订单行。",
+            "expectedOutcome": "订单分别保存数量二和一。",
+            "expectedEvidence": "购物车提交内容与订单行数量对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS23",
+            "requirementId": "R7",
+            "observableBehavior": "提交单价分别为 7 元和 9 元的订单行。",
+            "expectedOutcome": "订单行单价分别保存为 7 元和 9 元。",
+            "expectedEvidence": "下单价格与订单详情单价对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS24",
+            "requirementId": "R7",
+            "observableBehavior": "查看两行订单总金额，再以数量三和一重新下单。",
+            "expectedOutcome": "两次订单总金额分别等于独立计算的 23 元和 30 元。",
+            "expectedEvidence": "订单行、数量、单价、显示总额及两次独立算式。",
+            "blocking": true
+          },
+          {
+            "id": "AS25",
+            "requirementId": "R7",
+            "observableBehavior": "选择配送地址后提交订单。",
+            "expectedOutcome": "订单保存所选配送地址。",
+            "expectedEvidence": "地址选择记录与订单详情地址对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS26",
+            "requirementId": "R7",
+            "observableBehavior": "选择地址后提交订单。",
+            "expectedOutcome": "订单保存所选地址的联系人。",
+            "expectedEvidence": "所选地址和订单详情联系人对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS27",
+            "requirementId": "R7",
+            "observableBehavior": "选择地址后提交订单。",
+            "expectedOutcome": "订单保存所选地址的手机号。",
+            "expectedEvidence": "所选地址和订单详情手机号对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS28",
+            "requirementId": "R7",
+            "observableBehavior": "创建订单并模拟支付。",
+            "expectedOutcome": "订单状态从待支付变为已支付，并可重新读取。",
+            "expectedEvidence": "同一订单 ID 的支付前后持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS29",
+            "requirementId": "R7",
+            "observableBehavior": "创建订单后重新读取。",
+            "expectedOutcome": "订单含创建时间，重新读取时保持同一值。",
+            "expectedEvidence": "创建响应和后续详情中的时间值对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS30",
+            "requirementId": "R8",
+            "observableBehavior": "顾客创建订单。",
+            "expectedOutcome": "生成待支付订单，尚未显示模拟支付成功。",
+            "expectedEvidence": "订单创建结果及支付前持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS31",
+            "requirementId": "R8",
+            "observableBehavior": "通过本地 Mock Payment 完成模拟支付。",
+            "expectedOutcome": "同一订单变为支付成功。",
+            "expectedEvidence": "模拟支付结果和订单持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS32",
+            "requirementId": "R8",
+            "observableBehavior": "模拟支付成功后打开商家后台。",
+            "expectedOutcome": "同一订单作为待处理订单出现。",
+            "expectedEvidence": "支付结果与商家订单列表中的同一订单 ID。",
+            "blocking": true
+          },
+          {
+            "id": "AS33",
+            "requirementId": "R8",
+            "observableBehavior": "将 Payment Adapter 的本地模拟实现替换为第二个本地测试实现，再完成相同订单流程。",
+            "expectedOutcome": "同一接口下仍可创建订单、确认支付成功并让商家收到待处理订单。",
+            "expectedEvidence": "两个实现分别运行所得的订单状态与后台待处理结果；无真实支付渠道调用。",
+            "blocking": true
+          },
+          {
+            "id": "AS34",
+            "requirementId": "R9",
+            "observableBehavior": "顾客打开订单列表。",
+            "expectedOutcome": "能找到自己刚创建的订单。",
+            "expectedEvidence": "列表中同一订单 ID。",
+            "blocking": true
+          },
+          {
+            "id": "AS35",
+            "requirementId": "R9",
+            "observableBehavior": "顾客打开该订单详情。",
+            "expectedOutcome": "显示该订单的商品、金额和配送信息。",
+            "expectedEvidence": "详情与持久订单记录对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS36",
+            "requirementId": "R9",
+            "observableBehavior": "商家推进订单后顾客重新查看当前状态。",
+            "expectedOutcome": "顾客看到该订单最新持久状态。",
+            "expectedEvidence": "商家操作、状态记录与顾客界面同一订单 ID 对照。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A4",
+        "requirementIds": [
+          "R10",
+          "R11",
+          "R12"
+        ],
+        "description": "商家 Web 后台可维护顾客所见目录并查看订单。",
+        "level": "ui",
+        "expectedEvidence": "后台操作记录与顾客小程序实际展示、商家订单视图对照。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS37",
+            "requirementId": "R10",
+            "observableBehavior": "商家在浏览器打开管理后台并执行目录及订单操作。",
+            "expectedOutcome": "Web 后台可实际交互并保存结果。",
+            "expectedEvidence": "浏览器操作及重新打开后的数据。",
+            "blocking": true
+          },
+          {
+            "id": "AS38",
+            "requirementId": "R11",
+            "observableBehavior": "商家创建含分类、名称、图片、描述、价格和可售状态的商品。",
+            "expectedOutcome": "商品保存，顾客小程序分别显示所配置的分类、名称、图片、描述、价格和可售状态。",
+            "expectedEvidence": "后台各字段保存值与小程序各对应字段逐项对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS39",
+            "requirementId": "R11",
+            "observableBehavior": "商家逐项编辑商品分类、名称、图片、描述和价格。",
+            "expectedOutcome": "重新打开后各编辑值保存，顾客小程序逐项显示新值。",
+            "expectedEvidence": "每项编辑前后后台值及小程序对应展示对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS40",
+            "requirementId": "R11",
+            "observableBehavior": "商家将商品下架，再重新上架。",
+            "expectedOutcome": "顾客小程序先观察到不可售，再观察到可售，且不可售时无法作为可售商品下单。",
+            "expectedEvidence": "两次后台状态与两次顾客小程序实际状态、下单结果。",
+            "blocking": true
+          },
+          {
+            "id": "AS41",
+            "requirementId": "R11",
+            "observableBehavior": "商家创建和修改商品分类。",
+            "expectedOutcome": "分类变更保存并反映在顾客浏览目录中。",
+            "expectedEvidence": "后台分类变更与小程序分类显示对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS42",
+            "requirementId": "R11",
+            "observableBehavior": "商家为商品创建和修改 SKU 及其价格。",
+            "expectedOutcome": "顾客可选择已更新 SKU，并看到对应新价格。",
+            "expectedEvidence": "后台 SKU 记录与小程序选择和价格对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS43",
+            "requirementId": "R12",
+            "observableBehavior": "商家打开订单列表。",
+            "expectedOutcome": "显示刚支付的同一订单。",
+            "expectedEvidence": "顾客支付结果与后台列表订单 ID 对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS44",
+            "requirementId": "R12",
+            "observableBehavior": "商家打开该订单详情。",
+            "expectedOutcome": "显示该订单商品、SKU、数量、金额、配送联系信息和状态。",
+            "expectedEvidence": "商家详情与顾客订单详情及持久记录对照。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A5",
+        "requirementIds": [
+          "R13",
+          "R14"
+        ],
+        "description": "商家推进订单及自营配送，取消规则按 Q1 确定。",
+        "level": "integration",
+        "expectedEvidence": "同一订单 ID 的逐次后台操作、持久状态和顾客所见状态；取消允许及拒绝操作记录。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS45",
+            "requirementId": "R13",
+            "observableBehavior": "创建订单并在支付前读取状态。",
+            "expectedOutcome": "处于待支付业务阶段。",
+            "expectedEvidence": "订单创建后的持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS46",
+            "requirementId": "R13",
+            "observableBehavior": "模拟支付成功。",
+            "expectedOutcome": "同一订单进入已支付业务阶段。",
+            "expectedEvidence": "支付前后持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS47",
+            "requirementId": "R13",
+            "observableBehavior": "商家接单。",
+            "expectedOutcome": "同一订单进入已接单业务阶段。",
+            "expectedEvidence": "后台操作与持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS48",
+            "requirementId": "R13",
+            "observableBehavior": "商家开始制作。",
+            "expectedOutcome": "同一订单进入制作中业务阶段。",
+            "expectedEvidence": "后台操作与持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS49",
+            "requirementId": "R13",
+            "observableBehavior": "商家开始配送。",
+            "expectedOutcome": "同一订单进入配送中业务阶段。",
+            "expectedEvidence": "后台操作与持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS50",
+            "requirementId": "R13",
+            "observableBehavior": "商家完成订单。",
+            "expectedOutcome": "同一订单进入已完成业务阶段。",
+            "expectedEvidence": "后台操作与持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS51",
+            "requirementId": "R13",
+            "observableBehavior": "按 Q1 选定的角色和阶段执行一次允许的取消操作。",
+            "expectedOutcome": "该订单持久状态变为已取消。",
+            "expectedEvidence": "允许角色、操作前阶段及重新读取的取消状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS52",
+            "requirementId": "R13",
+            "observableBehavior": "由 Q1 选定规则禁止的角色尝试取消订单。",
+            "expectedOutcome": "操作被拒绝，订单持久状态保持原值。",
+            "expectedEvidence": "操作者、拒绝结果和操作前后持久状态对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS53",
+            "requirementId": "R13",
+            "observableBehavior": "在 Q1 选定规则禁止的业务阶段尝试取消订单。",
+            "expectedOutcome": "操作被拒绝，订单持久状态保持原值。",
+            "expectedEvidence": "业务阶段、拒绝结果和操作前后持久状态对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS54",
+            "requirementId": "R14",
+            "observableBehavior": "商家在后台将已制作订单标记为配送中。",
+            "expectedOutcome": "无需骑手 App，该订单持久状态及顾客所见状态均为配送中。",
+            "expectedEvidence": "后台操作、持久状态和顾客小程序同一订单显示。",
+            "blocking": true
+          },
+          {
+            "id": "AS55",
+            "requirementId": "R14",
+            "observableBehavior": "商家在后台将配送中订单标记为已完成。",
+            "expectedOutcome": "无需第三方配送平台，该订单持久状态及顾客所见状态均为已完成。",
+            "expectedEvidence": "后台操作、持久状态和顾客小程序同一订单显示。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A6",
+        "requirementIds": [
+          "R15"
+        ],
+        "description": "今日订单数与今日成交金额按客户选定口径跨三日核算。",
+        "level": "integration",
+        "expectedEvidence": "固定订单组的创建、支付、完成、取消事件时间及金额；三日后台显示与独立计算表。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS56",
+            "requirementId": "R15",
+            "observableBehavior": "建立统计订单组：O1 第 1 日创建、第 2 日成功支付、第 3 日完成，金额 2×7＋1×9＝23 元；O2 第 1 日创建并成功支付、第 3 日取消，金额 17 元；O3 第 2 日创建且未支付，金额 11 元；O4 第 3 日创建、成功支付并完成，金额 31 元。分别查看第 1、2、3 日的今日订单数。",
+            "expectedOutcome": "按 Q2 所选完整口径，三日数值和贡献订单 ID 精确匹配 Q2 对应选项；O1 的三种事件日期及 O2 的支付后取消均参与口径核对。",
+            "expectedEvidence": "四单事件记录、按所选口径逐单分类及三个日期的后台订单数与独立计数。",
+            "blocking": true
+          },
+          {
+            "id": "AS57",
+            "requirementId": "R15",
+            "observableBehavior": "对同一 O1 至 O4 订单组分别查看第 1、2、3 日的今日成交金额。",
+            "expectedOutcome": "按 Q3 所选完整口径，三日金额和贡献订单 ID 精确匹配 Q3 对应选项；未支付 O3 不计入成交金额。",
+            "expectedEvidence": "支付、完成、取消事件记录；逐单金额算式及三个日期的后台金额与独立汇总。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A7",
+        "requirementIds": [
+          "R17"
+        ],
+        "description": "按要求顺序实际执行同一订单的十三步跨端闭环。",
+        "level": "platform",
+        "expectedEvidence": "按时间排序的小程序和后台交互记录，全部步骤关联同一订单 ID。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS58",
+            "requirementId": "R17",
+            "observableBehavior": "顾客在小程序登录。",
+            "expectedOutcome": "登录状态可供本次下单使用。",
+            "expectedEvidence": "登录后小程序顾客身份及后续订单归属。",
+            "blocking": true
+          },
+          {
+            "id": "AS59",
+            "requirementId": "R17",
+            "observableBehavior": "顾客浏览商品。",
+            "expectedOutcome": "实际看到可选商品。",
+            "expectedEvidence": "小程序目录交互记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS60",
+            "requirementId": "R17",
+            "observableBehavior": "顾客选择 SKU。",
+            "expectedOutcome": "所选 SKU 进入本次购买内容。",
+            "expectedEvidence": "SKU 选择记录与后续订单行对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS61",
+            "requirementId": "R17",
+            "observableBehavior": "顾客加入购物车。",
+            "expectedOutcome": "所选商品和 SKU 出现在购物车。",
+            "expectedEvidence": "加入动作及购物车行项目。",
+            "blocking": true
+          },
+          {
+            "id": "AS62",
+            "requirementId": "R17",
+            "observableBehavior": "顾客创建或选择地址。",
+            "expectedOutcome": "本次订单预览使用该地址。",
+            "expectedEvidence": "地址操作与订单预览对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS63",
+            "requirementId": "R17",
+            "observableBehavior": "顾客创建订单。",
+            "expectedOutcome": "生成带商品和地址信息的持久订单 ID。",
+            "expectedEvidence": "小程序提交结果及重新读取的订单。",
+            "blocking": true
+          },
+          {
+            "id": "AS64",
+            "requirementId": "R17",
+            "observableBehavior": "顾客模拟支付。",
+            "expectedOutcome": "该订单成为已支付订单。",
+            "expectedEvidence": "支付动作及同一订单持久状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS65",
+            "requirementId": "R17",
+            "observableBehavior": "商家打开后台订单列表。",
+            "expectedOutcome": "同一已支付订单出现为待处理订单。",
+            "expectedEvidence": "后台列表与支付订单 ID 对照。",
+            "blocking": true
+          },
+          {
+            "id": "AS66",
+            "requirementId": "R17",
+            "observableBehavior": "商家接单。",
+            "expectedOutcome": "同一订单成为已接单。",
+            "expectedEvidence": "后台操作及重新读取状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS67",
+            "requirementId": "R17",
+            "observableBehavior": "商家开始制作。",
+            "expectedOutcome": "同一订单成为制作中。",
+            "expectedEvidence": "后台操作及重新读取状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS68",
+            "requirementId": "R17",
+            "observableBehavior": "商家开始配送。",
+            "expectedOutcome": "同一订单成为配送中。",
+            "expectedEvidence": "后台操作及重新读取状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS69",
+            "requirementId": "R17",
+            "observableBehavior": "商家完成订单。",
+            "expectedOutcome": "同一订单成为已完成。",
+            "expectedEvidence": "后台操作及重新读取状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS70",
+            "requirementId": "R17",
+            "observableBehavior": "顾客重新打开该订单。",
+            "expectedOutcome": "小程序显示同一订单已完成，重新进入后仍保持已完成。",
+            "expectedEvidence": "顾客订单 ID、完成状态及重新进入后的显示。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A8",
+        "requirementIds": [
+          "R16",
+          "R18"
+        ],
+        "description": "验证明确排除的范围和可重复工程验收步骤。",
+        "level": "delivery",
+        "expectedEvidence": "交付清单、可运行界面与服务边界核查，以及从干净环境执行的逐项验证记录。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS71",
+            "requirementId": "R16",
+            "observableBehavior": "核查交付的商户入口与数据模型。",
+            "expectedOutcome": "没有多商户平台开户或跨商户经营流程。",
+            "expectedEvidence": "交付入口和商户数据边界记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS72",
+            "requirementId": "R16",
+            "observableBehavior": "核查交付应用清单。",
+            "expectedOutcome": "没有骑手独立 App。",
+            "expectedEvidence": "应用构成及运行入口清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS73",
+            "requirementId": "R16",
+            "observableBehavior": "核查订单分配流程。",
+            "expectedOutcome": "没有智能派单功能。",
+            "expectedEvidence": "商家订单操作界面与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS74",
+            "requirementId": "R16",
+            "observableBehavior": "核查配送操作。",
+            "expectedOutcome": "没有地图路线规划功能。",
+            "expectedEvidence": "配送界面与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS75",
+            "requirementId": "R16",
+            "observableBehavior": "核查下单与商家功能。",
+            "expectedOutcome": "没有优惠券系统。",
+            "expectedEvidence": "下单界面与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS76",
+            "requirementId": "R16",
+            "observableBehavior": "核查顾客账户与订单结果。",
+            "expectedOutcome": "没有积分功能。",
+            "expectedEvidence": "顾客界面与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS77",
+            "requirementId": "R16",
+            "observableBehavior": "核查顾客账户功能。",
+            "expectedOutcome": "没有会员等级。",
+            "expectedEvidence": "顾客界面与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS78",
+            "requirementId": "R16",
+            "observableBehavior": "核查商品分享及下单功能边界。",
+            "expectedOutcome": "没有分销功能。",
+            "expectedEvidence": "顾客和商家功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS79",
+            "requirementId": "R16",
+            "observableBehavior": "核查商家后台导航。",
+            "expectedOutcome": "没有营销中心。",
+            "expectedEvidence": "后台实际导航与交付功能清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS80",
+            "requirementId": "R16",
+            "observableBehavior": "核查商家权限配置。",
+            "expectedOutcome": "没有复杂 RBAC 管理功能。",
+            "expectedEvidence": "后台入口与权限配置清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS81",
+            "requirementId": "R16",
+            "observableBehavior": "核查支付流程及外部连接配置。",
+            "expectedOutcome": "没有真实微信支付接入。",
+            "expectedEvidence": "本地模拟支付结果和支付适配配置。",
+            "blocking": true
+          },
+          {
+            "id": "AS82",
+            "requirementId": "R16",
+            "observableBehavior": "核查登录流程及外部连接配置。",
+            "expectedOutcome": "没有真实微信登录接入。",
+            "expectedEvidence": "无真实微信凭据时的模拟登录结果。",
+            "blocking": true
+          },
+          {
+            "id": "AS83",
+            "requirementId": "R16",
+            "observableBehavior": "核查交付与运行目标。",
+            "expectedOutcome": "不包含云端生产部署。",
+            "expectedEvidence": "交付运行说明与部署目标清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS84",
+            "requirementId": "R16",
+            "observableBehavior": "核查交付架构与验收目标。",
+            "expectedOutcome": "不包含高并发架构专项能力。",
+            "expectedEvidence": "组件清单与验收范围。",
+            "blocking": true
+          },
+          {
+            "id": "AS85",
+            "requirementId": "R16",
+            "observableBehavior": "核查服务构成。",
+            "expectedOutcome": "没有微服务拆分。",
+            "expectedEvidence": "服务运行与组件清单。",
+            "blocking": true
+          },
+          {
+            "id": "AS86",
+            "requirementId": "R18",
+            "observableBehavior": "在干净环境按交付说明执行 install。",
+            "expectedOutcome": "顾客小程序、后台和业务服务所需依赖可重复安装。",
+            "expectedEvidence": "安装记录及随后三个交付面均可启动的记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS87",
+            "requirementId": "R18",
+            "observableBehavior": "按交付说明执行 typecheck。",
+            "expectedOutcome": "类型检查通过，且其对应版本可继续运行验收流程。",
+            "expectedEvidence": "检查记录与对应版本的后续业务运行记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS88",
+            "requirementId": "R18",
+            "observableBehavior": "按交付说明执行 tests。",
+            "expectedOutcome": "订单金额、支付、状态与权限等业务测试通过。",
+            "expectedEvidence": "测试结果及对应业务输入、持久状态和预期结果。",
+            "blocking": true
+          },
+          {
+            "id": "AS89",
+            "requirementId": "R18",
+            "observableBehavior": "按交付说明执行 build。",
+            "expectedOutcome": "小程序和后台产物可启动并实际打开。",
+            "expectedEvidence": "构建记录及产物运行、打开记录。",
+            "blocking": true
+          },
+          {
+            "id": "AS90",
+            "requirementId": "R18",
+            "observableBehavior": "从清理后的本地状态执行 cold start／clean start。",
+            "expectedOutcome": "服务、后台和小程序可启动，并能创建一笔新订单。",
+            "expectedEvidence": "干净状态、启动记录与新订单 ID。",
+            "blocking": true
+          },
+          {
+            "id": "AS91",
+            "requirementId": "R18",
+            "observableBehavior": "按交付说明重复执行核心业务流程。",
+            "expectedOutcome": "同一订单从顾客下单到商家完成、顾客看到完成。",
+            "expectedEvidence": "第二次独立运行的订单 ID 和逐阶段跨端状态。",
+            "blocking": true
+          }
+        ]
+      },
+      {
+        "id": "A9",
+        "requirementIds": [
+          "R19"
+        ],
+        "description": "全新数据库可初始化、取得测试数据并支撑业务启动。",
+        "level": "delivery",
+        "expectedEvidence": "空库到可下单环境的完整记录及新订单数据。",
+        "blocking": true,
+        "assertions": [
+          {
+            "id": "AS92",
+            "requirementId": "R19",
+            "observableBehavior": "从没有业务表和遗留记录的数据库初始化环境。",
+            "expectedOutcome": "初始化成功，产生可供系统使用的空环境。",
+            "expectedEvidence": "初始化前空库状态与初始化后可连接状态。",
+            "blocking": true
+          },
+          {
+            "id": "AS93",
+            "requirementId": "R19",
+            "observableBehavior": "在全新数据库执行 schema／migration。",
+            "expectedOutcome": "建立当前版本全部必需的数据结构。",
+            "expectedEvidence": "迁移记录与商品、地址、订单流程所需结构及后续读写结果。",
+            "blocking": true
+          },
+          {
+            "id": "AS94",
+            "requirementId": "R19",
+            "observableBehavior": "执行 seed 或等效测试数据方案。",
+            "expectedOutcome": "顾客可浏览用于验收的商品并选择 SKU。",
+            "expectedEvidence": "测试数据方案执行记录及小程序实际目录。",
+            "blocking": true
+          },
+          {
+            "id": "AS95",
+            "requirementId": "R19",
+            "observableBehavior": "连接 fresh database 启动所有本地交付面并创建订单。",
+            "expectedOutcome": "新数据库支撑启动和新订单持久化，无须复制开发遗留数据。",
+            "expectedEvidence": "全新数据库标识、启动记录及该库中的新订单 ID。",
+            "blocking": true
+          }
+        ]
+      }
+    ]
+  },
+  "risks": [
+    {
+      "id": "K1",
+      "description": "取消权限和阶段未确定，可能使状态操作与验收预期不一致。",
+      "mitigation": "在实现取消规则前确认 Q1，并以允许及禁止操作的持久状态断言验收。"
+    },
+    {
+      "id": "K2",
+      "description": "今日订单数和成交金额的口径未确定，不同事件日期和支付后取消会产生不同结果。",
+      "mitigation": "确认 Q2、Q3；用跨三日固定订单组逐单计算并核对后台显示。"
+    },
+    {
+      "id": "K3",
+      "description": "顾客和商家界面可能显示不同状态或金额。",
+      "mitigation": "以同一持久订单 ID、订单行快照和跨端实际交互验收。"
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "S1",
+      "statement": "采用本地关系型数据库作为持久化技术选择。",
+      "impactIfFalse": "需要替换持久化实现及对应的空环境验证方式，业务验收结果不变。"
+    },
+    {
+      "id": "S2",
+      "statement": "验收可控制测试订单的事件日期，以便独立核对跨日统计。",
+      "impactIfFalse": "需用等效的时间控制或预置事件记录完成相同的三日核对。"
+    }
+  ],
+  "customerQuestions": [
+    {
+      "id": "Q1",
+      "question": "订单取消由谁在什么阶段操作？",
+      "reason": "决定哪些顾客或商家操作会使订单进入已取消状态，以及哪些操作必须被拒绝且保持原状态。",
+      "decisionType": "business_rule",
+      "options": [
+        "顾客仅可在待支付阶段取消；商家可在已支付、已接单或制作中取消；配送中及已完成不可取消。",
+        "顾客可在待支付或已支付且商家未接单时取消；商家可在已支付、已接单或制作中取消；配送中及已完成不可取消。"
+      ],
+      "blocking": true
+    },
+    {
+      "id": "Q2",
+      "question": "“今日订单数”按哪一种订单及事件日期统计？以下结果基于验收订单 O1：第 1 日创建、第 2 日支付、第 3 日完成；O2：第 1 日创建并支付、第 3 日取消；O3：第 2 日创建未支付；O4：第 3 日创建、支付并完成。",
+      "reason": "决定后台三日订单数；各选项同时规定计入范围、取消订单处理和每笔计入订单确实具有的归属事件日期。",
+      "decisionType": "business_rule",
+      "options": [
+        "按创建日计全部订单，含取消：第 1 日 2（O1、O2），第 2 日 1（O3），第 3 日 1（O4）。",
+        "按创建日计当前未取消订单：第 1 日 1（O1），第 2 日 1（O3），第 3 日 1（O4）。",
+        "按成功支付日计已支付订单，含支付后取消：第 1 日 1（O2），第 2 日 1（O1），第 3 日 1（O4）。",
+        "按成功支付日计当前未取消的已支付订单：第 1 日 0（无），第 2 日 1（O1），第 3 日 1（O4）。",
+        "按完成日仅计已完成订单：第 1 日 0（无），第 2 日 0（无），第 3 日 2（O1、O4）。"
+      ],
+      "blocking": true
+    },
+    {
+      "id": "Q3",
+      "question": "“今日成交金额”按成功支付日还是完成日归属？已成功支付后又取消的 O2 金额是否计入？",
+      "reason": "决定后台三日成交金额；验收订单为 O1：第 1 日创建、第 2 日支付、第 3 日完成，23 元；O2：第 1 日创建并支付、第 3 日取消，17 元；O3：第 2 日创建未支付，11 元；O4：第 3 日创建、支付并完成，31 元。",
+      "decisionType": "business_rule",
+      "options": [
+        "按成功支付日计成功支付金额，含支付后取消：第 1 日 17 元（O2），第 2 日 23 元（O1），第 3 日 31 元（O4）。",
+        "按成功支付日计当前未取消订单的成功支付金额：第 1 日 0 元（无），第 2 日 23 元（O1），第 3 日 31 元（O4）。",
+        "按完成日仅计已完成订单金额：第 1 日 0 元（无），第 2 日 0 元（无），第 3 日 54 元（O1、O4）。"
+      ],
+      "blocking": true
+    }
+  ]
+}

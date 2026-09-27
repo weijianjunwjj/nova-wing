@@ -50,10 +50,19 @@ for (let index = 1; index <= runs; index += 1) {
     await writeFile(join(directory, `model-attempt-${modelAttempt}.txt`), response.text, { mode: 0o600 })
     return response
   }
+  const reviewer = createCodexPlanningSemanticReviewer({ env })
+  let reviewAttempt = 0
+  const observedReviewer = async (input) => {
+    const response = await reviewer(input)
+    reviewAttempt += 1
+    await writeFile(join(directory, `semantic-review-${reviewAttempt}.json`),
+      `${JSON.stringify(response.review, null, 2)}\n`, { mode: 0o600 })
+    return response
+  }
   const service = new PlanningService(observedProvider,
     new PlanningStore(join(directory, 'planning', 'plans')),
     new PlanningEventStore(join(directory, 'planning', 'events.jsonl')),
-    createCodexPlanningSemanticReviewer({ env }))
+    observedReviewer)
   const launchpad = await createNovaWingLaunchpad({ configDirectory, env, dependencies: { planningService: service } })
   let result
   try {
@@ -90,9 +99,13 @@ for (let index = 1; index <= runs; index += 1) {
       customerQuestions: plan?.customerQuestions ?? [],
       businessAssumptions: plan?.assumptions ?? [],
     }
+    result.gatePass = response.status === 200 && result.deterministicPass === true &&
+      result.blockingAssertionCoverage === 100 && result.semanticVerdict === 'PASS' &&
+      (result.status === 'ready_for_approval' || result.status === 'needs_customer_input') &&
+      result.semanticIssues.length === 0 && result.telemetryContainsFullRequirement === false
   } catch (error) {
     result = { run: index, error: error instanceof Error ? error.message : String(error),
-      deterministicPass: false, semanticVerdict: 'UNAVAILABLE' }
+      deterministicPass: false, semanticVerdict: 'UNAVAILABLE', gatePass: false }
   } finally {
     await launchpad.close()
   }
@@ -101,5 +114,7 @@ for (let index = 1; index <= runs; index += 1) {
   console.log(JSON.stringify({ type: 'benchmark.run', ...result }))
 }
 summary.completedAt = new Date().toISOString()
+summary.gatePass = summary.runs.length === runs && summary.runs.every((run) => run.gatePass === true)
 await writeFile(join(root, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 })
-console.log(JSON.stringify({ type: 'benchmark.completed', root, completedAt: summary.completedAt }))
+console.log(JSON.stringify({ type: 'benchmark.completed', root, gatePass: summary.gatePass, completedAt: summary.completedAt }))
+if (!summary.gatePass) process.exitCode = 1
