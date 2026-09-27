@@ -15,6 +15,7 @@ import {
   validateTrustedWorkSessionConfig,
   type ProductionGitProcessRunner,
   type ProductionWorkSessionUi,
+  type ProductionWorkSessionDependencies,
   type TrustedWorkSessionConfig,
 } from '../production.js'
 import { ProductionWorkSessionInitializationError } from '../production-lifecycle-errors.js'
@@ -85,6 +86,7 @@ import { PlanningEventStore } from '../../planning/telemetry.js'
 import { validateDevelopmentPlan } from '../../planning/validator.js'
 import { CUSTOMER_APP_JS, CUSTOMER_STYLES_CSS, renderCustomerHtml } from '../../planning/customer-view.js'
 import { DeliveryEventStore, DeliveryService, DeliveryStore } from '../../delivery/service.js'
+import { createDeliveryRuntimeDispatcher } from '../../delivery/runtime-adapter.js'
 import { conservativeCapabilityResolver, inspectDeliveryTarget,
   type CompiledRuntimePlan, type VerificationCapabilityResolver } from '../../delivery/runtime-plan.js'
 import type { WorkSessionPlanBinding } from '../../delivery/service.js'
@@ -249,7 +251,8 @@ export interface NovaWingLaunchpadDependencies {
   resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
   createWorkSession?: (
     config: TrustedWorkSessionConfig,
-    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord; shutdownMode?: 'strict' | 'bounded'; activityObserver?: WorkSessionActivityObserver },
+    options: { env: NodeJS.ProcessEnv; serverPort: 0; preflightRepair?: PreflightRepairRecord; shutdownMode?: 'strict' | 'bounded'; activityObserver?: WorkSessionActivityObserver;
+      createV2Dispatcher?: NonNullable<ProductionWorkSessionDependencies['createV2Dispatcher']> },
   ) => Promise<ManagedWorkSessionApp>
   gitProcessRunner?: ProductionGitProcessRunner
   shutdownTimeoutMs?: number
@@ -1638,6 +1641,10 @@ export class NovaWingLaunchpad {
     const config = await this.loadConfig(discovered.configPath)
     if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
     const env = await this.resolveEnvironment(config)
+    const deliverySession = configId.startsWith('delivery-') ? await this.deliveryStore.getSession(configId) : undefined
+    const deliveryPlan = deliverySession === undefined ? undefined : await this.deliveryStore.getPlan(deliverySession.runtimePlanId)
+    if (deliverySession !== undefined && (deliveryPlan === undefined || deliveryPlan.runtimePlanHash !== deliverySession.runtimePlanHash))
+      throw new Error('Delivery RuntimePlan is unavailable or has drifted.')
     let app: ManagedWorkSessionApp
     try {
       app = await this.createWorkSession(config, {
@@ -1646,6 +1653,8 @@ export class NovaWingLaunchpad {
         shutdownMode: this.shutdownMode,
         ...(this.activityObserver === undefined ? {} : { activityObserver: this.activityObserver }),
         ...(preflightRepair === undefined ? {} : { preflightRepair }),
+        ...(deliveryPlan === undefined ? {} : { createV2Dispatcher: ({ defaultDispatcher }) =>
+          createDeliveryRuntimeDispatcher(deliveryPlan, this.deliveryStore, defaultDispatcher) }),
       })
     } catch (error) {
       // A factory may have failed while cleaning up partially initialized owners.

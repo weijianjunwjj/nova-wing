@@ -1,9 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { lstat, realpath } from 'node:fs/promises'
+import { scopedNodeTestPath } from '../verification-command-policy.js'
 import { type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
-import { verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
+import { collectCommandEvidence, collectFilesystemEvidence, collectHttpEvidence, collectProcessEvidence,
+  verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
+import { bindProvisionedVerifier, verifyBindingTransition, type BoundVerifier,
+  type VerificationBindingTransition } from './staged-verification.js'
 import {
   admitRuntimePlan, bindDeliveryTarget, compileRuntimePlan, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity,
   workSessionDefinitionFor, type CompiledRuntimePlan, type DeliveryTargetBinding, type RuntimeAdmission,
@@ -47,7 +52,7 @@ export class DeliveryEventStore {
 
 export class DeliveryStore {
   constructor(readonly directory: string) {}
-  private path(kind: 'binding' | 'plan' | 'session' | 'evidence', id: string): string {
+  private path(kind: 'binding' | 'plan' | 'session' | 'evidence' | 'transition', id: string): string {
     if (!/^[a-z0-9-]{36,120}$/u.test(id)) throw new Error('Invalid delivery artifact ID.')
     return join(this.directory, `${kind}-${id}.json`)
   }
@@ -113,6 +118,69 @@ export class DeliveryStore {
       throw new Error('Capability evidence is bound to another RuntimePlan.')
     }
     return stored.evidence
+  }
+  async bindProvisionedVerifier(plan: CompiledRuntimePlan, assertionId: string,
+    runtimeTaskId: string, verifier: BoundVerifier): Promise<VerificationBindingTransition> {
+    verifyRuntimePlanIdentity(plan)
+    const obligation = plan.acceptanceBindings.find((binding) => binding.assertionId === assertionId &&
+      binding.runtimeTaskId === runtimeTaskId && binding.blocking)?.stagedVerification.provisioning
+    if (obligation === undefined) throw new Error('No exact blocking provisioning obligation exists.')
+    const transition = bindProvisionedVerifier({ runtimePlanHash: plan.runtimePlanHash, obligation, verifier })
+    if (verifier.family === 'command' || verifier.family === 'process') {
+      const relativePath = verifier.family === 'command' ? scopedNodeTestPath(verifier.command)! : verifier.relativeEntry
+      const path = join(plan.targetBinding.canonicalPath, relativePath)
+      const entry = await lstat(path)
+      if (!entry.isFile() || entry.isSymbolicLink() || await realpath(path) !== path)
+        throw new Error('Exact verifier artifact is not an ordinary repository file.')
+    }
+    const path = this.path('transition', obligation.id)
+    const existing = await this.read<VerificationBindingTransition>(path)
+    if (existing !== undefined) {
+      verifyBindingTransition(existing, obligation, plan.runtimePlanHash)
+      if (existing.id !== transition.id) throw new Error('Provisioning contract already bound to a different verifier.')
+      return existing
+    }
+    try { await this.writeOnce(path, transition) }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        const raced = await this.read<VerificationBindingTransition>(path)
+        if (raced && raced.id === transition.id) return raced
+      }
+      throw error
+    }
+    return transition
+  }
+  async getBindingTransition(plan: CompiledRuntimePlan, assertionId: string,
+    runtimeTaskId: string): Promise<VerificationBindingTransition | undefined> {
+    verifyRuntimePlanIdentity(plan)
+    const obligation = plan.acceptanceBindings.find((binding) => binding.assertionId === assertionId &&
+      binding.runtimeTaskId === runtimeTaskId && binding.blocking)?.stagedVerification.provisioning
+    if (obligation === undefined) return undefined
+    const transition = await this.read<VerificationBindingTransition>(this.path('transition', obligation.id))
+    if (transition !== undefined) verifyBindingTransition(transition, obligation, plan.runtimePlanHash)
+    return transition
+  }
+  async collectProvisionedEvidence(plan: CompiledRuntimePlan, assertionId: string,
+    runtimeTaskId: string): Promise<CapabilityEvidence> {
+    const transition = await this.getBindingTransition(plan, assertionId, runtimeTaskId)
+    if (transition === undefined) throw new Error('Verifier has not been provisioned.')
+    const verifier = transition.verifier
+    let observed: CapabilityEvidence
+    switch (verifier.family) {
+      case 'http_api': observed = await collectHttpEvidence({ assertionId, port: verifier.port, route: verifier.route,
+        expectedStatus: verifier.expectedStatus, expectedJsonPointer: verifier.expectedJsonPointer,
+        expectedJsonValue: verifier.expectedJsonValue, timeoutMs: verifier.timeoutMs }); break
+      case 'filesystem': observed = await collectFilesystemEvidence({ target: plan.targetBinding, assertionId,
+        relativePath: verifier.relativePath, expectation: verifier.expectation,
+        ...(verifier.contains === undefined ? {} : { contains: verifier.contains }) }); break
+      case 'process': observed = await collectProcessEvidence({ target: plan.targetBinding, assertionId,
+        relativeEntry: verifier.relativeEntry, expectedExitCode: verifier.expectedExitCode,
+        timeoutMs: verifier.timeoutMs }); break
+      case 'command': observed = await collectCommandEvidence({ target: plan.targetBinding, assertionId,
+        command: verifier.command }); break
+    }
+    await this.saveCapabilityEvidence(plan, observed)
+    return observed
   }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
     try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }

@@ -58,11 +58,11 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CapabilityFamily, CapabilityDe
     environmentRequirements: ['listening loopback service'], evidenceType: 'http_observation', deterministic: false,
     availability: 'AVAILABLE', reason: 'A trusted route and expected outcome must be configured; HTTP status alone cannot prove business behavior.' },
   process: { family: 'process', version: '1', providerId: 'owned-process-observer', providerVersion: '1',
-    trustLevel: 'TRUSTED_LOCAL', supportedAssertionShape: 'One runtime-owned process start or exit observation',
-    verificationContract: 'Observe a runtime-owned process and bounded exit evidence',
-    requiredInputs: ['ownedProcessId', 'assertionId'], targetRequirements: ['runtime-owned process'],
-    environmentRequirements: ['process harness'], evidenceType: 'process_observation', deterministic: false,
-    availability: 'UNAVAILABLE', reason: 'The delivery runtime has no owned process evidence harness yet.' },
+    trustLevel: 'TRUSTED_LOCAL', supportedAssertionShape: 'One project-owned Node entry and bounded exit observation',
+    verificationContract: 'Start one repository-scoped Node entry with bounded exit evidence',
+    requiredInputs: ['relativeEntry', 'expectedExitCode', 'timeoutMs', 'assertionId'], targetRequirements: ['bound repository'],
+    environmentRequirements: ['node'], evidenceType: 'process_observation', deterministic: false,
+    availability: 'AVAILABLE', reason: 'Requires an exact project-owned entry and expected exit contract.' },
   browser_ui: { family: 'browser_ui', version: '1', providerId: 'browser-harness-pending', providerVersion: '1',
     trustLevel: 'EXTERNAL', supportedAssertionShape: 'One bound browser route and interaction outcome',
     verificationContract: 'Bound route, interactions, DOM observations and screenshots',
@@ -143,6 +143,8 @@ export interface CapabilityResolution {
   capabilityVersion?: string
   evidenceType?: string
   availability?: ProviderAvailability
+  /** Explicit trusted policy: a missing external dependency may block implementation itself. */
+  startPrerequisite?: 'EXECUTION' | 'COMPLETION'
 }
 export interface ResolvedCapability extends CapabilityResolution {
   family: CapabilityFamily
@@ -163,8 +165,12 @@ export const conservativeCapabilityResolver: VerificationCapabilityResolver = (i
   const definition = CAPABILITY_REGISTRY[classification.family]
   const capability: CapabilitySupport = definition.availability === 'HUMAN_REQUIRED' ? 'REQUIRES_HUMAN'
     : definition.availability === 'EXTERNAL_ENVIRONMENT' ? 'REQUIRES_EXTERNAL_ENVIRONMENT' : 'UNSUPPORTED'
+  const prerequisiteText = `${input.assertion.observableBehavior} ${input.assertion.expectedEvidence} ${input.requirement.statement}`
+  const executionPrerequisite = /(?:开发前|开始开发前|实现前|必须先|需先).{0,30}(?:账号|账户|SDK|权限|凭据|密钥|AppID|平台环境)/iu.test(prerequisiteText)
   return { capability, capabilityId: `${definition.providerId}-v${definition.providerVersion}`,
     family: classification.family, classificationRule: classification.ruleId,
+    ...(capability === 'REQUIRES_EXTERNAL_ENVIRONMENT' || capability === 'REQUIRES_HUMAN'
+      ? { startPrerequisite: executionPrerequisite ? 'EXECUTION' as const : 'COMPLETION' as const } : {}),
     reason: `${classification.reason} ${definition.reason}` }
 }
 
@@ -190,6 +196,7 @@ export function resolveCapability(input: Parameters<VerificationCapabilityResolv
     !evidenceType || !/^[a-z][a-z0-9_]{0,79}$/u.test(evidenceType) ||
     !/^[A-Za-z][A-Za-z0-9_-]{0,119}$/u.test(classificationRule) ||
     (raw.availability !== undefined && !['AVAILABLE', 'UNAVAILABLE', 'EXTERNAL_ENVIRONMENT', 'HUMAN_REQUIRED'].includes(raw.availability)) ||
+    (raw.startPrerequisite !== undefined && !['EXECUTION', 'COMPLETION'].includes(raw.startPrerequisite)) ||
     (raw.capability === 'SUPPORTED' && (providerId !== definition.providerId || providerVersion !== definition.providerVersion ||
       capabilityVersion !== definition.version || evidenceType !== definition.evidenceType)) ||
     (raw.capability === 'SUPPORTED' && (family !== 'command' || !raw.verificationCommand ||
@@ -303,7 +310,7 @@ export async function collectGitEvidence(input: { target: Pick<DeliveryTargetBin
 }
 
 export async function collectHttpEvidence(input: { assertionId: string; port: number; route: string;
-  expectedStatus: number; timeoutMs?: number }): Promise<CapabilityEvidence> {
+  expectedStatus: number; expectedJsonPointer?: string; expectedJsonValue?: string; timeoutMs?: number }): Promise<CapabilityEvidence> {
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65535 ||
     !/^\/[A-Za-z0-9/_?.=&%-]{0,500}$/u.test(input.route) || input.route.startsWith('//') || input.route.includes('..') ||
     !Number.isInteger(input.expectedStatus) || input.expectedStatus < 100 || input.expectedStatus > 599)
@@ -326,16 +333,79 @@ export async function collectHttpEvidence(input: { assertionId: string; port: nu
       chunks.push(item.value)
     }
   } finally { await reader?.cancel().catch(() => undefined) }
-  const digest = createHash('sha256')
-  for (const chunk of chunks) digest.update(chunk)
+  const body = Buffer.concat(chunks)
+  let bodyMatch = true
+  if (input.expectedJsonPointer !== undefined) {
+    if (!/^\/(?:[^/~]|~[01])+(?:\/(?:[^/~]|~[01])+)*$/u.test(input.expectedJsonPointer) ||
+      input.expectedJsonValue === undefined || input.expectedJsonValue.length > 1_000)
+      throw new Error('Unsafe HTTP JSON predicate.')
+    const decoded: unknown = JSON.parse(body.toString('utf8'))
+    const value = input.expectedJsonPointer.slice(1).split('/').map((part) => part.replace(/~1/gu, '/').replace(/~0/gu, '~'))
+      .reduce<unknown>((current, key) => current !== null && typeof current === 'object' &&
+        Object.hasOwn(current, key) ? (current as Record<string, unknown>)[key] : undefined, decoded)
+    bodyMatch = typeof value === 'string' && value === input.expectedJsonValue
+  }
   return evidence(input.assertionId, 'http_api', 'loopback-http-read', 'OBSERVED',
-    { status: response.status, bytes, bodySha256: digest.digest('hex'), observedMatch: response.status === input.expectedStatus })
+    { status: response.status, bytes, bodySha256: createHash('sha256').update(body).digest('hex'),
+      observedMatch: response.status === input.expectedStatus && bodyMatch })
+}
+
+/** Executes only a Node entry inside the bound repository. Output is bounded and never implies business PASS. */
+export async function collectProcessEvidence(input: { target: Pick<DeliveryTargetBinding, 'canonicalPath'>;
+  assertionId: string; relativeEntry: string; expectedExitCode: number; timeoutMs: number }): Promise<CapabilityEvidence> {
+  const root = await realpath(input.target.canonicalPath)
+  if (root !== input.target.canonicalPath || !/\.(?:mjs|cjs|js)$/u.test(input.relativeEntry) ||
+    !Number.isInteger(input.expectedExitCode) || input.expectedExitCode < 0 || input.expectedExitCode > 255 ||
+    !Number.isInteger(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > 10_000)
+    throw new Error('Unsafe owned process contract.')
+  const entry = scopedPath(root, input.relativeEntry)
+  const parts = relative(root, entry).split(sep)
+  for (let index = 1; index <= parts.length; index++) {
+    const stat = await lstat(join(root, ...parts.slice(0, index)))
+    if (stat.isSymbolicLink() || (index === parts.length && !stat.isFile())) throw new Error('Unsafe process entry.')
+  }
+  const result = await execFilePromise(process.execPath, [entry], { cwd: root, timeout: input.timeoutMs,
+    maxBuffer: 64_000, env: { PATH: process.env.PATH ?? '', HOME: root, TMPDIR: root } })
+  return evidence(input.assertionId, 'process', 'owned-process-observer', 'OBSERVED',
+    { exitCode: result.exitCode, stdoutSha256: createHash('sha256').update(result.stdout).digest('hex'),
+      stderrSha256: createHash('sha256').update(result.stderr).digest('hex'),
+      observedMatch: result.exitCode === input.expectedExitCode })
+}
+
+export async function collectCommandEvidence(input: { target: Pick<DeliveryTargetBinding, 'canonicalPath'>;
+  assertionId: string; command: string }): Promise<CapabilityEvidence> {
+  const root = await realpath(input.target.canonicalPath)
+  const relativeEntry = scopedNodeTestPath(input.command)
+  if (root !== input.target.canonicalPath || relativeEntry === undefined ||
+    assessVerificationCommand(input.command).status !== 'ALLOWED') throw new Error('Unsafe assertion-bound test contract.')
+  const entry = scopedPath(root, relativeEntry)
+  const parts = relative(root, entry).split(sep)
+  for (let index = 1; index <= parts.length; index++) {
+    const stat = await lstat(join(root, ...parts.slice(0, index)))
+    if (stat.isSymbolicLink() || (index === parts.length && !stat.isFile())) throw new Error('Unsafe assertion-bound test file.')
+  }
+  const result = await execFilePromise(process.execPath, ['--test', entry], { cwd: root, timeout: 30_000,
+    maxBuffer: 64_000, env: { PATH: process.env.PATH ?? '', HOME: root, TMPDIR: root } })
+  return evidence(input.assertionId, 'command', 'existing-guarded-verifier', 'OBSERVED',
+    { exitCode: result.exitCode, stdoutSha256: createHash('sha256').update(result.stdout).digest('hex'),
+      stderrSha256: createHash('sha256').update(result.stderr).digest('hex'), observedMatch: result.exitCode === 0 })
+}
+
+function execFilePromise(file: string, args: string[], options: Parameters<typeof execFile>[2]): Promise<{
+  exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => execFile(file, args, options, (error, stdout, stderr) => {
+    if (error && ('killed' in error && error.killed || error.message.includes('maxBuffer'))) { reject(error); return }
+    resolve({ exitCode: error && 'code' in error && typeof error.code === 'number' ? error.code : error ? 1 : 0,
+      stdout: String(stdout), stderr: String(stderr) })
+  }))
 }
 
 export type CapabilityCollectionRequest =
   | ({ family: 'filesystem' } & Parameters<typeof collectFilesystemEvidence>[0])
   | ({ family: 'git' } & Parameters<typeof collectGitEvidence>[0])
   | ({ family: 'http_api' } & Parameters<typeof collectHttpEvidence>[0])
+  | ({ family: 'process' } & Parameters<typeof collectProcessEvidence>[0])
+  | ({ family: 'command' } & Parameters<typeof collectCommandEvidence>[0])
 
 /** Fixed provider dispatch. No assertion text is interpreted as a command or probe input. */
 export class TrustedCapabilityRegistry {
@@ -345,18 +415,23 @@ export class TrustedCapabilityRegistry {
       case 'filesystem': return collectFilesystemEvidence(request)
       case 'git': return collectGitEvidence(request)
       case 'http_api': return collectHttpEvidence(request)
+      case 'process': return collectProcessEvidence(request)
+      case 'command': return collectCommandEvidence(request)
     }
   }
 }
 
 export const trustedCapabilityRegistry = new TrustedCapabilityRegistry()
 
-export function capabilityCoverage(bindings: readonly { blocking: boolean; verificationCapability: ResolvedCapability }[],
+export function capabilityCoverage(bindings: readonly { blocking: boolean; verificationCapability: ResolvedCapability;
+  stagedVerification?: { readiness: string; provisioning?: { providerId: string } } }[],
   availabilityProbe?: (providerId: string) => ProviderAvailability) {
   const blocking = bindings.filter((binding) => binding.blocking)
   const count = (predicate: (binding: typeof blocking[number]) => boolean): number => blocking.filter(predicate).length
   return { total: blocking.length, classified: count((binding) => Boolean(binding.verificationCapability.classificationRule)),
-    trustedProvider: count((binding) => binding.verificationCapability.capability === 'SUPPORTED'),
+    trustedProvider: count((binding) => binding.verificationCapability.capability === 'SUPPORTED' ||
+      (binding.stagedVerification?.readiness === 'PROVISIONABLE' &&
+        binding.stagedVerification.provisioning?.providerId === binding.verificationCapability.providerId)),
     executableOnCurrentHost: count((binding) => binding.verificationCapability.capability === 'SUPPORTED' &&
       (availabilityProbe?.(binding.verificationCapability.providerId) ?? binding.verificationCapability.availability) === 'AVAILABLE'),
     externalEnvironment: count((binding) => binding.verificationCapability.capability === 'REQUIRES_EXTERNAL_ENVIRONMENT'),

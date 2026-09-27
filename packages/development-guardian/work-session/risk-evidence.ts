@@ -50,9 +50,12 @@ export function assertionCapabilityEvidenceValid(task: Pick<TaskStateV2, 'accept
     new Set(trace.evidenceIds).size !== trace.evidenceIds.length) return false
   const criterion = task.acceptanceCriteria.find((item) => item.startsWith(`AcceptanceAssertion ${verdict.assertionId}: `))
   const requiredCommands = task.completion.bindings.find((binding) => binding.criterion === criterion)?.requiredEvidence ?? []
+  const provisionedCommand = contract.family === 'command' && criterion?.includes(' | VerificationReadiness: PROVISIONABLE | ') === true
   return trace.evidenceIds.every((id) => task.verificationState.results.some((result) =>
-    result.stepId === id && result.status === 'passed' &&
-    (contract.family !== 'command' || (result.command !== undefined && requiredCommands.includes(result.command)))))
+    result.status === 'passed' && (contract.family === 'command' && !provisionedCommand
+      ? result.stepId === id && result.command !== undefined && requiredCommands.includes(result.command)
+      : /^[a-f0-9]{64}$/u.test(id) && result.rawOutputRef === id && result.stepId !== undefined &&
+        requiredCommands.includes(result.stepId) && (!provisionedCommand || result.command !== undefined))))
 }
 
 /** Criteria without one exact, non-empty trusted evidence contract. */

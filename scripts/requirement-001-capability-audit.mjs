@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { bindDeliveryTarget, compileRuntimePlan } from '../dist/packages/development-guardian/delivery/runtime-plan.js'
 import { CAPABILITY_REGISTRY } from '../dist/packages/development-guardian/delivery/capability-layer.js'
+import { hasDeepSeekRoute } from '../dist/packages/development-guardian/deepseek-executor.js'
+import { runProductionDependencyPreflight } from '../dist/packages/development-guardian/work-session/dependency-health.js'
 
 const [snapshotPath, targetPath] = process.argv.slice(2)
 if (!snapshotPath || !targetPath) throw new Error('Usage: node scripts/requirement-001-capability-audit.mjs SNAPSHOT TARGET_REPO')
@@ -12,8 +14,15 @@ if (snapshot.id !== '080d2835-5f35-4311-acb5-7424b5a17607' ||
   throw new Error('The input is not the approved frozen Requirement 001 snapshot.')
 }
 const target = await bindDeliveryTarget(snapshot, resolve(targetPath), 'trusted_test')
+const [preflight, reviewerAvailable] = await Promise.all([
+  runProductionDependencyPreflight({ targetRepo: target.canonicalPath, controlPlane: 'v2',
+    timeoutMs: 3_000, shutdownMode: 'strict' }),
+  hasDeepSeekRoute(target.canonicalPath),
+])
 const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'runtime-policy-v1',
-  runtimeConfigured: false, executorAvailable: false, reviewerAvailable: false })
+  runtimeConfigured: target.branch !== null, executorAvailable: preflight.canStart, reviewerAvailable })
+const capabilityModel = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'runtime-policy-v1',
+  runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
 const blocking = plan.acceptanceBindings.filter((binding) => binding.blocking)
 const countBy = (selector) => Object.fromEntries([...new Set(blocking.map(selector))].sort()
   .map((key) => [key, blocking.filter((binding) => selector(binding) === key).length]))
@@ -24,6 +33,19 @@ const result = {
   totalBlockingBindings: blocking.length,
   capabilityFamilies: countBy((binding) => binding.verificationCapability.family),
   supportStates: countBy((binding) => binding.verificationCapability.capability),
+  verificationReadiness: countBy((binding) => binding.stagedVerification.readiness),
+  executionPrerequisiteBlockers: plan.admission.blockers.filter((item) => item.code === 'EXECUTION_PREREQUISITE_MISSING').length,
+  completionOnlyBlockers: blocking.filter((binding) => binding.stagedVerification.prerequisite === 'COMPLETION' &&
+    binding.stagedVerification.readiness !== 'BOUND_EXECUTABLE').length,
+  startDeliveryReadiness: plan.admission.status === 'READY' ? 'YES' : 'NO',
+  runtimeReadiness: { configured: target.branch !== null, executorAvailable: preflight.canStart,
+    reviewerAvailable, preflightOverall: preflight.overall },
+  startDeliveryReadinessIfRepoClean: capabilityModel.admission.blockers.every((item) =>
+    item.code === 'TARGET_DIRTY' || item.code === 'TARGET_DRIFT') &&
+    plan.admission.blockers.every((item) => ['TARGET_DIRTY', 'TARGET_DRIFT'].includes(item.code)) ? 'YES' : 'NO',
+  capabilityModelReadinessIfRepoCleanAndRuntimeReady: capabilityModel.admission.blockers.every((item) =>
+    ['TARGET_DIRTY', 'TARGET_DRIFT'].includes(item.code)) ? 'YES' : 'NO',
+  customerDeliveryCompletionReadiness: 'NO',
   providerAvailability: countBy((binding) => CAPABILITY_REGISTRY[binding.verificationCapability.family].availability),
   coverage: plan.admission.capabilityCoverage,
   blockerTypes: Object.fromEntries([...new Set(plan.admission.blockers.map((blocker) => blocker.code))].sort()
