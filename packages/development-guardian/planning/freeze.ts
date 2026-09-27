@@ -5,7 +5,7 @@ import { validateDevelopmentPlan } from './validator.js'
 
 const answerSchema = z.object({
   questionId: z.string().min(1), sourcePlanVersion: z.number().int().positive(),
-  selectedOptionId: z.string().regex(/^option-[1-6]$/u), selectedOptionText: z.string().min(1),
+  selectedOptionId: z.string().regex(/^(?:option-[1-6]|custom)$/u), selectedOptionText: z.string().min(1),
   question: planDraftSchema.shape.customerQuestions.element,
   freeformAnswer: z.string().max(2_000).optional(), answeredAt: z.iso.datetime(),
   provenance: z.literal('customer_decision'),
@@ -113,8 +113,11 @@ export function verifyPlanSnapshot(input: unknown): PlanSnapshot {
   for (const answer of answers) {
     const key = `${answer.sourcePlanVersion}:${answer.questionId}`
     const index = Number(answer.selectedOptionId.slice('option-'.length)) - 1
+    const validDecision = answer.selectedOptionId === 'custom'
+      ? answer.freeformAnswer?.trim() === answer.selectedOptionText && answer.selectedOptionText.trim().length > 0
+      : answer.question.options[index] === answer.selectedOptionText
     if (unique.has(key) || answer.sourcePlanVersion >= snapshot.sourcePlanVersion ||
-      answer.question.id !== answer.questionId || !answer.question.blocking || answer.question.options[index] !== answer.selectedOptionText) {
+      answer.question.id !== answer.questionId || !answer.question.blocking || !validDecision) {
       throw new Error('Plan snapshot integrity failure: invalid customer decision.')
     }
     unique.add(key)

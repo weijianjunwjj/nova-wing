@@ -11,7 +11,7 @@ export function renderCustomerHtml(token: string): string {
   <section id="recent" class="panel" hidden><h2>最近的方案</h2><ul id="recent-list"></ul></section>
   <section id="plan" hidden aria-label="开发方案"><div class="plan-head"><div><p class="eyebrow">DEVELOPMENT PLAN</p><h2 id="plan-title">开发方案</h2><p id="plan-status"></p></div><span id="coverage" class="coverage"></span></div><div id="plan-sections"></div>
     <section id="validation" class="panel" hidden><h3>完整性检查</h3><ul id="validation-issues"></ul></section>
-    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请选择业务规则。提交后会生成新版方案，并重新检查质量。</p><div id="question-list"></div><div class="actions"><button id="answer-revise" type="button">提交回答并重新生成方案</button></div></section>
+    <section id="questions" class="panel" hidden><h3>需要你决定的问题</h3><p>请选择业务规则，或写下你自己的准确规则。提交后会生成新版方案，并重新检查质量。</p><div id="question-list"></div><div class="actions"><button id="answer-revise" type="button">提交回答并重新生成方案</button></div></section>
     <section id="freeze-result" class="panel" hidden><h3>PLAN FROZEN</h3><p id="freeze-details"></p><p>此版本已固定。后续修改须创建新版本。</p></section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
   </section><footer>规划批准不会启动执行。</footer>
@@ -97,7 +97,17 @@ export const CUSTOMER_APP_JS = `(() => {
       select.append(node('option', '请选择'))
       select.firstChild.value = ''
       item.options.forEach((option, index) => { const choice = node('option', option); choice.value = 'option-' + (index + 1); select.append(choice) })
-      questionList.append(label, node('p', item.reason), select)
+      const custom = node('option', '自定义业务规则')
+      custom.value = 'custom'
+      select.append(custom)
+      const detail = node('textarea')
+      detail.dataset.questionId = item.id
+      detail.rows = 3
+      detail.maxLength = 2000
+      detail.placeholder = '请写下完整、准确的业务决定'
+      detail.hidden = true
+      select.addEventListener('change', () => { detail.hidden = select.value !== 'custom' })
+      questionList.append(label, node('p', item.reason), select, detail)
     }
     validationIssues.replaceChildren()
     const issues = [...(result.validation ? result.validation.issues : []), ...(plan.semanticReview ? plan.semanticReview.issues : [])]
@@ -152,8 +162,12 @@ export const CUSTOMER_APP_JS = `(() => {
   document.getElementById('revise').addEventListener('click', () => { if (!feedback.value.trim()) { error.textContent = '请先写下修改意见。'; return }; run(true) })
   document.getElementById('answer-revise').addEventListener('click', async () => {
     if (!current || busy) return
-    const answers = [...questionList.querySelectorAll('select')].map(select => ({ questionId: select.dataset.questionId, selectedOptionId: select.value }))
-    if (answers.some(answer => !answer.selectedOptionId)) { error.textContent = '请回答所有业务问题。'; return }
+    const answers = [...questionList.querySelectorAll('select')].map(select => {
+      const answer = { questionId: select.dataset.questionId, selectedOptionId: select.value }
+      if (select.value === 'custom') answer.freeformAnswer = [...questionList.querySelectorAll('textarea')].find(item => item.dataset.questionId === select.dataset.questionId)?.value.trim()
+      return answer
+    })
+    if (answers.some(answer => !answer.selectedOptionId || (answer.selectedOptionId === 'custom' && !answer.freeformAnswer))) { error.textContent = '请回答所有业务问题。'; return }
     busy = true; error.textContent = ''; progress.hidden = false
     try {
       await post('/api/planning/answers', { planId: current.id, version: current.version, answers })

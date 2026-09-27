@@ -553,6 +553,7 @@ test('Phase 2 fixture-only answers revise through both gates, freeze, and surviv
     const customerJs = await (await fetch(`${address.url}/customer/app.js`)).text()
     assert.ok(customerHtml.includes('提交回答并重新生成方案'))
     assert.ok(customerJs.includes('/api/planning/answers'))
+    assert.ok(customerJs.includes('自定义业务规则'))
     const headers = { 'Content-Type': 'application/json', Origin: address.url,
       'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() }
     const post = async (path: string, body: unknown) => fetch(`${address.url}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
@@ -598,6 +599,42 @@ test('Phase 2 fixture-only answers revise through both gates, freeze, and surviv
   for (const type of ['customer_question.answered', 'plan.revision.started', 'plan.revision.completed',
     'plan.ready_for_approval', 'plan.approved', 'plan.freeze.started', 'plan.frozen']) assert.ok(telemetry.includes(type), type)
   assert.ok(!telemetry.includes('按支付日统计已支付订单'))
+})
+
+test('customer-defined answer keeps the exact rule, question and source version', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-customer-custom-answer-'))
+  const store = new PlanningStore(join(directory, 'plans'))
+  let calls = 0
+  const service = new PlanningService(async ({ revisionFeedback }) => {
+    calls += 1
+    const draft = requirement001Draft(text)
+    if (calls === 1) draft.customerQuestions = [{ id: 'Q1', question: '今日订单数按哪种业务口径统计？', reason: '创建与支付日期可能不同。',
+      decisionType: 'business_rule', options: ['按创建日统计全部订单', '按支付日统计已支付订单'], blocking: true }]
+    else {
+      assert.ok(revisionFeedback?.includes('仅统计创建日为查询日且已经完成'))
+      draft.analysis.summary += ' 今日订单数按客户自定义决定统计。'
+      draft.acceptancePlan.criteria[11]!.assertions[0]!.expectedOutcome += ' 今日订单数按客户自定义决定统计。'
+    }
+    return { text: JSON.stringify(draft) }
+  }, store, new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
+  const first = await service.generate(text)
+  const rule = '仅统计创建日为查询日且已经完成的订单；其他订单不计入。'
+  await assert.rejects(service.answerQuestions(first.plan.id, 2, [{ questionId: 'Q1', selectedOptionId: 'custom', freeformAnswer: rule }]), PlanningInputError)
+  await assert.rejects(service.answerQuestions(first.plan.id, 1, [{ questionId: 'Q1', selectedOptionId: 'custom', freeformAnswer: ' ' }]), PlanningInputError)
+  const answers = await service.answerQuestions(first.plan.id, 1, [{ questionId: 'Q1', selectedOptionId: 'custom', freeformAnswer: rule }])
+  assert.equal(answers[0]?.selectedOptionText, rule)
+  assert.equal(answers[0]?.freeformAnswer, rule)
+  assert.equal(answers[0]?.sourcePlanVersion, 1)
+  assert.equal(answers[0]?.question.id, 'Q1')
+  assert.equal(answers[0]?.provenance, 'customer_decision')
+  assert.deepEqual(await store.getAnswers(first.plan.id, 1), answers)
+  const second = await service.generate(text, { planId: first.plan.id, expectedVersion: 1 })
+  assert.equal(second.plan.status, 'ready_for_approval')
+  assert.equal(second.plan.customerAnswers?.[0]?.selectedOptionText, rule)
+  const frozen = await service.approve(first.plan.id, 2)
+  assert.equal(frozen.status, 'frozen')
+  assert.equal(verifyPlanSnapshot(await store.getSnapshot(first.plan.id, 2)).answerAudit[0]?.freeformAnswer, rule)
 })
 
 test('answer metadata plus deleted question cannot masquerade as a revised business plan', async () => {

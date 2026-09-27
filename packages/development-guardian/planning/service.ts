@@ -209,7 +209,7 @@ export class PlanningService {
     this.activePlanIds.add(id)
     try {
       const decisionNotes = pendingAnswers?.map((answer) =>
-        `Customer decision for ${answer.questionId}: ${answer.question.question} Selected: ${answer.selectedOptionText}${answer.freeformAnswer === undefined ? '' : `; ${answer.freeformAnswer}`}`) ?? []
+        `Customer decision for ${answer.questionId}: ${answer.question.question} ${answer.selectedOptionId === 'custom' ? `Customer's own rule: ${answer.freeformAnswer}` : `Selected: ${answer.selectedOptionText}${answer.freeformAnswer === undefined ? '' : `; ${answer.freeformAnswer}`}`}`) ?? []
       const revisionNotes = [...decisionNotes, ...(revision?.feedback === undefined ? [] : [revision.feedback]),
         ...(change === undefined ? [] : [`Customer change request: ${change.requestedChange}`])]
       const requirement = previous === undefined
@@ -372,12 +372,15 @@ export class PlanningService {
       const answers = selections.map((selection): CustomerAnswer => {
         const question = blocking.find((item) => item.id === selection.questionId)
         const optionIndex = /^option-[1-6]$/u.test(selection.selectedOptionId) ? Number(selection.selectedOptionId.slice(7)) - 1 : -1
-        if (question === undefined || optionIndex < 0 || question.options[optionIndex] === undefined ||
+        const custom = selection.selectedOptionId === 'custom'
+        const freeform = selection.freeformAnswer?.trim()
+        if (question === undefined || (custom ? !freeform : optionIndex < 0 || question.options[optionIndex] === undefined) ||
           (selection.freeformAnswer !== undefined && selection.freeformAnswer.length > 2_000)) {
-          throw new PlanningInputError('Answer must select an option for an existing blocking question.')
+          throw new PlanningInputError('Answer must select a valid option or provide a customer-defined rule for an existing blocking question.')
         }
         return { questionId: question.id, sourcePlanVersion: version, selectedOptionId: selection.selectedOptionId,
-          selectedOptionText: question.options[optionIndex]!, question, ...(selection.freeformAnswer === undefined ? {} : { freeformAnswer: selection.freeformAnswer }),
+          selectedOptionText: custom ? freeform! : question.options[optionIndex]!, question,
+          ...(selection.freeformAnswer === undefined ? {} : { freeformAnswer: custom ? freeform! : selection.freeformAnswer }),
           answeredAt: new Date().toISOString(), provenance: 'customer_decision' }
       })
       const existing = await this.store.getAnswers(id, version)

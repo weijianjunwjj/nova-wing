@@ -75,7 +75,7 @@ export class PlanningEventStore {
         ...(safeCount(event.metadata.questionCount) === undefined ? {} : { questionCount: safeCount(event.metadata.questionCount)! }),
         ...(safeCount(event.metadata.repairCount) === undefined ? {} : { repairCount: safeCount(event.metadata.repairCount)! }),
         ...(typeof event.metadata.questionId === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(event.metadata.questionId) ? { questionId: event.metadata.questionId } : {}),
-        ...(typeof event.metadata.selectedOptionId === 'string' && /^option-[1-6]$/u.test(event.metadata.selectedOptionId) ? { selectedOptionId: event.metadata.selectedOptionId } : {}),
+        ...(typeof event.metadata.selectedOptionId === 'string' && /^(?:option-[1-6]|custom)$/u.test(event.metadata.selectedOptionId) ? { selectedOptionId: event.metadata.selectedOptionId } : {}),
       },
     }
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
