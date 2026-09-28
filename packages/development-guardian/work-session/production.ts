@@ -1,3 +1,4 @@
+import { probeDeepSeekReviewer } from './reviewer-health-refresh.js'
 import { gitExecutable } from '../platform/windows-git.js'
 import { workspacePathKey } from '../platform/paths.js'
 import { platformPaths } from '../platform/paths.js'
@@ -754,9 +755,9 @@ export async function createProductionWorkSessionUi(
           env,
           policy: runtimePolicy ?? cloneRuntimeModelPolicy(BUILTIN_RUNTIME_MODEL_POLICY),
         }) ?? new ReviewerRuntimeRegistry([
-          createClaudeReviewerRuntime({ cwd: definition.targetRepo }),
+          createClaudeReviewerRuntime({ cwd: definition.targetRepo, env }),
           createDeepSeekReviewerRuntime({
-            cwd: definition.targetRepo,
+            cwd: definition.targetRepo, env,
             model: reviewPolicy?.adapter === 'deepseek'
               ? reviewPolicy.model
               : trusted.agents?.find((agent) => agent.provider === 'deepseek')?.model ?? REVIEW_DEFAULT_MODEL,
@@ -904,6 +905,9 @@ export async function createProductionWorkSessionUi(
           }
         }
         const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl, runtimeRepair,
+          reviewerHealthProbe: () => probeDeepSeekReviewer({ cwd: definition.targetRepo, env,
+            model: reviewPolicy?.adapter === 'deepseek' ? reviewPolicy.model
+              : trusted.agents?.find(agent => agent.provider === 'deepseek')?.model ?? REVIEW_DEFAULT_MODEL }),
           ...(dependencies.validateTaskRetry === undefined ? {} : { taskRetry: {
             validate: dependencies.validateTaskRetry,
             acquireSession: () => codingStore.acquire(`task-retry-session:${definition.id}`, taskKey('task-retry')),

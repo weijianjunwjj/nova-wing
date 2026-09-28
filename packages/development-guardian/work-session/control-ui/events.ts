@@ -106,6 +106,8 @@ export interface WorkSessionControlSnapshot {
     tasks: readonly { id: string; goal: string }[]
   }
   runtime: {
+    taskRetryReceipt?: import('../task-retry.js').TaskRetryReceipt
+    reviewerHealth?: { provider: string; status: string; observedAt: string; probeId?: string; requestedModel?: string; resolvedModel?: string }
     started: boolean
     running: boolean
     /** T021: 当前进程内是否存在真正启动/恢复过执行的 Runtime Runner。 */
@@ -248,6 +250,7 @@ export interface CodingExecutionView {
  * 测试注入 deterministic fake runtime。
  */
 export interface WorkSessionControlRuntime {
+  refreshReviewerHealth?(input: import('../reviewer-health-refresh.js').ReviewerHealthRefreshRequest): Promise<import('../reviewer-health-refresh.js').ReviewerHealthProbeResult>
   reconcileTaskRetry?(input: import('../task-retry.js').TaskRetryRequest): Promise<import('../task-retry.js').TaskRetryReceipt>
   loadPersistedState(): Promise<WorkSessionDurableState | undefined>
   start(): Promise<WorkSessionDurableState>

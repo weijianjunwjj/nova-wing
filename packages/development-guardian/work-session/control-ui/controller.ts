@@ -194,6 +194,7 @@ export class WorkSessionControlController {
   /** 明确持有 runtime.start() 的 Promise，rejection 已被 catch，绝不产生 unhandled rejection。 */
   private startPromise: Promise<void> | undefined
   private resumePromise: Promise<void> | undefined
+  private reviewerHealthRefreshPromise: Promise<import('../reviewer-health-refresh.js').ReviewerHealthProbeResult> | undefined
   private taskRetryPromise: Promise<TaskRetryReceipt> | undefined
   private checkpointRecoveryPromise: Promise<void> | undefined
   /** Current Task whose user decision must never be echoed back by provider-derived reasons. */
@@ -415,6 +416,14 @@ export class WorkSessionControlController {
     return result
   }
 
+  async refreshReviewerHealth(input: import('../reviewer-health-refresh.js').ReviewerHealthRefreshRequest) {
+    if (this.closed || this.inFlightOperationCount() > 0 || !this.runtime.refreshReviewerHealth)
+      throw new Error('REVIEWER_HEALTH_REFRESH_UNAVAILABLE_OR_BUSY')
+    this.reviewerHealthRefreshPromise = this.runOperation(() => this.runtime.refreshReviewerHealth!(input))
+    try { return await this.reviewerHealthRefreshPromise }
+    finally { this.reviewerHealthRefreshPromise = undefined; this.broadcastSnapshot() }
+  }
+
   async reconcileTaskRetry(input: TaskRetryRequest): Promise<TaskRetryReceipt> {
     if (this.closed || this.inFlightOperationCount() > 0 || !this.runtime.reconcileTaskRetry)
       throw new Error('TASK_RETRY_UNAVAILABLE_OR_BUSY')
@@ -430,7 +439,7 @@ export class WorkSessionControlController {
     if (state?.state !== 'SUSPENDED') {
       return { accepted: false, reason: 'session is not suspended' }
     }
-    if (this.resumePromise !== undefined || this.taskRetryPromise !== undefined) {
+    if (this.resumePromise !== undefined || this.taskRetryPromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) {
       return { accepted: false, reason: 'resume already in progress' }
     }
 
@@ -490,7 +499,7 @@ export class WorkSessionControlController {
     if (pending.options !== undefined && !pending.options.includes(decision)) {
       return { accepted: false, reason: 'the decision must be one of the offered options' }
     }
-    if (this.resumePromise !== undefined) {
+    if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) {
       return { accepted: false, reason: 'resume already in progress' }
     }
 
@@ -559,7 +568,7 @@ export class WorkSessionControlController {
         ) {
           return { accepted: false, reason: 'durable verification recovery accepts no decision data' }
         }
-        if (this.resumePromise !== undefined) {
+        if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) {
           return { accepted: false, reason: 'resume already in progress' }
         }
         const safeEventData = {
@@ -590,7 +599,7 @@ export class WorkSessionControlController {
     if (this.runtime.resumeInterrupted === undefined) {
       return { accepted: false, reason: 'interrupted resume is unavailable' }
     }
-    if (this.resumePromise !== undefined) {
+    if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) {
       return { accepted: false, reason: 'resume already in progress' }
     }
 
@@ -632,7 +641,7 @@ export class WorkSessionControlController {
       pending.sessionId !== state.sessionId || pending.taskId !== state.currentTaskId ||
       this.runtime.approvePendingVerificationAndContinue === undefined
     ) return { accepted: false, reason: 'verification approval is unavailable' }
-    if (this.resumePromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
+    if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
     const safeEventData = { taskId: pending.taskId, category: 'VERIFICATION_APPROVAL' }
     this.emit({ type: 'SESSION_RESUME_REQUESTED', data: safeEventData })
     this.resumePromise = this.runActivity('verification', () => this.runtime.approvePendingVerificationAndContinue!())
@@ -651,7 +660,7 @@ export class WorkSessionControlController {
         this.runtime.rejectPendingVerification === undefined) {
       return { accepted: false, reason: 'verification approval is unavailable' }
     }
-    if (this.resumePromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
+    if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) return { accepted: false, reason: 'resume already in progress' }
     this.resumePromise = this.trackOperation(this.runtime.rejectPendingVerification())
       .then(() => { this.broadcastSnapshot() })
       .catch(() => { this.emit({ type: 'SESSION_FAILED', data: { message: SAFE_SESSION_FAILED_MESSAGE } }) })
@@ -674,7 +683,7 @@ export class WorkSessionControlController {
     if (this.runtime.repairRuntimeAndResume === undefined) {
       return { accepted: false, reason: 'runtime repair is unavailable' }
     }
-    if (this.resumePromise !== undefined) {
+    if (this.resumePromise !== undefined || this.reviewerHealthRefreshPromise !== undefined) {
       return { accepted: false, reason: 'resume already in progress' }
     }
     const safeEventData = { taskId: state.currentTaskId, category: 'RUNTIME_REPAIR' }
@@ -797,6 +806,14 @@ export class WorkSessionControlController {
         ...(state !== undefined
           ? {
               state: state.state,
+              ...(state.taskRetryReceipt === undefined ? {} : { taskRetryReceipt: state.taskRetryReceipt }),
+              ...(state.providerHealth?.deepseek === undefined ? {} : { reviewerHealth: {
+                provider: 'deepseek', status: state.providerHealth.deepseek.status, observedAt: state.providerHealth.deepseek.observedAt,
+                ...Object.fromEntries(['probeId', 'requestedModel', 'resolvedModel'].flatMap(key => {
+                  const value = state.providerHealth?.deepseek?.metadata?.[key]
+                  return typeof value === 'string' && /^[A-Za-z0-9_.[\]-]{1,120}$/u.test(value) ? [[key, value]] : []
+                })),
+              } }),
               createdAt: state.createdAt.toISOString(),
               scheduledStartAt: state.scheduledStartAt ?? null,
               scheduleSource: state.scheduleSource ?? 'immediate',

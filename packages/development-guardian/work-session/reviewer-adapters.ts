@@ -235,7 +235,7 @@ function reviewClaudeArgs(model: string | undefined, prompt: string, maxTurns: n
   return args
 }
 
-function spawnReviewCommand(request: GuardianCommandRequest): Promise<GuardianCommandResult> {
+export function spawnReviewCommand(request: GuardianCommandRequest): Promise<GuardianCommandResult> {
   return new Promise((resolveRun) => {
     const child = spawn(request.executable, [...request.args], {
       cwd: request.cwd,
@@ -285,6 +285,7 @@ export function classifyReviewerProviderFailure(text: string): 'QUOTA_EXHAUSTED'
 }
 
 export interface DeepSeekReviewerRuntimeOptions {
+  env?: NodeJS.ProcessEnv
   cwd: string
   model?: string
   timeoutMs?: number
@@ -304,13 +305,13 @@ export interface DeepSeekReviewerRuntimeOptions {
  */
 export function createDeepSeekReviewerRuntime(options: DeepSeekReviewerRuntimeOptions): ReviewerRuntime {
   return createClaudeCliReviewerRuntime(options, 'deepseek',
-    options.routeAvailable ?? ((): Promise<boolean> => hasDeepSeekRoute(options.cwd)))
+    options.routeAvailable ?? ((): Promise<boolean> => hasDeepSeekRoute(options.cwd, options.env)))
 }
 
 /** Claude CLI reviewer through its configured Claude model route; credentials remain in the CLI environment. */
 export function createClaudeReviewerRuntime(options: DeepSeekReviewerRuntimeOptions): ReviewerRuntime {
   return createClaudeCliReviewerRuntime(options, 'claude',
-    options.routeAvailable ?? ((): Promise<boolean> => hasClaudeRoute(options.cwd)))
+    options.routeAvailable ?? ((): Promise<boolean> => hasClaudeRoute(options.cwd, options.env)))
 }
 
 function createClaudeCliReviewerRuntime(options: DeepSeekReviewerRuntimeOptions,
@@ -334,8 +335,8 @@ function createClaudeCliReviewerRuntime(options: DeepSeekReviewerRuntimeOptions,
       const spec = guardianShellCommand('exec claude "$@"', exportShellOptions(options))
       // The provider route needs its credentials on the CLI process environment even
       // when NovaWing itself was launched without them. They stay in memory only.
-      const providerEnvironment = await resolveClaudeProviderEnvironment(options.cwd, process.env)
-        .catch(() => ({ ...process.env }))
+      const providerEnvironment = await resolveClaudeProviderEnvironment(options.cwd, options.env ?? process.env)
+        .catch(() => ({ ...(options.env ?? process.env) }))
       const env = spec.nativeGitBash === true
         ? {
             ...providerEnvironment,

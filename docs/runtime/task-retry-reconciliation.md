@@ -49,3 +49,13 @@ Ordinary resume and `ALLOW REEXECUTE` retain their prior behavior for unreconcil
 ## Requirement 001
 
 Implementation and regression tests use isolated repositories and databases. Applying reconciliation to the real Requirement 001 WorkSession, deploying/reloading its runtime, or resuming it requires a subsequent explicit operation. This change performs none of those actions. Reviewer unavailability remains a separate REVIEW_FAILURE.
+
+## Refresh Reviewer health without resuming
+
+`POST /api/session/refresh-reviewer-health` uses the same protected control token/origin gates. Its exact binding fields are the reconciliation fields above, replacing `reasonCode` with `provider: "deepseek"`. Only a suspended current task at the expected generation/action and unchanged clean baseline/bindings is eligible. An already-pending retry receipt is rejected; refresh before reconciliation.
+
+The operation holds session and workspace ownership while running one isolated health fixture through the formal DeepSeek reviewer adapter. The existing resolved review model and provider environment are used. A private temporary Claude configuration/history directory keeps CLI state separate, and credentials stay in memory. The probe has a 60-second deadline and a three-turn limit; neither changes the real task's action budget or its normal review limit. It must return a parsed assertion PASS citing the freshly generated fixture identity and leave fixture contents unchanged.
+
+A new successful probe records AVAILABLE; failure records its unavailable status and `REVIEWER_PROBE_FAILED`. Raw provider errors/prompts are not copied into the event. `REVIEWER_HEALTH_REFRESHED` plus the previous health observation are persisted atomically in the workflow snapshot; prior task/failed review events remain intact. Only provider-health and append-only audit projections change. Generation, task state/action, budget, contracts, continuation and retry receipt are unchanged. Concurrent resume/reconcile/refresh cannot acquire the same session/workspace locks.
+
+The response reports probe identity, timestamp, requested model and response-metadata model when available. GET `/api/status` exposes the safe current health summary and any pending retry receipt, allowing an operator to inspect an ambiguous response before another action. Initialization and configuration preflight are not successful model probes and do not clear persisted DEGRADED. Existing Runtime AI Repair & Resume retains its behavior; this separate operation never calls it or dispatches workflow REVIEW/EXECUTE.

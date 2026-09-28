@@ -98,6 +98,7 @@ export interface DispatchExplanation {
 export type TaskEventType =
   | 'TASK_CREATED'
   | 'TASK_RETRY_RECONCILED'
+  | 'REVIEWER_HEALTH_REFRESHED'
   | 'VERIFICATION_PLANNED'
   | 'DIRECT_PATH_STARTED'
   | 'DIRECT_PATH_ESCALATED'

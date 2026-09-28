@@ -1,3 +1,4 @@
+import { reviewerHealthRefreshRequestSchema } from '../reviewer-health-refresh.js'
 import { taskRetryRequestSchema } from '../task-retry.js'
 /**
  * W005-A Thin Local Control Surface — HTTP + SSE Server
@@ -182,6 +183,21 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/stop-after-task') {
       return this.serveStopAfterTask(req, res)
     }
+    if (method === 'POST' && path === '/api/session/refresh-reviewer-health') {
+      if (!this.authorizeMutation(req, res)) return
+      if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+        this.respondJson(res, 415, { error: 'content type must be application/json' }); return
+      }
+      return this.readBodyWithLimit(req, res, body => {
+        let input: unknown
+        try { input = JSON.parse(body) } catch { this.respondJson(res, 400, { error: 'malformed JSON' }); return }
+        const parsed = reviewerHealthRefreshRequestSchema.safeParse(input)
+        if (!parsed.success) { this.respondJson(res, 400, { error: 'invalid reviewer health request' }); return }
+        void this.controller.refreshReviewerHealth(parsed.data).then(receipt => this.respondJson(res, 200, receipt), error =>
+          this.respondJson(res, 409, { error: error instanceof Error && /^REVIEWER_HEALTH_[A-Z_]+$/u.test(error.message)
+            ? error.message : 'REVIEWER_HEALTH_REJECTED' }))
+      })
+    }
     if (method === 'POST' && path === '/api/session/reconcile-task-retry') {
       if (!this.authorizeMutation(req, res)) return
       if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
@@ -241,6 +257,7 @@ export class WorkSessionControlServer {
       '/api/session/runtime-repair',
       '/api/session/recover-checkpoint',
       '/api/session/reconcile-task-retry',
+      '/api/session/refresh-reviewer-health',
     ])
     if (knownPaths.has(path)) {
       return this.respondJson(res, 405, { error: 'method not allowed' })

@@ -83,7 +83,13 @@ export * from './runtime-repair-audit.js'
 export * from './runtime-repair-notifier.js'
 export * from './reviewer-runtime.js'
 export * from './review-dispatcher.js'
-export * from './reviewer-adapters.js'
+export {
+  REVIEW_DEFAULT_TIMEOUT_MS, REVIEW_DEFAULT_MODEL, REVIEW_DEFAULT_MAX_TURNS,
+  REVIEWER_ALLOWED_TOOLS, REVIEWER_SYSTEM_PROMPT, parseReviewVerdict, buildReviewPrompt,
+  classifyReviewerProviderFailure, createDeepSeekReviewerRuntime, createClaudeReviewerRuntime,
+  createCodexReviewerRuntime,
+} from './reviewer-adapters.js'
+export type { ReviewVerdict, DeepSeekReviewerRuntimeOptions, CodexReviewerRuntimeOptions } from './reviewer-adapters.js'
 export type {
   SmtpTransportConfig,
   SmtpMailOptions,

@@ -343,3 +343,24 @@ test('the review dispatcher rejects a reviewer that mutates the repository', asy
   const failure: ReviewProviderFailure | undefined = result.providerFailure
   assert.match(failure?.reason ?? '', /repository changed during review/u)
 })
+
+
+test('reviewer route and child process use the same explicitly supplied provider environment', async () => {
+  const root=await mkdtemp(join(tmpdir(),'nw-reviewer-env-'))
+  try {
+    const env={CLAUDE_CONFIG_DIR:root,ANTHROPIC_BASE_URL:'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN:'fixture-not-a-secret',ANTHROPIC_DEFAULT_SONNET_MODEL:'deepseek-flash'}
+    let calls=0
+    const runtime=createDeepSeekReviewerRuntime({cwd:root,env,model:'sonnet',commandRunner:async request=>{
+      calls++
+      assert.equal(request.env?.CLAUDE_CONFIG_DIR,root)
+      assert.equal(request.env?.ANTHROPIC_BASE_URL,env.ANTHROPIC_BASE_URL)
+      assert.equal(request.env?.ANTHROPIC_AUTH_TOKEN,env.ANTHROPIC_AUTH_TOKEN)
+      assert.equal(request.args[request.args.indexOf('--model')+1],'sonnet')
+      return {exitCode:0,signal:null,stderr:'',stdout:JSON.stringify({result:JSON.stringify({verdict:'PASS',summary:'fixture',findings:[],blockingFindings:[]})})}
+    }})
+    const outcome=await runtime.review({agent:profile({id:'reviewer',provider:'deepseek',runtimeIdentity:'fixture',review:true}),
+      task:{taskId:'health',goal:'fixture',constraints:[],acceptanceCriteria:[],implementerProviders:[],changedFiles:[],verificationEvidence:[],evidence:[],blockers:[],risk:'LOW'}})
+    assert.equal(outcome.kind,'VERDICT');assert.equal(calls,1)
+  } finally { await import('node:fs/promises').then(fs=>fs.rm(root,{recursive:true,force:true})) }
+})

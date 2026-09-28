@@ -1,3 +1,4 @@
+import { reviewerHealthRefreshRequestSchema, reviewerHealthProbeResultSchema, type ReviewerHealthRefreshRequest, type ReviewerHealthProbeResult } from './reviewer-health-refresh.js'
 import { taskRetryRequestSchema, taskRetryPendingSchema, taskRetryRequestId, legacyTaskAttemptId, retryTaskProjection, type TaskRetryAuthority, type TaskRetryRequest, type TaskRetryReceipt } from './task-retry.js'
 /**
  * Work Session Runtime with Mastra Workflow Suspend/Resume
@@ -120,6 +121,7 @@ export interface WorkSessionGitCheckpointConfig {
 }
 
 export interface WorkSessionRuntimeConfig {
+  reviewerHealthProbe?: () => Promise<ReviewerHealthProbeResult>
   taskRetry?: TaskRetryAuthority
   definition: WorkSessionDefinition
   taskRunner: WorkSessionTaskRunner
@@ -215,6 +217,7 @@ const WorkflowStateSchema = z.object({
   // Both are advisory; TaskStateV2 remains the single semantic authority.
   taskEventLogs: z.record(z.string(), z.any()).optional(),
   providerHealth: z.record(z.string(), z.any()).optional(),
+  reviewerHealthHistory: z.array(z.any()).optional(),
   humanRequired: z.object({
     category: z.string(),
     reason: z.string(),
@@ -431,6 +434,7 @@ export class WorkSessionRuntime {
   private closed = false
   private closeOperation: Promise<void> | undefined
   private readonly storageOperations = new Set<Promise<unknown>>()
+  private reviewerHealthRefreshOperation: Promise<ReviewerHealthProbeResult> | undefined
   private taskRetryOperation: Promise<TaskRetryReceipt> | undefined
   /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
   private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
@@ -745,10 +749,69 @@ export class WorkSessionRuntime {
     }
   }
 
+  /** Refresh provider truth only. Never changes workflow/task execution state or calls resume. */
+  async refreshReviewerHealth(input: ReviewerHealthRefreshRequest): Promise<ReviewerHealthProbeResult> {
+    this.assertOpen()
+    if (this.reviewerHealthRefreshOperation || this.taskRetryOperation || this.startOperation || this.suspendedResumePromise ||
+      this.resumeInterruptedPromise || this.verificationApprovalPromise || this.runtimeRepairPromise || this.checkpointRecoveryPromise)
+      throw new Error('REVIEWER_HEALTH_REFRESH_BUSY')
+    const request = reviewerHealthRefreshRequestSchema.parse(input)
+    const authority = this.config.taskRetry, probe = this.config.reviewerHealthProbe
+    if (!authority || !probe) throw new Error('REVIEWER_HEALTH_REFRESH_UNAVAILABLE')
+    const release = authority.acquireSession()
+    this.reviewerHealthRefreshOperation = this.doRefreshReviewerHealth(request, authority, probe)
+      .finally(() => { release(); this.reviewerHealthRefreshOperation = undefined })
+    return this.reviewerHealthRefreshOperation
+  }
+
+  private async doRefreshReviewerHealth(request: ReviewerHealthRefreshRequest, authority: TaskRetryAuthority,
+    probe: () => Promise<ReviewerHealthProbeResult>): Promise<ReviewerHealthProbeResult> {
+    await this.notificationPromise
+    if (request.sessionId !== this.config.definition.id || request.workflowRunId !== this.config.definition.id)
+      throw new Error('REVIEWER_HEALTH_IDENTITY_MISMATCH')
+    const releaseWorkspace = await authority.acquireWorkspace()
+    try {
+      const { workflows, snapshot, state } = await this.taskRetrySnapshot()
+      const task = loadTaskStateV2(state.taskStatesV2?.[request.taskId])
+      if (state.currentTaskId !== request.taskId || state.humanRequiredGeneration !== request.expectedGeneration ||
+        task.status !== request.expectedTaskState || task.currentAction !== request.expectedCurrentAction ||
+        state.taskRetry?.phase === 'PENDING' || state.taskRetry?.phase === 'RESUME_CLAIMED')
+        throw new Error('REVIEWER_HEALTH_STATE_MISMATCH')
+      const binding = { ...request, reasonCode: 'RUNTIME_EXECUTION_RESULT_INVALIDATED' as const }
+      await authority.validate(binding, this.config.definition)
+      // Production probe has a hard CLI deadline and uses an isolated fixture, never taskRunner.
+      const probeStartedAt = Date.now()
+      const result = reviewerHealthProbeResultSchema.parse(await probe())
+      if (Date.parse(result.observedAt) < probeStartedAt || Date.parse(result.observedAt) > Date.now())
+        throw new Error('REVIEWER_HEALTH_STALE_PROBE')
+      if (Date.parse(result.observedAt) < Date.parse(state.providerHealth?.[request.provider]?.observedAt ?? '1970-01-01'))
+        throw new Error('REVIEWER_HEALTH_STALE_PROBE')
+      await authority.validate(binding, this.config.definition)
+      const latest = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId: request.workflowRunId })
+      if (JSON.stringify(latest) !== JSON.stringify(snapshot)) throw new Error('REVIEWER_HEALTH_CONCURRENT_STATE_CHANGE')
+      const log = new TaskEventLogV2(state.taskEventLogs?.[request.taskId])
+      log.append({ type: 'REVIEWER_HEALTH_REFRESHED', sessionId: request.sessionId, taskId: request.taskId,
+        provider: result.provider, timestamp: result.observedAt, metadata: { ...result,
+          previousStatus: state.providerHealth?.[request.provider]?.status ?? 'UNKNOWN' } })
+      const refreshed: WorkflowState = { ...state,
+        reviewerHealthHistory: [...(state.reviewerHealthHistory ?? []), { request, result,
+          previousObservation: structuredClone(state.providerHealth?.[request.provider] ?? null) }],
+        providerHealth: { ...state.providerHealth,
+        [result.provider]: { provider: result.provider, status: result.status, observedAt: result.observedAt,
+          source: 'runtime', reason: result.reasonCode, metadata: { probeId: result.probeId,
+            requestedModel: result.requestedModel, resolvedModel: result.resolvedModel } } },
+        taskEventLogs: { ...state.taskEventLogs, [request.taskId]: [...log.events] } }
+      snapshot.value = refreshed as unknown as Record<string, string>
+      await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId: request.workflowRunId, snapshot })
+      this.latestState = refreshed
+      return result
+    } finally { releaseWorkspace() }
+  }
+
   /** Reconcile only. This method never dispatches, resumes, or creates a WorkSession. */
   async reconcileTaskRetry(input: TaskRetryRequest): Promise<TaskRetryReceipt> {
     this.assertOpen()
-    if (this.taskRetryOperation || this.startOperation || this.suspendedResumePromise || this.resumeInterruptedPromise ||
+    if (this.reviewerHealthRefreshOperation || this.taskRetryOperation || this.startOperation || this.suspendedResumePromise || this.resumeInterruptedPromise ||
       this.verificationApprovalPromise || this.runtimeRepairPromise || this.checkpointRecoveryPromise)
       throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     const request = taskRetryRequestSchema.parse(input)
@@ -867,7 +930,7 @@ export class WorkSessionRuntime {
 
   async resume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
     this.assertOpen()
-    if (this.suspendedResumePromise !== undefined || this.taskRetryOperation !== undefined) {
+    if (this.suspendedResumePromise !== undefined || this.taskRetryOperation !== undefined || this.reviewerHealthRefreshOperation !== undefined) {
       throw new Error('session resume already in progress')
     }
     const release = this.config.taskRetry?.acquireSession()
@@ -960,7 +1023,7 @@ export class WorkSessionRuntime {
    * → resume the same Session. A legal repair never re-runs the Executor.
    */
   async repairRuntimeAndResume(): Promise<WorkSessionDurableState> {
-    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
+    if (this.taskRetryOperation || this.reviewerHealthRefreshOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.runtimeRepairPromise !== undefined) {
       throw new Error('runtime repair already in progress')
@@ -1210,7 +1273,7 @@ export class WorkSessionRuntime {
    * durable request already bound to this runtime's session and current task.
    */
   async approvePendingVerificationAndContinue(): Promise<WorkSessionDurableState> {
-    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
+    if (this.taskRetryOperation || this.reviewerHealthRefreshOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.verificationApprovalPromise !== undefined) {
       throw new Error('verification approval already in progress')
@@ -1222,7 +1285,7 @@ export class WorkSessionRuntime {
 
   /** Declining the exact pending verifier preserves the suspended session and evidence. */
   async rejectPendingVerification(): Promise<WorkSessionDurableState> {
-    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
+    if (this.taskRetryOperation || this.reviewerHealthRefreshOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.verificationApprovalPromise !== undefined || this.suspendedResumePromise !== undefined) {
       throw new Error('verification decision already in progress')
@@ -1576,7 +1639,7 @@ export class WorkSessionRuntime {
    * 必须由用户显式调用；loadPersistedState 只发现、不自动恢复。
    */
   async resumeInterrupted(): Promise<WorkSessionDurableState> {
-    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
+    if (this.taskRetryOperation || this.reviewerHealthRefreshOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.resumeInterruptedPromise !== undefined) {
       throw new Error('interrupted resume already in progress')
@@ -2741,7 +2804,7 @@ export class WorkSessionRuntime {
     // No new operations can enter. Existing workflow operations include their
     // awaited snapshot writes; notifications may be queued as they complete.
     const results = await Promise.allSettled([
-      ...this.storageOperations, this.startOperation, this.suspendedResumePromise, this.taskRetryOperation,
+      ...this.storageOperations, this.startOperation, this.suspendedResumePromise, this.taskRetryOperation, this.reviewerHealthRefreshOperation,
       this.resumeInterruptedPromise, this.verificationApprovalPromise,
       this.checkpointRecoveryPromise, this.runtimeRepairPromise,
     ])

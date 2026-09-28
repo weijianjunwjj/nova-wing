@@ -1,3 +1,4 @@
+import { probeDeepSeekReviewer, type ReviewerHealthProbeResult } from '../packages/development-guardian/work-session/reviewer-health-refresh.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
@@ -115,8 +116,9 @@ async function fixture() {
   const agents = ['executor', 'reviewer'].map(name => ({ id: name, identity: { agent: name,
     provider: name === 'executor' ? 'codex' : 'deepseek', runtimeIdentity: name }, available: true, quotaExhausted: false,
     degraded: false, capabilities: { coding: name === 'executor', verification: true, reasoning: true, review: name === 'reviewer' } }))
+  let healthProbe: (() => Promise<ReviewerHealthProbeResult>) | undefined
   const makeRuntime = () => new WorkSessionRuntime({ definition, storageUrl: pathToFileURL(join(data, 'session.db')).href,
-    taskRetry: authority,
+    taskRetry: authority, reviewerHealthProbe: async () => { if (!healthProbe) throw new Error('No fixture health probe'); return healthProbe() },
     taskRunner: new V2ControllerTaskRunner({ sessionId: id, branch: definition.branch, agents, dispatcher: {
       inspectRepository: inspect, dispatch: async ({ action }) => {
         if (action === 'EXECUTE') { executions++; return { status: 'SUCCESS', changedFiles: [] } }
@@ -134,6 +136,7 @@ async function fixture() {
     runtimePlanHash: plan.runtimePlanHash, targetBindingId: target.id, targetBaselineCommit: target.baselineCommit,
     reasonCode: TASK_RETRY_REASON }
   return { repo, data, definition, store, coding, root, frozen, plan, request, git,
+    setHealthProbe: (probe: () => Promise<ReviewerHealthProbeResult>) => { healthProbe = probe },
     runtime: () => runtime, additionalRuntime: makeRuntime, executions: () => executions, setSnapshot: (value: PlanSnapshot) => { snapshotSource = value },
     access: () => snapshotAccess(runtime),
     recreate: async () => { await runtime.close(); runtime = makeRuntime(); await runtime.loadPersistedState(); return runtime },
@@ -351,6 +354,8 @@ test('protected reconciliation API is explicit and receipt-bound resume executes
     const receipt = await response.json() as { receiptId: string; taskId: string; generation: number; nextDecision: string }
     assert.equal(receipt.nextDecision, 'EXECUTE')
     assert.equal(f.executions(), 1)
+    const view = await (await fetch(address.url + '/api/status')).json() as { runtime: { taskRetryReceipt: unknown } }
+    assert.deepEqual(view.runtime.taskRetryReceipt, receipt)
     assert.equal((await post(path, f.request)).status, 409)
     assert.equal((await post('/api/session/resume', {})).status, 409)
     const input = { taskRetryReceiptId: receipt.receiptId, taskId: receipt.taskId, generation: receipt.generation }
@@ -450,4 +455,113 @@ test('legacy absolute scope and Launchpad forbidden paths are preserved by retry
     assert.deepEqual(permissions.allowedPaths, [f.root])
     assert.deepEqual(permissions.forbiddenPaths, [...DEFAULT_WORKSPACE_FORBIDDEN_PATHS])
   } finally { await f.close() }
+})
+
+
+function healthRequest(request: TaskRetryRequest) {
+  const { reasonCode: _reason, ...binding } = request
+  return { ...binding, provider: 'deepseek' as const }
+}
+function healthResult(status: 'AVAILABLE' | 'DEGRADED' = 'AVAILABLE'): ReviewerHealthProbeResult {
+  return { probeId: '33333333-3333-4333-8333-333333333333', provider: 'deepseek', status,
+    reasonCode: status === 'AVAILABLE' ? 'REVIEWER_PROBE_PASSED' : 'REVIEWER_PROBE_FAILED',
+    requestedModel: 'sonnet', resolvedModel: 'deepseek-flash', observedAt: new Date().toISOString() }
+}
+for (const status of ['AVAILABLE', 'DEGRADED'] as const) {
+  test(`reviewer refresh-only persists ${status} with audit, no dispatch and no task/generation/budget change`, async () => {
+    const f = await fixture()
+    try {
+      let calls = 0
+      f.setHealthProbe(async () => { calls++; return healthResult(status) })
+      const before = await (await f.access()).read()
+      const result = await f.runtime().refreshReviewerHealth(healthRequest(f.request))
+      assert.equal(result.status, status)
+      const after = await (await f.access()).read()
+      const { providerHealth: oldHealth, taskEventLogs: oldEvents, reviewerHealthHistory: _oldHistory, ...oldState } = before.value
+      const { providerHealth: health, taskEventLogs: events, reviewerHealthHistory: history, ...state } = after.value
+      assert.deepEqual(state, oldState)
+      assert.deepEqual(events.T1.slice(0, -1), oldEvents.T1)
+      assert.equal(events.T1.at(-1).type, 'REVIEWER_HEALTH_REFRESHED')
+      assert.deepEqual(history[0].previousObservation, oldHealth.deepseek)
+      assert.equal(health.deepseek.status, status)
+      assert.equal(calls, 1); assert.equal(f.executions(), 1)
+      assert.equal(f.git('status', '--porcelain'), '')
+      await f.recreate()
+      assert.equal((await (await f.access()).read()).value.providerHealth.deepseek.status, status)
+      if (status === 'AVAILABLE') {
+        await f.runtime().reconcileTaskRetry(f.request)
+        const reconciled = await (await f.access()).read()
+        assert.equal(reconciled.value.providerHealth.deepseek.status, 'AVAILABLE')
+        assert.equal(reconciled.value.taskRetry.phase, 'PENDING')
+        assert.equal(f.executions(), 1)
+      }
+    } finally { await f.close() }
+  })
+}
+for (const mode of ['running', 'wrong-generation', 'wrong-task', 'active-executor', 'baseline-drift', 'runtime-drift'] as const) {
+  test(`refresh-only rejects ${mode} before probe or state mutation`, async () => {
+    const f = await fixture(); let release: (() => void) | undefined
+    try {
+      let calls=0; f.setHealthProbe(async () => { calls++; return healthResult() })
+      const request=healthRequest(f.request), access=await f.access()
+      if(mode==='running') await access.mutate((state,snapshot)=>{state.state='RUNNING';snapshot.status='running'})
+      if(mode==='wrong-generation') request.expectedGeneration++
+      if(mode==='wrong-task') request.taskId='T2'
+      if(mode==='active-executor') release=f.coding.acquire(f.root,'busy')
+      if(mode==='baseline-drift') await writeFile(join(f.repo,'dirty.txt'),'drift')
+      if(mode==='runtime-drift') request.runtimePlanHash='b'.repeat(64)
+      const before=await access.read()
+      await assert.rejects(f.runtime().refreshReviewerHealth(request))
+      assert.deepEqual(await access.read(),before);assert.equal(calls,0)
+    } finally { release?.(); await f.close() }
+  })
+}
+test('refresh-only owns session/workspace locks until probe settles; no concurrent resume/reconcile/probe', async () => {
+  const f=await fixture(), second=f.additionalRuntime()
+  try {
+    let resolve!: (value: ReviewerHealthProbeResult) => void
+    let started!: () => void
+    const ready=new Promise<void>(r=>{started=r})
+    f.setHealthProbe(()=>{started();return new Promise(r=>{resolve=r})})
+    const refresh=f.runtime().refreshReviewerHealth(healthRequest(f.request))
+    await ready
+    await assert.rejects(second.refreshReviewerHealth(healthRequest(f.request)))
+    await assert.rejects(second.resume({}))
+    await assert.rejects(f.runtime().reconcileTaskRetry(f.request))
+    resolve(healthResult());await refresh
+    assert.equal(f.executions(),1)
+  } finally {await second.close();await f.close()}
+})
+test('refresh-only protected HTTP endpoint does not call resume', async () => {
+  const f=await fixture()
+  const controller=new WorkSessionControlController({createRuntime:()=>f.runtime()})
+  const server=new WorkSessionControlServer({controller,port:0})
+  try {
+    f.setHealthProbe(async()=>healthResult())
+    const address=await server.start(),url=address.url+'/api/session/refresh-reviewer-health'
+    const body=JSON.stringify(healthRequest(f.request))
+    assert.equal((await fetch(url,{method:'POST',body})).status,403)
+    const response=await fetch(url,{method:'POST',body,headers:{Origin:address.url,'Content-Type':'application/json','X-NovaWing-Control-Token':server.getTokenForTest()}})
+    assert.equal(response.status,200)
+    assert.equal((await response.json() as ReviewerHealthProbeResult).status,'AVAILABLE')
+    assert.equal(controller.getSnapshot().runtime.reviewerHealth?.status,'AVAILABLE')
+    assert.equal(controller.getSnapshot().runtime.reviewerHealth?.resolvedModel,'deepseek-flash')
+    assert.equal(f.executions(),1);assert.equal(f.runtime().getDurableState()!.humanRequiredGeneration,f.request.expectedGeneration)
+  } finally {await server.close();await f.close()}
+})
+test('health probe uses an isolated fixture and never trusts an unproved verdict', async () => {
+  const f=await fixture()
+  try {
+    for(const pass of [true,false]) {
+      const result=await probeDeepSeekReviewer({cwd:f.repo,model:'sonnet',env:{CLAUDE_CONFIG_DIR:join(f.data,'empty')},
+        createReviewer:({cwd,env})=>({provider:'deepseek',review:async ()=>{
+          assert.notEqual(cwd,f.repo);assert.notEqual(env.CLAUDE_CONFIG_DIR,process.env.CLAUDE_CONFIG_DIR)
+          const content=await import('node:fs/promises').then(fs=>fs.readFile(join(cwd,'health.txt'),'utf8'))
+          return {kind:'VERDICT',provider:'deepseek',passed:true,findings:[],blockingFindings:[],summary:'fixture',
+            assertionVerdicts:[{assertionId:'HEALTH_PROBE',verdict:'PASS',evidence:pass?content:'unproved'}]}
+        }})})
+      assert.equal(result.status,pass?'AVAILABLE':'DEGRADED')
+      assert.equal(f.git('status','--porcelain'),'')
+    }
+  } finally {await f.close()}
 })
