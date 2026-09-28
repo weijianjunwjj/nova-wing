@@ -42,6 +42,8 @@ export interface TaskActionBudgetV2 {
 
 /** A serializable, task-centric projection of the established Work Session facts. */
 export interface TaskStateV2 {
+  /** Host-owned retry identity; transport metadata is partitioned by this attempt. */
+  attemptId?: string
   version: typeof TASK_STATE_V2_VERSION
   identity: { taskId: string; sessionId: string }
   goal: string
@@ -149,6 +151,7 @@ const verificationPlan = z.object({
   escalationSequence: strings, estimatedScope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), estimatedCost: z.enum(['LOW', 'MEDIUM', 'HIGH']), confidence: z.enum(['HIGH', 'MEDIUM', 'INSUFFICIENT']), approvalRequired: z.boolean(), invalidationConditions: strings, packageRoots: strings, explicitBindings: z.boolean(), rationale: strings,
 })
 const persistedTask = z.object({
+  attemptId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   version: z.literal(2), identity: z.object({ taskId: z.string().min(1), sessionId: z.string().min(1) }),
   goal: z.string(), constraints: strings, acceptanceCriteria: strings,
   permissions: z.object({ allowedPaths: strings, forbiddenPaths: strings }),

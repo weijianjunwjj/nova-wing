@@ -1,3 +1,4 @@
+import { taskRetryRequestSchema } from '../task-retry.js'
 /**
  * W005-A Thin Local Control Surface — HTTP + SSE Server
  *
@@ -181,6 +182,21 @@ export class WorkSessionControlServer {
     if (method === 'POST' && path === '/api/session/stop-after-task') {
       return this.serveStopAfterTask(req, res)
     }
+    if (method === 'POST' && path === '/api/session/reconcile-task-retry') {
+      if (!this.authorizeMutation(req, res)) return
+      if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+        this.respondJson(res, 415, { error: 'content type must be application/json' }); return
+      }
+      return this.readBodyWithLimit(req, res, body => {
+        let input: unknown
+        try { input = JSON.parse(body) } catch { this.respondJson(res, 400, { error: 'malformed JSON' }); return }
+        const parsed = taskRetryRequestSchema.safeParse(input)
+        if (!parsed.success) { this.respondJson(res, 400, { error: 'invalid task retry request' }); return }
+        void this.controller.reconcileTaskRetry(parsed.data).then(receipt => this.respondJson(res, 200, receipt), error =>
+          this.respondJson(res, 409, { error: error instanceof Error && /^TASK_RETRY_[A-Z_]+$/u.test(error.message)
+            ? error.message : 'TASK_RETRY_REJECTED' }))
+      })
+    }
     if (method === 'POST' && path === '/api/session/resume') {
       return this.serveResume(req, res)
     }
@@ -224,6 +240,7 @@ export class WorkSessionControlServer {
       '/api/session/reject-verification',
       '/api/session/runtime-repair',
       '/api/session/recover-checkpoint',
+      '/api/session/reconcile-task-retry',
     ])
     if (knownPaths.has(path)) {
       return this.respondJson(res, 405, { error: 'method not allowed' })
@@ -621,7 +638,7 @@ function parseResumeBody(body: string):
   }
   const record = parsed as Record<string, unknown>
   const keys = Object.keys(record)
-  if (keys.some((key) => !['decision', 'approval', 'recovery', 'taskId', 'generation'].includes(key))) {
+  if (keys.some((key) => !['decision', 'approval', 'recovery', 'taskId', 'generation', 'taskRetryReceiptId'].includes(key))) {
     return { ok: false, error: 'resume body contains unknown fields' }
   }
   if (['decision', 'approval', 'recovery'].filter((key) => record[key] !== undefined).length > 1) {
@@ -637,6 +654,12 @@ function parseResumeBody(body: string):
       return { ok: false, error: 'generation must be a nonnegative integer' }
     }
     scope.generation = record.generation
+  }
+  if (record.taskRetryReceiptId !== undefined) {
+    if (typeof record.taskRetryReceiptId !== 'string' || !/^[a-f0-9]{64}$/u.test(record.taskRetryReceiptId) ||
+      scope.taskId === undefined || scope.generation === undefined || record.decision !== undefined || record.approval !== undefined || record.recovery !== undefined)
+      return { ok: false, error: 'task retry resume requires an exact receipt, taskId and generation' }
+    return { ok: true, input: { ...scope, taskRetryReceiptId: record.taskRetryReceiptId } }
   }
   if (record.recovery !== undefined) {
     if (record.recovery !== 'diagnose' || scope.taskId === undefined || scope.generation === undefined) {

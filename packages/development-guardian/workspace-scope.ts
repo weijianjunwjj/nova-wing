@@ -2,6 +2,9 @@ import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { GuardianTask } from './model.js'
 
+/** Launchpad's existing protected paths, shared with exact recovery-policy validation. */
+export const DEFAULT_WORKSPACE_FORBIDDEN_PATHS = ['.env', '**/.env', '**/*secret*', '**/*credential*'] as const
+
 /**
  * Executor boundary: every scope rule inside the workspace is workspace-relative;
  * `.` means the whole repository. Legacy canonical absolute configuration is

@@ -91,3 +91,6 @@ export type {
   SmtpWorkSessionNotifierOptions,
   SmtpNotifierEnvironmentOptions,
 } from './smtp-notifier.js'
+
+export { TASK_RETRY_REASON, taskRetryRequestSchema } from './task-retry.js'
+export type { TaskRetryRequest, TaskRetryReceipt, TaskRetryAuthority } from './task-retry.js'

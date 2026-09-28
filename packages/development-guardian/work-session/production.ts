@@ -483,6 +483,7 @@ interface ClosableControlRuntime extends WorkSessionControlRuntime {
 }
 
 export interface ProductionWorkSessionDependencies {
+  validateTaskRetry?: import('./task-retry.js').TaskRetryAuthority['validate']
   activityObserver?: WorkSessionActivityObserver
   /** Explicit Desktop transport; null disables it, omission retains the CLI adapter. */
   desktopNotifier?: WorkSessionNotifier | null
@@ -690,7 +691,7 @@ export async function createProductionWorkSessionUi(
   const codingStore = new CodingExecutionStore(dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined
     ? join(resolve(storagePath, '..'), 'coding-executors.sqlite')
     : defaultCodingExecutionStorePath(env))
-  const taskKey = (id: string) => JSON.stringify([definition.id, id])
+  const taskKey = (id: string, attemptId?: string) => JSON.stringify(attemptId === undefined ? [definition.id, id] : [definition.id, id, attemptId])
   const policies = new Map(trusted.tasks.map((task) => [task.id, task.guardian]))
   const gitRunner = createProductionGitRunner(
     definition.targetRepo,
@@ -709,7 +710,7 @@ export async function createProductionWorkSessionUi(
             ...(dependencies.activityObserver === undefined ? {} : { activityObserver: dependencies.activityObserver }),
           }) } : {}),
     readCodingExecutions: () => trusted.tasks.map((task) => {
-      const state = codingStore.read(taskKey(task.id))
+      const state = codingStore.read(taskKey(task.id, runtime?.getDurableState()?.taskStatesV2?.[task.id]?.attemptId))
       return { taskId: task.id, mode: taskModes.get(task.id)!,
         ...(state === undefined ? {} : {
           activeExecutor: state.activeExecutor, history: state.history,
@@ -726,7 +727,7 @@ export async function createProductionWorkSessionUi(
       const snapshot = controller.getSnapshot().runtime
       const nextTaskId = snapshot.currentTaskId ?? trusted.tasks.find(task => !snapshot.completedTaskIds?.includes(task.id))?.id
       const executorModes = trusted.tasks.filter(task => task.id === nextTaskId).map((task) => {
-        const persisted = codingStore.read(taskKey(task.id))
+        const persisted = codingStore.read(taskKey(task.id, runtime?.getDurableState()?.taskStatesV2?.[task.id]?.attemptId))
         const mode = taskModes.get(task.id)!
         return persisted?.activeExecutor ?? (mode === 'auto' && quotaBlocked ? 'deepseek' : mode)
       })
@@ -780,13 +781,13 @@ export async function createProductionWorkSessionUi(
             const options: ClaudeCodeExecutorOptions = { cwd: definition.targetRepo, model: configuredDeepSeekModel, maxTurns: trusted.executor.maxTurns,
               allowNpmInstall: trusted.executor.allowNpmInstall, allowPythonBootstrap: trusted.executor.allowPythonBootstrap, verificationOutputDirectory, ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }) }
             const router = new ExecutorRouter({
-              taskKey: taskKey(taskState.identity.taskId), cwd: definition.targetRepo, store: codingStore,
+              taskKey: taskKey(taskState.identity.taskId, taskState.attemptId), cwd: definition.targetRepo, store: codingStore,
               mode: taskModes.get(taskState.identity.taskId)!, codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
               codexModel: configuredCodex.model,
               reasoningEffort: configuredCodex.reasoningEffort,
               quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
               createCodex(onThread) {
-                const persisted = codingStore.read(taskKey(taskState.identity.taskId))
+                const persisted = codingStore.read(taskKey(taskState.identity.taskId, taskState.attemptId))
                 const codex = persisted?.model !== undefined && persisted.reasoningEffort !== undefined
                   ? resolvePersistedCodexConfiguration(persisted)
                   : configuredCodex
@@ -903,6 +904,11 @@ export async function createProductionWorkSessionUi(
           }
         }
         const runtimeConfig: WorkSessionRuntimeConfig = { definition, taskRunner: runner, storageUrl, runtimeRepair,
+          ...(dependencies.validateTaskRetry === undefined ? {} : { taskRetry: {
+            validate: dependencies.validateTaskRetry,
+            acquireSession: () => codingStore.acquire(`task-retry-session:${definition.id}`, taskKey('task-retry')),
+            acquireWorkspace: async () => codingStore.acquire(workspacePathKey(await realpath(definition.targetRepo)), taskKey('task-retry')),
+          } }),
           gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
             ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }) } },
           ...(analyticsProjector === undefined ? {} : { analyticsProjector }),

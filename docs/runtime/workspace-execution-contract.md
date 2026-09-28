@@ -24,10 +24,6 @@ These are execution facts, not acceptance verdicts. Deterministic verification a
 
 The observed real T1 is SUSPENDED at REVIEW after an independent reviewer runtime failure. Ordinary resume restores the persisted task; ALLOW REEXECUTE only removes a prohibition on re-execution; reviewer repair resumes REVIEW. None is an explicit retry-from-EXECUTE operation. The failed-executor checkpoint recovery API requires a failed workflow and a supported transient Executor transport failure, so it does not apply to this suspension. Interrupted-run recovery rejects a suspended workflow.
 
-Do not directly resume this session. A separate, explicitly authorized reconciliation is needed before retrying it:
+The formal recovery API is documented in [Task retry reconciliation](task-retry-reconciliation.md). It archives the invalid attempt, requeues the same task in the same WorkSession/run, proves the next decision is EXECUTE, and requires a separate receipt-bound resume. Ordinary resume retains its prior behavior.
 
-1. Quiesce the owning runtime and preserve the workflow snapshot, task state, provider state and append-only event evidence. Check the exact session/task/suspension generation, frozen binding, clean baseline and absence of an active Executor.
-2. In the **same workflow run and WorkSession**, invalidate this T1 attempt's erroneous execution/completion projections, verification results and review/approval projections. Requeue only T1 as PENDING (Controller selects EXECUTE), with no stale blockers or continuation at REVIEW. Preserve task policy, acceptance bindings, frozen snapshot, identity, completed-task set and action-budget consumption. Preserve previous facts in the audit history; record the reconciliation reason. Do not change reviewer availability.
-3. Update all durable workflow resume projections consistently, retaining the same run ID and DB. Verify the next decision is EXECUTE before allowing an explicit resume. A new Start Delivery or a second WorkSession is not part of this recovery.
-
-This reconciliation has not been implemented or performed on the real session in this bugfix. The regression fixture proves that the existing resume variants do not rerun T1. It does not claim that an ad hoc database field edit is a supported recovery API.
+The real Requirement 001 session has not been reconciled or resumed by this bugfix. Reviewer availability remains independent.

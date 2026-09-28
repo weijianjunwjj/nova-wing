@@ -148,6 +148,7 @@ export interface RuntimeRepairRecord {
 }
 
 export interface WorkSessionDurableState {
+  taskRetryReceipt?: import('./task-retry.js').TaskRetryReceipt
   /** User instructions are durable task-scoped input, never an authorization grant. */
   taskRecoveryInstructions?: Record<string, readonly {
     sessionId: string

@@ -1,3 +1,4 @@
+import { taskRetryRequestSchema, taskRetryPendingSchema, taskRetryRequestId, legacyTaskAttemptId, retryTaskProjection, type TaskRetryAuthority, type TaskRetryRequest, type TaskRetryReceipt } from './task-retry.js'
 /**
  * Work Session Runtime with Mastra Workflow Suspend/Resume
  * W001 持久化骨架实现 - 使用真正的 Mastra Workflow
@@ -119,6 +120,7 @@ export interface WorkSessionGitCheckpointConfig {
 }
 
 export interface WorkSessionRuntimeConfig {
+  taskRetry?: TaskRetryAuthority
   definition: WorkSessionDefinition
   taskRunner: WorkSessionTaskRunner
   storageUrl: string
@@ -175,6 +177,7 @@ export interface WorkSessionRuntimeRepairConfig {
 }
 
 export interface ResumeInput {
+  taskRetryReceiptId?: string
   decision?: string
   approval?: boolean
   recovery?: 'diagnose'
@@ -201,6 +204,9 @@ const WorkflowStateSchema = z.object({
   currentTaskId: z.string().nullable(),
   completedTaskIds: z.array(z.string()),
   taskStatesV2: z.record(z.string(), z.any()).optional(),
+  taskRetry: taskRetryPendingSchema.optional(),
+  // Private, append-only attempt archives. Never projected to HTTP telemetry.
+  taskRetryHistory: z.array(z.any()).optional(),
   taskRecoveryInstructions: z.record(z.string(), z.array(z.object({
     sessionId: z.string(), taskId: z.string(), generation: z.number().int().nonnegative(),
     instruction: z.string().min(1).max(2_000), recordedAt: z.string(),
@@ -425,6 +431,7 @@ export class WorkSessionRuntime {
   private closed = false
   private closeOperation: Promise<void> | undefined
   private readonly storageOperations = new Set<Promise<unknown>>()
+  private taskRetryOperation: Promise<TaskRetryReceipt> | undefined
   /** T021: 中断恢复的进程内幂等 guard，防止 repeated Resume 创建两个活动 Runner。 */
   private resumeInterruptedPromise: Promise<WorkSessionDurableState> | undefined
   /** Direct runtime idempotency guard; the control layer also rejects duplicate clicks. */
@@ -738,12 +745,134 @@ export class WorkSessionRuntime {
     }
   }
 
+  /** Reconcile only. This method never dispatches, resumes, or creates a WorkSession. */
+  async reconcileTaskRetry(input: TaskRetryRequest): Promise<TaskRetryReceipt> {
+    this.assertOpen()
+    if (this.taskRetryOperation || this.startOperation || this.suspendedResumePromise || this.resumeInterruptedPromise ||
+      this.verificationApprovalPromise || this.runtimeRepairPromise || this.checkpointRecoveryPromise)
+      throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
+    const request = taskRetryRequestSchema.parse(input)
+    const authority = this.config.taskRetry
+    if (!authority) throw new Error('TASK_RETRY_UNAVAILABLE')
+    const release = authority.acquireSession()
+    this.taskRetryOperation = this.doReconcileTaskRetry(request, authority)
+      .finally(() => { release(); this.taskRetryOperation = undefined })
+    return this.taskRetryOperation
+  }
+
+  private async taskRetrySnapshot() {
+    const workflows = await this.mastra.getStorage()?.getStore('workflows')
+    if (!workflows) throw new Error('TASK_RETRY_STORAGE_UNAVAILABLE')
+    const snapshot = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId: this.config.definition.id })
+    if (!snapshot) throw new Error('TASK_RETRY_SNAPSHOT_MISSING')
+    const state = WorkflowStateSchema.parse(snapshot.value)
+    if (state.sessionId !== this.config.definition.id || snapshot.status !== 'suspended' || state.state !== 'SUSPENDED')
+      throw new Error('TASK_RETRY_NOT_SUSPENDED')
+    return { workflows, snapshot, state }
+  }
+
+  private async doReconcileTaskRetry(request: TaskRetryRequest, authority: TaskRetryAuthority): Promise<TaskRetryReceipt> {
+    // Notification writes must settle before we capture the immutable previous projection.
+    await this.notificationPromise
+    if (request.sessionId !== this.config.definition.id || request.workflowRunId !== this.config.definition.id ||
+      this.config.definition.controlPlane !== 'v2') throw new Error('TASK_RETRY_IDENTITY_MISMATCH')
+    const releaseWorkspace = await authority.acquireWorkspace()
+    try {
+      const { workflows, snapshot, state } = await this.taskRetrySnapshot()
+      const requestId = taskRetryRequestId(request)
+      if (state.taskRetryHistory?.some(entry => entry.requestId === requestId) || state.taskRetry?.phase === 'PENDING' ||
+        state.taskRetry?.phase === 'RESUME_CLAIMED') throw new Error('TASK_RETRY_ALREADY_RECONCILED')
+      if (state.currentTaskId !== request.taskId || state.completedTaskIds.includes(request.taskId) ||
+        state.checkpointCommits?.[request.taskId] !== undefined || state.checkpointPushes?.[request.taskId] !== undefined ||
+        this.config.definition.tasks[state.currentTaskIndex]?.id !== request.taskId) throw new Error('TASK_RETRY_TASK_MISMATCH')
+      if ((state.humanRequiredGeneration ?? 0) !== request.expectedGeneration) throw new Error('TASK_RETRY_GENERATION_MISMATCH')
+      const previous = loadTaskStateV2(state.taskStatesV2?.[request.taskId])
+      if (previous.status !== request.expectedTaskState || previous.currentAction !== request.expectedCurrentAction)
+        throw new Error('TASK_RETRY_STATE_MISMATCH')
+      await authority.validate(request, this.config.definition)
+      const previousAttemptId = previous.attemptId ?? legacyTaskAttemptId(request.sessionId, request.taskId, request.expectedGeneration)
+      const receipt: TaskRetryReceipt = { receiptId: requestId, sessionId: request.sessionId,
+        workflowRunId: request.workflowRunId, taskId: request.taskId, previousAttemptId, attemptId: requestId,
+        generation: request.expectedGeneration + 1, reasonCode: request.reasonCode,
+        timestamp: new Date().toISOString(), nextDecision: 'EXECUTE' }
+      const projected = retryTaskProjection(this.config.definition, previous, receipt.attemptId)
+      if (projected.gitState.headSha !== request.targetBaselineCommit || projected.gitState.changedFiles.length)
+        throw new Error('TASK_RETRY_REPOSITORY_PROJECTION_DRIFT')
+      const log = new TaskEventLogV2(state.taskEventLogs?.[request.taskId])
+      log.append({ type: 'TASK_RETRY_RECONCILED', sessionId: request.sessionId, taskId: request.taskId,
+        timestamp: receipt.timestamp, metadata: { workflowRunId: request.workflowRunId,
+          previousAttemptId, attemptId: receipt.attemptId, receiptId: receipt.receiptId,
+          reasonCode: request.reasonCode, generation: receipt.generation, nextDecision: 'EXECUTE' } })
+      const { taskRetryHistory: _history, taskEventLogs: _events, taskStatesV2: _tasks, ...previousProjection } = state
+      const reconciled: WorkflowState = { ...state,
+        taskRetryHistory: [...(state.taskRetryHistory ?? []), { requestId, receipt,
+          previousTaskState: structuredClone(state.taskStatesV2![request.taskId]),
+          previousProjection: structuredClone(previousProjection) }],
+        taskRetry: { request, receipt, phase: 'PENDING' },
+        taskStatesV2: { ...state.taskStatesV2, [request.taskId]: projected },
+        taskEventLogs: { ...state.taskEventLogs, [request.taskId]: [...log.events] },
+        // Preserve other tasks and append-only instructions; exclude old instructions from the new attempt below.
+        humanRequiredGeneration: receipt.generation,
+        humanRequired: { category: 'TASK_RETRY_READY', reason: 'Task retry reconciled; explicit receipt-bound resume required.' },
+        currentTaskCheckpoint: undefined, verificationFailure: undefined, verificationResults: undefined,
+        pendingVerificationApproval: undefined, pendingHumanAction: undefined, runtimeRepair: undefined,
+        brainFailure: undefined, suspensionReason: undefined, failureReason: undefined, failureStage: undefined,
+        failureCategory: undefined, safeFailureMessage: undefined, completionReason: undefined,
+        completedAt: undefined, updatedAt: receipt.timestamp }
+      // Detect non-cooperating state writers before the single atomic snapshot transition.
+      const latest = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId: request.workflowRunId })
+      if (JSON.stringify(latest) !== JSON.stringify(snapshot)) throw new Error('TASK_RETRY_CONCURRENT_STATE_CHANGE')
+      snapshot.value = reconciled as unknown as Record<string, string>
+      await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId: request.workflowRunId, snapshot })
+      this.latestState = reconciled
+      return receipt
+    } finally { releaseWorkspace() }
+  }
+
+  private async claimTaskRetryResume(input: ResumeInput): Promise<void> {
+    // Ordinary resume retains its established behavior until explicit reconciliation exists.
+    const stored = await this.readPersistedWorkflowSnapshot()
+    const pending = stored?.state.taskRetry
+    if (pending?.phase !== 'PENDING') {
+      if (input.taskRetryReceiptId !== undefined || pending?.phase === 'RESUME_CLAIMED')
+        throw new Error('TASK_RETRY_RECEIPT_ALREADY_CONSUMED')
+      return
+    }
+    const authority = this.config.taskRetry
+    if (!authority) throw new Error('TASK_RETRY_UNAVAILABLE')
+    const receipt = pending.receipt
+    if (input.taskRetryReceiptId !== receipt.receiptId || input.taskId !== receipt.taskId ||
+      input.generation !== receipt.generation || input.decision !== undefined || input.approval !== undefined || input.recovery !== undefined)
+      throw new Error('TASK_RETRY_EXPLICIT_RESUME_REQUIRED')
+    const releaseWorkspace = await authority.acquireWorkspace()
+    try {
+      const { workflows, snapshot, state } = await this.taskRetrySnapshot()
+      if (state.taskRetry?.phase !== 'PENDING' || state.taskRetry.receipt.receiptId !== receipt.receiptId ||
+        state.currentTaskId !== receipt.taskId || state.humanRequiredGeneration !== receipt.generation)
+        throw new Error('TASK_RETRY_RECEIPT_MISMATCH')
+      await authority.validate(taskRetryRequestSchema.parse(pending.request), this.config.definition)
+      const task = loadTaskStateV2(state.taskStatesV2?.[receipt.taskId])
+      if (task.attemptId !== receipt.attemptId || new TaskController().decide(task).action !== 'EXECUTE')
+        throw new Error('TASK_RETRY_NEXT_DECISION_NOT_EXECUTE')
+      // Recheck task policy and remaining budget without changing either.
+      retryTaskProjection(this.config.definition, task, receipt.attemptId)
+      const latest = await workflows.loadWorkflowSnapshot({ workflowName: this.workflowId, runId: this.config.definition.id })
+      if (JSON.stringify(latest) !== JSON.stringify(snapshot)) throw new Error('TASK_RETRY_CONCURRENT_STATE_CHANGE')
+      const claimed: WorkflowState = { ...state, taskRetry: { ...state.taskRetry, phase: 'RESUME_CLAIMED' } }
+      snapshot.value = claimed as unknown as Record<string, string>
+      await workflows.persistWorkflowSnapshot({ workflowName: this.workflowId, runId: receipt.workflowRunId, snapshot })
+      this.latestState = claimed
+    } finally { releaseWorkspace() }
+  }
+
   async resume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
     this.assertOpen()
-    if (this.suspendedResumePromise !== undefined) {
+    if (this.suspendedResumePromise !== undefined || this.taskRetryOperation !== undefined) {
       throw new Error('session resume already in progress')
     }
+    const release = this.config.taskRetry?.acquireSession()
     this.suspendedResumePromise = this.doResume(resumeInput)
+      .finally(() => release?.())
       .finally(() => { this.suspendedResumePromise = undefined })
     return this.suspendedResumePromise
   }
@@ -831,6 +960,7 @@ export class WorkSessionRuntime {
    * → resume the same Session. A legal repair never re-runs the Executor.
    */
   async repairRuntimeAndResume(): Promise<WorkSessionDurableState> {
+    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.runtimeRepairPromise !== undefined) {
       throw new Error('runtime repair already in progress')
@@ -990,6 +1120,7 @@ export class WorkSessionRuntime {
   }
 
   private async doResume(resumeInput: ResumeInput): Promise<WorkSessionDurableState> {
+    await this.claimTaskRetryResume(resumeInput)
     const runId = this.config.definition.id
 
     const workflow = this.mastra.getWorkflow(this.workflowId)
@@ -1079,6 +1210,7 @@ export class WorkSessionRuntime {
    * durable request already bound to this runtime's session and current task.
    */
   async approvePendingVerificationAndContinue(): Promise<WorkSessionDurableState> {
+    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.verificationApprovalPromise !== undefined) {
       throw new Error('verification approval already in progress')
@@ -1090,6 +1222,7 @@ export class WorkSessionRuntime {
 
   /** Declining the exact pending verifier preserves the suspended session and evidence. */
   async rejectPendingVerification(): Promise<WorkSessionDurableState> {
+    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.verificationApprovalPromise !== undefined || this.suspendedResumePromise !== undefined) {
       throw new Error('verification decision already in progress')
@@ -1443,6 +1576,7 @@ export class WorkSessionRuntime {
    * 必须由用户显式调用；loadPersistedState 只发现、不自动恢复。
    */
   async resumeInterrupted(): Promise<WorkSessionDurableState> {
+    if (this.taskRetryOperation) throw new Error('TASK_RETRY_OPERATION_IN_PROGRESS')
     this.assertOpen()
     if (this.resumeInterruptedPromise !== undefined) {
       throw new Error('interrupted resume already in progress')
@@ -1600,6 +1734,7 @@ export class WorkSessionRuntime {
         recovery: z.literal('diagnose').optional(),
         taskId: z.string().optional(),
         generation: z.number().int().nonnegative().optional(),
+        taskRetryReceiptId: z.string().optional(),
       }),
       suspendSchema: z.object({
         reason: z.string(),
@@ -1610,6 +1745,12 @@ export class WorkSessionRuntime {
 
         // 使用本地变量追踪最新状态
         let currentState = state
+        if (currentState.taskRetry?.phase === 'RESUME_CLAIMED') {
+          currentState = { ...currentState, taskRetry: { ...currentState.taskRetry, phase: 'RESUMED' } }
+          await setState(currentState)
+          self.latestState = currentState
+          await self.persistDurableState(currentState)
+        }
         const resumedTaskId = currentState.currentTaskId
         // v0.4.0: 本轮 resume 正在回答的结构化人类动作。它在 pendingHumanAction 被清空
         // 之前捕获，身份字段直接取自 Runtime 落库、且 Control UI 已校验过 task/generation
@@ -1856,7 +1997,8 @@ export class WorkSessionRuntime {
           const providerHealth = v2 ? new ProviderHealthRegistry(currentState.providerHealth) : undefined
           const runContext: WorkSessionTaskRunContext = {
             recoveryInstructions: (currentState.taskRecoveryInstructions?.[task.id] ?? [])
-              .filter((entry) => entry.sessionId === currentState.sessionId && entry.taskId === task.id)
+              .filter((entry) => entry.sessionId === currentState.sessionId && entry.taskId === task.id &&
+                (currentState.taskRetry?.receipt.taskId !== task.id || entry.generation >= currentState.taskRetry.receipt.generation))
               .map((entry) => entry.instruction),
             ...(answeredHumanAction === undefined || task.id !== resumedTaskId ? {} : { answeredHumanAction }),
             hardDeadlineAtMs: self.computeHardDeadlineAtMs(currentState),
@@ -2452,6 +2594,7 @@ export class WorkSessionRuntime {
     if (wfState.taskStatesV2 !== undefined) {
       result.taskStatesV2 = wfState.taskStatesV2 as Record<string, import('./task-state-v2.js').TaskStateV2>
     }
+    if (wfState.taskRetry?.phase === 'PENDING') result.taskRetryReceipt = wfState.taskRetry.receipt
     if (wfState.taskEventLogs !== undefined) {
       result.taskEventLogs = wfState.taskEventLogs as Record<string, readonly import('./task-observability.js').TaskEventV2[]>
     }
@@ -2598,7 +2741,7 @@ export class WorkSessionRuntime {
     // No new operations can enter. Existing workflow operations include their
     // awaited snapshot writes; notifications may be queued as they complete.
     const results = await Promise.allSettled([
-      ...this.storageOperations, this.startOperation, this.suspendedResumePromise,
+      ...this.storageOperations, this.startOperation, this.suspendedResumePromise, this.taskRetryOperation,
       this.resumeInterruptedPromise, this.verificationApprovalPromise,
       this.checkpointRecoveryPromise, this.runtimeRepairPromise,
     ])

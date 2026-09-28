@@ -1,3 +1,5 @@
+import { DEFAULT_WORKSPACE_FORBIDDEN_PATHS } from '../../workspace-scope.js'
+import { createDeliveryTaskRetryValidator } from '../../delivery/task-retry-binding.js'
 import { VENV_PYTEST_COMMANDS } from '../../platform/executables.js'
 import { platformPaths } from '../../platform/paths.js'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
@@ -147,7 +149,7 @@ const DEFAULT_GUARDIAN_POLICY = {
     'Do not modify files outside allowedPaths.',
     'Do not push changes.',
   ],
-  forbiddenPaths: ['.env', '**/.env', '**/*secret*', '**/*credential*'],
+  forbiddenPaths: DEFAULT_WORKSPACE_FORBIDDEN_PATHS,
 } as const
 
 export interface LaunchpadConfigSummary {
@@ -1711,7 +1713,10 @@ export class NovaWingLaunchpad {
         shutdownMode: this.shutdownMode,
         ...(this.activityObserver === undefined ? {} : { activityObserver: this.activityObserver }),
         ...(preflightRepair === undefined ? {} : { preflightRepair }),
-        ...(deliveryPlan === undefined ? {} : { createV2Dispatcher: ({ defaultDispatcher }) =>
+        ...(deliveryPlan === undefined ? {} : {
+          validateTaskRetry: createDeliveryTaskRetryValidator(this.deliveryStore,
+            (id, version) => this.planningService.getSnapshot(id, version)),
+          createV2Dispatcher: ({ defaultDispatcher }) =>
           createDeliveryRuntimeDispatcher(deliveryPlan, this.deliveryStore, defaultDispatcher) }),
       })
       if (deliveryContext) void creation.then((created) => {

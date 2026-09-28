@@ -1,3 +1,4 @@
+import { taskRetryRequestSchema, type TaskRetryRequest, type TaskRetryReceipt } from '../task-retry.js'
 /**
  * W005-A WorkSessionControlController
  *
@@ -193,6 +194,7 @@ export class WorkSessionControlController {
   /** 明确持有 runtime.start() 的 Promise，rejection 已被 catch，绝不产生 unhandled rejection。 */
   private startPromise: Promise<void> | undefined
   private resumePromise: Promise<void> | undefined
+  private taskRetryPromise: Promise<TaskRetryReceipt> | undefined
   private checkpointRecoveryPromise: Promise<void> | undefined
   /** Current Task whose user decision must never be echoed back by provider-derived reasons. */
   private resumeInputRedactionTaskId: string | undefined
@@ -413,13 +415,22 @@ export class WorkSessionControlController {
     return result
   }
 
+  async reconcileTaskRetry(input: TaskRetryRequest): Promise<TaskRetryReceipt> {
+    if (this.closed || this.inFlightOperationCount() > 0 || !this.runtime.reconcileTaskRetry)
+      throw new Error('TASK_RETRY_UNAVAILABLE_OR_BUSY')
+    const request = taskRetryRequestSchema.parse(input)
+    this.taskRetryPromise = this.runOperation(() => this.runtime.reconcileTaskRetry!(request))
+    try { return await this.taskRetryPromise }
+    finally { this.taskRetryPromise = undefined; this.broadcastSnapshot() }
+  }
+
   resume(input: ControlResumeInput): { accepted: boolean; reason?: string } {
     if (this.closed) return { accepted: false, reason: 'Controller is closing' }
     const state = this.runtime.getDurableState()
     if (state?.state !== 'SUSPENDED') {
       return { accepted: false, reason: 'session is not suspended' }
     }
-    if (this.resumePromise !== undefined) {
+    if (this.resumePromise !== undefined || this.taskRetryPromise !== undefined) {
       return { accepted: false, reason: 'resume already in progress' }
     }
 
@@ -1397,6 +1408,14 @@ function validateResumeForState(
       (input.generation !== undefined && input.generation !== state.humanRequiredGeneration)) {
     return { accepted: false, reason: 'the task or suspension has changed; refresh before continuing' }
   }
+  if (state.taskRetryReceipt !== undefined) {
+    const receipt = state.taskRetryReceipt
+    if (input.taskRetryReceiptId !== receipt.receiptId || input.taskId !== receipt.taskId ||
+      input.generation !== receipt.generation || input.decision !== undefined || input.approval !== undefined || input.recovery !== undefined)
+      return { accepted: false, reason: 'TASK_RETRY_EXPLICIT_RESUME_REQUIRED' }
+    return { accepted: true, input }
+  }
+  if (input.taskRetryReceiptId !== undefined) return { accepted: false, reason: 'TASK_RETRY_RECEIPT_ALREADY_CONSUMED' }
   if (state.pendingVerificationApproval !== undefined) {
     return { accepted: false, reason: 'verification approval must use its dedicated control' }
   }

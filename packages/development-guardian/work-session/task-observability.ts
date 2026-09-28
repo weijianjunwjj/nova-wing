@@ -97,6 +97,7 @@ export interface DispatchExplanation {
 /** Task Event Log 事件类型。 */
 export type TaskEventType =
   | 'TASK_CREATED'
+  | 'TASK_RETRY_RECONCILED'
   | 'VERIFICATION_PLANNED'
   | 'DIRECT_PATH_STARTED'
   | 'DIRECT_PATH_ESCALATED'
