@@ -1,0 +1,971 @@
+{
+  "snapshotId": "080d2835-5f35-4311-acb5-7424b5a17607",
+  "frozenPlanHash": "bdacb10272bbf5512fd9e9d113796c75b1f600440a45e95924aaf664d18cec3a",
+  "targetBaselineCommit": "4b0b9bf535d3aab909b67561d5a24953cf925a2e",
+  "targetClean": true,
+  "inspectedFacts": {
+    "scannedFileCount": 25,
+    "routeCount": 11,
+    "routePatternCount": 5,
+    "testFileCount": 1,
+    "explicitContractPresent": false
+  },
+  "inputUnresolved": 78,
+  "provisionableAfterPlanning": 0,
+  "stillUnresolved": 78,
+  "externalDeferred": 63,
+  "humanDeferred": 0,
+  "httpBlueprints": 0,
+  "filesystemBlueprints": 0,
+  "processBlueprints": 0,
+  "compositeBlueprints": 0,
+  "commandBlueprints": 0,
+  "newRuntimePlanId": "213e84600314d97e155d303497ecee8c635f16fd028db836d94d0c9a726cf3c5",
+  "newRuntimePlanHash": "213e84600314d97e155d303497ecee8c635f16fd028db836d94d0c9a726cf3c5",
+  "runtimeAdmission": "ADMISSION_BLOCKED",
+  "executorReady": true,
+  "reviewerReady": true,
+  "startDeliveryBlockers": [
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS22"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS23"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS24"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS25"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS26"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS27"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS28"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS29"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS30"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS31"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS32"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS33"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS34"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS35"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS52"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS52"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS52"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS53"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS53"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS53"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS54"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS54"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS54"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS55"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS55"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS55"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS56"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS56"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS56"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS57"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS57"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS57"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS58"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS58"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS58"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS59"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS59"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS59"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS65"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS66"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS67"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS68"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS69"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS70"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS71"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS72"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS73"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS74"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS75"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS76"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS77"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS78"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS79"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS95"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS96"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS97"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS98"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS100"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS101"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS102"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS104"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS105"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS106"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS107"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS108"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS109"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS110"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS111"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS112"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS113"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS114"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS115"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS116"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS117"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS118"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS119"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS120"
+    },
+    {
+      "code": "VERIFICATION_UNRESOLVED",
+      "assertionId": "AS121"
+    }
+  ],
+  "readyForRealStartDelivery": "NO",
+  "realRequirementRepositoryModified": false,
+  "realWorkSessionCreated": false,
+  "outcomes": [
+    {
+      "assertionId": "AS22",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS23",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS24",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS25",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS26",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS27",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS28",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS29",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS30",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS31",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS32",
+      "runtimeTaskId": "T5",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS33",
+      "runtimeTaskId": "T5",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS34",
+      "runtimeTaskId": "T5",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS35",
+      "runtimeTaskId": "T5",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS52",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS52",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS52",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS53",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS53",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS53",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS54",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS54",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS54",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS55",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS55",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS55",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS56",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS56",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS56",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS57",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS57",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS57",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS58",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS58",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS58",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS59",
+      "runtimeTaskId": "T4",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS59",
+      "runtimeTaskId": "T6",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS59",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS65",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS66",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS67",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS68",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS69",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS70",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS71",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS72",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS73",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS74",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS75",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS76",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS77",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS78",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS79",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS95",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "process",
+      "reason": "Project scripts exist, but no exact bounded lifecycle, fresh-state setup, readiness and business probe contract is bound.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS96",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS97",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS98",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS100",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS101",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS102",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS104",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "process",
+      "reason": "Project scripts exist, but no exact bounded lifecycle, fresh-state setup, readiness and business probe contract is bound.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS105",
+      "runtimeTaskId": "T10",
+      "status": "UNRESOLVED",
+      "family": "process",
+      "reason": "Project scripts exist, but no exact bounded lifecycle, fresh-state setup, readiness and business probe contract is bound.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS106",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS107",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS108",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS109",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS110",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS111",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS112",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS113",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS114",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound GET response and business predicate contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS115",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS116",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "http_api",
+      "reason": "HTTP routes exist, but no exact assertion-bound fixture, trusted mutation action, same-entity observation, predicate, and cleanup contract exists.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS117",
+      "runtimeTaskId": "T7",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS118",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS119",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS120",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    },
+    {
+      "assertionId": "AS121",
+      "runtimeTaskId": "T8",
+      "status": "UNRESOLVED",
+      "family": "filesystem",
+      "reason": "No scope or delivery manifest binds the exact artifact and structural predicate to this assertion.",
+      "attempts": 0
+    }
+  ]
+}

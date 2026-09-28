@@ -14,6 +14,9 @@ import {
   workSessionDefinitionFor, type CompiledRuntimePlan, type DeliveryTargetBinding, type RuntimeAdmission,
   type VerificationCapabilityResolver,
 } from './runtime-plan.js'
+import { inspectRepoCapabilities, type RepoCapabilityFacts } from './repo-capability-inspector.js'
+import { planVerificationBlueprints, type BlueprintPlanningResult, type BlueprintReviewer,
+  type BlueprintRepairer } from './verification-blueprint-planner.js'
 
 export interface WorkSessionPlanBinding {
   workSessionId: string
@@ -30,18 +33,24 @@ export interface WorkSessionPlanBinding {
 
 export type DeliveryEventType = 'delivery.target_bound' | 'runtime_plan.compile_started' |
   'runtime_plan.compile_completed' | 'runtime_plan.compile_failed' | 'runtime_plan.admission_passed' |
-  'runtime_plan.admission_blocked' | 'delivery.start_requested' | 'delivery.started' | 'work_session.created'
+  'runtime_plan.admission_blocked' | 'delivery.start_requested' | 'delivery.started' | 'work_session.created' |
+  'verification_blueprint.plan_started' | 'verification_blueprint.generated' |
+  'verification_blueprint.validation_failed' | 'verification_blueprint.review_failed' |
+  'verification_blueprint.approved' | 'verification_blueprint.unresolved'
 
 /** Closed event projection: paths, requirement text, prompts, responses and secrets cannot enter the file. */
 export class DeliveryEventStore {
   constructor(readonly path: string) {}
   async append(type: DeliveryEventType, fields: { snapshotId: string; runtimePlanHash?: string;
-    taskCount?: number; assertionCount?: number; blockerCount?: number; durationMs?: number }): Promise<void> {
+    taskCount?: number; assertionCount?: number; blockerCount?: number; durationMs?: number;
+    blueprintCount?: number; issueCount?: number; attempt?: number; hashPrefix?: string }): Promise<void> {
     const event = { id: randomUUID(), at: new Date().toISOString(), type,
       snapshotId: /^[a-f0-9-]{36}$/u.test(fields.snapshotId) ? fields.snapshotId : 'invalid',
       ...(fields.runtimePlanHash && /^[a-f0-9]{64}$/u.test(fields.runtimePlanHash)
         ? { runtimePlanHashPrefix: fields.runtimePlanHash.slice(0, 12) } : {}),
-      ...Object.fromEntries((['taskCount', 'assertionCount', 'blockerCount', 'durationMs'] as const)
+      ...(fields.hashPrefix && /^[a-f0-9]{12}$/u.test(fields.hashPrefix) ? { blueprintHashPrefix: fields.hashPrefix } : {}),
+      ...Object.fromEntries((['taskCount', 'assertionCount', 'blockerCount', 'durationMs',
+        'blueprintCount', 'issueCount', 'attempt'] as const)
         .filter((key) => Number.isSafeInteger(fields[key]) && fields[key]! >= 0).map((key) => [key, fields[key]])),
     }
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
@@ -242,6 +251,34 @@ export class DeliveryService {
       return plan
     } catch (error) {
       await this.events.append('runtime_plan.compile_failed', { snapshotId: snapshot.id, durationMs: Date.now() - started })
+      throw error
+    }
+  }
+
+  /** Preparation only: inspect, plan, review, compile, and persist. Never starts a WorkSession. */
+  async prepareWithBlueprintPlanning(snapshotInput: PlanSnapshot, repositoryRoot: string,
+    reviewer: BlueprintReviewer, repairer?: BlueprintRepairer): Promise<{ plan: CompiledRuntimePlan;
+      planning: BlueprintPlanningResult; facts: RepoCapabilityFacts }> {
+    const snapshot = verifyPlanSnapshot(snapshotInput)
+    const base = await this.prepare(snapshot, repositoryRoot)
+    const facts = await inspectRepoCapabilities(base.targetBinding)
+    const planning = await planVerificationBlueprints({ snapshot, plan: base, target: base.targetBinding,
+      facts, reviewer, ...(repairer ? { repairer } : {}),
+      telemetry: (type, counts) => this.events.append(type, { snapshotId: snapshot.id, ...counts }) })
+    await this.events.append('runtime_plan.compile_started', { snapshotId: snapshot.id })
+    try {
+      const plan = await compileRuntimePlan(snapshot, base.targetBinding, { resolver: this.resolver,
+        runtimePolicyVersion: this.policyVersion, approvedBlueprints: planning.approved,
+        ...await this.options(base.targetBinding) })
+      await this.store.savePlan(plan)
+      const fields = { snapshotId: snapshot.id, runtimePlanHash: plan.runtimePlanHash,
+        taskCount: plan.tasks.length, assertionCount: plan.acceptanceBindings.length,
+        blockerCount: plan.admission.blockers.length }
+      await this.events.append('runtime_plan.compile_completed', fields)
+      await this.events.append(plan.admission.status === 'READY' ? 'runtime_plan.admission_passed' : 'runtime_plan.admission_blocked', fields)
+      return { plan, planning, facts }
+    } catch (error) {
+      await this.events.append('runtime_plan.compile_failed', { snapshotId: snapshot.id })
       throw error
     }
   }

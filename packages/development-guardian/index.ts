@@ -124,6 +124,16 @@ export type { CapabilityFamily, CapabilityDefinition, CapabilityEvidence, Resolv
   ProviderAvailability, CapabilityCollectionRequest } from './delivery/capability-layer.js'
 export { DeliveryStore, DeliveryEventStore, DeliveryService } from './delivery/service.js'
 export type { WorkSessionPlanBinding, DeliveryRuntimeAdapter, DeliveryEventType } from './delivery/service.js'
+export { BLUEPRINT_SCHEMA_VERSION, assertionContractHash, blueprintHash, validateVerificationBlueprint,
+  approveVerificationBlueprint, verifyApprovedBlueprint } from './delivery/verification-blueprint.js'
+export type { VerificationBlueprint, ApprovedVerificationBlueprint, ArtifactScopeContract, BlueprintStep, BlueprintStepKind,
+  BlueprintReview, BlueprintReviewIssue, BlueprintValidation, BlueprintValidationIssue } from './delivery/verification-blueprint.js'
+export { inspectRepoCapabilities, readRepositoryReviewMaterial } from './delivery/repo-capability-inspector.js'
+export type { RepoCapabilityFacts } from './delivery/repo-capability-inspector.js'
+export { planVerificationBlueprints, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer,
+  blueprintSetHash } from './delivery/verification-blueprint-planner.js'
+export type { BlueprintPlanningResult, BlueprintReviewInput, BlueprintReviewer, BlueprintRepairer,
+  BlueprintTelemetry } from './delivery/verification-blueprint-planner.js'
 export { createCodexPlanningProvider } from './planning/provider.js'
 export type { PlanningModelProvider, PlanningModelResponse } from './planning/provider.js'
 export { createCodexPlanningSemanticReviewer } from './planning/semantic-reviewer.js'

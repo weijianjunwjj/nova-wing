@@ -25,6 +25,10 @@ import { createDeliveryRuntimeDispatcher } from '../packages/development-guardia
 import { FakeTaskRunner } from '../packages/development-guardian/work-session/fake-task-runner.js'
 import { NovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
 import type { PlanningService } from '../packages/development-guardian/planning/service.js'
+import { inspectRepoCapabilities } from '../packages/development-guardian/delivery/repo-capability-inspector.js'
+import { planVerificationBlueprints } from '../packages/development-guardian/delivery/verification-blueprint-planner.js'
+import { approveVerificationBlueprint, assertionContractHash, validateVerificationBlueprint,
+  type VerificationBlueprint } from '../packages/development-guardian/delivery/verification-blueprint.js'
 
 const exec = promisify(execFile)
 const plannedHttpVerifier = (port = 0) => ({ family: 'http_api' as const, assertionId: 'A1',
@@ -86,6 +90,143 @@ async function fixture() {
   await git(repo, 'commit', '-qm', 'fixture baseline')
   return { root, repo, snapshot: snapshotFixture() }
 }
+
+function blueprintFixture(snapshot: PlanSnapshot, target: Awaited<ReturnType<typeof bindDeliveryTarget>>): VerificationBlueprint {
+  const assertion = snapshot.content.acceptancePlan.criteria[0]!.assertions[0]!
+  const artifact = 'tests/cart.test.js'
+  const step = (kind: 'setup' | 'action' | 'observation' | 'predicate' | 'reread' | 'cleanup',
+    mutates = false) => ({ kind, mechanism: 'repository_test' as const, artifact,
+      operation: kind === 'predicate' ? 'exact_value' : `isolated_${kind}`,
+      expected: kind === 'predicate' ? 'exact business total' : 'scoped fixture', mutates, entityRef: 'cart-id' })
+  return { schemaVersion: 1, assertionId: assertion.id, runtimeTaskId: 'T1',
+    sourceAssertionHash: assertionContractHash(assertion), provider: { id: 'existing-guarded-verifier', version: '1' },
+    family: 'command', setup: [step('setup', true)], action: [step('action', true)],
+    observation: [step('observation')], predicate: [step('predicate')], reread: [step('reread')], cleanup: [step('cleanup')],
+    timeoutMs: 5_000, requiredArtifacts: [artifact], targetConstraints: {
+      canonicalPath: target.canonicalPath, gitRepositoryIdentity: target.gitRepositoryIdentity,
+      baselineCommit: target.baselineCommit },
+    provenance: { kind: 'repository_contract', relativePath: 'verification/blueprints.v1.json', contractHash: 'a'.repeat(64) },
+    entityIdentity: { setupRef: 'cart-id', actionRef: 'cart-id', observationRef: 'cart-id' },
+    plannedVerifier: { family: 'command', assertionId: assertion.id, providerId: 'existing-guarded-verifier',
+      providerVersion: '1', command: `node --test ${artifact}` } }
+}
+
+test('Phase 6 blueprint validator rejects weak evidence, unsafe scope and baseline drift', async () => {
+  const { repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const criterion = snapshot.content.acceptancePlan.criteria[0]!
+  const assertion = criterion.assertions[0]!
+  const base = blueprintFixture(snapshot, target)
+  const validate = (candidate: VerificationBlueprint, level: typeof criterion.level = criterion.level) =>
+    validateVerificationBlueprint(candidate, { assertion, criterion: { ...criterion, level }, runtimeTaskId: 'T1', target })
+  assert.equal(validate(base).pass, true)
+  const codes = (candidate: VerificationBlueprint, level?: typeof criterion.level) =>
+    validate(candidate, level).issues.map((issue) => issue.code)
+  assert.ok(codes({ ...base, action: [], setup: [] }).includes('MUTATION_WITH_READ_ONLY_EVIDENCE'))
+  assert.ok(codes({ ...base, predicate: [] }).includes('UNSPECIFIED_PREDICATE'))
+  assert.ok(codes({ ...base, reread: [] }).includes('PERSISTENCE_WITHOUT_REREAD'))
+  assert.ok(codes({ ...base, predicate: [{ ...base.predicate[0]!, operation: 'status' }] }).includes('NUMBER_WITHOUT_EXACT_COMPARISON'))
+  assert.ok(codes({ ...base, entityIdentity: { setupRef: 'first', actionRef: 'second', observationRef: 'first' } },
+    'integration').includes('ENTITY_IDENTITY_MISSING') === false)
+  const readOnlyHttp = { family: 'http_api' as const, assertionId: 'A1', providerId: 'loopback-http-read',
+    providerVersion: '1', method: 'GET', requestFixture: 'NONE', port: 0, route: '/cart', expectedStatus: 200,
+    expectedJsonPointer: '', expectedJsonValue: '', timeoutMs: 1000 } as const
+  assert.ok(codes({ ...base, plannedVerifier: readOnlyHttp }).includes('HTTP_STATUS_ONLY'))
+  assert.ok(codes({ ...base, plannedVerifier: readOnlyHttp }).includes('EXECUTION_COVERAGE_GAP'))
+  assert.ok(codes({ ...base, requiredArtifacts: ['tests/<test>.js'] }).includes('PLACEHOLDER_PATH'))
+  assert.ok(codes({ ...base, observation: [{ ...base.observation[0]!, artifact: '/<route>', mechanism: 'loopback_http_get' }] })
+    .includes('PLACEHOLDER_ENDPOINT'))
+  assert.ok(codes({ ...base, action: [{ ...base.action[0]!, mechanism: 'owned_process', operation: 'sh -c anything' }] })
+    .includes('UNRESTRICTED_SHELL'))
+  assert.ok(codes({ ...base, requiredArtifacts: ['../secret'] }).includes('PLACEHOLDER_PATH'))
+  assert.ok(codes({ ...base, targetConstraints: { ...base.targetConstraints, baselineCommit: 'f'.repeat(40) } })
+    .includes('BASELINE_DRIFT'))
+  const sameEntity = { ...assertion, observableBehavior: `${assertion.observableBehavior} 同一订单必须保持身份。` }
+  assert.ok(validateVerificationBlueprint({ ...base, sourceAssertionHash: assertionContractHash(sameEntity),
+    entityIdentity: { setupRef: 'first', actionRef: 'second', observationRef: 'first' } },
+  { assertion: sameEntity, criterion, runtimeTaskId: 'T1', target }).issues.some((issue) => issue.code === 'ENTITY_IDENTITY_MISSING'))
+  const amount = { ...assertion, expectedOutcome: `${assertion.expectedOutcome} 精确金额为 80 元。` }
+  assert.ok(validateVerificationBlueprint({ ...base, sourceAssertionHash: assertionContractHash(amount) },
+  { assertion: amount, criterion, runtimeTaskId: 'T1', target }).issues.some((issue) => issue.code === 'EXPECTED_NUMBER_MISSING'))
+  assert.ok(validateVerificationBlueprint(base, { assertion, criterion, runtimeTaskId: 'T1', target,
+    providerAvailability: () => 'UNAVAILABLE' }).issues.some((issue) => issue.code === 'PROVIDER_UNAVAILABLE'))
+  assert.ok(codes({ ...base, cleanup: [] }).includes('CLEANUP_MISSING'))
+  assert.ok(codes({ ...base }, 'ui').includes('UI_API_SUBSTITUTION'))
+  assert.ok(codes({ ...base, family: 'composite' }).includes('COMPOSITE_PROVIDER_GAP'))
+  assert.ok(codes({ ...base, family: 'filesystem', plannedVerifier: {
+    family: 'filesystem', assertionId: 'A1', providerId: 'scoped-filesystem-read', providerVersion: '1',
+    relativePath: 'missing-app', expectation: 'file_missing' }, artifactScope: {
+      kind: 'scope_manifest', relativePath: 'verification/scope.json', generator: 'project-build',
+      includedRoots: ['src'], reviewRequired: true } }).includes('NEGATIVE_SCOPE_UNPROVEN'))
+  assert.ok(codes({ ...base, assertionId: 'OTHER' }).includes('ASSERTION_MISMATCH'))
+})
+
+test('Phase 6 exact repository contract needs independent review, changes RuntimePlan identity, and preserves old plan', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const initial = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const initialBlueprint = blueprintFixture(snapshot, initial)
+  const marker = `const assertionId = 'A1'; const assertionContractHash = '${initialBlueprint.sourceAssertionHash}';\n`
+  await writeFile(join(repo, 'tests/cart.test.js'), marker + await readFile(join(repo, 'tests/cart.test.js'), 'utf8'))
+  await (await import('node:fs/promises')).mkdir(join(repo, 'verification'))
+  const { schemaVersion: _schema, assertionId, runtimeTaskId, sourceAssertionHash, targetConstraints: _target,
+    provenance: _provenance, ...content } = initialBlueprint
+  await writeFile(join(repo, 'verification/blueprints.v1.json'), JSON.stringify({ schemaVersion: 1,
+    entries: [{ assertionId, runtimeTaskId, sourceAssertionHash, blueprint: content }] }))
+  await git(repo, 'add', '.')
+  await git(repo, 'commit', '-qm', 'Add exact verification contract')
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const facts = await inspectRepoCapabilities(target)
+  assert.equal(facts.testFiles[0]?.assertionIds.includes('A1'), true)
+  assert.equal(facts.contract?.entries.length, 1)
+  const options = { runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true,
+    executorAvailable: true, reviewerAvailable: true }
+  const old = await compileRuntimePlan(snapshot, target, options)
+  const rejected = await planVerificationBlueprints({ snapshot, plan: old, target, facts,
+    reviewer: async () => ({ verdict: 'REVISION_REQUIRED', reviewer: 'independent-fixture',
+      issues: [{ code: 'FALSE_POSITIVE', message: 'Needs stronger observation.' }] }), maxRepairs: 0 })
+  assert.equal(rejected.approved.length, 0)
+  assert.equal(rejected.outcomes[0]?.status, 'UNRESOLVED')
+  let repairs = 0
+  const bounded = await planVerificationBlueprints({ snapshot, plan: old, target, facts,
+    reviewer: async () => ({ verdict: 'REVISION_REQUIRED', reviewer: 'independent-fixture',
+      issues: [{ code: 'FALSE_POSITIVE', message: 'Still weak.' }] }),
+    repairer: async ({ candidate }) => { repairs += 1; return candidate }, maxRepairs: 2 })
+  assert.equal(repairs, 2)
+  assert.equal(bounded.approved.length, 0)
+  const approved = await planVerificationBlueprints({ snapshot, plan: old, target, facts,
+    reviewer: async ({ reviewMaterial }) => {
+      assert.equal(reviewMaterial.length, 1)
+      assert.match(reviewMaterial[0]!.source, /assertionContractHash/u)
+      return { verdict: 'PASS', reviewer: 'independent-fixture', issues: [] }
+    } })
+  assert.equal(approved.approved.length, 1)
+  const newPlan = await compileRuntimePlan(snapshot, target, { ...options, approvedBlueprints: approved.approved })
+  assert.notEqual(newPlan.runtimePlanHash, old.runtimePlanHash)
+  assert.equal(newPlan.sourcePlanHash, old.sourcePlanHash)
+  assert.equal(newPlan.acceptanceBindings[0]?.stagedVerification.readiness, 'PROVISIONABLE')
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.saveBinding(target)
+  await store.savePlan(old)
+  await store.savePlan(newPlan)
+  assert.equal((await store.getPlan(old.id))?.id, old.id)
+  assert.equal((await store.getPlan(newPlan.id))?.id, newPlan.id)
+  const events = new DeliveryEventStore(join(root, 'delivery-events.jsonl'))
+  const adapter: DeliveryRuntimeAdapter = { configured: async () => true, executorAvailable: async () => true,
+    reviewerAvailable: async () => true, createAndStart: async () => { throw new Error('Must not start in planning.') } }
+  const service = new DeliveryService(store, events, adapter, conservativeCapabilityResolver, 'fixture-policy-v1')
+  const prepared = await service.prepareWithBlueprintPlanning(snapshot, repo,
+    async () => ({ verdict: 'PASS', reviewer: 'independent-fixture', issues: [] }))
+  assert.equal(prepared.plan.id, newPlan.id)
+  assert.equal((await service.readiness(snapshot, newPlan.id)).admission.status, 'READY')
+  const eventText = await readFile(join(root, 'delivery-events.jsonl'), 'utf8')
+  assert.match(eventText, /verification_blueprint\.approved/u)
+  assert.doesNotMatch(eventText, /exact business total|tests\/cart\.test\.js|\/repo/u)
+  assert.equal(await git(repo, 'status', '--porcelain=v1'), '')
+  assert.equal((await (await import('node:fs/promises')).readdir(join(root, 'delivery')))
+    .some((path) => path.startsWith('session-')), false)
+  assert.throws(() => approveVerificationBlueprint(approved.approved[0]!, { verdict: 'REVISION_REQUIRED',
+    reviewer: 'independent-fixture', issues: [] }))
+})
 
 test('compiler preserves exact contracts, deterministic identity, and rejects mutation or omission', async () => {
   const { repo, snapshot } = await fixture()

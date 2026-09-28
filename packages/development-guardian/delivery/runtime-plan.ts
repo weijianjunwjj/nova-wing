@@ -12,13 +12,33 @@ import { CAPABILITY_REGISTRY, CAPABILITY_SCHEMA_VERSION, capabilityCoverage, cap
   resolveCapability, type CapabilityResolution, type ProviderAvailability, type ResolvedCapability,
   type VerificationCapabilityResolver } from './capability-layer.js'
 import { ADMISSION_MODEL_VERSION, stagedVerificationContract, type StagedVerificationContract } from './staged-verification.js'
+import { blueprintSetHash } from './verification-blueprint-planner.js'
+import { verifyApprovedBlueprint, type ApprovedVerificationBlueprint } from './verification-blueprint.js'
 
 const git = promisify(execFile)
 export const COMPILER_SCHEMA_VERSION = 3
-export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase5.2'
+export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase6.0'
 export { conservativeCapabilityResolver }
 export type { CapabilityResolution, VerificationCapabilityResolver }
 export type VerificationCapability = CapabilityResolution['capability']
+
+function resolutionWithBlueprint(resolver: VerificationCapabilityResolver,
+  blueprint: ApprovedVerificationBlueprint | undefined): VerificationCapabilityResolver {
+  if (!blueprint) return resolver
+  if (blueprint.family === 'composite' || !blueprint.plannedVerifier) throw new Error('Blueprint has no supported Runtime adapter.')
+  const family = blueprint.family
+  const verifier = blueprint.plannedVerifier
+  const provider = CAPABILITY_REGISTRY[family]
+  return (input) => {
+    const base = resolver(input)
+    if (base.capability !== 'UNSUPPORTED') throw new Error('Blueprint may only resolve an unsupported assertion.')
+    return { ...base, family, classificationRule: `reviewed-blueprint-${family}-v1`,
+      providerId: provider.providerId, providerVersion: provider.providerVersion,
+      capabilityVersion: provider.version, evidenceType: provider.evidenceType, availability: provider.availability,
+      reason: 'Exact blueprint passed deterministic validation and independent review.',
+      provisioningVerifier: verifier }
+  }
+}
 
 export interface DeliveryTargetBinding {
   id: string
@@ -90,6 +110,7 @@ export interface AcceptanceBinding {
   expectedEvidence: string
   blocking: boolean
   verificationCapability: ResolvedCapability
+  verificationBlueprint?: ApprovedVerificationBlueprint
   stagedVerification: StagedVerificationContract
   evidenceStatus: 'NOT_COLLECTED'
 }
@@ -109,6 +130,7 @@ export interface CompiledRuntimePlan {
   admissionModelVersion: 1
   capabilitySchemaVersion: 1
   capabilityPolicyFingerprint: string
+  blueprintSetHash: string
   compilerImplementationVersion: string
   runtimePolicyVersion: string
   sourceSnapshotId: string
@@ -134,6 +156,7 @@ function semanticRuntimePlan(plan: CompiledRuntimePlan): unknown {
     compilerSchemaVersion: plan.compilerSchemaVersion, compilerImplementationVersion: plan.compilerImplementationVersion,
     admissionModelVersion: plan.admissionModelVersion,
     capabilitySchemaVersion: plan.capabilitySchemaVersion, capabilityPolicyFingerprint: plan.capabilityPolicyFingerprint,
+    blueprintSetHash: plan.blueprintSetHash,
     runtimePolicyVersion: plan.runtimePolicyVersion, tasks: plan.tasks, requirements: plan.requirements,
     acceptanceCriteria: plan.acceptanceCriteria,
     customerDecisions: plan.customerDecisions, acceptanceBindings: semanticAcceptanceBindings(plan.acceptanceBindings) }
@@ -152,7 +175,9 @@ export function verifyRuntimePlanIdentity(plan: CompiledRuntimePlan): void {
   if (hash !== plan.runtimePlanHash || plan.id !== hash || plan.compilerSchemaVersion !== COMPILER_SCHEMA_VERSION ||
     plan.compilerImplementationVersion !== COMPILER_IMPLEMENTATION_VERSION || plan.admissionModelVersion !== ADMISSION_MODEL_VERSION ||
     plan.capabilitySchemaVersion !== CAPABILITY_SCHEMA_VERSION ||
-    plan.capabilityPolicyFingerprint !== capabilityPolicyFingerprint()) {
+    plan.capabilityPolicyFingerprint !== capabilityPolicyFingerprint() ||
+    plan.blueprintSetHash !== blueprintSetHash(plan.acceptanceBindings.flatMap((binding) =>
+      binding.verificationBlueprint ? [binding.verificationBlueprint] : []))) {
     throw new Error('Runtime plan identity or compiler version mismatch.')
   }
 }
@@ -210,6 +235,13 @@ export function verifyRuntimePlanCoverage(snapshotInput: PlanSnapshot, plan: Com
         !plan.tasks.find((entry) => entry.id === owner.id)?.acceptanceAssertionIds.includes(assertion.id)) {
         throw new Error(`Runtime acceptance contract changed or lost: ${assertion.id}`)
       }
+      if (binding.verificationBlueprint) {
+        verifyApprovedBlueprint(binding.verificationBlueprint, { assertion, criterion, runtimeTaskId: owner.id,
+          target: plan.targetBinding })
+        if (canonicalSerialize(binding.verificationCapability.provisioningVerifier) !==
+          canonicalSerialize(binding.verificationBlueprint.plannedVerifier))
+          throw new Error(`Blueprint verifier changed: ${assertion.id}`)
+      }
       const stage = stagedVerificationContract({ assertionId: assertion.id, runtimeTaskId: owner.id,
         capability: binding.verificationCapability,
         ...(binding.verificationCapability.startPrerequisite === undefined ? {} :
@@ -238,7 +270,8 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
       const requirement = snapshotInput.content.clauses.find((item) => item.id === binding.requirementId)
       if (!criterion || !assertion || !requirement ||
         canonicalSerialize(semanticAcceptanceBindings([{ ...binding,
-          verificationCapability: resolveCapability({ criterion, assertion, requirement }, options.resolver) }])) !==
+          verificationCapability: resolveCapability({ criterion, assertion, requirement },
+            resolutionWithBlueprint(options.resolver!, binding.verificationBlueprint)) }])) !==
         canonicalSerialize(semanticAcceptanceBindings([binding]))) {
         throw new Error(`Trusted capability policy changed for assertion ${binding.assertionId}; recompile the frozen plan.`)
       }
@@ -316,11 +349,19 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
 
 export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBinding: DeliveryTargetBinding,
   options: { resolver?: VerificationCapabilityResolver; runtimePolicyVersion: string;
-    runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean }): Promise<CompiledRuntimePlan> {
+    runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean;
+    approvedBlueprints?: readonly ApprovedVerificationBlueprint[] }): Promise<CompiledRuntimePlan> {
   const snapshot = verifyPlanSnapshot(snapshotInput)
   if (targetBinding.snapshotId !== snapshot.id) throw new Error('Target binding belongs to another frozen snapshot.')
   if (!options.runtimePolicyVersion.trim()) throw new Error('Runtime policy version is required.')
   const resolver = options.resolver ?? conservativeCapabilityResolver
+  const approvedBlueprints = options.approvedBlueprints ?? []
+  const blueprintKeys = new Set<string>()
+  for (const blueprint of approvedBlueprints) {
+    const key = `${blueprint.assertionId}\0${blueprint.runtimeTaskId}`
+    if (blueprintKeys.has(key)) throw new Error('Duplicate approved blueprint binding.')
+    blueprintKeys.add(key)
+  }
   const tasks: RuntimeTaskBinding[] = snapshot.content.tasks.map((task) => ({
     id: task.id, plannedTaskId: task.id, title: task.title, complexity: task.complexity,
     requirementIds: [...task.requirementIds], objective: task.objective,
@@ -333,7 +374,12 @@ export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBind
       .filter((task) => task.acceptanceCriterionIds.includes(criterion.id) && task.requirementIds.includes(assertion.requirementId))
       .map((task) => {
         const requirement = snapshot.content.clauses.find((item) => item.id === assertion.requirementId)!
-        const verificationCapability = resolveCapability({ assertion, criterion, requirement }, resolver)
+        const verificationBlueprint = approvedBlueprints.find((entry) => entry.assertionId === assertion.id &&
+          entry.runtimeTaskId === task.id)
+        if (verificationBlueprint) verifyApprovedBlueprint(verificationBlueprint, {
+          assertion, criterion, runtimeTaskId: task.id, target: targetBinding })
+        const verificationCapability = resolveCapability({ assertion, criterion, requirement },
+          resolutionWithBlueprint(resolver, verificationBlueprint))
         const stagedVerification = stagedVerificationContract({ assertionId: assertion.id, runtimeTaskId: task.id,
           capability: verificationCapability,
           ...(verificationCapability.startPrerequisite === undefined ? {} : { prerequisite: verificationCapability.startPrerequisite }) })
@@ -341,21 +387,26 @@ export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBind
           plannedTaskId: task.id, runtimeTaskId: task.id, observableBehavior: assertion.observableBehavior,
           expectedOutcome: assertion.expectedOutcome, expectedEvidence: assertion.expectedEvidence,
           blocking: criterion.blocking && assertion.blocking, verificationCapability, stagedVerification,
+          ...(verificationBlueprint ? { verificationBlueprint } : {}),
           evidenceStatus: 'NOT_COLLECTED' as const }
       })))
+  if (approvedBlueprints.some((item) => !snapshot.content.tasks.some((task) => task.id === item.runtimeTaskId &&
+    acceptanceBindings.some((binding) => binding.assertionId === item.assertionId && binding.runtimeTaskId === task.id))))
+    throw new Error('Approved blueprint is not bound to a frozen Runtime task.')
+  const setHash = blueprintSetHash(approvedBlueprints)
   const semantic = { sourcePlanHash: snapshot.planHash.value, sourceSnapshotId: snapshot.id,
     target: { canonicalPath: targetBinding.canonicalPath, gitRepositoryIdentity: targetBinding.gitRepositoryIdentity,
       baselineCommit: targetBinding.baselineCommit, branch: targetBinding.branch, clean: targetBinding.clean },
     compilerSchemaVersion: COMPILER_SCHEMA_VERSION, compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION,
     admissionModelVersion: ADMISSION_MODEL_VERSION,
-    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(),
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), blueprintSetHash: setHash,
     runtimePolicyVersion: options.runtimePolicyVersion, tasks, requirements: snapshot.content.clauses,
     acceptanceCriteria: snapshot.content.acceptancePlan.criteria,
     customerDecisions: snapshot.content.customerAnswers, acceptanceBindings: semanticAcceptanceBindings(acceptanceBindings) }
   const runtimePlanHash = createHash('sha256').update('novawing-runtime-plan-v1\0').update(canonicalSerialize(semantic)).digest('hex')
   const plan: CompiledRuntimePlan = { id: runtimePlanHash, runtimePlanHash, compilerSchemaVersion: 3,
     admissionModelVersion: ADMISSION_MODEL_VERSION,
-    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(),
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), blueprintSetHash: setHash,
     compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION, runtimePolicyVersion: options.runtimePolicyVersion,
     sourceSnapshotId: snapshot.id, sourcePlanId: snapshot.sourcePlanId, sourcePlanVersion: snapshot.sourcePlanVersion,
     sourcePlanHash: snapshot.planHash.value, sourceCanonicalSchemaVersion: 1, targetBinding,
