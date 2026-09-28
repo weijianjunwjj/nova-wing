@@ -21,7 +21,7 @@ import { ADMISSION_MODEL_VERSION, customerDeliveryCompletionGate, taskCompletion
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { assertionCapabilityEvidenceValid, type ReviewEvidence } from '../packages/development-guardian/work-session/risk-evidence.js'
-import type { V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
+import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { createDeliveryRuntimeDispatcher } from '../packages/development-guardian/delivery/runtime-adapter.js'
 import { FakeTaskRunner } from '../packages/development-guardian/work-session/fake-task-runner.js'
 import { NovaWingLaunchpad } from '../packages/development-guardian/work-session/launchpad/server.js'
@@ -374,6 +374,11 @@ test('completion transition rejects verifier substitution, missing artifact, and
       verdict: 'PASS', evidence: 'Scoped test observed.', capabilityEvidence: { family: 'command',
         providerId: 'existing-guarded-verifier', providerVersion: '1', collector: 'existing-guarded-verifier',
         evidenceIds: [verified.verificationResults![0]!.rawOutputRef!], verificationResult: 'OBSERVED' } }] }
+  const unlinkedReview: ReviewEvidence = { ...review, assertionVerdicts: [{ ...review.assertionVerdicts![0]!,
+    capabilityEvidence: { ...review.assertionVerdicts![0]!.capabilityEvidence!, evidenceIds: [] } }] }
+  const unlinkedTask = { ...verifiedTask, completion: { ...verifiedTask.completion, review: unlinkedReview } }
+  assert.equal(assertionCapabilityEvidenceValid(unlinkedTask, unlinkedReview.assertionVerdicts![0]!), false)
+  assert.equal((await dispatcher.deliveryCompletionGate!(unlinkedTask)).status, 'BLOCKED')
   const reviewedTask = { ...verifiedTask, completion: { ...verifiedTask.completion, review } }
   assert.equal((await dispatcher.deliveryCompletionGate!(reviewedTask)).status, 'LOCALLY_VERIFIED')
   await dispatcher.deliveryTaskCompleted!(reviewedTask)
@@ -484,6 +489,32 @@ test('delivery V2 adapter lets implementation run without executing obligation m
   assert.notEqual(await git(repo, 'rev-parse', 'HEAD'), beforeVerificationCommit)
   assert.equal(await git(repo, 'status', '--porcelain'), '')
   assert.equal(received.length, 1)
+})
+
+test('production V2 controller cannot complete an owner task when its exact blueprint is absent', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'fixture-production-gate')
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.savePlan(plan)
+  let fallbackCalls = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(plan, store, {
+    inspectRepository: () => trustedGitState(repo),
+    dispatch: async () => { fallbackCalls++; throw new Error('No fallback may certify this obligation.') },
+  })
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+    agents: [{ id: 'fixture', available: true, quotaExhausted: false, degraded: false,
+      capabilities: { coding: true, reasoning: true, verification: true, review: true } }], dispatcher })
+  const initial = createTaskStateV2(definition, definition.tasks[0]!)
+  const result = await runner.run(definition.tasks[0]!, undefined, undefined, {
+    taskStateV2: { ...initial, humanConstraints: { verifyOnly: true } },
+  })
+  assert.notEqual(result.status, 'COMPLETED')
+  assert.equal(fallbackCalls, 0)
+  assert.equal((await store.customerAssessment(plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  assert.equal(await git(repo, 'status', '--porcelain'), '')
 })
 
 test('Requirement 001 audit guard rejects a different snapshot before inspecting a target', async () => {

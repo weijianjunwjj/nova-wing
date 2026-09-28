@@ -37,3 +37,10 @@ Delivery telemetry emits only event name, snapshot ID, short RuntimePlan hash an
 ## Limits
 
 The real Requirement 001 repository is not an execution fixture. This phase only recompiles and admits it read-only; no WorkSession or customer repository mutation is performed. No general business verifier is inferred from `npm test`, a route name, or an exit code. The web folder input and `new_project` target type need future product work. External or human evidence remains deferred until a trusted provider or identified human decision is available.
+
+### Phase 6.1 known non-blocking limitations
+
+- Completion proof is held in memory between `COMPLETE` and finalization. A restart in that interval fails closed and can require manual recovery.
+- The current `BOUND_EXECUTABLE` evidence key can incorrectly block another plan. Requirement 001 has no `BOUND_EXECUTABLE` assertion.
+- `providerAvailability` is not explicitly injected into the server dispatcher; runtime provider loss still fails closed.
+- `delivery_scope_review` proof strength depends on the independent reviewer assessing the generated manifest and bounded source.
