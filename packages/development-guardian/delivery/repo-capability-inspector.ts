@@ -14,15 +14,19 @@ const contractPath = 'verification/blueprints.v1.json'
 
 export interface RepoCapabilityFacts {
   baselineCommit: string
+  implementationCommit: string
   gitRepositoryIdentity: string
   scannedFileCount: number
+  trackedPaths: string[]
   sourceFileCount: number
-  scripts: Array<{ name: string; entry: string }>
+  scripts: Array<{ sourceFile: string; name: string; entry: string }>
+  packageDependencies: Array<{ sourceFile: string; kind: string; name: string; version: string }>
   routes: Array<{ method: string; route: string; sourceFile: string }>
   routePatterns: Array<{ method: string; pattern: string; sourceFile: string }>
   testFiles: Array<{ path: string; caseNames: string[]; assertionIds: string[]; assertionContractHashes: string[] }>
   sourceEntries: Array<{ path: string; exportedNames: string[]; methodNames: string[] }>
   artifactPaths: string[]
+  artifactHashes: Record<string, string>
   schemaFiles: string[]
   migrationFiles: string[]
   configurationExamples: string[]
@@ -45,19 +49,22 @@ async function readTracked(root: string, path: string): Promise<string | undefin
 }
 
 /** Reads only tracked, ordinary, bounded project files. It never invokes project scripts. */
-export async function inspectRepoCapabilities(target: DeliveryTargetBinding): Promise<RepoCapabilityFacts> {
+export async function inspectAtCommit(target: DeliveryTargetBinding, commit: string): Promise<RepoCapabilityFacts> {
+  if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error('Implementation commit must be exact.')
   const before = await inspectDeliveryTarget(target.canonicalPath)
-  if (!before.clean || before.baselineCommit !== target.baselineCommit ||
+  if (!before.clean || before.baselineCommit !== commit ||
     before.gitRepositoryIdentity !== target.gitRepositoryIdentity || before.canonicalPath !== target.canonicalPath)
-    throw new Error('Repository baseline changed before capability inspection.')
+    throw new Error('Repository implementation commit changed before capability inspection.')
+  await run('git', ['merge-base', '--is-ancestor', target.baselineCommit, commit],
+    { cwd: target.canonicalPath, timeout: 10_000 }).catch(() => { throw new Error('COMMIT_NOT_DESCENDANT') })
   const { stdout } = await run('git', ['ls-files', '-z', '--cached'], {
     cwd: target.canonicalPath, encoding: 'buffer', timeout: 10_000, maxBuffer: 4_000_000,
   })
   const tracked = (stdout as Buffer).toString('utf8').split('\0').filter(Boolean)
   if (tracked.length > MAX_FILES) throw new Error('Repository exceeds bounded inspection scope.')
-  const facts: RepoCapabilityFacts = { baselineCommit: target.baselineCommit,
-    gitRepositoryIdentity: target.gitRepositoryIdentity, scannedFileCount: 0, sourceFileCount: 0,
-    scripts: [], routes: [], routePatterns: [], testFiles: [], sourceEntries: [], artifactPaths: [],
+  const facts: RepoCapabilityFacts = { baselineCommit: target.baselineCommit, implementationCommit: commit,
+    gitRepositoryIdentity: target.gitRepositoryIdentity, scannedFileCount: 0, trackedPaths: tracked.filter(safeTrackedPath), sourceFileCount: 0,
+    scripts: [], packageDependencies: [], routes: [], routePatterns: [], testFiles: [], sourceEntries: [], artifactPaths: [], artifactHashes: {},
     schemaFiles: [], migrationFiles: [], configurationExamples: [] }
   for (const path of tracked) {
     if ((!allowed.test(path) && path !== contractPath) || !safeTrackedPath(path)) continue
@@ -65,11 +72,19 @@ export async function inspectRepoCapabilities(target: DeliveryTargetBinding): Pr
     if (source === undefined) continue
     facts.scannedFileCount += 1
     facts.artifactPaths.push(path)
-    if (path === 'package.json') {
+    facts.artifactHashes[path] = createHash('sha256').update(source).digest('hex')
+    if (path === 'package.json' || path.endsWith('/package.json')) {
       try {
-        const parsed = JSON.parse(source) as { scripts?: Record<string, unknown> }
-        facts.scripts = Object.entries(parsed.scripts ?? {}).filter((item): item is [string, string] =>
-          typeof item[1] === 'string' && item[1].length <= 300).map(([name, entry]) => ({ name, entry }))
+        const parsed = JSON.parse(source) as { scripts?: Record<string, unknown>;
+          dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown>;
+          optionalDependencies?: Record<string, unknown>; peerDependencies?: Record<string, unknown> }
+        facts.scripts.push(...Object.entries(parsed.scripts ?? {}).filter((item): item is [string, string] =>
+          typeof item[1] === 'string' && item[1].length <= 300)
+          .map(([name, entry]) => ({ sourceFile: path, name, entry })))
+        for (const kind of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const)
+          facts.packageDependencies.push(...Object.entries(parsed[kind] ?? {})
+            .filter((item): item is [string, string] => typeof item[1] === 'string' && item[1].length <= 200)
+            .map(([name, version]) => ({ sourceFile: path, kind, name, version })))
       } catch { /* Invalid package metadata is not evidence. */ }
     }
     if (path === contractPath) {
@@ -113,10 +128,28 @@ export async function inspectRepoCapabilities(target: DeliveryTargetBinding): Pr
     if (/(?:migration|migrations)/iu.test(path)) facts.migrationFiles.push(path)
     if (/(?:\.env\.example|config\.example|example\.config)/iu.test(path)) facts.configurationExamples.push(path)
   }
+  if (facts.scripts.length > 2_000 || facts.packageDependencies.length > 5_000)
+    throw new Error('Repository package manifest exceeds bounded inspection scope.')
   const after = await inspectDeliveryTarget(target.canonicalPath)
   if (!after.clean || after.baselineCommit !== before.baselineCommit || after.gitRepositoryIdentity !== before.gitRepositoryIdentity)
     throw new Error('Repository changed during capability inspection.')
   return facts
+}
+
+export async function inspectRepoCapabilities(target: DeliveryTargetBinding): Promise<RepoCapabilityFacts> {
+  return inspectAtCommit(target, target.baselineCommit)
+}
+
+export function generateScopeManifest(facts: RepoCapabilityFacts): { sha256: string; content: string } {
+  // The repository contract contains the expected manifest hash. Excluding that file and C
+  // avoids a self-referential digest; the approved transition separately binds C exactly.
+  const content = JSON.stringify({ schemaVersion: 1, baselineCommit: facts.baselineCommit,
+    trackedPaths: facts.trackedPaths.filter((path) => path !== contractPath),
+    trackedArtifacts: Object.entries(facts.artifactHashes).filter(([path]) => path !== contractPath)
+      .sort(([a], [b]) => a.localeCompare(b)),
+    scripts: facts.scripts, packageDependencies: facts.packageDependencies,
+    routes: facts.routes, routePatterns: facts.routePatterns })
+  return { content, sha256: createHash('sha256').update(content).digest('hex') }
 }
 
 /** Exact bounded source supplied to the independent reviewer, outside telemetry and planner matching. */
@@ -124,7 +157,7 @@ export async function readRepositoryReviewMaterial(target: DeliveryTargetBinding
   paths: readonly string[]): Promise<Array<{ path: string; sha256: string; source: string }>> {
   if (facts.baselineCommit !== target.baselineCommit || paths.length > 4) throw new Error('Review material scope is invalid.')
   const before = await inspectDeliveryTarget(target.canonicalPath)
-  if (!before.clean || before.baselineCommit !== target.baselineCommit) throw new Error('Review target drifted.')
+  if (!before.clean || before.baselineCommit !== facts.implementationCommit) throw new Error('Review target drifted.')
   const material = []
   let totalBytes = 0
   for (const path of [...new Set(paths)]) {
@@ -137,6 +170,7 @@ export async function readRepositoryReviewMaterial(target: DeliveryTargetBinding
     material.push({ path, sha256: createHash('sha256').update(source).digest('hex'), source })
   }
   const after = await inspectDeliveryTarget(target.canonicalPath)
-  if (!after.clean || after.baselineCommit !== before.baselineCommit) throw new Error('Review target drifted.')
+  if (!after.clean || after.baselineCommit !== facts.implementationCommit ||
+    after.baselineCommit !== before.baselineCommit) throw new Error('Review target drifted.')
   return material
 }

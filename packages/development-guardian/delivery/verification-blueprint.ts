@@ -3,9 +3,10 @@ import { isAbsolute, normalize, sep } from 'node:path'
 import { canonicalSerialize } from '../planning/freeze.js'
 import { z } from 'zod'
 import type { AcceptanceAssertion, AcceptanceCriterion } from '../planning/model.js'
-import { CAPABILITY_REGISTRY, type CapabilityFamily, type ProviderAvailability } from './capability-layer.js'
+import { CAPABILITY_REGISTRY, claimRequirements, claimRequiresExactComparison, type CapabilityFamily, type ProviderAvailability } from './capability-layer.js'
 import type { DeliveryTargetBinding } from './runtime-plan.js'
-import type { BoundVerifier } from './staged-verification.js'
+import type { BoundVerifier, VerificationObligation } from './staged-verification.js'
+import { assessVerificationCommand, scopedNodeTestPath } from '../verification-command-policy.js'
 
 export const BLUEPRINT_SCHEMA_VERSION = 1
 export type BlueprintStepKind = 'setup' | 'action' | 'observation' | 'predicate' | 'reread' | 'cleanup'
@@ -47,6 +48,9 @@ export interface VerificationBlueprint {
   provenance: { kind: 'repository_contract' | 'deterministic_resolver'; relativePath: string; contractHash: string }
   entityIdentity?: { setupRef: string; actionRef: string; observationRef: string }
   plannedVerifier?: BoundVerifier
+  obligationId?: string
+  implementationCommit?: string
+  artifactHashes?: Record<string, string>
 }
 export interface BlueprintReviewIssue {
   code: 'FALSE_POSITIVE' | 'WEAK_PREDICATE' | 'MISSING_SETUP_ACTION' | 'COMMAND_ONLY' |
@@ -83,6 +87,9 @@ const verifierSchema = z.discriminatedUnion('family', [
     contains: z.string().optional() }).strict(),
   z.object({ family: z.literal('process'), assertionId: z.string(), providerId: z.string(), providerVersion: z.string(),
     relativeEntry: z.string(), expectedExitCode: z.number().int(), timeoutMs: z.number().int() }).strict(),
+  z.object({ family: z.literal('scope_review'), assertionId: z.string(), providerId: z.string(),
+    providerVersion: z.string(), manifestHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    command: z.string().optional() }).strict(),
 ])
 const candidateSchema = z.object({ schemaVersion: z.literal(1), assertionId: z.string().min(1),
   runtimeTaskId: z.string().min(1), sourceAssertionHash: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -100,11 +107,15 @@ const candidateSchema = z.object({ schemaVersion: z.literal(1), assertionId: z.s
     relativePath: z.string(), contractHash: z.string().regex(/^[a-f0-9]{64}$/u) }).strict(),
   entityIdentity: z.object({ setupRef: z.string(), actionRef: z.string(), observationRef: z.string() }).strict().optional(),
   plannedVerifier: verifierSchema.optional(),
+  obligationId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  implementationCommit: z.string().regex(/^[a-f0-9]{40}$/u).optional(),
+  artifactHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/u)).optional(),
 }).strict()
 
 export function assertionContractHash(assertion: AcceptanceAssertion): string {
   return createHash('sha256').update('novawing-assertion-contract-v1\0').update(canonicalSerialize({
-    id: assertion.id, requirementId: assertion.requirementId, observableBehavior: assertion.observableBehavior,
+    id: assertion.id, requirementId: assertion.requirementId, blocking: assertion.blocking,
+    observableBehavior: assertion.observableBehavior,
     expectedOutcome: assertion.expectedOutcome, expectedEvidence: assertion.expectedEvidence,
   })).digest('hex')
 }
@@ -120,14 +131,11 @@ function safeRelative(path: string): boolean {
     !path.startsWith(sep)
 }
 const placeholder = /(?:\{\{|\}\}|<[^>]+>|\$\{|\b(?:TODO|TBD|PLACEHOLDER|YOUR_[A-Z_]+)\b)/iu
-const mutation = /(?:创建|新增|添加|修改|更新|删除|取消|支付|提交|保存|持久|下单|状态流转|create|update|delete|cancel|pay|persist|submit|save|write)/iu
-const persistence = /(?:持久|重启后|重新读取|再次读取|落库|persist|reread|reload|reopen|database)/iu
-const exactNumber = /(?:\d+(?:\.\d+)?\s*(?:元|件|个|%|条|次|分钟|秒)|精确|准确|exact|equal)/iu
-const entityContinuity = /(?:同一|该订单|该用户|该商品|原订单|same|identity|unchanged)/iu
-
 export function validateVerificationBlueprint(blueprint: VerificationBlueprint, input: {
   assertion: AcceptanceAssertion; criterion: AcceptanceCriterion; runtimeTaskId: string;
-  target: DeliveryTargetBinding; providerAvailability?: (providerId: string) => ProviderAvailability
+  target: DeliveryTargetBinding; providerAvailability?: (providerId: string) => ProviderAvailability;
+  obligation?: VerificationObligation; implementationCommit?: string;
+  artifactSources?: Record<string, string>; scopeManifestHash?: string
 }): BlueprintValidation {
   if (!candidateSchema.safeParse(blueprint).success) return { pass: false,
     issues: [{ code: 'INVALID_BLUEPRINT_SHAPE', message: 'Blueprint schema or bounded fields are invalid.' }] }
@@ -140,8 +148,10 @@ export function validateVerificationBlueprint(blueprint: VerificationBlueprint, 
     add('ASSERTION_MISMATCH', 'Blueprint does not bind the frozen assertion contract.')
   if (blueprint.targetConstraints.canonicalPath !== input.target.canonicalPath ||
     blueprint.targetConstraints.gitRepositoryIdentity !== input.target.gitRepositoryIdentity ||
-    blueprint.targetConstraints.baselineCommit !== input.target.baselineCommit)
-    add('BASELINE_DRIFT', 'Blueprint target or commit differs from the bound repository.')
+    blueprint.targetConstraints.baselineCommit !== (input.implementationCommit ?? input.target.baselineCommit))
+    add('COMMIT_NOT_DESCENDANT', 'Blueprint target or baseline ancestry differs from the bound repository.')
+  if (input.implementationCommit && blueprint.implementationCommit !== input.implementationCommit)
+    add('COMMIT_MISMATCH', 'Blueprint is not bound to the inspected implementation commit.')
   const provider = blueprint.family === 'composite' ? undefined : CAPABILITY_REGISTRY[blueprint.family]
   if (!provider || provider.providerId !== blueprint.provider.id || provider.providerVersion !== blueprint.provider.version ||
     provider.availability !== 'AVAILABLE' || (input.providerAvailability &&
@@ -175,18 +185,18 @@ export function validateVerificationBlueprint(blueprint: VerificationBlueprint, 
     blueprint.artifactScope.includedRoots.some((path) => !safeRelative(path)) ||
     blueprint.artifactScope.reviewRequired !== true))
     add('INVALID_SCOPE_MANIFEST', 'Artifact scope needs a concrete generated, bounded and reviewed manifest.')
-  const claim = `${input.assertion.observableBehavior} ${input.assertion.expectedOutcome} ${input.assertion.expectedEvidence}`
-  if (mutation.test(claim) && ![...blueprint.setup, ...blueprint.action].some((step) => step.mutates))
+  const requirements = claimRequirements(input.assertion)
+  if (requirements.requiresMutation && ![...blueprint.setup, ...blueprint.action].some((step) => step.mutates))
     add('MUTATION_WITH_READ_ONLY_EVIDENCE', 'A state-changing assertion needs a trusted action.')
-  if (persistence.test(claim) && blueprint.reread.length === 0)
+  if (requirements.requiresReread && blueprint.reread.length === 0)
     add('PERSISTENCE_WITHOUT_REREAD', 'Persistence needs a separate reread observation.')
-  if (exactNumber.test(claim) && !blueprint.predicate.some((step) => /(?:===|==|equals|equal_to|exact_value)/u.test(step.operation)))
+  if (claimRequiresExactComparison(input.assertion) && !blueprint.predicate.some((step) => /(?:===|==|equals|equal_to|exact_value)/u.test(step.operation)))
     add('NUMBER_WITHOUT_EXACT_COMPARISON', 'A numerical claim needs an exact comparison.')
-  const claimNumbers = [...new Set([...claim.matchAll(/\b\d+(?:\.\d+)?\b/gu)].map((match) => match[0]))]
+  const claimNumbers = requirements.exactNumbers
   if (claimNumbers.length && claimNumbers.some((number) => !blueprint.predicate.some((step) =>
     new RegExp(`(?:^|\\D)${number.replace('.', '\\.')}($|\\D)`, 'u').test(step.expected ?? ''))))
     add('EXPECTED_NUMBER_MISSING', 'An exact number in the frozen claim is absent from the expected predicate.')
-  if (entityContinuity.test(claim) && (!blueprint.entityIdentity ||
+  if (requirements.requiresEntityContinuity && (!blueprint.entityIdentity ||
     !Object.values(blueprint.entityIdentity).every((value) => value.trim().length > 0) ||
     new Set(Object.values(blueprint.entityIdentity)).size !== 1))
     add('ENTITY_IDENTITY_MISSING', 'The same business entity must be bound across steps.')
@@ -223,9 +233,68 @@ export function validateVerificationBlueprint(blueprint: VerificationBlueprint, 
   if (blueprint.plannedVerifier && (blueprint.plannedVerifier.assertionId !== blueprint.assertionId ||
     blueprint.plannedVerifier.providerId !== blueprint.provider.id ||
     blueprint.plannedVerifier.providerVersion !== blueprint.provider.version ||
-    blueprint.plannedVerifier.family !== blueprint.family))
+    (blueprint.plannedVerifier.family !== blueprint.family &&
+      !(input.obligation?.strategy === 'delivery_scope_review' && blueprint.plannedVerifier.family === 'scope_review'))))
     add('VERIFIER_MISMATCH', 'Runtime verifier differs from blueprint provider and assertion.')
   if (!blueprint.plannedVerifier) add('RUNTIME_ADAPTER_MISSING', 'No exact Runtime verifier implements this blueprint.')
+  if (input.obligation) {
+    const obligation = input.obligation
+    if (blueprint.obligationId !== obligation.obligationId || blueprint.family !== obligation.capabilityFamily ||
+      blueprint.provider.id !== obligation.providerId || blueprint.provider.version !== obligation.providerVersion ||
+      blueprint.sourceAssertionHash !== obligation.sourceAssertionHash ||
+      blueprint.runtimeTaskId !== obligation.canonicalOwnerTaskId)
+      add('OBLIGATION_CONFORMANCE', 'Blueprint changes a frozen obligation field.')
+    const requiredMechanism: BlueprintMechanism = obligation.strategy === 'assertion_scoped_repository_test' ? 'repository_test' :
+      obligation.strategy === 'loopback_http_get_predicate' ? 'loopback_http_get' :
+      obligation.strategy === 'scoped_artifact_predicate' ? 'scoped_filesystem_read' :
+      obligation.strategy === 'owned_process_predicate' ? 'owned_process' : 'manifest'
+    const mixedScope = obligation.strategy === 'delivery_scope_review' && obligation.requirements.requiresMutation
+    const scopeCommand = blueprint.plannedVerifier?.family === 'scope_review'
+      ? blueprint.plannedVerifier.command : undefined
+    const scopeTestPath = scopeCommand === undefined ? undefined : scopedNodeTestPath(scopeCommand)
+    if ((obligation.strategy === 'delivery_scope_review'
+      ? steps.some((step) => step.mechanism !== 'manifest' && !(mixedScope && step.mechanism === 'repository_test'))
+      : steps.some((step) => step.mechanism !== requiredMechanism)) ||
+      obligation.strategy === 'delivery_scope_review' && blueprint.plannedVerifier?.family !== 'scope_review' ||
+      obligation.strategy === 'assertion_scoped_repository_test' && blueprint.plannedVerifier?.family !== 'command' ||
+      obligation.strategy === 'loopback_http_get_predicate' && blueprint.plannedVerifier?.family !== 'http_api' ||
+      obligation.strategy === 'scoped_artifact_predicate' && blueprint.plannedVerifier?.family !== 'filesystem' ||
+      obligation.strategy === 'owned_process_predicate' && blueprint.plannedVerifier?.family !== 'process')
+      add('OBLIGATION_CONFORMANCE', 'Blueprint mechanism or verifier substitutes the frozen strategy.')
+    const scopeManifestCovered = blueprint.observation.some((step) => step.mechanism === 'manifest') &&
+      blueprint.predicate.some((step) => step.mechanism === 'manifest')
+    const scopeTestCovered = scopeTestPath !== undefined && scopeCommand !== undefined &&
+      assessVerificationCommand(scopeCommand).status === 'ALLOWED' &&
+      blueprint.requiredArtifacts.includes(scopeTestPath) &&
+      blueprint.action.length > 0 && blueprint.action.some((step) => step.mutates) &&
+      blueprint.cleanup.length > 0 &&
+      [...blueprint.action, ...blueprint.cleanup].every((step) =>
+        step.mechanism === 'repository_test' && step.artifact === scopeTestPath) &&
+      blueprint.predicate.some((step) => step.mechanism === 'repository_test' && step.artifact === scopeTestPath)
+    if (obligation.strategy === 'delivery_scope_review' &&
+      (!scopeManifestCovered || Boolean(scopeCommand) !== mixedScope ||
+        (mixedScope && !scopeTestCovered) ||
+        (!mixedScope && steps.some((step) => step.mechanism === 'repository_test'))))
+      add('OBLIGATION_CONFORMANCE', 'Mixed scope requires a scoped executable test plus generated manifest review.')
+    if (obligation.requirements.requiresMutation && ![...blueprint.setup, ...blueprint.action].some((step) => step.mutates) ||
+      obligation.requirements.requiresReread && !blueprint.reread.length ||
+      obligation.requirements.requiresCleanup && !blueprint.cleanup.length ||
+      obligation.requirements.requiresEntityContinuity && !blueprint.entityIdentity)
+      add('OBLIGATION_CONFORMANCE', 'Blueprint omits a frozen requirement flag.')
+    const expected = blueprint.predicate.map((step) => step.expected ?? '').join(' ')
+    const sources = Object.values(input.artifactSources ?? {}).join(' ')
+    if (obligation.requirements.exactNumbers.some((number) => !expected.includes(number) ||
+      ((blueprint.plannedVerifier?.family === 'command' || scopeCommand !== undefined) && !sources.includes(number))))
+      add('OBLIGATION_CONFORMANCE', 'Frozen exact numbers are missing from predicate or test source.')
+    if (!blueprint.artifactHashes || blueprint.requiredArtifacts.some((path) =>
+      !/^[a-f0-9]{64}$/u.test(blueprint.artifactHashes?.[path] ?? '')))
+      add('OBLIGATION_CONFORMANCE', 'Blueprint lacks inspected artifact hashes.')
+    if (obligation.strategy === 'delivery_scope_review' &&
+      (!blueprint.artifactScope || !input.scopeManifestHash ||
+        blueprint.artifactHashes?.NOVAWING_SCOPE_MANIFEST !== input.scopeManifestHash ||
+        blueprint.plannedVerifier?.family !== 'scope_review'))
+      add('OBLIGATION_CONFORMANCE', 'Scope review needs a NovaWing manifest and exact manifest hash.')
+  }
   return { pass: issues.length === 0, issues }
 }
 

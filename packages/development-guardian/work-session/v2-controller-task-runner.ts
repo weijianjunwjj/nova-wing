@@ -74,6 +74,15 @@ export interface V2ActionDispatcher {
   dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
+  /** Delivery-only durable assertion gate, checked immediately before Task finalization. */
+  deliveryCompletionGate?(task: TaskStateV2): Promise<{ status: 'LOCALLY_VERIFIED' | 'BLOCKED'; reason?: string }>
+  deliveryTaskCompleted?(task: TaskStateV2): Promise<void>
+  deliveryTaskFinalized?(task: TaskStateV2, commitSha: string): Promise<void>
+}
+
+function locallyPassingVerificationResults(results: readonly VerificationResult[]): boolean {
+  return results.length > 0 && results.every((item) => item.status === 'passed' ||
+    (item.status === 'skipped' && item.stepId?.startsWith('NOVAWING_DEFERRED:')))
 }
 
 export interface NoOpExecutionRetry {
@@ -225,6 +234,10 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     directPath?: { enabled: boolean; repositoryRoot: string }
   }) {}
 
+  async afterRuntimeTaskFinalized(task: TaskStateV2, commitSha: string): Promise<void> {
+    await this.options.dispatcher.deliveryTaskFinalized?.(task, commitSha)
+  }
+
   async run(task: WorkSessionTask, resumeData?: unknown, _checkpoint?: unknown, context?: WorkSessionTaskRunContext): Promise<WorkSessionTaskResult> {
     if (this.options.directPath?.enabled !== true || context?.taskStateV2?.execution?.escalated === true || context?.taskStateV2?.status !== undefined && context.taskStateV2.status !== 'PENDING') {
       return this.runController(task, resumeData, _checkpoint, context)
@@ -317,7 +330,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     emit('VERIFYING', 'active', { kind: 'VERIFIER_STARTED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId })
     const verification = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state) })
     state = controller.applyResult(state, 'VERIFY', verification)
-    const passed = verification.status === 'SUCCESS' && state.verificationState.results.length > 0 && state.verificationState.results.every((item) => item.status === 'passed')
+    const passed = verification.status === 'SUCCESS' && locallyPassingVerificationResults(state.verificationState.results)
     note({ type: passed ? 'VERIFICATION_PASSED' : 'VERIFICATION_FAILED', action: 'VERIFY', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), evidenceRefs: state.verificationState.results.map((item) => item.name) })
     emit('VERIFYING', passed ? 'completed' : 'failed', { kind: 'VERIFIER_COMPLETED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId, outcome: passed ? 'PASSED' : 'FAILED' })
     await context?.persistTaskStateV2?.(state)
@@ -327,7 +340,13 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       note({ type: 'DIRECT_PATH_ESCALATED', action: 'VERIFY', ...repositoryFacts(state), metadata: { stage: 'VERIFY', verificationPlan: plan, failureClassification: state.verificationState.results.find((item) => item.status === 'failed')?.classification ?? 'EVIDENCE_MISSING' } })
       return { escalationState: state }
     }
+    if (this.options.dispatcher.deliveryCompletionGate) {
+      const delivery = await this.options.dispatcher.deliveryCompletionGate(state)
+      if (delivery.status !== 'LOCALLY_VERIFIED') return { escalationState: { ...state,
+        blockers: [...state.blockers, delivery.reason ?? 'Delivery assertion evidence is incomplete.'] } }
+    }
     emit('FINALIZING', 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
+    await this.options.dispatcher.deliveryTaskCompleted?.(state)
     state = { ...state, status: 'COMPLETED', currentAction: 'COMPLETE', updatedAt: new Date().toISOString() }
     note({ type: 'TASK_COMPLETED', action: 'COMPLETE', ...repositoryFacts(state), evidenceRefs: plan.steps.map((step) => step.command), metadata: { executionPath: 'DIRECT', outcome: end.changedFiles.length === 0 ? 'ALREADY_SATISFIED' : 'COMPLETED' } })
     await context?.persistTaskStateV2?.(state)
@@ -492,7 +511,14 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         reasonEvent('REVIEW_REQUIRED', 'REVIEW', 'RISK_REQUIRES_REVIEW', {}, decision.reason === undefined ? [] : [decision.reason], state)
       }
       if (decision.action === 'COMPLETE') {
+        if (this.options.dispatcher.deliveryCompletionGate) {
+          const delivery = await this.options.dispatcher.deliveryCompletionGate(state)
+          if (delivery.status !== 'LOCALLY_VERIFIED') return { status: 'HUMAN_REQUIRED',
+            humanRequired: { category: 'RECOVERY_BLOCKED', reason: delivery.reason ?? 'Delivery assertion evidence is incomplete.' },
+            taskStateV2: state }
+        }
         const verificationResults = state.verificationState.results
+        await this.options.dispatcher.deliveryTaskCompleted?.(state)
         note({ type: 'TASK_COMPLETED', action: 'COMPLETE', reasonCode: 'COMPLETION_CRITERIA_SATISFIED', ...repositoryFacts(state),
           evidenceRefs: [...new Set(state.completion.bindings.flatMap((binding) => binding.requiredEvidence))] })
         return {
@@ -604,7 +630,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         reasonEvent('PROVIDER_SWITCHED', decision.action, switchCode, { previousProvider: fromProvider, selectedProvider: toProvider, ...(previousAgent === undefined ? {} : { previousAgent }) }, [`provider changed from ${fromProvider} to ${toProvider}`], state)
       }
       const verificationResults = result.verificationResults ?? state.verificationState.results
-      const verificationPassed = decision.action === 'VERIFY' && verificationResults.length > 0 && verificationResults.every((resultItem) => resultItem.status === 'passed')
+      const verificationPassed = decision.action === 'VERIFY' && result.status === 'SUCCESS' &&
+        locallyPassingVerificationResults(verificationResults)
       if (decision.action === 'VERIFY' && verificationResults !== undefined) {
         if (verificationPassed) note({ type: 'VERIFICATION_PASSED', action: 'VERIFY', ...repositoryFacts(state), evidenceRefs: verificationResults.map((resultItem) => resultItem.name) })
         else {

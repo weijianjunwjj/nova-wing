@@ -12,33 +12,13 @@ import { CAPABILITY_REGISTRY, CAPABILITY_SCHEMA_VERSION, capabilityCoverage, cap
   resolveCapability, type CapabilityResolution, type ProviderAvailability, type ResolvedCapability,
   type VerificationCapabilityResolver } from './capability-layer.js'
 import { ADMISSION_MODEL_VERSION, stagedVerificationContract, type StagedVerificationContract } from './staged-verification.js'
-import { blueprintSetHash } from './verification-blueprint-planner.js'
-import { verifyApprovedBlueprint, type ApprovedVerificationBlueprint } from './verification-blueprint.js'
 
 const git = promisify(execFile)
 export const COMPILER_SCHEMA_VERSION = 3
-export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase6.0'
+export const COMPILER_IMPLEMENTATION_VERSION = '0.5.0-phase6.1'
 export { conservativeCapabilityResolver }
 export type { CapabilityResolution, VerificationCapabilityResolver }
 export type VerificationCapability = CapabilityResolution['capability']
-
-function resolutionWithBlueprint(resolver: VerificationCapabilityResolver,
-  blueprint: ApprovedVerificationBlueprint | undefined): VerificationCapabilityResolver {
-  if (!blueprint) return resolver
-  if (blueprint.family === 'composite' || !blueprint.plannedVerifier) throw new Error('Blueprint has no supported Runtime adapter.')
-  const family = blueprint.family
-  const verifier = blueprint.plannedVerifier
-  const provider = CAPABILITY_REGISTRY[family]
-  return (input) => {
-    const base = resolver(input)
-    if (base.capability !== 'UNSUPPORTED') throw new Error('Blueprint may only resolve an unsupported assertion.')
-    return { ...base, family, classificationRule: `reviewed-blueprint-${family}-v1`,
-      providerId: provider.providerId, providerVersion: provider.providerVersion,
-      capabilityVersion: provider.version, evidenceType: provider.evidenceType, availability: provider.availability,
-      reason: 'Exact blueprint passed deterministic validation and independent review.',
-      provisioningVerifier: verifier }
-  }
-}
 
 export interface DeliveryTargetBinding {
   id: string
@@ -109,14 +89,16 @@ export interface AcceptanceBinding {
   expectedOutcome: string
   expectedEvidence: string
   blocking: boolean
+  ownership: 'OWNER' | 'CONTRIBUTES' | 'AMBIGUOUS'
+  canonicalOwnerTaskId?: string
+  coveringTaskIds: string[]
   verificationCapability: ResolvedCapability
-  verificationBlueprint?: ApprovedVerificationBlueprint
   stagedVerification: StagedVerificationContract
   evidenceStatus: 'NOT_COLLECTED'
 }
 export interface RuntimeAdmission {
   gate: 'START_DELIVERY_ADMISSION'
-  modelVersion: 1
+  modelVersion: 2
   status: 'READY' | 'ADMISSION_BLOCKED'
   blockers: Array<{ code: string; assertionId?: string; message: string }>
   coverage: { plannedTaskRuntime: number; mustRuntime: number; blockingAssertionRuntime: number }
@@ -127,10 +109,10 @@ export interface CompiledRuntimePlan {
   id: string
   runtimePlanHash: string
   compilerSchemaVersion: 3
-  admissionModelVersion: 1
+  admissionModelVersion: 2
   capabilitySchemaVersion: 1
   capabilityPolicyFingerprint: string
-  blueprintSetHash: string
+  obligationSetHash: string
   compilerImplementationVersion: string
   runtimePolicyVersion: string
   sourceSnapshotId: string
@@ -156,7 +138,7 @@ function semanticRuntimePlan(plan: CompiledRuntimePlan): unknown {
     compilerSchemaVersion: plan.compilerSchemaVersion, compilerImplementationVersion: plan.compilerImplementationVersion,
     admissionModelVersion: plan.admissionModelVersion,
     capabilitySchemaVersion: plan.capabilitySchemaVersion, capabilityPolicyFingerprint: plan.capabilityPolicyFingerprint,
-    blueprintSetHash: plan.blueprintSetHash,
+    obligationSetHash: plan.obligationSetHash,
     runtimePolicyVersion: plan.runtimePolicyVersion, tasks: plan.tasks, requirements: plan.requirements,
     acceptanceCriteria: plan.acceptanceCriteria,
     customerDecisions: plan.customerDecisions, acceptanceBindings: semanticAcceptanceBindings(plan.acceptanceBindings) }
@@ -176,10 +158,28 @@ export function verifyRuntimePlanIdentity(plan: CompiledRuntimePlan): void {
     plan.compilerImplementationVersion !== COMPILER_IMPLEMENTATION_VERSION || plan.admissionModelVersion !== ADMISSION_MODEL_VERSION ||
     plan.capabilitySchemaVersion !== CAPABILITY_SCHEMA_VERSION ||
     plan.capabilityPolicyFingerprint !== capabilityPolicyFingerprint() ||
-    plan.blueprintSetHash !== blueprintSetHash(plan.acceptanceBindings.flatMap((binding) =>
-      binding.verificationBlueprint ? [binding.verificationBlueprint] : []))) {
+    plan.obligationSetHash !== obligationSetHash(plan.acceptanceBindings)) {
     throw new Error('Runtime plan identity or compiler version mismatch.')
   }
+}
+
+function obligationSetHash(bindings: readonly AcceptanceBinding[]): string {
+  const ids = bindings.filter((item) => item.ownership === 'OWNER')
+    .flatMap((item) => item.stagedVerification.obligation ? [item.stagedVerification.obligation.obligationId] : []).sort()
+  return createHash('sha256').update('novawing-obligation-set-v2\0').update(canonicalSerialize(ids)).digest('hex')
+}
+
+function canonicalOwner(tasks: PlanSnapshot['content']['tasks'], coveringTaskIds: string[]): string | undefined {
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const ancestors = (id: string, seen = new Set<string>()): Set<string> => {
+    for (const dependency of byId.get(id)?.dependencyIds ?? []) if (!seen.has(dependency)) {
+      seen.add(dependency)
+      ancestors(dependency, seen)
+    }
+    return seen
+  }
+  const candidates = coveringTaskIds.filter((id) => coveringTaskIds.every((other) => other === id || ancestors(id).has(other)))
+  return candidates.length === 1 ? candidates[0] : undefined
 }
 
 export function verifyRuntimePlanCoverage(snapshotInput: PlanSnapshot, plan: CompiledRuntimePlan): RuntimeAdmission['coverage'] {
@@ -226,26 +226,26 @@ export function verifyRuntimePlanCoverage(snapshotInput: PlanSnapshot, plan: Com
   }
   for (const criterion of source.acceptancePlan.criteria) for (const assertion of criterion.assertions) {
     const owners = source.tasks.filter((task) => task.acceptanceCriterionIds.includes(criterion.id) && task.requirementIds.includes(assertion.requirementId))
+    const coveringTaskIds = owners.map((task) => task.id)
+    const ownerId = canonicalOwner(source.tasks, coveringTaskIds)
     for (const owner of owners) {
       const binding = plan.acceptanceBindings.find((entry) => entry.assertionId === assertion.id && entry.plannedTaskId === owner.id)
       if (binding === undefined || binding.criterionId !== criterion.id || binding.requirementId !== assertion.requirementId ||
         binding.runtimeTaskId !== owner.id || binding.blocking !== (criterion.blocking && assertion.blocking) ||
         binding.observableBehavior !== assertion.observableBehavior || binding.expectedOutcome !== assertion.expectedOutcome ||
         binding.expectedEvidence !== assertion.expectedEvidence ||
+        canonicalSerialize(binding.coveringTaskIds) !== canonicalSerialize(coveringTaskIds) ||
+        binding.canonicalOwnerTaskId !== ownerId ||
+        binding.ownership !== (ownerId === undefined ? 'AMBIGUOUS' : ownerId === owner.id ? 'OWNER' : 'CONTRIBUTES') ||
         !plan.tasks.find((entry) => entry.id === owner.id)?.acceptanceAssertionIds.includes(assertion.id)) {
         throw new Error(`Runtime acceptance contract changed or lost: ${assertion.id}`)
       }
-      if (binding.verificationBlueprint) {
-        verifyApprovedBlueprint(binding.verificationBlueprint, { assertion, criterion, runtimeTaskId: owner.id,
-          target: plan.targetBinding })
-        if (canonicalSerialize(binding.verificationCapability.provisioningVerifier) !==
-          canonicalSerialize(binding.verificationBlueprint.plannedVerifier))
-          throw new Error(`Blueprint verifier changed: ${assertion.id}`)
-      }
-      const stage = stagedVerificationContract({ assertionId: assertion.id, runtimeTaskId: owner.id,
-        capability: binding.verificationCapability,
-        ...(binding.verificationCapability.startPrerequisite === undefined ? {} :
-          { prerequisite: binding.verificationCapability.startPrerequisite }) })
+      const stage: StagedVerificationContract = binding.ownership === 'OWNER'
+        ? stagedVerificationContract({ assertion, criterion, ownerTaskId: owner.id,
+          coveringTaskIds, target: plan.targetBinding, capability: binding.verificationCapability,
+          ...(binding.verificationCapability.startPrerequisite === undefined ? {} :
+            { prerequisite: binding.verificationCapability.startPrerequisite }) })
+        : { readiness: 'UNRESOLVED', prerequisite: 'COMPLETION', policy: 'non-owner-contribution-v2' }
       if (canonicalSerialize(binding.stagedVerification) !== canonicalSerialize(stage))
         throw new Error(`Runtime verification lifecycle changed: ${assertion.id}`)
     }
@@ -271,7 +271,7 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
       if (!criterion || !assertion || !requirement ||
         canonicalSerialize(semanticAcceptanceBindings([{ ...binding,
           verificationCapability: resolveCapability({ criterion, assertion, requirement },
-            resolutionWithBlueprint(options.resolver!, binding.verificationBlueprint)) }])) !==
+            options.resolver!) }])) !==
         canonicalSerialize(semanticAcceptanceBindings([binding]))) {
         throw new Error(`Trusted capability policy changed for assertion ${binding.assertionId}; recompile the frozen plan.`)
       }
@@ -287,24 +287,31 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
       current.clean !== plan.targetBinding.clean) blockers.push({ code: 'TARGET_DRIFT', message: '交付项目已变化，需要重新检查。' })
     if (!current.clean) blockers.push({ code: 'TARGET_DIRTY', message: '交付项目存在未提交的改动。' })
   } catch { blockers.push({ code: 'TARGET_UNAVAILABLE', message: '交付项目无法读取。' }) }
-  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.stagedVerification.readiness === 'UNRESOLVED') {
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'AMBIGUOUS' &&
+    !blockers.some((item) => item.code === 'OWNERSHIP_AMBIGUOUS' && item.assertionId === binding.assertionId)) {
+    blockers.push({ code: 'OWNERSHIP_AMBIGUOUS', assertionId: binding.assertionId,
+      message: '验收断言的唯一 owner 无法由依赖关系确定。' })
+  }
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' &&
+    binding.stagedVerification.readiness === 'UNRESOLVED') {
     blockers.push({ code: 'VERIFICATION_UNRESOLVED', assertionId: binding.assertionId,
       message: binding.verificationCapability.reason })
   }
-  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.stagedVerification.readiness === 'PROVISIONABLE' &&
-    binding.stagedVerification.provisioning === undefined) blockers.push({ code: 'PROVISIONING_CONTRACT_MISSING', assertionId: binding.assertionId,
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' &&
+    binding.stagedVerification.readiness === 'PROVISIONABLE_DURING_EXECUTION' &&
+    binding.stagedVerification.obligation === undefined) blockers.push({ code: 'PROVISIONING_CONTRACT_MISSING', assertionId: binding.assertionId,
       message: '验证供给义务缺失。' })
-  for (const binding of plan.acceptanceBindings) if (binding.blocking &&
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' &&
     ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness) &&
     binding.stagedVerification.prerequisite === 'EXECUTION') blockers.push({ code: 'EXECUTION_PREREQUISITE_MISSING',
       assertionId: binding.assertionId, message: '开发前置外部或人工条件尚未满足。' })
-  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.stagedVerification.readiness === 'BOUND_EXECUTABLE' &&
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' && binding.stagedVerification.readiness === 'BOUND_EXECUTABLE' &&
     (binding.verificationCapability.verificationCommand === undefined ||
       assessVerificationCommand(binding.verificationCapability.verificationCommand).status !== 'ALLOWED')) {
     blockers.push({ code: 'VERIFICATION_COMMAND_UNAVAILABLE', assertionId: binding.assertionId,
       message: '该验收结果没有可安全运行的精确验证方式。' })
   }
-  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.stagedVerification.readiness === 'BOUND_EXECUTABLE') {
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' && binding.stagedVerification.readiness === 'BOUND_EXECUTABLE') {
     const relativePath = scopedNodeTestPath(binding.verificationCapability.verificationCommand ?? '')
     const path = relativePath === undefined ? '' : join(plan.targetBinding.canonicalPath, relativePath)
     const artifact = path ? await lstat(path).catch(() => undefined) : undefined
@@ -312,8 +319,8 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
       blockers.push({ code: 'VERIFIER_ARTIFACT_UNAVAILABLE', assertionId: binding.assertionId,
         message: '精确验证文件当前不存在或不是普通仓库文件。' })
   }
-  for (const binding of plan.acceptanceBindings) if (binding.blocking &&
-    ['BOUND_EXECUTABLE', 'PROVISIONABLE'].includes(binding.stagedVerification.readiness)) {
+  for (const binding of plan.acceptanceBindings) if (binding.blocking && binding.ownership === 'OWNER' &&
+    ['BOUND_EXECUTABLE', 'PROVISIONABLE_DURING_EXECUTION'].includes(binding.stagedVerification.readiness)) {
     const capability = binding.verificationCapability
     const availability = options.providerAvailability?.(capability.providerId) ??
       (capability.family === 'command' ? 'AVAILABLE' : CAPABILITY_REGISTRY[capability.family].availability)
@@ -330,7 +337,7 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
         blockers.push({ code: 'TASK_NO_BLOCKING_ASSERTION', message: `任务 ${task.id} 缺少必须证明的验收结果。` })
         continue
       }
-      const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
+      const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
       if (bindings.every((binding) => binding.stagedVerification.readiness === 'BOUND_EXECUTABLE')) {
         const verification = await planVerification({ repositoryRoot: plan.targetBinding.canonicalPath,
           task, risk: 'HIGH' }).catch(() => undefined)
@@ -349,19 +356,11 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
 
 export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBinding: DeliveryTargetBinding,
   options: { resolver?: VerificationCapabilityResolver; runtimePolicyVersion: string;
-    runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean;
-    approvedBlueprints?: readonly ApprovedVerificationBlueprint[] }): Promise<CompiledRuntimePlan> {
+    runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean }): Promise<CompiledRuntimePlan> {
   const snapshot = verifyPlanSnapshot(snapshotInput)
   if (targetBinding.snapshotId !== snapshot.id) throw new Error('Target binding belongs to another frozen snapshot.')
   if (!options.runtimePolicyVersion.trim()) throw new Error('Runtime policy version is required.')
   const resolver = options.resolver ?? conservativeCapabilityResolver
-  const approvedBlueprints = options.approvedBlueprints ?? []
-  const blueprintKeys = new Set<string>()
-  for (const blueprint of approvedBlueprints) {
-    const key = `${blueprint.assertionId}\0${blueprint.runtimeTaskId}`
-    if (blueprintKeys.has(key)) throw new Error('Duplicate approved blueprint binding.')
-    blueprintKeys.add(key)
-  }
   const tasks: RuntimeTaskBinding[] = snapshot.content.tasks.map((task) => ({
     id: task.id, plannedTaskId: task.id, title: task.title, complexity: task.complexity,
     requirementIds: [...task.requirementIds], objective: task.objective,
@@ -374,39 +373,39 @@ export async function compileRuntimePlan(snapshotInput: PlanSnapshot, targetBind
       .filter((task) => task.acceptanceCriterionIds.includes(criterion.id) && task.requirementIds.includes(assertion.requirementId))
       .map((task) => {
         const requirement = snapshot.content.clauses.find((item) => item.id === assertion.requirementId)!
-        const verificationBlueprint = approvedBlueprints.find((entry) => entry.assertionId === assertion.id &&
-          entry.runtimeTaskId === task.id)
-        if (verificationBlueprint) verifyApprovedBlueprint(verificationBlueprint, {
-          assertion, criterion, runtimeTaskId: task.id, target: targetBinding })
-        const verificationCapability = resolveCapability({ assertion, criterion, requirement },
-          resolutionWithBlueprint(resolver, verificationBlueprint))
-        const stagedVerification = stagedVerificationContract({ assertionId: assertion.id, runtimeTaskId: task.id,
-          capability: verificationCapability,
-          ...(verificationCapability.startPrerequisite === undefined ? {} : { prerequisite: verificationCapability.startPrerequisite }) })
+        const coveringTaskIds = snapshot.content.tasks.filter((entry) =>
+          entry.acceptanceCriterionIds.includes(criterion.id) && entry.requirementIds.includes(assertion.requirementId))
+          .map((entry) => entry.id)
+        const ownerId = canonicalOwner(snapshot.content.tasks, coveringTaskIds)
+        const ownership = ownerId === undefined ? 'AMBIGUOUS' as const : ownerId === task.id ? 'OWNER' as const : 'CONTRIBUTES' as const
+        const verificationCapability = resolveCapability({ assertion, criterion, requirement }, resolver)
+        const stagedVerification: StagedVerificationContract = ownership === 'OWNER'
+          ? stagedVerificationContract({ assertion, criterion, ownerTaskId: task.id,
+            coveringTaskIds, target: targetBinding, capability: verificationCapability,
+            ...(verificationCapability.startPrerequisite === undefined ? {} : { prerequisite: verificationCapability.startPrerequisite }) })
+          : { readiness: 'UNRESOLVED', prerequisite: 'COMPLETION', policy: 'non-owner-contribution-v2' }
         return { assertionId: assertion.id, criterionId: criterion.id, requirementId: assertion.requirementId,
           plannedTaskId: task.id, runtimeTaskId: task.id, observableBehavior: assertion.observableBehavior,
           expectedOutcome: assertion.expectedOutcome, expectedEvidence: assertion.expectedEvidence,
-          blocking: criterion.blocking && assertion.blocking, verificationCapability, stagedVerification,
-          ...(verificationBlueprint ? { verificationBlueprint } : {}),
+          blocking: criterion.blocking && assertion.blocking, ownership,
+          ...(ownerId ? { canonicalOwnerTaskId: ownerId } : {}), coveringTaskIds,
+          verificationCapability, stagedVerification,
           evidenceStatus: 'NOT_COLLECTED' as const }
       })))
-  if (approvedBlueprints.some((item) => !snapshot.content.tasks.some((task) => task.id === item.runtimeTaskId &&
-    acceptanceBindings.some((binding) => binding.assertionId === item.assertionId && binding.runtimeTaskId === task.id))))
-    throw new Error('Approved blueprint is not bound to a frozen Runtime task.')
-  const setHash = blueprintSetHash(approvedBlueprints)
+  const setHash = obligationSetHash(acceptanceBindings)
   const semantic = { sourcePlanHash: snapshot.planHash.value, sourceSnapshotId: snapshot.id,
     target: { canonicalPath: targetBinding.canonicalPath, gitRepositoryIdentity: targetBinding.gitRepositoryIdentity,
       baselineCommit: targetBinding.baselineCommit, branch: targetBinding.branch, clean: targetBinding.clean },
     compilerSchemaVersion: COMPILER_SCHEMA_VERSION, compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION,
     admissionModelVersion: ADMISSION_MODEL_VERSION,
-    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), blueprintSetHash: setHash,
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), obligationSetHash: setHash,
     runtimePolicyVersion: options.runtimePolicyVersion, tasks, requirements: snapshot.content.clauses,
     acceptanceCriteria: snapshot.content.acceptancePlan.criteria,
     customerDecisions: snapshot.content.customerAnswers, acceptanceBindings: semanticAcceptanceBindings(acceptanceBindings) }
   const runtimePlanHash = createHash('sha256').update('novawing-runtime-plan-v1\0').update(canonicalSerialize(semantic)).digest('hex')
   const plan: CompiledRuntimePlan = { id: runtimePlanHash, runtimePlanHash, compilerSchemaVersion: 3,
     admissionModelVersion: ADMISSION_MODEL_VERSION,
-    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), blueprintSetHash: setHash,
+    capabilitySchemaVersion: CAPABILITY_SCHEMA_VERSION, capabilityPolicyFingerprint: capabilityPolicyFingerprint(), obligationSetHash: setHash,
     compilerImplementationVersion: COMPILER_IMPLEMENTATION_VERSION, runtimePolicyVersion: options.runtimePolicyVersion,
     sourceSnapshotId: snapshot.id, sourcePlanId: snapshot.sourcePlanId, sourcePlanVersion: snapshot.sourcePlanVersion,
     sourcePlanHash: snapshot.planHash.value, sourceCanonicalSchemaVersion: 1, targetBinding,
@@ -453,19 +452,21 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
         ...task.acceptanceCriterionIds.map((id) => `AcceptanceCriterion ${id}: ${canonicalSerialize(plan.acceptanceCriteria.find((item) => item.id === id)!)}`),
         ...task.outputs.map((output) => `Expected output: ${output}`),
         ...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking &&
-          binding.stagedVerification.provisioning !== undefined)
-          .map((binding) => `VerificationProvisioningBinding ${binding.assertionId}: ${canonicalSerialize(binding.stagedVerification.provisioning)}`),
+          binding.ownership === 'OWNER' && binding.stagedVerification.obligation !== undefined)
+          .map((binding) => `VerificationObligation ${binding.assertionId}: ${canonicalSerialize(binding.stagedVerification.obligation)}`),
         ...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking &&
+          binding.ownership === 'OWNER' &&
           ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness))
           .map((binding) => `Completion-only verification gate ${binding.assertionId}: ${binding.stagedVerification.readiness}; ${binding.stagedVerification.policy}`),
         ...plan.customerDecisions.map((decision) => `Customer decision ${decision.questionId}: ${decision.selectedOptionText}`)],
       allowedPaths: [plan.targetBinding.canonicalPath], forbiddenPaths: [], risk: 'HIGH',
-      acceptanceCriteria: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
+      acceptanceCriteria: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map(criterionFor),
-      acceptanceEvidenceBindings: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
+      acceptanceEvidenceBindings: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map((binding) => ({ criterion: criterionFor(binding),
-          requiredEvidence: [binding.stagedVerification.readiness === 'BOUND_EXECUTABLE'
+          requiredEvidence: ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness) ? [] :
+            [binding.stagedVerification.readiness === 'BOUND_EXECUTABLE'
             ? binding.verificationCapability.verificationCommand!
-            : `NOVAWING_VERIFICATION_PENDING:${binding.assertionId}:${binding.stagedVerification.provisioning?.id ?? binding.stagedVerification.readiness}`] })),
+            : `NOVAWING_VERIFICATION_PENDING:${binding.assertionId}:${binding.stagedVerification.obligation?.obligationId ?? binding.stagedVerification.readiness}`] })),
     })) }
 }

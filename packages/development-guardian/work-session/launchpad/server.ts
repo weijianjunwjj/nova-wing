@@ -1027,8 +1027,9 @@ export class NovaWingLaunchpad {
         const snapshot = await this.planningService.getSnapshot(planId, version)
         if (snapshot === undefined) { this.respondJson(response, 404, { error: 'not found' }); return }
         const { plan, admission } = await this.deliveryService.readiness(snapshot, runtimePlanPath[1]!)
+        const customerAssessment = await this.deliveryStore.customerAssessment(plan.id)
         this.respondJson(response, 200, { snapshotId: plan.sourceSnapshotId, runtimePlanId: plan.id,
-          runtimePlanHash: plan.runtimePlanHash, targetBindingId: plan.targetBinding.id, admission })
+          runtimePlanHash: plan.runtimePlanHash, targetBindingId: plan.targetBinding.id, admission, customerAssessment })
       } catch { this.respondJson(response, 409, { error: '交付准备状态无法恢复。' }) }
       return
     }

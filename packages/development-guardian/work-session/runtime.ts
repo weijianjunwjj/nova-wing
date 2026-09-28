@@ -73,6 +73,7 @@ import {
 import {
   finalizeCompletedTask,
   readCurrentHeadSha,
+  verifyDeliveryImplementationCommit,
   GitCheckpointError,
   GitPushError,
   RemoteVerificationUnavailableError,
@@ -1984,19 +1985,38 @@ export class WorkSessionRuntime {
             ) {
               const finalizer = gitCheckpoint.finalizer ?? finalizeCompletedTask
               try {
+                let finalizationBaseHead = currentState.currentTaskBaseHeadSha
+                const deliveryBaseline = task.constraints?.find((constraint) =>
+                  constraint.startsWith('Delivery target baseline: '))?.slice('Delivery target baseline: '.length)
+                const deliveryTask = self.config.definition.id.startsWith('delivery-') &&
+                  task.constraints?.some((constraint) => constraint.startsWith('Frozen plan SHA-256: ')) === true &&
+                  deliveryBaseline !== undefined
+                if (deliveryTask) {
+                  const implementationCommit = completionEvidence.repositoryReality?.headSha
+                  if (!finalizationBaseHead || !implementationCommit || !deliveryBaseline)
+                    throw new GitCheckpointError('delivery implementation commit proof is missing')
+                  await verifyDeliveryImplementationCommit({ repoPath: self.config.definition.targetRepo,
+                    expectedBranch: self.config.definition.branch, baselineCommit: deliveryBaseline,
+                    taskBaseCommit: finalizationBaseHead,
+                    implementationCommit,
+                    ...(gitCheckpoint.commandRunner === undefined ? {} : { commandRunner: gitCheckpoint.commandRunner }) })
+                  finalizationBaseHead = implementationCommit
+                }
                 const commitResult = await finalizer({
                   repoPath: self.config.definition.targetRepo,
                   expectedBranch: self.config.definition.branch,
                   task,
                   completionEvidence,
                   policy: gitCheckpoint.policy,
-                  ...(currentState.currentTaskBaseHeadSha !== undefined
-                    ? { expectedBaseHeadSha: currentState.currentTaskBaseHeadSha }
+                  ...(finalizationBaseHead !== undefined
+                    ? { expectedBaseHeadSha: finalizationBaseHead }
                     : {}),
                 })
                 if (checkpointRequired && (commitResult.disposition === 'ALREADY_SATISFIED' || commitResult.commitSha.trim().length === 0)) {
                   throw new GitCheckpointError('required CHECKPOINT_COMMITTED evidence was not produced by finalization')
                 }
+                if (v2 && result.taskStateV2)
+                  await self.config.taskRunner.afterRuntimeTaskFinalized?.(result.taskStateV2, commitResult.commitSha)
                 if (commitResult.disposition === 'ALREADY_SATISFIED') {
                   self.recordGitCommitSkipped(task.id, currentState)
                 } else {

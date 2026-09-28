@@ -63,7 +63,7 @@ export const REVIEWER_SYSTEM_PROMPT = [
   '',
   'Answer with ONE JSON object and nothing else:',
   '{"verdict":"PASS"|"FAIL","findings":["..."],"blockingFindings":["..."],"summary":"<one or two sentences>"}',
-  'When the Task contains AcceptanceAssertion IDs, also include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL","evidence":"specific observed evidence"}] for every ID. Missing or unproved IDs cannot PASS.',
+  'When the Task contains AcceptanceAssertion IDs, also include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL"|"DEFERRED","evidence":"specific observed evidence"}] for every ID. Use DEFERRED only for completion-only external or human assertions; they remain open for customer acceptance. Missing or unproved local IDs cannot PASS.',
   'For a CapabilityContract assertion, each PASS verdict also needs capabilityEvidence with family, providerId, providerVersion, collector, evidenceIds (actual passed verification stepIds), and verificationResult="OBSERVED". A command or HTTP status alone does not prove the expected business outcome.',
   'A FAIL with at least one blockingFinding means the implementation must be revised.',
   'No prose, no markdown fences, no comments.',
@@ -129,7 +129,7 @@ export function parseReviewVerdict(text: string): { ok: true; verdict: ReviewVer
       if (item === null || typeof item !== 'object' || Array.isArray(item)) return false
       const row = item as Record<string, unknown>
       return typeof row.assertionId === 'string' && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(row.assertionId) &&
-        (row.verdict === 'PASS' || row.verdict === 'FAIL') &&
+        (row.verdict === 'PASS' || row.verdict === 'FAIL' || row.verdict === 'DEFERRED') &&
         typeof row.evidence === 'string' && row.evidence.trim().length > 0 && row.evidence.length <= 2_000 &&
         (row.capabilityEvidence === undefined || (() => {
           if (row.capabilityEvidence === null || typeof row.capabilityEvidence !== 'object' || Array.isArray(row.capabilityEvidence)) return false
@@ -197,7 +197,7 @@ export function buildReviewPrompt(context: ReviewerTaskContext): string {
     `Acceptance criteria:\n${list(context.acceptanceCriteria)}`,
     ...(acceptanceAssertionIds(context.acceptanceCriteria).length === 0 ? [] : [
       `Return one assertionVerdict for each of these exact IDs: ${acceptanceAssertionIds(context.acceptanceCriteria).join(', ')}.`,
-      'For every PASS, cite specific verification or repository evidence in its evidence field. If any assertion is unproved, return FAIL.',
+      'For every local PASS, cite specific verification evidence and capabilityEvidence.evidenceIds. For completion-only external or human assertions, return DEFERRED; never PASS without accepted external evidence.',
     ]),
     `Implementer identity: ${context.implementer === undefined ? '(none)' : JSON.stringify(context.implementer)}`,
     `Providers that produced the implementation: ${context.implementerProviders.join(', ') || '(none)'}`,

@@ -235,6 +235,77 @@ export async function readCurrentHeadSha(
   return head
 }
 
+/** Delivery-only checkpoint before exact verification; it commits precisely the inspected implementation files. */
+export async function checkpointImplementationForVerification(options: {
+  repoPath: string; expectedRepositoryIdentity: string; expectedBranch: string;
+  baselineCommit: string; expectedHeadSha: string; expectedChangedFiles: readonly string[];
+  expectedWorktreeFingerprint: string; taskId: string;
+  commandRunner?: GitCheckpointCommandRunner
+}): Promise<string> {
+  const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
+  if (PROTECTED_BRANCHES.has(options.expectedBranch) || !/^[a-f0-9]{40}$/u.test(options.baselineCommit) ||
+    !/^[a-f0-9]{40}$/u.test(options.expectedHeadSha) || !/^[a-f0-9]{64}$/u.test(options.expectedWorktreeFingerprint) ||
+    !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(options.taskId) ||
+    await realpath(options.repoPath) !== options.expectedRepositoryIdentity)
+    throw new GitCheckpointError('delivery implementation checkpoint identity is invalid')
+  if (await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
+    await runGitString(runGit, ['rev-parse', 'HEAD']) !== options.expectedHeadSha)
+    throw new GitCheckpointError('delivery implementation HEAD or branch drifted')
+  await runGitChecked(runGit, ['merge-base', '--is-ancestor', options.baselineCommit, options.expectedHeadSha])
+  const status = await runGitString(runGit, ['status', '--porcelain', '-z', '--untracked-files=all'])
+  const entries = parseGitStatus(status)
+  const indexDiff = await runGitString(runGit, ['diff', '--cached', '--binary'])
+  const fingerprint = createHash('sha256').update(await computeWorktreeFingerprint(options.repoPath, entries,
+    { strict: true })).update(indexDiff).digest('hex')
+  if (fingerprint !== options.expectedWorktreeFingerprint ||
+    !samePathSet(entries.map((item) => item.path), options.expectedChangedFiles))
+    throw new GitCheckpointError('delivery implementation changed after trusted repository inspection')
+  const meaningful = entries.filter((item) => !isUntrackedRuntimeArtifact(item.status, item.path))
+    .map((item) => normalizePath(item.path))
+  if (parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])).length)
+    throw new GitCheckpointError('delivery implementation has pre-staged changes')
+  if (meaningful.length === 0) {
+    if (entries.length) throw new GitCheckpointError('delivery implementation has untracked runtime artifacts')
+    return options.expectedHeadSha
+  }
+  let stagingStarted = false
+  try {
+    stagingStarted = true
+    await runGitChecked(runGit, ['add', '--', ...meaningful])
+    await runGitChecked(runGit, ['diff', '--cached', '--check'])
+    if (!samePathSet(parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])), meaningful))
+      throw new GitCheckpointError('delivery staged files differ from inspected implementation files')
+    await runGitChecked(runGit, ['commit', '-m', `${options.taskId}: implementation for verification`])
+  } catch (error) {
+    const rollback = stagingStarted ? await restoreIndexAfterFailedCheckpoint(runGit, options.expectedHeadSha) : undefined
+    throw new GitCheckpointError(`${error instanceof Error ? error.message : String(error)}` +
+      (rollback ? `; ${rollback}` : '; restored index after failed delivery checkpoint'))
+  }
+  const commit = await runGitString(runGit, ['rev-parse', 'HEAD'])
+  if (!/^[a-f0-9]{40}$/u.test(commit) || await runGitString(runGit,
+    ['status', '--porcelain', '--untracked-files=all']) !== '')
+    throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
+  return commit
+}
+
+/** Read-only handoff proof for the normal Task-boundary finalizer after delivery VERIFY. */
+export async function verifyDeliveryImplementationCommit(options: {
+  repoPath: string; expectedBranch: string; baselineCommit: string; taskBaseCommit: string;
+  implementationCommit: string;
+  commandRunner?: GitCheckpointCommandRunner
+}): Promise<void> {
+  const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
+  if (!/^[a-f0-9]{40}$/u.test(options.baselineCommit) || !/^[a-f0-9]{40}$/u.test(options.taskBaseCommit) ||
+    !/^[a-f0-9]{40}$/u.test(options.implementationCommit) ||
+    PROTECTED_BRANCHES.has(options.expectedBranch) ||
+    await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
+    await runGitString(runGit, ['rev-parse', 'HEAD']) !== options.implementationCommit ||
+    await runGitString(runGit, ['status', '--porcelain', '--untracked-files=all']) !== '')
+    throw new GitCheckpointError('delivery implementation commit drifted before finalization')
+  await runGitChecked(runGit, ['merge-base', '--is-ancestor', options.baselineCommit, options.implementationCommit])
+  await runGitChecked(runGit, ['merge-base', '--is-ancestor', options.taskBaseCommit, options.implementationCommit])
+}
+
 export interface PushCheckpointCommitOptions {
   repoPath: string
   expectedBranch: string
@@ -448,7 +519,8 @@ function defaultGitWait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
-function validateCompletionEvidence(evidence: TaskCompletionEvidence, runtimeOnly = false): void {
+function validateCompletionEvidence(evidence: TaskCompletionEvidence, runtimeOnly = false,
+  task?: WorkSessionTask): void {
   if (evidence.finalReviewerVerdict !== 'done') {
     throw new GitCheckpointError(
       `final reviewer verdict is ${evidence.finalReviewerVerdict}, not done; refusing to commit`,
@@ -468,7 +540,12 @@ function validateCompletionEvidence(evidence: TaskCompletionEvidence, runtimeOnl
     )
   }
   for (const verification of evidence.verificationResults) {
-    if (verification.status !== 'passed') {
+    const deferred = /^NOVAWING_DEFERRED:([A-Za-z][A-Za-z0-9_-]*):(EXTERNAL_DEFERRED|HUMAN_DEFERRED)$/u
+      .exec(verification.stepId ?? '')
+    const allowedDeferred = verification.status === 'skipped' && deferred !== null &&
+      task?.acceptanceCriteria?.some((criterion) => criterion.startsWith(`AcceptanceAssertion ${deferred[1]}: `) &&
+        criterion.includes(` | VerificationReadiness: ${deferred[2]} |`)) === true
+    if (verification.status !== 'passed' && !allowedDeferred) {
       throw new GitCheckpointError(
         `verification ${verification.name} status=${verification.status}; refusing to commit`,
       )
@@ -529,7 +606,7 @@ export async function finalizeCompletedTask(
     (task.acceptanceEvidenceBindings ?? []).every(isRuntimeAcceptanceBinding)
   // A checkpoint-only contract is proved by the owned finalization below. Its
   // branch, index, path and staged-diff checks still run before any commit.
-  validateCompletionEvidence(completionEvidence, runtimeOnly)
+  validateCompletionEvidence(completionEvidence, runtimeOnly, task)
 
   // gate: definition branch 不得是 protected branch
   if (PROTECTED_BRANCHES.has(expectedBranch)) {

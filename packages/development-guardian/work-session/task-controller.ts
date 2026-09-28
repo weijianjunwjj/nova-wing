@@ -56,6 +56,9 @@ export class TaskController {
       if (classifications.includes('ENVIRONMENT_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFICATION_ENVIRONMENT_FAILURE', reason: 'verification requires environment/runtime recovery' }
       if (classifications.includes('VERIFIER_CONFIGURATION_FAILURE')) return { action: 'SUSPEND', reasonCode: 'VERIFIER_CONFIGURATION_FAILURE', reason: 'verifier or Task Contract configuration requires repair' }
       if (classifications.includes('UNRELATED_TEST_FAILURE')) return { action: 'SUSPEND', reasonCode: 'UNRELATED_TEST_FAILURE', reason: 'an audited pre-existing failure is unrelated to the Task; task-local disposition is required' }
+      if (classifications.includes('EVIDENCE_MISSING')) return task.humanConstraints?.verifyOnly === true
+        ? { action: 'SUSPEND', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'assertion evidence failed and implementation revision is forbidden' }
+        : { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'assertion evidence did not match the frozen expected outcome' }
       if (classifications.every((item) => item === 'CODE_FAILURE')) return task.humanConstraints?.verifyOnly === true
         ? { action: 'SUSPEND', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'CODE_FAILURE requires implementation, but durable VERIFY ONLY forbids re-execution' }
         : { action: 'EXECUTE', reasonCode: 'VERIFICATION_FAILED', reason: 'deterministic evidence attributes the failure to the Task implementation' }
@@ -63,7 +66,8 @@ export class TaskController {
     }
     if (task.status === 'SUSPENDED') return { action: 'REQUEST_APPROVAL', reasonCode: 'HUMAN_DECISION_REQUIRED', reason: 'task requires a human decision or approval' }
     const runtimeOnly = task.completion.bindings.every(isRuntimeAcceptanceBinding)
-    if ((results.length === 0 && !runtimeOnly) || results.some((result) => result.status !== 'passed')) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
+    if ((results.length === 0 && !runtimeOnly) || results.some((result) => result.status !== 'passed' &&
+      !(result.status === 'skipped' && result.stepId?.startsWith('NOVAWING_DEFERRED:')))) return { action: 'VERIFY', reasonCode: 'EVIDENCE_MISSING', reason: 'required deterministic evidence is missing' }
     const risk = assessRisk(task)
     // A failed independent review is a verdict on the implementation, so the
     // Controller sends the work back for revision. The reviewer never edits code.
@@ -104,7 +108,8 @@ export class TaskController {
             : task.completion)
         : {
         ...task.completion,
-        evidence: verified.map((item) => ({ type: item.stepId ?? item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
+        evidence: verified.filter((item) => !(item.status === 'skipped' && item.stepId?.startsWith('NOVAWING_DEFERRED:')))
+          .map((item) => ({ type: item.stepId ?? item.name, status: item.status === 'passed' ? 'PASSED' as const : 'FAILED' as const, source: 'deterministic', ...(task.gitState.repositoryIdentity === undefined ? {} : { repositoryIdentity: task.gitState.repositoryIdentity }), ...(task.gitState.branch === undefined ? {} : { branch: task.gitState.branch }), ...(task.gitState.headSha === undefined ? {} : { headSha: task.gitState.headSha }), ...(task.gitState.worktreeFingerprint === undefined ? {} : { workspaceIdentity: task.gitState.worktreeFingerprint }), timestamp: new Date().toISOString() })),
         // Bindings come only from the trusted task definition; a passed verifier
         // must never be projected as evidence for every acceptance criterion.
         bindings: task.completion.bindings,

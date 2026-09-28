@@ -130,10 +130,9 @@ export type { VerificationBlueprint, ApprovedVerificationBlueprint, ArtifactScop
   BlueprintReview, BlueprintReviewIssue, BlueprintValidation, BlueprintValidationIssue } from './delivery/verification-blueprint.js'
 export { inspectRepoCapabilities, readRepositoryReviewMaterial } from './delivery/repo-capability-inspector.js'
 export type { RepoCapabilityFacts } from './delivery/repo-capability-inspector.js'
-export { planVerificationBlueprints, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer,
+export { createClaudeBlueprintReviewer, createClaudeBlueprintRepairer,
   blueprintSetHash } from './delivery/verification-blueprint-planner.js'
-export type { BlueprintPlanningResult, BlueprintReviewInput, BlueprintReviewer, BlueprintRepairer,
-  BlueprintTelemetry } from './delivery/verification-blueprint-planner.js'
+export type { BlueprintReviewInput, BlueprintReviewer, BlueprintRepairer } from './delivery/verification-blueprint-planner.js'
 export { createCodexPlanningProvider } from './planning/provider.js'
 export type { PlanningModelProvider, PlanningModelResponse } from './planning/provider.js'
 export { createCodexPlanningSemanticReviewer } from './planning/semantic-reviewer.js'

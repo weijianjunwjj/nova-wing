@@ -109,6 +109,8 @@ export interface WorkSessionTaskRunContext {
 }
 
 export interface WorkSessionTaskRunner {
+  /** Called only after the Runtime has durably finalized a completed Task and its Git checkpoint. */
+  afterRuntimeTaskFinalized?(task: TaskStateV2, commitSha: string): Promise<void>
   /** Optional shared preflight used by durable approval reconciliation. */
   verifyRecoveryCheckpoint?(
     checkpoint: GuardianTaskRecoveryCheckpoint,

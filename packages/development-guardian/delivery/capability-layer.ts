@@ -102,10 +102,47 @@ export function capabilityPolicyFingerprint(): string {
 }
 
 export interface CapabilityClassification { family: CapabilityFamily; ruleId: string; reason: string }
+/** Shared frozen-claim rules used by admission and exact blueprint validation. */
+export function claimRequirements(assertion: AcceptanceAssertion): {
+  requiresMutation: boolean; requiresReread: boolean; requiresEntityContinuity: boolean;
+  exactNumbers: string[]; requiresCleanup: boolean; requiresFreshState: boolean
+} {
+  const claim = `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`
+  const negativeScope = /(?:不存在|未交付|没有|不包含|不做|不提供|不涉及|无需|无.{0,16}(?:系统|功能|模块)|范围外|非本期|不引入|不新增|不实现|not include|out of scope|without)/iu.test(assertion.expectedOutcome)
+  const mixedPositiveAction = /(?:取消|支付|创建|新增|下单|保存|修改|更新|删除|提交|create|update|delete|cancel|pay|submit|save)[^，。；;]{0,12}(?:可运行|成功|可用|完成|持久)/iu.test(assertion.expectedOutcome)
+  const requiresMutation = (!negativeScope || mixedPositiveAction) && /(?:创建|新增|添加|修改|更新|删除|取消|支付|提交|保存|持久|下单|状态流转|create|update|delete|cancel|pay|persist|submit|save|write)/iu.test(claim)
+  return {
+    requiresMutation,
+    requiresReread: /(?:持久|重启后|重新读取|再次读取|落库|persist|reread|reload|reopen|database)/iu.test(claim),
+    requiresEntityContinuity: /(?:同一|该订单|该用户|该商品|原订单|same|identity|unchanged)/iu.test(claim),
+    exactNumbers: [...new Set([...claim.matchAll(/\b\d+(?:\.\d+)?\b/gu)].map((match) => match[0]))],
+    requiresCleanup: requiresMutation,
+    requiresFreshState: /(?:新建|初始|空白|首次|fresh|empty|initial|seed)/iu.test(claim),
+  }
+}
+
+export function claimRequiresExactComparison(assertion: AcceptanceAssertion): boolean {
+  return /(?:\d+(?:\.\d+)?\s*(?:元|件|个|%|条|次|分钟|秒)|精确|准确|exact|equal)/iu.test(
+    `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`)
+}
+
+export function isDeliveryScopeClaim(assertion: AcceptanceAssertion, criterion: AcceptanceCriterion): boolean {
+  return criterion.level === 'delivery' &&
+    /(?:不存在|未交付|没有|不包含|不做|不提供|不涉及|无需|无.{0,16}(?:系统|功能|模块)|范围外|非本期|不引入|不新增|不实现|not include|out of scope|without)/iu.test(assertion.expectedOutcome)
+}
+
+export function claimExternalResidual(assertion: AcceptanceAssertion, criterion: AcceptanceCriterion): boolean {
+  if (criterion.level !== 'delivery') return false
+  const claim = `${assertion.expectedOutcome} ${assertion.expectedEvidence}`
+  return /(?:实际登录|实际(?:商品|订单|新建订单)|界面访问|小程序[^，。；;]{0,20}(?:可运行|可用)|后台[^，。；;]{0,20}(?:可运行|可用))/iu.test(claim)
+}
+
 export function classifyCapability(input: { assertion: AcceptanceAssertion; criterion: AcceptanceCriterion;
   requirement: RequirementClause }): CapabilityClassification {
   const { criterion, assertion } = input
   const observed = `${assertion.observableBehavior} ${assertion.expectedEvidence}`
+  if (isDeliveryScopeClaim(assertion, criterion)) return { family: 'filesystem', ruleId: 'delivery-scope-review-v2',
+    reason: 'Negative delivery scope requires a generated manifest and independent review.' }
   if (criterion.level === 'platform' || /小程序|微信|Android|iOS/u.test(observed))
     return { family: 'external_platform', ruleId: 'platform-surface-v1', reason: 'Assertion requires an actual named platform or mini-program interaction.' }
   if (criterion.level === 'ui') {
@@ -113,6 +150,8 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       return { family: 'desktop_ui', ruleId: 'desktop-surface-v1', reason: 'Assertion names a desktop user interface.' }
     return { family: 'browser_ui', ruleId: 'browser-surface-v1', reason: 'UI criterion requires observable browser interaction.' }
   }
+  if ((criterion.level === 'api' || criterion.level === 'integration') && claimRequirements(assertion).requiresMutation)
+    return { family: 'command', ruleId: 'mutation-repository-test-v2', reason: 'Mutation requires an assertion-scoped repository test with action and reread.' }
   if (criterion.level === 'api')
     return { family: 'http_api', ruleId: 'api-level-v1', reason: 'API criterion requires a bound request and response contract.' }
   if (criterion.level === 'unit')
@@ -126,6 +165,9 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       return { family: 'filesystem', ruleId: 'delivery-file-v1', reason: 'Delivery assertion names an output artifact or document.' }
     if (/启动|运行|进程|端口/u.test(observed))
       return { family: 'process', ruleId: 'delivery-process-v1', reason: 'Delivery assertion names a running process.' }
+    if (claimRequirements(assertion).requiresMutation || /(?:执行|测试|tests|初始化|migration|业务流程)/iu.test(observed))
+      return { family: 'command', ruleId: 'delivery-scenario-test-v2',
+        reason: 'Delivery scenario needs an assertion-scoped repository test at the implementation commit.' }
   }
   return { family: 'http_api', ruleId: 'integration-observation-v1',
     reason: 'Integration outcome needs a concrete interface or state probe; no endpoint is inferred.' }
@@ -248,6 +290,31 @@ export function verifyCapabilityEvidence(value: CapabilityEvidence): void {
     !Object.hasOwn(CAPABILITY_REGISTRY, value.family)) throw new Error('Invalid capability evidence identity.')
   const expected = evidence(value.assertionId, value.family, value.collector, value.result, value.facts)
   if (JSON.stringify(expected) !== JSON.stringify(value)) throw new Error('Capability evidence integrity mismatch.')
+}
+
+/** A generated scope manifest is observation only; independent review decides the absence claim. */
+export function collectScopeManifestEvidence(assertionId: string, manifestHash: string,
+  trackedArtifactCount: number): CapabilityEvidence {
+  if (!/^[a-f0-9]{64}$/u.test(manifestHash) || !Number.isSafeInteger(trackedArtifactCount) || trackedArtifactCount < 0)
+    throw new Error('Invalid generated scope manifest.')
+  return evidence(assertionId, 'filesystem', CAPABILITY_REGISTRY.filesystem.providerId, 'OBSERVED',
+    { manifestHash, trackedArtifactCount, observedMatch: true })
+}
+
+/** A mixed scope claim keeps its positive action test and negative scope manifest in one evidence lineage. */
+export async function collectScopeReviewEvidence(input: { target: Pick<DeliveryTargetBinding, 'canonicalPath'>;
+  assertionId: string; manifestHash: string; trackedArtifactCount: number; command?: string }): Promise<CapabilityEvidence> {
+  const manifest = collectScopeManifestEvidence(input.assertionId, input.manifestHash, input.trackedArtifactCount)
+  if (!input.command) return manifest
+  const executed = await collectCommandEvidence({ target: input.target, assertionId: input.assertionId,
+    command: input.command })
+  return evidence(input.assertionId, 'filesystem', CAPABILITY_REGISTRY.filesystem.providerId, 'OBSERVED', {
+    manifestHash: input.manifestHash, trackedArtifactCount: input.trackedArtifactCount,
+    commandEvidenceId: executed.id, commandExitCode: executed.facts.exitCode as number,
+    commandStdoutSha256: executed.facts.stdoutSha256 as string,
+    commandStderrSha256: executed.facts.stderrSha256 as string,
+    observedMatch: executed.result === 'OBSERVED' && executed.facts.observedMatch === true,
+  })
 }
 
 function scopedPath(root: string, path: string): string {
@@ -432,14 +499,15 @@ export class TrustedCapabilityRegistry {
 export const trustedCapabilityRegistry = new TrustedCapabilityRegistry()
 
 export function capabilityCoverage(bindings: readonly { blocking: boolean; verificationCapability: ResolvedCapability;
-  stagedVerification?: { readiness: string; provisioning?: { providerId: string } } }[],
+  ownership?: 'OWNER' | 'CONTRIBUTES' | 'AMBIGUOUS';
+  stagedVerification?: { readiness: string; obligation?: { providerId: string } } }[],
   availabilityProbe?: (providerId: string) => ProviderAvailability) {
-  const blocking = bindings.filter((binding) => binding.blocking)
+  const blocking = bindings.filter((binding) => binding.blocking && binding.ownership !== 'CONTRIBUTES')
   const count = (predicate: (binding: typeof blocking[number]) => boolean): number => blocking.filter(predicate).length
   return { total: blocking.length, classified: count((binding) => Boolean(binding.verificationCapability.classificationRule)),
     trustedProvider: count((binding) => binding.verificationCapability.capability === 'SUPPORTED' ||
-      (binding.stagedVerification?.readiness === 'PROVISIONABLE' &&
-        binding.stagedVerification.provisioning?.providerId === binding.verificationCapability.providerId)),
+      (binding.stagedVerification?.readiness === 'PROVISIONABLE_DURING_EXECUTION' &&
+        binding.stagedVerification.obligation?.providerId === binding.verificationCapability.providerId)),
     executableOnCurrentHost: count((binding) => binding.verificationCapability.capability === 'SUPPORTED' &&
       (availabilityProbe?.(binding.verificationCapability.providerId) ?? binding.verificationCapability.availability) === 'AVAILABLE'),
     externalEnvironment: count((binding) => binding.verificationCapability.capability === 'REQUIRES_EXTERNAL_ENVIRONMENT'),

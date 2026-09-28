@@ -1,22 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { lstat, realpath } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import { scopedNodeTestPath } from '../verification-command-policy.js'
 import { type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
-import { collectCommandEvidence, collectFilesystemEvidence, collectHttpEvidence, collectProcessEvidence,
+import { collectCommandEvidence, collectFilesystemEvidence, collectHttpEvidence, collectProcessEvidence, collectScopeReviewEvidence,
   verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
-import { bindProvisionedVerifier, verifyBindingTransition, type BoundVerifier,
-  type VerificationBindingTransition } from './staged-verification.js'
+import { assessCustomerDeliveryCompletion, bindProvisionedVerifier, taskCompletionGate, verifyBindingTransition,
+  type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
 import {
-  admitRuntimePlan, bindDeliveryTarget, compileRuntimePlan, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity,
+  admitRuntimePlan, bindDeliveryTarget, compileRuntimePlan, inspectDeliveryTarget, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity,
   workSessionDefinitionFor, type CompiledRuntimePlan, type DeliveryTargetBinding, type RuntimeAdmission,
   type VerificationCapabilityResolver,
 } from './runtime-plan.js'
-import { inspectRepoCapabilities, type RepoCapabilityFacts } from './repo-capability-inspector.js'
-import { planVerificationBlueprints, type BlueprintPlanningResult, type BlueprintReviewer,
-  type BlueprintRepairer } from './verification-blueprint-planner.js'
+import { generateScopeManifest, inspectAtCommit, readRepositoryReviewMaterial } from './repo-capability-inspector.js'
+import { verifyApprovedBlueprint, type ApprovedVerificationBlueprint } from './verification-blueprint.js'
 
 export interface WorkSessionPlanBinding {
   workSessionId: string
@@ -60,8 +61,13 @@ export class DeliveryEventStore {
 }
 
 export class DeliveryStore {
+  private readonly git = promisify(execFile)
   constructor(readonly directory: string) {}
-  private path(kind: 'binding' | 'plan' | 'session' | 'evidence' | 'transition', id: string): string {
+  private obligationCommitKey(obligationId: string, commit: string): string {
+    return createHash('sha256').update(`novawing-obligation-commit-v2\0${obligationId}\0${commit}`).digest('hex')
+  }
+  private path(kind: 'binding' | 'plan' | 'session' | 'evidence' | 'transition' | 'blueprint' |
+    'local-completion' | 'local-completion-index', id: string): string {
     if (!/^[a-z0-9-]{36,120}$/u.test(id)) throw new Error('Invalid delivery artifact ID.')
     return join(this.directory, `${kind}-${id}.json`)
   }
@@ -129,26 +135,52 @@ export class DeliveryStore {
     return stored.evidence
   }
   async bindProvisionedVerifier(plan: CompiledRuntimePlan, assertionId: string,
-    runtimeTaskId: string, verifier: BoundVerifier): Promise<VerificationBindingTransition> {
+    runtimeTaskId: string, blueprint: ApprovedVerificationBlueprint): Promise<VerificationBindingTransition> {
     verifyRuntimePlanIdentity(plan)
     const obligation = plan.acceptanceBindings.find((binding) => binding.assertionId === assertionId &&
-      binding.runtimeTaskId === runtimeTaskId && binding.blocking)?.stagedVerification.provisioning
-    if (obligation === undefined) throw new Error('No exact blocking provisioning obligation exists.')
-    const transition = bindProvisionedVerifier({ runtimePlanHash: plan.runtimePlanHash, obligation, verifier })
-    if (verifier.family === 'command' || verifier.family === 'process') {
-      const relativePath = verifier.family === 'command' ? scopedNodeTestPath(verifier.command)! : verifier.relativeEntry
+      binding.runtimeTaskId === runtimeTaskId && binding.blocking && binding.ownership === 'OWNER')?.stagedVerification.obligation
+    if (obligation === undefined) throw new Error('No exact blocking verification obligation exists.')
+    const facts = await inspectAtCommit(plan.targetBinding, blueprint.implementationCommit ?? '')
+    const criterion = plan.acceptanceCriteria.find((item) => item.id === obligation.criterionId)!
+    const assertion = criterion.assertions.find((item) => item.id === assertionId)!
+    const verifier = blueprint.plannedVerifier
+    if (!verifier) throw new Error('Approved blueprint has no exact verifier.')
+    const paths = verifier.family === 'command' ? [scopedNodeTestPath(verifier.command)!] :
+      verifier.family === 'scope_review' && verifier.command ? [scopedNodeTestPath(verifier.command)!] :
+      verifier.family === 'process' ? [verifier.relativeEntry] : []
+    const reviewMaterial = await readRepositoryReviewMaterial(plan.targetBinding, facts, paths)
+    verifyApprovedBlueprint(blueprint, { assertion, criterion, runtimeTaskId, target: plan.targetBinding,
+      obligation, implementationCommit: facts.implementationCommit,
+      artifactSources: Object.fromEntries(reviewMaterial.map((item) => [item.path, item.source])),
+      scopeManifestHash: generateScopeManifest(facts).sha256 })
+    if (Object.entries(blueprint.artifactHashes ?? {}).some(([path, hash]) =>
+      (path === 'NOVAWING_SCOPE_MANIFEST' ? generateScopeManifest(facts).sha256 : facts.artifactHashes[path]) !== hash))
+      throw new Error('Blueprint artifact hash changed.')
+    const transition = bindProvisionedVerifier({ runtimePlanHash: plan.runtimePlanHash, obligation,
+      approvedBlueprint: blueprint, implementationCommit: facts.implementationCommit,
+      artifactHashes: blueprint.artifactHashes ?? {} })
+    if (verifier.family === 'command' || verifier.family === 'process' ||
+      (verifier.family === 'scope_review' && verifier.command)) {
+      const relativePath = verifier.family === 'command' ? scopedNodeTestPath(verifier.command)! :
+        verifier.family === 'scope_review' ? scopedNodeTestPath(verifier.command!)! : verifier.relativeEntry
       const path = join(plan.targetBinding.canonicalPath, relativePath)
       const entry = await lstat(path)
       if (!entry.isFile() || entry.isSymbolicLink() || await realpath(path) !== path)
         throw new Error('Exact verifier artifact is not an ordinary repository file.')
     }
-    const path = this.path('transition', obligation.id)
+    const commitKey = this.obligationCommitKey(obligation.obligationId, transition.implementationCommit)
+    const path = this.path('transition', commitKey)
     const existing = await this.read<VerificationBindingTransition>(path)
     if (existing !== undefined) {
-      verifyBindingTransition(existing, obligation, plan.runtimePlanHash)
+      verifyBindingTransition(existing, obligation, plan.runtimePlanHash, blueprint)
       if (existing.id !== transition.id) throw new Error('Provisioning contract already bound to a different verifier.')
       return existing
     }
+    const blueprintPath = this.path('blueprint', commitKey)
+    const previousBlueprint = await this.read<ApprovedVerificationBlueprint>(blueprintPath)
+    if (previousBlueprint && previousBlueprint.blueprintHash !== blueprint.blueprintHash)
+      throw new Error('Verification obligation already has a different approved blueprint.')
+    if (!previousBlueprint) await this.writeOnce(blueprintPath, blueprint)
     try { await this.writeOnce(path, transition) }
     catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
@@ -163,16 +195,28 @@ export class DeliveryStore {
     runtimeTaskId: string): Promise<VerificationBindingTransition | undefined> {
     verifyRuntimePlanIdentity(plan)
     const obligation = plan.acceptanceBindings.find((binding) => binding.assertionId === assertionId &&
-      binding.runtimeTaskId === runtimeTaskId && binding.blocking)?.stagedVerification.provisioning
+      binding.runtimeTaskId === runtimeTaskId && binding.blocking && binding.ownership === 'OWNER')?.stagedVerification.obligation
     if (obligation === undefined) return undefined
-    const transition = await this.read<VerificationBindingTransition>(this.path('transition', obligation.id))
-    if (transition !== undefined) verifyBindingTransition(transition, obligation, plan.runtimePlanHash)
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    if (!current.clean) throw new Error('Implementation repository is not clean.')
+    const commitKey = this.obligationCommitKey(obligation.obligationId, current.baselineCommit)
+    const transition = await this.read<VerificationBindingTransition>(this.path('transition', commitKey))
+    const blueprint = await this.read<ApprovedVerificationBlueprint>(this.path('blueprint', commitKey))
+    if (transition !== undefined) {
+      if (!blueprint) throw new Error('Provisioned blueprint is missing.')
+      verifyBindingTransition(transition, obligation, plan.runtimePlanHash, blueprint)
+    }
     return transition
   }
   async collectProvisionedEvidence(plan: CompiledRuntimePlan, assertionId: string,
     runtimeTaskId: string): Promise<CapabilityEvidence> {
     const transition = await this.getBindingTransition(plan, assertionId, runtimeTaskId)
     if (transition === undefined) throw new Error('Verifier has not been provisioned.')
+    const facts = await inspectAtCommit(plan.targetBinding, transition.implementationCommit)
+    const manifestHash = generateScopeManifest(facts).sha256
+    if (Object.entries(transition.artifactHashes).some(([path, hash]) =>
+      (path === 'NOVAWING_SCOPE_MANIFEST' ? manifestHash : facts.artifactHashes[path]) !== hash))
+      throw new Error('INVALIDATED_ARTIFACT_HASH')
     const verifier = transition.verifier
     let observed: CapabilityEvidence
     switch (verifier.family) {
@@ -187,9 +231,103 @@ export class DeliveryStore {
         timeoutMs: verifier.timeoutMs }); break
       case 'command': observed = await collectCommandEvidence({ target: plan.targetBinding, assertionId,
         command: verifier.command }); break
+      case 'scope_review': observed = await collectScopeReviewEvidence({ target: plan.targetBinding, assertionId,
+        manifestHash, trackedArtifactCount: Object.keys(facts.artifactHashes).length,
+        ...(verifier.command ? { command: verifier.command } : {}) }); break
     }
     await this.saveCapabilityEvidence(plan, observed)
     return observed
+  }
+  private completionKey(plan: CompiledRuntimePlan, taskId: string, commit: string): string {
+    return createHash('sha256').update(`${plan.runtimePlanHash}\0${taskId}\0${commit}`).digest('hex')
+  }
+  private completionIndexKey(plan: CompiledRuntimePlan, taskId: string): string {
+    return createHash('sha256').update(`${plan.runtimePlanHash}\0${taskId}`).digest('hex')
+  }
+  async recordLocalTaskCompletion(plan: CompiledRuntimePlan, taskId: string,
+    transitions: VerificationBindingTransition[], evidence: AssertionCompletionEvidence[]): Promise<void> {
+    verifyRuntimePlanIdentity(plan)
+    const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === taskId && item.blocking && item.ownership === 'OWNER')
+    if (taskCompletionGate(bindings, transitions, evidence) !== 'LOCALLY_VERIFIED')
+      throw new Error('Task completion has no exact local verification proof.')
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    if (!current.clean || transitions.some((item) => item.implementationCommit !== current.baselineCommit))
+      throw new Error('Task completion implementation commit drifted.')
+    for (const transition of transitions) {
+      const stored = await this.getBindingTransition(plan, transition.assertionId, transition.runtimeTaskId)
+      if (stored?.id !== transition.id) throw new Error('Task completion transition was not persisted.')
+      const facts = await inspectAtCommit(plan.targetBinding, transition.implementationCommit)
+      if (Object.entries(transition.artifactHashes).some(([path, hash]) =>
+        (path === 'NOVAWING_SCOPE_MANIFEST' ? generateScopeManifest(facts).sha256 : facts.artifactHashes[path]) !== hash))
+        throw new Error('INVALIDATED_ARTIFACT_HASH')
+    }
+    for (const item of evidence) if (item.reviewerVerdict !== 'DEFERRED') {
+      const observed = await this.getCapabilityEvidence(plan, item.evidenceId)
+      if (!observed || observed.assertionId !== item.assertionId || observed.providerId !== item.providerId ||
+        observed.result !== 'OBSERVED' || observed.facts.observedMatch !== true)
+        throw new Error('Task completion evidence was not persisted or did not match.')
+    }
+    const path = this.path('local-completion', this.completionKey(plan, taskId, current.baselineCommit))
+    const record = { runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit,
+      transitions, evidence }
+    const existing = await this.read<typeof record>(path)
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error('Local completion identity collision.')
+    } else await this.writeOnce(path, record)
+    await this.writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, taskId)),
+      { runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit })
+  }
+  async customerAssessment(planId: string): Promise<ReturnType<typeof assessCustomerDeliveryCompletion>> {
+    const plan = await this.getPlan(planId)
+    if (!plan) throw new Error('Runtime plan does not exist.')
+    const completed = new Set<string>()
+    const transitions: VerificationBindingTransition[] = []
+    const evidence: AssertionCompletionEvidence[] = []
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath).catch(() => undefined)
+    const facts = current?.clean ? await inspectAtCommit(plan.targetBinding, current.baselineCommit).catch(() => undefined) : undefined
+    for (const task of plan.tasks) {
+      if (!facts || !current) break
+      const index = await this.read<{ runtimePlanHash: string; taskId: string; commit: string }>(
+        this.path('local-completion-index', this.completionIndexKey(plan, task.id)))
+      if (!index || index.runtimePlanHash !== plan.runtimePlanHash || index.taskId !== task.id ||
+        !/^[a-f0-9]{40}$/u.test(index.commit)) continue
+      const record = await this.read<{ runtimePlanHash: string; taskId: string; commit: string;
+        transitions: VerificationBindingTransition[]; evidence: AssertionCompletionEvidence[] }>(
+        this.path('local-completion', this.completionKey(plan, task.id, index.commit)))
+      if (!record || record.runtimePlanHash !== plan.runtimePlanHash || record.taskId !== task.id ||
+        record.commit !== index.commit || !Array.isArray(record.transitions) || !Array.isArray(record.evidence)) continue
+      const ancestor = await this.git('git', ['merge-base', '--is-ancestor', record.commit, current.baselineCommit],
+        { cwd: plan.targetBinding.canonicalPath, timeout: 10_000 }).then(() => true, () => false)
+      if (!ancestor) continue
+      const owned = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === task.id && item.blocking && item.ownership === 'OWNER')
+      if (taskCompletionGate(owned, record.transitions, record.evidence) !== 'LOCALLY_VERIFIED') continue
+      let valid = true
+      for (const transition of record.transitions) {
+        const obligation = owned.find((item) => item.assertionId === transition.assertionId)?.stagedVerification.obligation
+        if (!obligation) { valid = false; break }
+        const key = this.obligationCommitKey(obligation.obligationId, transition.implementationCommit)
+        const stored = await this.read<VerificationBindingTransition>(this.path('transition', key))
+        const blueprint = await this.read<ApprovedVerificationBlueprint>(this.path('blueprint', key))
+        try {
+          if (!stored || !blueprint || stored.id !== transition.id) throw new Error('Missing transition lineage.')
+          verifyBindingTransition(stored, obligation, plan.runtimePlanHash, blueprint)
+          if (Object.entries(transition.artifactHashes).some(([path, hash]) =>
+            (path === 'NOVAWING_SCOPE_MANIFEST' ? generateScopeManifest(facts).sha256 : facts.artifactHashes[path]) !== hash))
+            throw new Error('INVALIDATED_ARTIFACT_HASH')
+        } catch { valid = false; break }
+      }
+      if (!valid) continue
+      for (const item of record.evidence) if (item.reviewerVerdict !== 'DEFERRED') {
+        const observed = await this.getCapabilityEvidence(plan, item.evidenceId).catch(() => undefined)
+        if (!observed || observed.assertionId !== item.assertionId || observed.providerId !== item.providerId ||
+          observed.result !== 'OBSERVED' || observed.facts.observedMatch !== true) { valid = false; break }
+      }
+      if (!valid) continue
+      completed.add(task.id)
+      transitions.push(...record.transitions)
+      evidence.push(...record.evidence)
+    }
+    return assessCustomerDeliveryCompletion(plan.tasks, plan.acceptanceBindings, transitions, evidence, completed)
   }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
     try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }
@@ -251,34 +389,6 @@ export class DeliveryService {
       return plan
     } catch (error) {
       await this.events.append('runtime_plan.compile_failed', { snapshotId: snapshot.id, durationMs: Date.now() - started })
-      throw error
-    }
-  }
-
-  /** Preparation only: inspect, plan, review, compile, and persist. Never starts a WorkSession. */
-  async prepareWithBlueprintPlanning(snapshotInput: PlanSnapshot, repositoryRoot: string,
-    reviewer: BlueprintReviewer, repairer?: BlueprintRepairer): Promise<{ plan: CompiledRuntimePlan;
-      planning: BlueprintPlanningResult; facts: RepoCapabilityFacts }> {
-    const snapshot = verifyPlanSnapshot(snapshotInput)
-    const base = await this.prepare(snapshot, repositoryRoot)
-    const facts = await inspectRepoCapabilities(base.targetBinding)
-    const planning = await planVerificationBlueprints({ snapshot, plan: base, target: base.targetBinding,
-      facts, reviewer, ...(repairer ? { repairer } : {}),
-      telemetry: (type, counts) => this.events.append(type, { snapshotId: snapshot.id, ...counts }) })
-    await this.events.append('runtime_plan.compile_started', { snapshotId: snapshot.id })
-    try {
-      const plan = await compileRuntimePlan(snapshot, base.targetBinding, { resolver: this.resolver,
-        runtimePolicyVersion: this.policyVersion, approvedBlueprints: planning.approved,
-        ...await this.options(base.targetBinding) })
-      await this.store.savePlan(plan)
-      const fields = { snapshotId: snapshot.id, runtimePlanHash: plan.runtimePlanHash,
-        taskCount: plan.tasks.length, assertionCount: plan.acceptanceBindings.length,
-        blockerCount: plan.admission.blockers.length }
-      await this.events.append('runtime_plan.compile_completed', fields)
-      await this.events.append(plan.admission.status === 'READY' ? 'runtime_plan.admission_passed' : 'runtime_plan.admission_blocked', fields)
-      return { plan, planning, facts }
-    } catch (error) {
-      await this.events.append('runtime_plan.compile_failed', { snapshotId: snapshot.id })
       throw error
     }
   }

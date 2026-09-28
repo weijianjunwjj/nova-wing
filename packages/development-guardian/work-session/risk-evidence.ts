@@ -1,10 +1,12 @@
 import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
 import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
+import { taskCompletionGate, type CompletionBinding, type VerificationBindingTransition,
+  type AssertionCompletionEvidence, type VerificationReadiness, type VerificationObligation } from '../delivery/staged-verification.js'
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type EvidenceStatus = 'PASSED' | 'FAILED' | 'MISSING' | 'STALE'
 export interface EvidenceV2 { type: string; status: EvidenceStatus; source: string; repositoryIdentity?: string; branch?: string; headSha?: string; workspaceIdentity?: string; timestamp: string; details?: string }
-export interface AssertionReviewVerdict { assertionId: string; verdict: 'PASS' | 'FAIL'; evidence: string;
+export interface AssertionReviewVerdict { assertionId: string; verdict: 'PASS' | 'FAIL' | 'DEFERRED'; evidence: string;
   capabilityEvidence?: { family: string; providerId: string; providerVersion: string; collector: string;
     evidenceIds: readonly string[]; verificationResult: 'OBSERVED' | 'FAILED' } }
 export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string; assertionVerdicts?: readonly AssertionReviewVerdict[] }
@@ -42,15 +44,17 @@ export function assertionCapabilityEvidenceValid(task: Pick<TaskStateV2, 'accept
   const contract = capabilityContracts(task.acceptanceCriteria).get(verdict.assertionId)
   if (!contract) return true
   const trace = verdict.capabilityEvidence
+  const criterion = task.acceptanceCriteria.find((item) => item.startsWith(`AcceptanceAssertion ${verdict.assertionId}: `))
+  if (criterion && /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(criterion))
+    return verdict.verdict === 'DEFERRED' && trace === undefined
   if (!trace || !Array.isArray(trace.evidenceIds) ||
     !trace.evidenceIds.every((id) => typeof id === 'string' && id.length > 0) ||
     trace.family !== contract.family || trace.providerId !== contract.providerId ||
     trace.providerVersion !== contract.providerVersion || trace.collector !== contract.providerId ||
     trace.verificationResult !== 'OBSERVED' || trace.evidenceIds.length === 0 ||
     new Set(trace.evidenceIds).size !== trace.evidenceIds.length) return false
-  const criterion = task.acceptanceCriteria.find((item) => item.startsWith(`AcceptanceAssertion ${verdict.assertionId}: `))
   const requiredCommands = task.completion.bindings.find((binding) => binding.criterion === criterion)?.requiredEvidence ?? []
-  const provisionedCommand = contract.family === 'command' && criterion?.includes(' | VerificationReadiness: PROVISIONABLE | ') === true
+  const provisionedCommand = contract.family === 'command' && criterion?.includes(' | VerificationReadiness: PROVISIONABLE_DURING_EXECUTION | ') === true
   return trace.evidenceIds.every((id) => task.verificationState.results.some((result) =>
     result.status === 'passed' && (contract.family === 'command' && !provisionedCommand
       ? result.stepId === id && result.command !== undefined && requiredCommands.includes(result.command)
@@ -66,7 +70,9 @@ export function unmappedAcceptanceCriteria(task: Pick<TaskStateV2, 'acceptanceCr
   }
   return task.acceptanceCriteria.filter((criterion) => {
     const binding = task.completion.bindings.find((candidate) => candidate.criterion === criterion)
-    return counts.get(criterion) !== 1 || binding === undefined || binding.requiredEvidence.length === 0
+    const deferred = /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(criterion)
+    return counts.get(criterion) !== 1 || binding === undefined ||
+      (deferred ? binding.requiredEvidence.length !== 0 : binding.requiredEvidence.length === 0)
   })
 }
 
@@ -122,7 +128,9 @@ export function reviewSatisfied(task: TaskStateV2): boolean {
   const assertionVerdicts = r?.assertionVerdicts ?? []
   return r?.passed === true && r.blockingFindings.length === 0 && i !== undefined &&
     (assertionIds.length === 0 || (assertionVerdicts.length === assertionIds.length &&
-      assertionIds.every((id) => assertionVerdicts.filter((item) => item.assertionId === id && item.verdict === 'PASS' &&
+      assertionIds.every((id) => assertionVerdicts.filter((item) => item.assertionId === id &&
+        item.verdict === (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`AcceptanceAssertion ${id}: `) &&
+          /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(criterion)) ? 'DEFERRED' : 'PASS') &&
         item.evidence.trim() && assertionCapabilityEvidenceValid(task, item)).length === 1))) &&
     [i.agent, i.provider, i.runtimeIdentity, r.reviewer.agent, r.reviewer.provider, r.reviewer.runtimeIdentity].every(Boolean) &&
     r.implementer.agent === i.agent && r.implementer.provider === i.provider && r.implementer.runtimeIdentity === i.runtimeIdentity &&
@@ -142,8 +150,53 @@ export function completionGate(input: { task: TaskStateV2; evidence: readonly Ev
   // COMPLETE authorizes runtime finalization. Its checkpoint assertion is only
   // discharged by the runtime's own committed SHA before durable Task completion.
   if (!bindings.every((binding) => isRuntimeAcceptanceBinding(binding) ||
+      /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(binding.criterion) ||
       (binding.requiredEvidence.length > 0 && binding.requiredEvidence.every((type) => evidence.some((item) => item.type === type && item.status === 'PASSED'))))) return false
   if ((risk.level === 'CRITICAL' || bindings.some((b) => b.requiresApproval)) && !approvalSatisfied(task)) return false
   if (risk.level === 'HIGH' && !reviewSatisfied(task)) return false
+  if (task.acceptanceCriteria.some((criterion) => criterion.includes(' | VerificationReadiness: '))) {
+    const projected: CompletionBinding[] = []
+    const transitions: VerificationBindingTransition[] = []
+    const assertionEvidence: AssertionCompletionEvidence[] = []
+    for (const criterion of task.acceptanceCriteria) {
+      const match = /^AcceptanceAssertion ([A-Za-z][A-Za-z0-9_-]*): .*? → (.*?) \| Expected evidence: .*? \| VerificationReadiness: ([A-Z_]+) \| CapabilityContract: ([a-z_]+)\/([A-Za-z0-9_-]+)@([A-Za-z0-9_.-]+)$/u.exec(criterion)
+      if (!match) return false
+      const [, assertionId, expectedOutcome, readiness, family, providerId, providerVersion] = match
+      const obligationText = task.constraints.find((item) => item.startsWith(`VerificationObligation ${assertionId}: `))
+      let obligation: VerificationObligation | undefined
+      if (obligationText) {
+        try { obligation = JSON.parse(obligationText.slice(`VerificationObligation ${assertionId}: `.length)) as VerificationObligation }
+        catch { return false }
+      }
+      projected.push({ assertionId: assertionId!, runtimeTaskId: task.identity.taskId, blocking: true,
+        expectedOutcome: expectedOutcome!, stagedVerification: { readiness: readiness as VerificationReadiness,
+          prerequisite: 'COMPLETION', policy: 'runtime-projection', ...(obligation ? { obligation } : {}) },
+        verificationCapability: { providerId: providerId!, providerVersion: providerVersion!, family: family! } as CompletionBinding['verificationCapability'] })
+      const result = task.verificationState.results.find((item) => item.stepId ===
+        `NOVAWING_VERIFICATION_PENDING:${assertionId}:${obligation?.obligationId}`)
+      const verdict = task.completion.review?.assertionVerdicts?.find((item) => item.assertionId === assertionId)
+      if ((readiness === 'EXTERNAL_DEFERRED' || readiness === 'HUMAN_DEFERRED') && verdict?.verdict === 'DEFERRED') {
+        assertionEvidence.push({ assertionId: assertionId!, runtimeTaskId: task.identity.taskId,
+          providerId: providerId!, collector: 'independent-reviewer', verificationStep: 'COMPLETION_DEFERRED',
+          expectedOutcome: expectedOutcome!, evidenceId: `DEFERRED:${assertionId}`,
+          executed: false, observedMatch: false, reviewerVerdict: 'DEFERRED' })
+      }
+      if (result?.details && result.rawOutputRef) {
+        let transition: VerificationBindingTransition
+        try { transition = (JSON.parse(result.details) as { transition: VerificationBindingTransition }).transition }
+        catch { return false }
+        if (!transition) return false
+        transitions.push(transition)
+        assertionEvidence.push({ assertionId: assertionId!, runtimeTaskId: task.identity.taskId,
+          transitionId: transition.id, providerId: providerId!, collector: providerId!,
+          verificationStep: result.stepId!, expectedOutcome: expectedOutcome!, evidenceId: result.rawOutputRef,
+          implementationCommit: transition.implementationCommit, blueprintHash: transition.blueprintHash,
+          artifactHashes: transition.artifactHashes, executed: result.status === 'passed',
+          observedMatch: result.status === 'passed', reviewerVerdict: verdict?.verdict ?? 'PENDING',
+          ...(verdict?.capabilityEvidence?.evidenceIds ? { reviewerEvidenceIds: verdict.capabilityEvidence.evidenceIds } : {}) })
+      }
+    }
+    if (taskCompletionGate(projected, transitions, assertionEvidence) !== 'LOCALLY_VERIFIED') return false
+  }
   return true
 }

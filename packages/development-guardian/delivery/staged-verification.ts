@@ -1,75 +1,172 @@
 import { createHash } from 'node:crypto'
 import { canonicalSerialize } from '../planning/freeze.js'
 import { assessVerificationCommand, scopedNodeTestPath } from '../verification-command-policy.js'
-import { CAPABILITY_REGISTRY, type CapabilityFamily, type ResolvedCapability } from './capability-layer.js'
+import type { AcceptanceAssertion, AcceptanceCriterion } from '../planning/model.js'
+import type { DeliveryTargetBinding } from './runtime-plan.js'
+import { assertionContractHash, type ApprovedVerificationBlueprint } from './verification-blueprint.js'
+import { CAPABILITY_REGISTRY, claimExternalResidual, claimRequirements, claimRequiresExactComparison, isDeliveryScopeClaim, type CapabilityFamily, type ResolvedCapability } from './capability-layer.js'
 
-export const ADMISSION_MODEL_VERSION = 1
-export type VerificationReadiness = 'BOUND_EXECUTABLE' | 'PROVISIONABLE' | 'EXTERNAL_DEFERRED' | 'HUMAN_DEFERRED' | 'UNRESOLVED'
+export const ADMISSION_MODEL_VERSION = 2
+export type VerificationReadiness = 'BOUND_EXECUTABLE' | 'PROVISIONABLE_DURING_EXECUTION' | 'EXTERNAL_DEFERRED' | 'HUMAN_DEFERRED' | 'UNRESOLVED'
 export type VerificationPrerequisite = 'EXECUTION' | 'COMPLETION'
 
-/** Immutable obligation. Concrete verifier inputs are a separate, audited transition. */
-export interface VerificationProvisioningBinding {
-  id: string
+export type VerificationStrategy = 'assertion_scoped_repository_test' | 'loopback_http_get_predicate' |
+  'scoped_artifact_predicate' | 'owned_process_predicate' | 'delivery_scope_review'
+export type PredicateClass = 'exact_value' | 'exact_set' | 'state_transition' | 'rejection' |
+  'presence' | 'absence_in_scope' | 'lifecycle'
+/** All normative fields are hashed; only concrete implementation inputs may be bound later. */
+export interface VerificationObligation {
+  schemaVersion: 2
+  obligationId: string
   assertionId: string
-  runtimeTaskId: string
+  sourceAssertionHash: string
+  criterionId: string
+  criterionLevel: AcceptanceCriterion['level']
+  canonicalOwnerTaskId: string
+  coveringTaskIds: string[]
   capabilityFamily: CapabilityFamily
   providerId: string
   providerVersion: string
-  intendedEvidenceType: string
-  strategy: 'assertion_scoped_test' | 'loopback_http_predicate' | 'scoped_artifact_predicate' | 'owned_process_predicate'
-  strategyVersion: '1'
-  requiredInputs: readonly string[]
-  /** HTTP port 0 means the exact loopback port is supplied by the owned runtime at binding time. */
-  plannedVerifier: BoundVerifier
-  verifierLifecycle: 'PROVISION_THEN_BIND_AND_EXECUTE'
-  completionRequirement: 'EXACT_EVIDENCE_AND_INDEPENDENT_REVIEW'
+  strategy: VerificationStrategy
+  predicateClass: PredicateClass
+  expectedOutcome: string
+  expectedEvidence: string
+  requirements: ReturnType<typeof claimRequirements>
+  externalResidual: boolean
+  allowedBindingInputs: string[]
+  forbiddenSubstitutions: string[]
+  bindingDeadline: 'BEFORE_OWNER_TASK_COMPLETION'
+  targetConstraints: { gitRepositoryIdentity: string; baselineCommit: string }
+  prerequisite: VerificationPrerequisite
 }
+export type VerificationProvisioningBinding = VerificationObligation
 
 export interface StagedVerificationContract {
   readiness: VerificationReadiness
   prerequisite: VerificationPrerequisite
   policy: string
-  provisioning?: VerificationProvisioningBinding
+  obligation?: VerificationObligation
 }
 
-const strategies: Partial<Record<CapabilityFamily, { name: VerificationProvisioningBinding['strategy']; inputs: readonly string[] }>> = {
-  command: { name: 'assertion_scoped_test', inputs: ['repositoryRelativeTestFile', 'exactAllowedCommand', 'expectedAssertionOutcome'] },
-  http_api: { name: 'loopback_http_predicate', inputs: ['method=GET', 'loopbackPort', 'route', 'requestFixture=none', 'expectedStatus', 'expectedBodyPredicate', 'timeoutMs'] },
-  filesystem: { name: 'scoped_artifact_predicate', inputs: ['repositoryRelativePath', 'artifactMatcher', 'boundedPredicate', 'expectedObservableOutcome'] },
-  process: { name: 'owned_process_predicate', inputs: ['projectOwnedEntry', 'restrictedStartPolicy', 'expectedLifecycle', 'expectedExitOrListen', 'timeoutMs'] },
+const strategies: Partial<Record<CapabilityFamily, { name: VerificationStrategy; inputs: string[] }>> = {
+  command: { name: 'assertion_scoped_repository_test', inputs: ['testFilePath'] },
+  http_api: { name: 'loopback_http_get_predicate', inputs: ['port', 'route', 'jsonPointer'] },
+  filesystem: { name: 'scoped_artifact_predicate', inputs: ['artifactPath'] },
+  process: { name: 'owned_process_predicate', inputs: ['processEntry'] },
 }
 
-export function stagedVerificationContract(input: { assertionId: string; runtimeTaskId: string;
+function frozenRequirementsForScope(assertion: AcceptanceAssertion): boolean {
+  return claimRequirements(assertion).requiresMutation
+}
+
+function obligationDigest(content: Omit<VerificationObligation, 'obligationId'>): string {
+  return createHash('sha256').update('novawing-verification-obligation-v2\0')
+    .update(canonicalSerialize(content)).digest('hex')
+}
+
+export function validateVerificationObligation(obligation: VerificationObligation,
+  input: { assertion: AcceptanceAssertion; criterion: AcceptanceCriterion; ownerTaskId: string;
+    coveringTaskIds: string[]; target: DeliveryTargetBinding; providerAvailability?: (id: string) => string;
+    prerequisite?: VerificationPrerequisite }): string[] {
+  const issues: string[] = []
+  if (!obligation || !obligation.requirements || !Array.isArray(obligation.coveringTaskIds) ||
+    !Array.isArray(obligation.allowedBindingInputs) || !Array.isArray(obligation.forbiddenSubstitutions) ||
+    !obligation.targetConstraints) return ['OBLIGATION_IDENTITY_MISMATCH', 'FLAGS_INCONSISTENT']
+  const { obligationId: _id, ...content } = obligation
+  const expectedStrategy = isDeliveryScopeClaim(input.assertion, input.criterion)
+    ? { name: 'delivery_scope_review' as const,
+        inputs: frozenRequirementsForScope(input.assertion) ? ['scopeManifestHash', 'testFilePath'] : ['scopeManifestHash'] } :
+      strategies[obligation.capabilityFamily]
+  if (!expectedStrategy || obligation.strategy !== expectedStrategy.name ||
+    canonicalSerialize(obligation.allowedBindingInputs) !== canonicalSerialize(expectedStrategy.inputs))
+    issues.push('OBLIGATION_STRATEGY_MISSING')
+  const frozenRequirements = claimRequirements(input.assertion)
+  const claim = `${input.assertion.observableBehavior} ${input.assertion.expectedOutcome} ${input.assertion.expectedEvidence}`
+  const expectedPredicate: PredicateClass = expectedStrategy?.name === 'delivery_scope_review' ? 'absence_in_scope' :
+    /(?:拒绝|禁止|不能|失败|rejected|denied|forbidden)/iu.test(claim) ? 'rejection' :
+    frozenRequirements.requiresMutation ? 'state_transition' : claimRequiresExactComparison(input.assertion) ? 'exact_value' :
+    obligation.capabilityFamily === 'process' ? 'lifecycle' : 'presence'
+  if (obligation.predicateClass !== expectedPredicate) issues.push('PREDICATE_CLASS_MISSING')
+  if (obligation.expectedOutcome !== input.assertion.expectedOutcome || obligation.expectedEvidence !== input.assertion.expectedEvidence ||
+    obligation.sourceAssertionHash !== assertionContractHash(input.assertion)) issues.push('EXPECTED_NOT_FROZEN')
+  if (canonicalSerialize(obligation.requirements) !== canonicalSerialize(frozenRequirements))
+    issues.push('FLAGS_INCONSISTENT')
+  const externalResidual = claimExternalResidual(input.assertion, input.criterion)
+  if (obligation.externalResidual !== externalResidual) issues.push('FLAGS_INCONSISTENT')
+  if (frozenRequirements.exactNumbers.some((number) => !obligation.requirements.exactNumbers?.includes(number)))
+    issues.push('EXACT_NUMBERS_MISSING')
+  if (obligation.canonicalOwnerTaskId !== input.ownerTaskId ||
+    canonicalSerialize(obligation.coveringTaskIds) !== canonicalSerialize([...input.coveringTaskIds].sort()))
+    issues.push('OWNER_AMBIGUOUS')
+  const provider = CAPABILITY_REGISTRY[obligation.capabilityFamily]
+  if (!provider || provider.trustLevel !== 'TRUSTED_LOCAL' || provider.availability !== 'AVAILABLE' ||
+    input.providerAvailability?.(obligation.providerId) === 'UNAVAILABLE' ||
+    provider.providerId !== obligation.providerId || provider.providerVersion !== obligation.providerVersion)
+    issues.push('PROVIDER_UNAVAILABLE')
+  if (!obligation.forbiddenSubstitutions?.includes('EXIT_CODE_ONLY') ||
+    !obligation.forbiddenSubstitutions.includes('HTTP_STATUS_ONLY') ||
+    !obligation.forbiddenSubstitutions.includes('API_FOR_UI') ||
+    (obligation.strategy === 'delivery_scope_review' && !obligation.forbiddenSubstitutions.includes('FILE_MISSING_FOR_ABSENCE')))
+    issues.push('FORBIDDEN_SUBSTITUTION_MISSING')
+  if (obligation.obligationId !== obligationDigest(content) || obligation.schemaVersion !== 2 ||
+    obligation.assertionId !== input.assertion.id || obligation.criterionId !== input.criterion.id ||
+    obligation.criterionLevel !== input.criterion.level ||
+    obligation.targetConstraints.gitRepositoryIdentity !== input.target.gitRepositoryIdentity ||
+    obligation.targetConstraints.baselineCommit !== input.target.baselineCommit ||
+    obligation.bindingDeadline !== 'BEFORE_OWNER_TASK_COMPLETION' ||
+    (input.prerequisite !== undefined && obligation.prerequisite !== input.prerequisite)) issues.push('OBLIGATION_IDENTITY_MISMATCH')
+  return issues
+}
+
+export function stagedVerificationContract(input: { assertion: AcceptanceAssertion; criterion: AcceptanceCriterion;
+  ownerTaskId: string; coveringTaskIds: string[]; target: DeliveryTargetBinding;
   capability: ResolvedCapability; prerequisite?: VerificationPrerequisite }): StagedVerificationContract {
-  const { capability, assertionId, runtimeTaskId } = input
+  const { capability, assertion, criterion } = input
   const prerequisite = input.prerequisite ?? 'COMPLETION'
-  if (capability.capability === 'SUPPORTED') return { readiness: 'BOUND_EXECUTABLE', prerequisite,
-    policy: 'exact-trusted-verifier-v1' }
   if (capability.capability === 'REQUIRES_EXTERNAL_ENVIRONMENT') return { readiness: 'EXTERNAL_DEFERRED',
     prerequisite, policy: 'external-evidence-required-v1' }
   if (capability.capability === 'REQUIRES_HUMAN') return { readiness: 'HUMAN_DEFERRED', prerequisite,
     policy: 'identified-human-decision-required-v1' }
   const family = capability.family
-  const strategy = strategies[family]
+  const strategy = isDeliveryScopeClaim(assertion, criterion)
+    ? { name: 'delivery_scope_review' as const,
+        inputs: frozenRequirementsForScope(assertion) ? ['scopeManifestHash', 'testFilePath'] : ['scopeManifestHash'] } :
+      strategies[family]
   const provider = CAPABILITY_REGISTRY[family]
-  if (!strategy || capability.provisioningVerifier === undefined || provider.trustLevel !== 'TRUSTED_LOCAL' ||
+  if (!strategy || provider.trustLevel !== 'TRUSTED_LOCAL' ||
     capability.providerId !== provider.providerId || capability.providerVersion !== provider.providerVersion) {
-    return { readiness: 'UNRESOLVED', prerequisite, policy: 'no-exact-trusted-provisioning-verifier-v1' }
+    return { readiness: 'UNRESOLVED', prerequisite, policy: 'no-trusted-obligation-strategy-v2' }
   }
-  const content = { assertionId, runtimeTaskId, capabilityFamily: family, providerId: provider.providerId,
-    providerVersion: provider.providerVersion, intendedEvidenceType: provider.evidenceType,
-    strategy: strategy.name, strategyVersion: '1' as const, requiredInputs: strategy.inputs,
-    plannedVerifier: capability.provisioningVerifier,
-    verifierLifecycle: 'PROVISION_THEN_BIND_AND_EXECUTE' as const,
-    completionRequirement: 'EXACT_EVIDENCE_AND_INDEPENDENT_REVIEW' as const }
-  const id = createHash('sha256').update('novawing-verification-obligation-v1\0')
-    .update(canonicalSerialize(content)).digest('hex')
-  const checkVerifier = capability.provisioningVerifier.family === 'http_api' && capability.provisioningVerifier.port === 0
-    ? { ...capability.provisioningVerifier, port: 1 } : capability.provisioningVerifier
-  try { bindProvisionedVerifier({ runtimePlanHash: '0'.repeat(64), obligation: { id, ...content }, verifier: checkVerifier }) }
-  catch { return { readiness: 'UNRESOLVED', prerequisite, policy: 'invalid-exact-provisioning-verifier-v1' } }
-  return { readiness: 'PROVISIONABLE', prerequisite, policy: 'trusted-provisioning-obligation-v1',
-    provisioning: { id, ...content } }
+  const requirements = claimRequirements(assertion)
+  if (strategy.name === 'loopback_http_get_predicate' &&
+    (requirements.requiresMutation || requirements.requiresReread || requirements.requiresCleanup))
+    return { readiness: 'UNRESOLVED', prerequisite, policy: 'http-get-cannot-prove-mutation-v2' }
+  const claim = `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`
+  const predicateClass: PredicateClass = strategy.name === 'delivery_scope_review' ? 'absence_in_scope' :
+    /(?:拒绝|禁止|不能|失败|rejected|denied|forbidden)/iu.test(claim) ? 'rejection' :
+    requirements.requiresMutation ? 'state_transition' : claimRequiresExactComparison(assertion) ? 'exact_value' :
+    family === 'process' ? 'lifecycle' : 'presence'
+  const content: Omit<VerificationObligation, 'obligationId'> = {
+    schemaVersion: 2, assertionId: assertion.id, sourceAssertionHash: assertionContractHash(assertion),
+    criterionId: criterion.id, criterionLevel: criterion.level,
+    canonicalOwnerTaskId: input.ownerTaskId, coveringTaskIds: [...input.coveringTaskIds].sort(),
+    capabilityFamily: family, providerId: provider.providerId, providerVersion: provider.providerVersion,
+    strategy: strategy.name, predicateClass, expectedOutcome: assertion.expectedOutcome,
+    expectedEvidence: assertion.expectedEvidence, requirements,
+    externalResidual: claimExternalResidual(assertion, criterion),
+    allowedBindingInputs: strategy.inputs,
+    forbiddenSubstitutions: ['HTTP_STATUS_ONLY', 'EXIT_CODE_ONLY', 'API_FOR_UI',
+      ...(strategy.name === 'delivery_scope_review' ? ['FILE_MISSING_FOR_ABSENCE'] : [])],
+    bindingDeadline: 'BEFORE_OWNER_TASK_COMPLETION',
+    targetConstraints: { gitRepositoryIdentity: input.target.gitRepositoryIdentity,
+      baselineCommit: input.target.baselineCommit }, prerequisite,
+  }
+  const obligation = { ...content, obligationId: obligationDigest(content) }
+  const issues = validateVerificationObligation(obligation, { assertion, criterion, ownerTaskId: input.ownerTaskId,
+    coveringTaskIds: input.coveringTaskIds, target: input.target, prerequisite })
+  if (issues.length) return { readiness: 'UNRESOLVED', prerequisite, policy: issues.join(',') }
+  return { readiness: 'PROVISIONABLE_DURING_EXECUTION', prerequisite,
+    policy: 'immutable-verification-obligation-v2', obligation }
 }
 
 export type BoundVerifier =
@@ -80,6 +177,8 @@ export type BoundVerifier =
       expectation: 'file_exists' | 'file_missing' | 'directory_exists' | 'contains'; contains?: string }
   | { family: 'process'; assertionId: string; providerId: string; providerVersion: string; relativeEntry: string;
       expectedExitCode: number; timeoutMs: number }
+  | { family: 'scope_review'; assertionId: string; providerId: string; providerVersion: string;
+      manifestHash: string; command?: string }
 
 export interface VerificationBindingTransition {
   id: string
@@ -87,7 +186,10 @@ export interface VerificationBindingTransition {
   obligationId: string
   assertionId: string
   runtimeTaskId: string
-  from: 'PROVISIONABLE'
+  implementationCommit: string
+  blueprintHash: string
+  artifactHashes: Record<string, string>
+  from: 'PROVISIONABLE_DURING_EXECUTION'
   to: 'BOUND_EXECUTABLE'
   verifier: BoundVerifier
   recordedAt: string
@@ -99,15 +201,22 @@ function safeRelative(path: string): boolean {
 }
 
 export function bindProvisionedVerifier(input: { runtimePlanHash: string; obligation: VerificationProvisioningBinding;
-  verifier: BoundVerifier }): VerificationBindingTransition {
-  const { obligation, verifier } = input
-  const planned = obligation.plannedVerifier.family === 'http_api' && obligation.plannedVerifier.port === 0 &&
-    verifier.family === 'http_api' ? { ...obligation.plannedVerifier, port: verifier.port } : obligation.plannedVerifier
+  approvedBlueprint: ApprovedVerificationBlueprint; implementationCommit: string;
+  artifactHashes: Record<string, string>; verifier?: BoundVerifier }): VerificationBindingTransition {
+  const { obligation, approvedBlueprint } = input
+  const verifier = input.verifier ?? approvedBlueprint.plannedVerifier
+  if (!verifier) throw new Error('Approved blueprint has no exact verifier.')
   if (!/^[a-f0-9]{64}$/u.test(input.runtimePlanHash) || verifier.assertionId !== obligation.assertionId ||
-    verifier.family !== obligation.capabilityFamily || verifier.providerId !== obligation.providerId ||
+    (verifier.family !== obligation.capabilityFamily && !(obligation.strategy === 'delivery_scope_review' && verifier.family === 'scope_review')) ||
+    verifier.providerId !== obligation.providerId ||
     verifier.providerVersion !== obligation.providerVersion ||
-    canonicalSerialize(verifier) !== canonicalSerialize(planned))
-    throw new Error('Verifier does not match the exact trusted obligation.')
+    canonicalSerialize(verifier) !== canonicalSerialize(approvedBlueprint.plannedVerifier) ||
+    approvedBlueprint.obligationId !== obligation.obligationId ||
+    approvedBlueprint.implementationCommit !== input.implementationCommit ||
+    canonicalSerialize(approvedBlueprint.artifactHashes) !== canonicalSerialize(input.artifactHashes) ||
+    !/^[a-f0-9]{40}$/u.test(input.implementationCommit) ||
+    Object.values(input.artifactHashes).some((hash) => !/^[a-f0-9]{64}$/u.test(hash)))
+    throw new Error('Verifier does not match the approved obligation blueprint and commit.')
   if (verifier.family === 'command' && (scopedNodeTestPath(verifier.command) === undefined ||
     assessVerificationCommand(verifier.command).status !== 'ALLOWED')) throw new Error('Unsafe assertion verifier command.')
   if (verifier.family === 'http_api' && (verifier.method !== 'GET' || verifier.requestFixture !== 'NONE' ||
@@ -123,16 +232,26 @@ export function bindProvisionedVerifier(input: { runtimePlanHash: string; obliga
   if (verifier.family === 'process' && (!safeRelative(verifier.relativeEntry) ||
     !Number.isInteger(verifier.expectedExitCode) || verifier.expectedExitCode < 0 || verifier.expectedExitCode > 255 ||
     verifier.timeoutMs < 1 || verifier.timeoutMs > 10_000)) throw new Error('Unsafe process predicate.')
-  const content = { runtimePlanHash: input.runtimePlanHash, obligationId: obligation.id,
-    assertionId: obligation.assertionId, runtimeTaskId: obligation.runtimeTaskId,
-    from: 'PROVISIONABLE' as const, to: 'BOUND_EXECUTABLE' as const, verifier }
-  const id = createHash('sha256').update('novawing-verifier-transition-v1\0').update(canonicalSerialize(content)).digest('hex')
+  if (verifier.family === 'scope_review' && (!/^[a-f0-9]{64}$/u.test(verifier.manifestHash) ||
+    verifier.manifestHash !== input.artifactHashes['NOVAWING_SCOPE_MANIFEST'] ||
+    Boolean(verifier.command) !== obligation.requirements.requiresMutation ||
+    (verifier.command !== undefined && (scopedNodeTestPath(verifier.command) === undefined ||
+      assessVerificationCommand(verifier.command).status !== 'ALLOWED' ||
+      !input.artifactHashes[scopedNodeTestPath(verifier.command)!]))))
+    throw new Error('Invalid or incomplete scope review verifier.')
+  const content = { runtimePlanHash: input.runtimePlanHash, obligationId: obligation.obligationId,
+    assertionId: obligation.assertionId, runtimeTaskId: obligation.canonicalOwnerTaskId,
+    implementationCommit: input.implementationCommit, blueprintHash: approvedBlueprint.blueprintHash,
+    artifactHashes: input.artifactHashes,
+    from: 'PROVISIONABLE_DURING_EXECUTION' as const, to: 'BOUND_EXECUTABLE' as const, verifier }
+  const id = createHash('sha256').update('novawing-verifier-transition-v2\0').update(canonicalSerialize(content)).digest('hex')
   return { id, ...content, recordedAt: new Date().toISOString() }
 }
 
 export function verifyBindingTransition(value: VerificationBindingTransition,
-  obligation: VerificationProvisioningBinding, runtimePlanHash: string): void {
-  const expected = bindProvisionedVerifier({ runtimePlanHash, obligation, verifier: value.verifier })
+  obligation: VerificationProvisioningBinding, runtimePlanHash: string, blueprint: ApprovedVerificationBlueprint): void {
+  const expected = bindProvisionedVerifier({ runtimePlanHash, obligation, approvedBlueprint: blueprint,
+    implementationCommit: value.implementationCommit, artifactHashes: value.artifactHashes, verifier: value.verifier })
   if (value.id !== expected.id || value.obligationId !== expected.obligationId ||
     value.runtimeTaskId !== expected.runtimeTaskId || value.from !== expected.from || value.to !== expected.to ||
     !Number.isFinite(Date.parse(value.recordedAt))) throw new Error('Provisioning transition integrity mismatch.')
@@ -147,39 +266,67 @@ export interface AssertionCompletionEvidence {
   verificationStep: string
   expectedOutcome: string
   evidenceId: string
+  implementationCommit?: string
+  blueprintHash?: string
+  artifactHashes?: Record<string, string>
+  reviewerEvidenceIds?: readonly string[]
   executed: boolean
   observedMatch: boolean
-  reviewerVerdict: 'PASS' | 'FAIL' | 'PENDING'
+  reviewerVerdict: 'PASS' | 'FAIL' | 'PENDING' | 'DEFERRED'
 }
 
-export function taskCompletionGate(bindings: readonly { assertionId: string; runtimeTaskId: string; blocking: boolean;
-  expectedOutcome: string; stagedVerification: StagedVerificationContract; verificationCapability: ResolvedCapability }[],
-  transitions: readonly VerificationBindingTransition[], evidence: readonly AssertionCompletionEvidence[]): boolean {
-  const blocking = bindings.filter((binding) => binding.blocking)
-  return blocking.length > 0 && blocking.every((binding) => {
+export interface CompletionBinding { assertionId: string; runtimeTaskId: string; blocking: boolean;
+  ownership?: 'OWNER' | 'CONTRIBUTES' | 'AMBIGUOUS'; expectedOutcome: string;
+  stagedVerification: StagedVerificationContract; verificationCapability: ResolvedCapability }
+
+export function taskCompletionGate(bindings: readonly CompletionBinding[],
+  transitions: readonly VerificationBindingTransition[], evidence: readonly AssertionCompletionEvidence[]): 'LOCALLY_VERIFIED' | 'BLOCKED' {
+  const blocking = bindings.filter((binding) => binding.blocking && binding.ownership !== 'CONTRIBUTES')
+  const passed = blocking.length > 0 && blocking.every((binding) => {
     const stage = binding.stagedVerification
-    const transition = stage.readiness === 'PROVISIONABLE'
-      ? transitions.find((item) => item.obligationId === stage.provisioning?.id && item.assertionId === binding.assertionId &&
+    if (stage.readiness === 'EXTERNAL_DEFERRED' || stage.readiness === 'HUMAN_DEFERRED')
+      return stage.prerequisite === 'COMPLETION' && evidence.some((item) => item.assertionId === binding.assertionId &&
+        item.runtimeTaskId === binding.runtimeTaskId && item.reviewerVerdict === 'DEFERRED') &&
+        !evidence.some((item) => item.assertionId === binding.assertionId && item.reviewerVerdict === 'PASS')
+    const transition = stage.readiness === 'PROVISIONABLE_DURING_EXECUTION'
+      ? transitions.find((item) => item.obligationId === stage.obligation?.obligationId && item.assertionId === binding.assertionId &&
         item.runtimeTaskId === binding.runtimeTaskId && item.to === 'BOUND_EXECUTABLE') : undefined
     if (stage.readiness !== 'BOUND_EXECUTABLE' && transition === undefined) return false
     return evidence.some((item) => item.assertionId === binding.assertionId && item.runtimeTaskId === binding.runtimeTaskId &&
       item.transitionId === transition?.id && item.providerId === binding.verificationCapability.providerId &&
       item.collector.length > 0 && item.verificationStep.length > 0 && item.evidenceId.length > 0 &&
-      item.expectedOutcome === binding.expectedOutcome && item.executed && item.observedMatch && item.reviewerVerdict === 'PASS')
+      item.expectedOutcome === binding.expectedOutcome && item.executed && item.observedMatch && item.reviewerVerdict === 'PASS' &&
+      item.implementationCommit === transition?.implementationCommit && item.blueprintHash === transition?.blueprintHash &&
+      canonicalSerialize(item.artifactHashes ?? {}) === canonicalSerialize(transition?.artifactHashes ?? {}) &&
+      item.reviewerEvidenceIds?.includes(item.evidenceId))
   })
+  return passed ? 'LOCALLY_VERIFIED' : 'BLOCKED'
 }
 
+export interface ExternalAcceptanceRecord { assertionId: string; kind: 'EXTERNAL' | 'HUMAN';
+  evidenceIds: readonly string[]; reviewerVerdict: 'PASS'; reviewerIdentity: string; acceptedAt: string }
+
 export function customerDeliveryCompletionGate(tasks: readonly { id: string }[],
-  bindings: readonly Parameters<typeof taskCompletionGate>[0][number][], transitions: readonly VerificationBindingTransition[],
-  evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>): boolean {
+  bindings: readonly CompletionBinding[], transitions: readonly VerificationBindingTransition[],
+  evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>,
+  externalAccepted: readonly ExternalAcceptanceRecord[] = []): boolean {
+  const unique = [...new Map(bindings.filter((binding) => binding.blocking && binding.ownership !== 'CONTRIBUTES')
+    .map((binding) => [binding.assertionId, binding])).values()]
+  const accepted = (id: string, kind: ExternalAcceptanceRecord['kind']): boolean =>
+    externalAccepted.some((item) => item.assertionId === id && item.kind === kind && item.reviewerVerdict === 'PASS' &&
+      item.reviewerIdentity.trim().length > 0 && item.evidenceIds.length > 0 && Number.isFinite(Date.parse(item.acceptedAt)))
   return tasks.length > 0 && bindings.some((binding) => binding.blocking) && tasks.every((task) => completedTaskIds.has(task.id) &&
-    taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence)) &&
-    bindings.filter((binding) => binding.blocking).every((binding) => tasks.some((task) => task.id === binding.runtimeTaskId))
+    taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence) === 'LOCALLY_VERIFIED') &&
+    unique.every((binding) => {
+      if (binding.stagedVerification.readiness === 'EXTERNAL_DEFERRED') return accepted(binding.assertionId, 'EXTERNAL')
+      if (binding.stagedVerification.readiness === 'HUMAN_DEFERRED') return accepted(binding.assertionId, 'HUMAN')
+      return !binding.stagedVerification.obligation?.externalResidual || accepted(binding.assertionId, 'EXTERNAL')
+    })
 }
 
 export interface CustomerDeliveryCompletionAssessment {
   gate: 'CUSTOMER_DELIVERY_COMPLETION_GATE'
-  status: 'CUSTOMER_DELIVERY_COMPLETED' | 'BLOCKED'
+  status: 'CUSTOMER_DELIVERY_COMPLETED' | 'CUSTOMER_DELIVERY_BLOCKED'
   completedRuntimeTaskIds: readonly string[]
   blockedRuntimeTaskIds: readonly string[]
   blockingAssertionIds: readonly string[]
@@ -187,13 +334,15 @@ export interface CustomerDeliveryCompletionAssessment {
 
 /** Read model: implementation progress is never itself a customer delivery verdict. */
 export function assessCustomerDeliveryCompletion(tasks: readonly { id: string }[],
-  bindings: readonly Parameters<typeof taskCompletionGate>[0][number][], transitions: readonly VerificationBindingTransition[],
-  evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>): CustomerDeliveryCompletionAssessment {
+  bindings: readonly CompletionBinding[], transitions: readonly VerificationBindingTransition[],
+  evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>,
+  externalAccepted: readonly ExternalAcceptanceRecord[] = []): CustomerDeliveryCompletionAssessment {
   const blockedRuntimeTaskIds = tasks.filter((task) => !completedTaskIds.has(task.id) ||
-    !taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence)).map((task) => task.id)
+    taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence) !== 'LOCALLY_VERIFIED').map((task) => task.id)
   return { gate: 'CUSTOMER_DELIVERY_COMPLETION_GATE',
-    status: customerDeliveryCompletionGate(tasks, bindings, transitions, evidence, completedTaskIds)
-      ? 'CUSTOMER_DELIVERY_COMPLETED' : 'BLOCKED',
+    status: customerDeliveryCompletionGate(tasks, bindings, transitions, evidence, completedTaskIds, externalAccepted)
+      ? 'CUSTOMER_DELIVERY_COMPLETED' : 'CUSTOMER_DELIVERY_BLOCKED',
     completedRuntimeTaskIds: tasks.filter((task) => completedTaskIds.has(task.id)).map((task) => task.id),
-    blockedRuntimeTaskIds, blockingAssertionIds: bindings.filter((binding) => binding.blocking).map((binding) => binding.assertionId) }
+    blockedRuntimeTaskIds, blockingAssertionIds: [...new Set(bindings.filter((binding) => binding.blocking)
+      .map((binding) => binding.assertionId))] }
 }
