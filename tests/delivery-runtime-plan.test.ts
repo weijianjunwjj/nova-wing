@@ -11,7 +11,8 @@ import { createServer } from 'node:http'
 import { symlink } from 'node:fs/promises'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
 import { canonicalPlanContent, createPlanSnapshot, planContentHash, type PlanSnapshot } from '../packages/development-guardian/planning/freeze.js'
-import { DeliveryEventStore, DeliveryService, DeliveryStore, type DeliveryRuntimeAdapter } from '../packages/development-guardian/delivery/service.js'
+import { DeliveryEventStore, DeliveryService, DeliveryStore, type DeliveryRuntimeAdapter,
+  type WorkSessionPlanBinding } from '../packages/development-guardian/delivery/service.js'
 import { bindDeliveryTarget, compileRuntimePlan, conservativeCapabilityResolver, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity, workSessionDefinitionFor,
   type CompiledRuntimePlan, type VerificationCapabilityResolver } from '../packages/development-guardian/delivery/runtime-plan.js'
 import { CAPABILITY_REGISTRY, classifyCapability, collectFilesystemEvidence, collectGitEvidence, collectHttpEvidence,
@@ -19,6 +20,7 @@ import { CAPABILITY_REGISTRY, classifyCapability, collectFilesystemEvidence, col
   resolveCapability, verifyCapabilityEvidence } from '../packages/development-guardian/delivery/capability-layer.js'
 import { ADMISSION_MODEL_VERSION, customerDeliveryCompletionGate, taskCompletionGate } from '../packages/development-guardian/delivery/staged-verification.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
+import { validateTrustedWorkSessionConfig } from '../packages/development-guardian/work-session/production.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { assertionCapabilityEvidenceValid, type ReviewEvidence } from '../packages/development-guardian/work-session/risk-evidence.js'
 import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
@@ -628,6 +630,7 @@ test('fixture delivery creates one exact WorkSession, persists binding and rejec
   const store = new DeliveryStore(join(root, 'delivery'))
   const events = new DeliveryEventStore(join(root, 'delivery', 'events.jsonl'))
   const definitions: string[] = []
+  const runner = new FakeTaskRunner({ T1: { type: 'COMPLETED' } })
   const adapter: DeliveryRuntimeAdapter = {
     configured: async () => true, executorAvailable: async () => true, reviewerAvailable: async () => true,
     createAndStart: async (definition, binding) => {
@@ -636,7 +639,7 @@ test('fixture delivery creates one exact WorkSession, persists binding and rejec
       assert.equal(definition.id, binding.workSessionId)
       definitions.push(definition.id)
       const runtime = new WorkSessionRuntime({ definition: { ...definition, controlPlane: 'v1' },
-        taskRunner: new FakeTaskRunner({ T1: { type: 'COMPLETED' } }),
+        taskRunner: runner,
         storageUrl: pathToFileURL(join(root, 'fixture-runtime.db')).href })
       try { await runtime.start() } finally { await runtime.close() }
     },
@@ -659,6 +662,8 @@ test('fixture delivery creates one exact WorkSession, persists binding and rejec
   assert.equal(started.runtimePlanHash, plan.runtimePlanHash)
   assert.equal((await service.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id)).workSessionId, started.workSessionId)
   assert.equal(definitions.length, 1)
+  assert.equal(runner.getExecutionCount('T1'), 1)
+  assert.ok((await (await import('node:fs/promises')).stat(join(root, 'fixture-runtime.db'))).size > 0)
   const reopened = new DeliveryService(new DeliveryStore(join(root, 'delivery')), events, adapter, supported, 'fixture-policy-v1')
   assert.equal((await reopened.readiness(snapshot, plan.id)).admission.status, 'READY')
   assert.equal((await reopened.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id)).workSessionId, started.workSessionId)
@@ -672,6 +677,135 @@ test('fixture delivery creates one exact WorkSession, persists binding and rejec
   assert.ok(raw.includes('delivery.started'))
   assert.ok(!raw.includes(repo))
   assert.ok(!raw.includes('两件不同商品'))
+})
+
+test('a non-settling createAndStart times out, records failure, and cannot create a second session', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const store = new DeliveryStore(join(root, 'delivery'))
+  const events = new DeliveryEventStore(join(root, 'delivery', 'events.jsonl'))
+  let calls = 0
+  const adapter: DeliveryRuntimeAdapter = { configured: async () => true, executorAvailable: async () => true,
+    reviewerAvailable: async () => true, createAndStart: async (_definition, _binding, _plan, context) => {
+      calls++
+      await context.progress('preflight_started')
+      await new Promise<void>(() => undefined)
+    } }
+  const service = new DeliveryService(store, events, adapter, supported, 'fixture-policy-v1', undefined, 30)
+  const plan = await service.prepare(snapshot, repo, 'trusted_test')
+  await assert.rejects(service.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id),
+    /DELIVERY_START_TIMEOUT/)
+  const digest = createHash('sha256').update('novawing-delivery-session-v1\0')
+    .update(`${snapshot.id}\0${plan.runtimePlanHash}\0${plan.targetBinding.id}`).digest('hex')
+  const id = `delivery-${digest}-000000000000-${digest.slice(0, 6)}`
+  assert.equal((await store.getSession(id))?.status, 'TIMEOUT')
+  await assert.rejects(service.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id), /TIMEOUT/)
+  assert.equal(calls, 1)
+  const raw = await readFile(events.path, 'utf8')
+  assert.ok(raw.includes('preflight_started'))
+  assert.ok(raw.includes('delivery_start_failed'))
+  assert.ok(!raw.includes(repo))
+})
+
+test('controller start failure is terminal and interrupted STARTING reconciles without relaunch', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const store = new DeliveryStore(join(root, 'delivery'))
+  const events = new DeliveryEventStore(join(root, 'delivery', 'events.jsonl'))
+  let calls = 0
+  const adapter: DeliveryRuntimeAdapter = { configured: async () => true, executorAvailable: async () => true,
+    reviewerAvailable: async () => true, createAndStart: async (_definition, _binding, _plan, context) => {
+      calls++
+      await context.progress('preflight_started')
+      await context.progress('preflight_completed')
+      await context.progress('config_created')
+      await context.progress('work_session_creation_started')
+      await context.progress('work_session_creation_completed')
+      await context.progress('controller_start_started')
+      throw new Error('controller failed')
+    } }
+  const service = new DeliveryService(store, events, adapter, supported, 'fixture-policy-v1')
+  const plan = await service.prepare(snapshot, repo, 'trusted_test')
+  await assert.rejects(service.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id),
+    /DELIVERY_START_FAILED/)
+  const digest = createHash('sha256').update('novawing-delivery-session-v1\0')
+    .update(`${snapshot.id}\0${plan.runtimePlanHash}\0${plan.targetBinding.id}`).digest('hex')
+  const id = `delivery-${digest}-000000000000-${digest.slice(0, 6)}`
+  assert.equal((await store.getSession(id))?.status, 'FAILED')
+  assert.equal((await store.getSession(id))?.failure?.stage, 'controller_start')
+  assert.equal(calls, 1)
+
+  const second = await fixture()
+  const secondStore = new DeliveryStore(join(second.root, 'delivery'))
+  const secondEvents = new DeliveryEventStore(join(second.root, 'delivery', 'events.jsonl'))
+  const secondService = new DeliveryService(secondStore, secondEvents, adapter, supported, 'fixture-policy-v1')
+  const secondPlan = await secondService.prepare(second.snapshot, second.repo, 'trusted_test')
+  const secondDigest = createHash('sha256').update('novawing-delivery-session-v1\0')
+    .update(`${second.snapshot.id}\0${secondPlan.runtimePlanHash}\0${secondPlan.targetBinding.id}`).digest('hex')
+  const secondId = `delivery-${secondDigest}-000000000000-${secondDigest.slice(0, 6)}`
+  await secondStore.claimSession({ workSessionId: secondId, sourceSnapshotId: second.snapshot.id,
+    sourcePlanHash: second.snapshot.planHash.value, runtimePlanId: secondPlan.id,
+    runtimePlanHash: secondPlan.runtimePlanHash, targetBindingId: secondPlan.targetBinding.id,
+    targetBaselineCommit: secondPlan.targetBaselineCommit,
+    compilerVersion: secondPlan.compilerImplementationVersion, createdAt: new Date().toISOString(), status: 'STARTING' })
+  await secondService.reconcileInterruptedStarts()
+  assert.equal((await secondStore.getSession(secondId))?.status, 'TIMEOUT')
+  await assert.rejects(secondService.startDelivery(second.snapshot, secondPlan.id, secondPlan.runtimePlanHash,
+    secondPlan.targetBinding.id), /TIMEOUT/)
+  assert.equal(calls, 1)
+})
+
+test('production delivery preflight Promise timeout stops before WorkSession creation', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const store = new DeliveryStore(join(root, 'delivery'))
+  const events = new DeliveryEventStore(join(root, 'delivery', 'events.jsonl'))
+  const adapter: DeliveryRuntimeAdapter = { configured: async () => true, executorAvailable: async () => true,
+    reviewerAvailable: async () => true, createAndStart: async () => undefined }
+  const service = new DeliveryService(store, events, adapter, supported, 'fixture-policy-v1')
+  const plan = await service.prepare(snapshot, repo, 'trusted_test')
+  const observed: string[] = []
+  let workSessionsCreated = 0
+  const launchpad = new NovaWingLaunchpad([], join(root, 'configs'), {
+    deliveryDataRoot: join(root, 'delivery'), deliveryStageTimeoutMs: 30,
+    resolveReviewerProvider: async () => 'deepseek',
+    preflight: async () => new Promise(() => undefined),
+    createWorkSession: async () => { workSessionsCreated++; throw new Error('must not create') },
+  })
+  const diagnostic = launchpad as unknown as { createDeliveryWorkSession: (definition: ReturnType<typeof workSessionDefinitionFor>,
+    binding: WorkSessionPlanBinding, plan: CompiledRuntimePlan,
+    context: { signal: AbortSignal; progress: (event: string) => Promise<void> }) => Promise<void> }
+  const runtime: DeliveryRuntimeAdapter = { ...adapter,
+    createAndStart: (definition, binding, admittedPlan, context) =>
+      diagnostic.createDeliveryWorkSession(definition, binding, admittedPlan, {
+        ...context, progress: async (event) => { observed.push(event); await context.progress(event as Parameters<typeof context.progress>[0]) },
+      }) }
+  const runningService = new DeliveryService(store, events, runtime, supported, 'fixture-policy-v1', undefined, 500)
+  await assert.rejects(runningService.startDelivery(snapshot, plan.id, plan.runtimePlanHash, plan.targetBinding.id),
+    /PREFLIGHT_TIMEOUT/)
+  const digest = createHash('sha256').update('novawing-delivery-session-v1\0')
+    .update(`${snapshot.id}\0${plan.runtimePlanHash}\0${plan.targetBinding.id}`).digest('hex')
+  const id = `delivery-${digest}-000000000000-${digest.slice(0, 6)}`
+  assert.equal((await store.getSession(id))?.status, 'TIMEOUT')
+  assert.equal((await store.getSession(id))?.failure?.code, 'PREFLIGHT_TIMEOUT')
+  assert.ok(observed.includes('config_created'))
+  assert.ok(observed.includes('preflight_started'))
+  assert.equal(workSessionsCreated, 0)
+  await launchpad.close()
+})
+
+test('delivery V2 accepts completion-only empty command bindings while ordinary configs still reject them', async () => {
+  const { repo } = await fixture()
+  const config = { session: { id: `delivery-${'a'.repeat(64)}-000000000000-aaaaaa`, targetRepo: repo,
+    branch: 'codex/delivery-fixture', controlPlane: 'v2' as const,
+    limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
+    tasks: [{ id: 'T1', goal: 'fixture', guardian: { constraints: [], acceptanceCriteria: ['completion only'],
+      doNotDo: [], allowedPaths: [repo], forbiddenPaths: [] },
+      acceptanceEvidenceBindings: [{ criterion: 'completion only', requiredEvidence: [] }] }],
+    gitCheckpoint: { autoCommit: true, autoPush: false },
+    executor: { model: 'fixture', maxTurns: 1, allowNpmInstall: false, allowPythonBootstrap: false } }
+  assert.equal((await validateTrustedWorkSessionConfig(config)).tasks[0]?.acceptanceEvidenceBindings?.[0]?.requiredEvidence.length, 0)
+  await assert.rejects(validateTrustedWorkSessionConfig({ ...config,
+    session: { ...config.session, id: 'ordinary-202609281200-aaaaaa' } }), /evidence binding is empty/)
+  await assert.rejects(validateTrustedWorkSessionConfig({ ...config,
+    session: { ...config.session, controlPlane: 'v1' } }), /evidence binding is empty/)
 })
 
 test('Customer delivery API binds an exact snapshot and uses the production session entry', async () => {

@@ -85,7 +85,8 @@ import { PlanningInputError, PlanningService, PlanningStore } from '../../planni
 import { PlanningEventStore } from '../../planning/telemetry.js'
 import { validateDevelopmentPlan } from '../../planning/validator.js'
 import { CUSTOMER_APP_JS, CUSTOMER_STYLES_CSS, renderCustomerHtml } from '../../planning/customer-view.js'
-import { DeliveryEventStore, DeliveryService, DeliveryStore } from '../../delivery/service.js'
+import { DeliveryEventStore, DeliveryService, DeliveryStartupError, DeliveryStore,
+  type DeliveryStartupEvent, type DeliveryStartupStage } from '../../delivery/service.js'
 import { createDeliveryRuntimeDispatcher } from '../../delivery/runtime-adapter.js'
 import { conservativeCapabilityResolver, inspectDeliveryTarget,
   type CompiledRuntimePlan, type VerificationCapabilityResolver } from '../../delivery/runtime-plan.js'
@@ -246,6 +247,8 @@ interface LiveWorkSessionApp {
 }
 
 export interface NovaWingLaunchpadDependencies {
+  deliveryStartupTimeoutMs?: number
+  deliveryStageTimeoutMs?: number
   activityObserver?: WorkSessionActivityObserver
   loadConfig?: (configPath: string) => Promise<TrustedWorkSessionConfig>
   resolveEnvironment?: (config: TrustedWorkSessionConfig) => Promise<NodeJS.ProcessEnv>
@@ -593,6 +596,8 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 export class NovaWingLaunchpad {
+  private readonly deliveryStageTimeoutMs: number
+  private readonly autoReconcileDeliveryStarts: boolean
   private readonly configDirectory: string
   private readonly configs: Map<string, DiscoveredLaunchpadConfig>
   private readonly loadConfig: (configPath: string) => Promise<TrustedWorkSessionConfig>
@@ -653,6 +658,9 @@ export class NovaWingLaunchpad {
       ? providedDependencies
       : configDirectoryOrDependencies
     this.configDirectory = resolve(configDirectory)
+    // A direct Launchpad constructed with a fixture config directory must not
+    // scan the host's default production delivery store during startup.
+    this.autoReconcileDeliveryStarts = dependencies.deliveryDataRoot !== undefined
     this.configs = new Map(discovered.map((config) => [config.summary.configId, config]))
     this.loadConfig = dependencies.loadConfig ?? loadTrustedWorkSessionConfig
     this.resolveEnvironment = dependencies.resolveEnvironment ?? resolveProductionSmtpEnvironment
@@ -661,6 +669,7 @@ export class NovaWingLaunchpad {
         createProductionWorkSessionUi(config, options)
     )
     this.shutdownTimeoutMs = dependencies.shutdownTimeoutMs ?? 5_000
+    this.deliveryStageTimeoutMs = dependencies.deliveryStageTimeoutMs ?? 30_000
     this.shutdownMode = dependencies.shutdownMode ?? 'bounded'
     this.activityObserver = dependencies.activityObserver
     this.gitProcessRunner = dependencies.gitProcessRunner
@@ -700,9 +709,11 @@ export class NovaWingLaunchpad {
           try { await this.assertDependenciesReady(target.canonicalPath, 'v2'); return true } catch { return false }
         },
         reviewerAvailable: async (target) => this.resolveReviewerRouteAvailable(target.canonicalPath).catch(() => false),
-        createAndStart: (definition, binding, plan) => this.createDeliveryWorkSession(definition, binding, plan) },
+        createAndStart: (definition, binding, plan, context) => this.createDeliveryWorkSession(definition, binding, plan, context) },
       dependencies.deliveryResolver ?? conservativeCapabilityResolver,
       dependencies.deliveryPolicyVersion ?? 'runtime-policy-v1',
+      undefined,
+      dependencies.deliveryStartupTimeoutMs ?? 120_000,
     )
     this.server = createServer((request, response) => {
       if (this.closed) {
@@ -812,6 +823,7 @@ export class NovaWingLaunchpad {
   }
 
   private async startInternal(): Promise<NovaWingLaunchpadAddress> {
+    if (this.autoReconcileDeliveryStarts) await this.deliveryService.reconcileInterruptedStarts()
     await this.hydrateStatuses()
     this.initialExecutorMode = await this.resolveInitialExecutorMode()
     if (this.preflight !== undefined) {
@@ -1502,7 +1514,8 @@ export class NovaWingLaunchpad {
     }
   }
 
-  private async startWorkSession(configId: string, preflightRepair?: PreflightRepairRecord): Promise<LaunchResult> {
+  private async startWorkSession(configId: string, preflightRepair?: PreflightRepairRecord,
+    deliveryContext?: { signal: AbortSignal; progress: (event: DeliveryStartupEvent) => Promise<void> }): Promise<LaunchResult> {
     await assertLaunchpadRuntimeCurrent()
     if (this.activeDeletes.has(configId)) throw new Error('unknown config')
     const existing = this.activeStarts.get(configId)
@@ -1513,7 +1526,7 @@ export class NovaWingLaunchpad {
     const discovered = this.configs.get(configId)
     if (discovered === undefined) throw new Error('unknown config')
 
-    const launch = this.launchWorkSession(configId, discovered, preflightRepair)
+    const launch = this.launchWorkSession(configId, discovered, preflightRepair, deliveryContext)
     this.activeStarts.set(configId, launch)
     try {
       return await launch
@@ -1584,8 +1597,10 @@ export class NovaWingLaunchpad {
 
   private async createDeliveryWorkSession(
     definition: WorkSessionDefinition, binding: WorkSessionPlanBinding, plan: CompiledRuntimePlan,
+    context: { signal: AbortSignal; progress: (event: DeliveryStartupEvent) => Promise<void> },
   ): Promise<void> {
-    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    const current = await this.withDeliveryStage('preflight', context, () =>
+      inspectDeliveryTarget(plan.targetBinding.canonicalPath), 'preflight_started')
     if (!current.clean || current.baselineCommit !== binding.targetBaselineCommit ||
       current.gitRepositoryIdentity !== plan.targetBinding.gitRepositoryIdentity ||
       current.branch !== plan.targetBinding.branch) throw new Error('Delivery target drifted before runtime creation.')
@@ -1593,9 +1608,10 @@ export class NovaWingLaunchpad {
       definition.branch !== plan.targetBinding.branch || plan.admission.status !== 'READY') {
       throw new Error('Delivery runtime definition is not bound to the admitted plan.')
     }
-    const reviewerProvider = await this.resolveReviewerProvider(definition.targetRepo)
+    const reviewerProvider = await this.withDeliveryStage('preflight', context,
+      () => this.resolveReviewerProvider(definition.targetRepo), undefined, 'preflight_completed')
     if (reviewerProvider === undefined) throw new Error('Independent reviewer route is unavailable before runtime creation.')
-    const config = await validateTrustedWorkSessionConfig({
+    const config = await this.withDeliveryStage('config', context, () => validateTrustedWorkSessionConfig({
       session: { id: definition.id, targetRepo: definition.targetRepo, branch: definition.branch,
         createdAt: binding.createdAt, controlPlane: 'v2', directPath: { enabled: false },
         goldenPath: { enabled: false }, limits: definition.limits },
@@ -1611,11 +1627,35 @@ export class NovaWingLaunchpad {
       codex: { model: CODING_EXECUTOR_DEFAULTS.codex.model,
         reasoningEffort: CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort },
       notification: { email: { enabled: false } },
-    })
-    const configPath = await persistComposedTrustedWorkSessionConfig(this.configDirectory, config)
+    }), 'config_creation_started')
+    const configPath = await this.withDeliveryStage('config', context,
+      () => persistComposedTrustedWorkSessionConfig(this.configDirectory, config), 'config_creation_started', 'config_created')
     const configId = config.session.id
     this.configs.set(configId, { configPath, config, summary: summaryFromConfig(configId, config) })
-    await this.startWorkSession(configId)
+    await this.startWorkSession(configId, undefined, context)
+  }
+
+  private async withDeliveryStage<T>(stage: DeliveryStartupStage,
+    context: { signal: AbortSignal; progress: (event: DeliveryStartupEvent) => Promise<void> },
+    operation: () => Promise<T>, startEvent?: DeliveryStartupEvent, completeEvent?: DeliveryStartupEvent | true): Promise<T> {
+    if (context.signal.aborted) throw new DeliveryStartupError('TIMEOUT', stage, 'DELIVERY_START_TIMEOUT')
+    if (startEvent) await context.progress(startEvent)
+    let timer: NodeJS.Timeout | undefined
+    try {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new DeliveryStartupError('TIMEOUT', stage,
+          stage === 'preflight' ? 'PREFLIGHT_TIMEOUT' : `${stage.toUpperCase()}_TIMEOUT`)), this.deliveryStageTimeoutMs)
+      })
+      const result = await Promise.race([operation(), timeout]).catch((error: unknown) => {
+        if (error instanceof DeliveryStartupError) throw error
+        const code = stage === 'preflight' ? 'PREFLIGHT_FAILED' : stage === 'config' ? 'CONFIG_VALIDATION_FAILED' :
+          stage === 'work_session_creation' ? 'WORK_SESSION_CREATION_FAILED' : 'CONTROLLER_START_FAILED'
+        throw new DeliveryStartupError(stage === 'preflight' || stage === 'config' ? 'BLOCKED' : 'FAILED', stage, code)
+      })
+      if (context.signal.aborted) throw new DeliveryStartupError('TIMEOUT', stage, 'DELIVERY_START_TIMEOUT')
+      if (completeEvent) await context.progress(completeEvent === true ? 'preflight_completed' : completeEvent)
+      return result
+    } finally { if (timer) clearTimeout(timer) }
   }
 
   private async assertDeliveryStartBaseline(configId: string): Promise<void> {
@@ -1635,6 +1675,7 @@ export class NovaWingLaunchpad {
     configId: string,
     discovered: DiscoveredLaunchpadConfig,
     preflightRepair?: PreflightRepairRecord,
+    deliveryContext?: { signal: AbortSignal; progress: (event: DeliveryStartupEvent) => Promise<void> },
   ): Promise<LaunchResult> {
     if (this.closed && this.shutdownMode === 'bounded') throw new Error('Launchpad is closed')
     const existing = this.liveApps.get(configId)
@@ -1649,16 +1690,22 @@ export class NovaWingLaunchpad {
       await this.retireApp(existing.app)
       this.liveApps.delete(configId)
     }
-    const config = await this.loadConfig(discovered.configPath)
-    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
-    const env = await this.resolveEnvironment(config)
+    const config = deliveryContext ? await this.withDeliveryStage('preflight', deliveryContext,
+      () => this.loadConfig(discovered.configPath), 'preflight_started') : await this.loadConfig(discovered.configPath)
+    if (config.session.scheduledStartAt == null) {
+      if (deliveryContext) await this.withDeliveryStage('preflight', deliveryContext,
+        () => this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1'))
+      else await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
+    }
+    const env = deliveryContext ? await this.withDeliveryStage('preflight', deliveryContext,
+      () => this.resolveEnvironment(config), undefined, 'preflight_completed') : await this.resolveEnvironment(config)
     const deliverySession = configId.startsWith('delivery-') ? await this.deliveryStore.getSession(configId) : undefined
     const deliveryPlan = deliverySession === undefined ? undefined : await this.deliveryStore.getPlan(deliverySession.runtimePlanId)
     if (deliverySession !== undefined && (deliveryPlan === undefined || deliveryPlan.runtimePlanHash !== deliverySession.runtimePlanHash))
       throw new Error('Delivery RuntimePlan is unavailable or has drifted.')
     let app: ManagedWorkSessionApp
     try {
-      app = await this.createWorkSession(config, {
+      const creation = this.createWorkSession(config, {
         env,
         serverPort: 0,
         shutdownMode: this.shutdownMode,
@@ -1667,6 +1714,11 @@ export class NovaWingLaunchpad {
         ...(deliveryPlan === undefined ? {} : { createV2Dispatcher: ({ defaultDispatcher }) =>
           createDeliveryRuntimeDispatcher(deliveryPlan, this.deliveryStore, defaultDispatcher) }),
       })
+      if (deliveryContext) void creation.then((created) => {
+        if (deliveryContext.signal.aborted) void created.close().catch(() => undefined)
+      }).catch(() => undefined)
+      app = deliveryContext ? await this.withDeliveryStage('work_session_creation', deliveryContext,
+        () => creation, 'work_session_creation_started', 'work_session_creation_completed') : await creation
     } catch (error) {
       // A factory may have failed while cleaning up partially initialized owners.
       // Preserve that failure even when the HTTP layer renders a safe 500.
@@ -1683,13 +1735,16 @@ export class NovaWingLaunchpad {
     }
 
     try {
-      const address = await app.start()
+      const address = deliveryContext ? await this.withDeliveryStage('controller_start', deliveryContext,
+        () => app.start(), 'controller_start_started') : await app.start()
       if (this.closed && this.shutdownMode === 'bounded') {
         await this.closeOwnedApp(app)
         throw new Error('Launchpad is closed')
       }
       if (configId.startsWith('delivery-')) await this.assertDeliveryStartBaseline(configId)
+      if (deliveryContext?.signal.aborted) throw new DeliveryStartupError('TIMEOUT', 'controller_start', 'DELIVERY_START_TIMEOUT')
       const result = app.controller.start()
+      if (deliveryContext) await deliveryContext.progress('controller_start_completed')
       this.liveApps.set(configId, { app, controlUrl: address.url })
       if (this.closed) this.closeOwnedApp(app)
       return {

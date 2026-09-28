@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { lstat, realpath } from 'node:fs/promises'
 import { promisify } from 'node:util'
@@ -29,12 +29,26 @@ export interface WorkSessionPlanBinding {
   targetBaselineCommit: string
   compilerVersion: string
   createdAt: string
-  status: 'STARTING' | 'STARTED'
+  status: 'STARTING' | 'STARTED' | 'BLOCKED' | 'FAILED' | 'TIMEOUT'
+  failure?: { stage: DeliveryStartupStage; code: string; at: string }
+}
+
+export type DeliveryStartupStage = 'preflight' | 'config' | 'work_session_creation' | 'controller_start' | 'delivery'
+export type DeliveryStartupEvent = 'preflight_started' | 'preflight_completed' | 'config_creation_started' | 'config_created' |
+  'work_session_creation_started' | 'work_session_creation_completed' | 'controller_start_started' |
+  'controller_start_completed'
+
+export class DeliveryStartupError extends Error {
+  constructor(readonly status: 'BLOCKED' | 'FAILED' | 'TIMEOUT', readonly stage: DeliveryStartupStage,
+    readonly code: string) { super(code) }
 }
 
 export type DeliveryEventType = 'delivery.target_bound' | 'runtime_plan.compile_started' |
   'runtime_plan.compile_completed' | 'runtime_plan.compile_failed' | 'runtime_plan.admission_passed' |
   'runtime_plan.admission_blocked' | 'delivery.start_requested' | 'delivery.started' | 'work_session.created' |
+  'preflight_started' | 'preflight_completed' | 'config_creation_started' | 'config_created' |
+  'work_session_creation_started' | 'work_session_creation_completed' |
+  'controller_start_started' | 'controller_start_completed' | 'delivery_start_failed' |
   'verification_blueprint.plan_started' | 'verification_blueprint.generated' |
   'verification_blueprint.validation_failed' | 'verification_blueprint.review_failed' |
   'verification_blueprint.approved' | 'verification_blueprint.unresolved'
@@ -44,12 +58,15 @@ export class DeliveryEventStore {
   constructor(readonly path: string) {}
   async append(type: DeliveryEventType, fields: { snapshotId: string; runtimePlanHash?: string;
     taskCount?: number; assertionCount?: number; blockerCount?: number; durationMs?: number;
-    blueprintCount?: number; issueCount?: number; attempt?: number; hashPrefix?: string }): Promise<void> {
+    blueprintCount?: number; issueCount?: number; attempt?: number; hashPrefix?: string;
+    stage?: DeliveryStartupStage; reasonCode?: string }): Promise<void> {
     const event = { id: randomUUID(), at: new Date().toISOString(), type,
       snapshotId: /^[a-f0-9-]{36}$/u.test(fields.snapshotId) ? fields.snapshotId : 'invalid',
       ...(fields.runtimePlanHash && /^[a-f0-9]{64}$/u.test(fields.runtimePlanHash)
         ? { runtimePlanHashPrefix: fields.runtimePlanHash.slice(0, 12) } : {}),
       ...(fields.hashPrefix && /^[a-f0-9]{12}$/u.test(fields.hashPrefix) ? { blueprintHashPrefix: fields.hashPrefix } : {}),
+      ...(fields.stage ? { stage: fields.stage } : {}),
+      ...(fields.reasonCode && /^[A-Z_]{3,64}$/u.test(fields.reasonCode) ? { reasonCode: fields.reasonCode } : {}),
       ...Object.fromEntries((['taskCount', 'assertionCount', 'blockerCount', 'durationMs',
         'blueprintCount', 'issueCount', 'attempt'] as const)
         .filter((key) => Number.isSafeInteger(fields[key]) && fields[key]! >= 0).map((key) => [key, fields[key]])),
@@ -337,9 +354,26 @@ export class DeliveryStore {
     }
   }
   async finishSession(binding: WorkSessionPlanBinding): Promise<void> {
+    const current = await this.getSession(binding.workSessionId)
+    if (current?.status !== 'STARTING') throw new Error('Delivery start claim is no longer active.')
     await this.writeAtomic(this.path('session', binding.workSessionId), { ...binding, status: 'STARTED' })
   }
+  async failSession(binding: WorkSessionPlanBinding, error: DeliveryStartupError): Promise<void> {
+    const current = await this.getSession(binding.workSessionId)
+    if (current?.status !== 'STARTING') return
+    await this.writeAtomic(this.path('session', binding.workSessionId), { ...current, status: error.status,
+      failure: { stage: error.stage, code: error.code, at: new Date().toISOString() } })
+  }
   async getSession(id: string): Promise<WorkSessionPlanBinding | undefined> { return this.read(this.path('session', id)) }
+  async startingSessions(): Promise<WorkSessionPlanBinding[]> {
+    const names = await readdir(this.directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return []
+      throw error
+    })
+    const sessions = await Promise.all(names.filter((name) => /^session-delivery-[a-z0-9-]+\.json$/u.test(name))
+      .map((name) => this.read<WorkSessionPlanBinding>(join(this.directory, name))))
+    return sessions.filter((item): item is WorkSessionPlanBinding => item?.status === 'STARTING')
+  }
 }
 
 export interface DeliveryRuntimeAdapter {
@@ -347,14 +381,27 @@ export interface DeliveryRuntimeAdapter {
   executorAvailable(target: DeliveryTargetBinding): Promise<boolean>
   reviewerAvailable(target: DeliveryTargetBinding): Promise<boolean>
   /** Must durably create this exact session, then start the existing Runtime. */
-  createAndStart(definition: WorkSessionDefinition, binding: WorkSessionPlanBinding, plan: CompiledRuntimePlan): Promise<void>
+  createAndStart(definition: WorkSessionDefinition, binding: WorkSessionPlanBinding, plan: CompiledRuntimePlan,
+    context: { signal: AbortSignal; progress: (event: DeliveryStartupEvent) => Promise<void> }): Promise<void>
 }
 
 export class DeliveryService {
   constructor(private readonly store: DeliveryStore, private readonly events: DeliveryEventStore,
     private readonly runtime: DeliveryRuntimeAdapter, private readonly resolver: VerificationCapabilityResolver,
     private readonly policyVersion: string,
-    private readonly providerAvailability?: (providerId: string) => ProviderAvailability) {}
+    private readonly providerAvailability?: (providerId: string) => ProviderAvailability,
+    private readonly startupTimeoutMs = 120_000) {}
+
+  async reconcileInterruptedStarts(): Promise<void> {
+    for (const binding of await this.store.startingSessions()) {
+      // A former process cannot be trusted to have finished merely because a config or DB exists.
+      // Terminalize the claim and require explicit inspection before any same-ID retry.
+      const error = new DeliveryStartupError('TIMEOUT', 'delivery', 'INTERRUPTED_STARTING')
+      await this.store.failSession(binding, error)
+      await this.events.append('delivery_start_failed', { snapshotId: binding.sourceSnapshotId,
+        runtimePlanHash: binding.runtimePlanHash, stage: error.stage, reasonCode: error.code })
+    }
+  }
 
   private async options(target: DeliveryTargetBinding): Promise<{ runtimeConfigured: boolean; executorAvailable: boolean; reviewerAvailable: boolean }> {
     const [runtimeConfigured, executorAvailable, reviewerAvailable] = await Promise.all([
@@ -427,18 +474,44 @@ export class DeliveryService {
       throw new Error('Persisted WorkSession binding does not match this exact delivery request.')
     }
     if (existing?.status === 'STARTED') return existing
-    if (existing !== undefined) throw new Error('Delivery start is already in progress; reconcile before retrying.')
+    if (existing !== undefined) throw new Error(`Delivery start is ${existing.status}; same-ID retry requires artifact reconciliation.`)
     const binding: WorkSessionPlanBinding = { workSessionId, sourceSnapshotId: snapshot.id,
       sourcePlanHash: snapshot.planHash.value, runtimePlanId: plan.id, runtimePlanHash: plan.runtimePlanHash,
       targetBindingId, targetBaselineCommit: plan.targetBaselineCommit,
       compilerVersion: plan.compilerImplementationVersion, createdAt: new Date().toISOString(), status: 'STARTING' }
     if (!await this.store.claimSession(binding)) throw new Error('Delivery start is already claimed.')
-    // A crash after the runtime call leaves STARTING for explicit reconciliation; it never creates a second session.
     const admittedPlan = { ...plan, admission }
-    await this.runtime.createAndStart(workSessionDefinitionFor(admittedPlan, workSessionId), binding, admittedPlan)
-    await this.store.finishSession(binding)
-    await this.events.append('work_session.created', { snapshotId: snapshot.id, runtimePlanHash })
-    await this.events.append('delivery.started', { snapshotId: snapshot.id, runtimePlanHash })
-    return { ...binding, status: 'STARTED' }
+    const abort = new AbortController()
+    let stage: DeliveryStartupStage = 'preflight'
+    const progress = async (event: DeliveryStartupEvent): Promise<void> => {
+      stage = event.startsWith('preflight_') ? 'preflight' : event.startsWith('config_') ? 'config' :
+        event.startsWith('work_session_') ? 'work_session_creation' : 'controller_start'
+      await this.events.append(event, { snapshotId: snapshot.id, runtimePlanHash, stage })
+    }
+    let timer: NodeJS.Timeout | undefined
+    try {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          abort.abort()
+          reject(new DeliveryStartupError('TIMEOUT', stage, 'DELIVERY_START_TIMEOUT'))
+        }, this.startupTimeoutMs)
+      })
+      await Promise.race([this.runtime.createAndStart(
+        workSessionDefinitionFor(admittedPlan, workSessionId), binding, admittedPlan, { signal: abort.signal, progress }), timeout])
+      if (abort.signal.aborted) throw new DeliveryStartupError('TIMEOUT', stage, 'DELIVERY_START_TIMEOUT')
+      stage = 'delivery'
+      await this.store.finishSession(binding)
+      await this.events.append('work_session.created', { snapshotId: snapshot.id, runtimePlanHash })
+      await this.events.append('delivery.started', { snapshotId: snapshot.id, runtimePlanHash })
+      return { ...binding, status: 'STARTED' }
+    } catch (cause) {
+      abort.abort()
+      const error = cause instanceof DeliveryStartupError ? cause :
+        new DeliveryStartupError('FAILED', stage, 'DELIVERY_START_FAILED')
+      await this.store.failSession(binding, error)
+      await this.events.append('delivery_start_failed', { snapshotId: snapshot.id, runtimePlanHash,
+        stage: error.stage, reasonCode: error.code })
+      throw error
+    } finally { if (timer) clearTimeout(timer) }
   }
 }

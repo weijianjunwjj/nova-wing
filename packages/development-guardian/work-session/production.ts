@@ -266,7 +266,14 @@ export async function validateTrustedWorkSessionConfig(
         binding.criterion = requireTrimmed(binding.criterion, `tasks.${task.id}.acceptanceEvidenceBindings[].criterion`)
         if (!criteria.has(binding.criterion)) throw new Error(`evidence binding names unknown acceptance criterion: ${binding.criterion}`)
         if (bound.has(binding.criterion)) throw new Error(`duplicate evidence binding: ${binding.criterion}`)
-        if (binding.requiredEvidence.length === 0) throw new Error(`evidence binding is empty: ${binding.criterion}`)
+        // Frozen delivery plans can admit completion-only external/human assertions.
+        // Their exact assertion remains in the V2 delivery dispatcher; there is no
+        // executable verifier command to put in this legacy command binding.
+        const deliveryV2 = config.session.controlPlane === 'v2' &&
+          /^delivery-[a-f0-9]{64}-000000000000-[a-f0-9]{6}$/u.test(config.session.id)
+        if (binding.requiredEvidence.length === 0 && !deliveryV2) {
+          throw new Error(`evidence binding is empty: ${binding.criterion}`)
+        }
         binding.requiredEvidence = binding.requiredEvidence.map((evidence) => requireTrimmed(evidence, `tasks.${task.id}.acceptanceEvidenceBindings[].requiredEvidence[]`))
         bound.add(binding.criterion)
       }
