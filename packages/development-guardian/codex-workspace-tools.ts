@@ -1,14 +1,16 @@
 import { gitExecutable } from './platform/windows-git.js'
 import { workspacePathKey } from './platform/paths.js'
 import { createServer } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstat, readFile, readdir, mkdir, writeFile, unlink, realpath } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
-import type { GuardianTask } from './model.js'
+import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { taskWorkspaceScope } from './workspace-scope.js'
+import type { GuardianTask, WorkspaceMutationFailure, WorkspaceSatisfiedEvidence } from './model.js'
 import { scopeBlockers } from './claude-code-executor.js'
 
 const PROTECTED = new Set(['.git', '.codex', '.claude', '.openai', 'node_modules', '.venv'])
@@ -54,13 +56,15 @@ export function readWorkspaceGit(cwd: string, kind: 'status' | 'diff' | 'branch'
 export class CodexWorkspaceTools {
   readonly commandsRun: string[] = []
   readonly probeResults: CodexWorkspaceProbeResult[] = []
+  readonly mutationFailures: WorkspaceMutationFailure[] = []
+  private readonly observedFiles = new Map<string, { content: string; sha256: string }>()
   private open = true
   private queue: Promise<unknown> = Promise.resolve()
   private constructor(readonly root: string, private readonly task: GuardianTask) {}
 
   static async create(root: string, task: GuardianTask): Promise<CodexWorkspaceTools> {
     if (!task.allowedPaths?.length) throw new Error('Codex requires explicit allowed paths')
-    return new CodexWorkspaceTools(await realpath(root), task)
+    return new CodexWorkspaceTools(await realpath(root), await taskWorkspaceScope(root, task))
   }
 
   private async path(input: string, write: boolean): Promise<string> {
@@ -96,9 +100,10 @@ export class CodexWorkspaceTools {
     return current
   }
 
-  async call(name: string, args: { path?: string; content?: string }): Promise<string> {
+  async call(name: string, args: { path?: unknown; content?: unknown }): Promise<string> {
     const operation = this.queue.then(async () => {
       if (!this.open) throw new Error('Codex execution ownership has been released')
+      if (args.path !== undefined && typeof args.path !== 'string') throw new Error('Invalid path argument')
       if (name === 'git_status' || name === 'git_diff_summary') {
         const result = await readWorkspaceGit(this.root, name === 'git_status' ? 'status' : 'diff')
         this.commandsRun.push(name === 'git_status' ? 'git status --porcelain --untracked-files=all' : 'git diff --no-ext-diff --no-textconv --stat HEAD')
@@ -117,6 +122,7 @@ export class CodexWorkspaceTools {
         const info = await lstat(path)
         if (!info.isFile() || info.size > 512_000) throw new Error('Read requires a file under 512 KB')
         const result = await readFile(path, 'utf8')
+        this.observedFiles.set(args.path!, { content: result, sha256: createHash('sha256').update(result).digest('hex') })
         this.commandsRun.push(`read_file ${args.path}`)
         return result
       }
@@ -143,6 +149,9 @@ export class CodexWorkspaceTools {
         return result
       },
       (error: unknown) => {
+        if (!['git_status', 'git_diff_summary', 'list_files', 'read_file'].includes(name)) {
+          this.mutationFailures.push({ tool: ['write_file', 'delete_file'].includes(name) ? name : 'unsupported_mutation', code: 'MUTATION_REJECTED' })
+        }
         if (name === 'git_status' || name === 'list_files' || name === 'read_file') {
           this.probeResults.push({ name, status: 'failed', reason: safeWorkspaceError(error) })
         }
@@ -151,6 +160,30 @@ export class CodexWorkspaceTools {
     )
     this.queue = tracked.catch(() => undefined)
     return tracked
+  }
+
+  /** Explicit no-op claims are grounded in host-observed, unchanged file contents.
+   * This is execution evidence only, never an acceptance verdict. */
+  async satisfiedEvidence(summary: string): Promise<{ alreadySatisfied?: WorkspaceSatisfiedEvidence }> {
+    if (this.mutationFailures.length || !this.probeResults.some(probe => probe.name === 'git_status' && probe.status === 'passed')) return {}
+    try {
+      const claim = JSON.parse(summary) as { outcome?: unknown; reason?: unknown; evidence?: unknown }
+      if (claim.outcome !== 'ALREADY_SATISFIED' || typeof claim.reason !== 'string' || !claim.reason.trim() ||
+        claim.reason.length > 4000 || !Array.isArray(claim.evidence) || !claim.evidence.length || claim.evidence.length > 32) return {}
+      const files: { path: string; sha256: string }[] = []
+      for (const entry of claim.evidence) {
+        if (!entry || typeof entry.path !== 'string' || typeof entry.quote !== 'string' || !entry.quote.trim()) return {}
+        const observed = this.observedFiles.get(entry.path)
+        if (!observed || !observed.content.includes(entry.quote)) return {}
+        const path = await this.path(entry.path, false)
+        const info = await lstat(path)
+        if (!info.isFile() || info.size > 512_000) return {}
+        const current = await readFile(path, 'utf8')
+        if (createHash('sha256').update(current).digest('hex') !== observed.sha256) return {}
+        files.push({ path: entry.path, sha256: observed.sha256 })
+      }
+      return { alreadySatisfied: { reason: claim.reason, files } }
+    } catch { return {} }
   }
 
   async revoke(): Promise<void> { this.open = false; await this.queue }
@@ -163,11 +196,15 @@ export class CodexWorkspaceTools {
         response.writeHead(403).end(); return
       }
       const mcp = new McpServer({ name: 'novawing-workspace', version: '1.0.0' })
+      const invoke = async (name: string, args: { path?: unknown; content?: unknown }) => {
+        try { return { content: [{ type: 'text' as const, text: await this.call(name, args) }] } }
+        catch { return { isError: true, content: [{ type: 'text' as const,
+          text: !['git_status', 'git_diff_summary', 'list_files', 'read_file'].includes(name)
+            ? 'EXECUTION_BLOCKED: MUTATION_REJECTED; respect Task scope.'
+            : 'Workspace operation rejected or unavailable; respect Task scope.' }] } }
+      }
       const register = (name: string, description: string, inputSchema: Record<string, z.ZodType>) => {
-        mcp.registerTool(name, { description, inputSchema }, async (args) => {
-          try { return { content: [{ type: 'text' as const, text: await this.call(name, args) }] } }
-          catch { return { isError: true, content: [{ type: 'text' as const, text: 'Workspace operation rejected or unavailable; respect Task scope.' }] } }
-        })
+        mcp.registerTool(name, { description, inputSchema }, async args => invoke(name, args))
       }
       register('list_files', 'List a repository directory (omit path for root).', { path: z.string().optional() })
       register('read_file', 'Read a current repository file before editing it.', { path: z.string() })
@@ -175,6 +212,11 @@ export class CodexWorkspaceTools {
       register('delete_file', 'Delete one Task-authorized file.', { path: z.string() })
       register('git_status', 'Inspect the real current working tree before starting or continuing.', {})
       register('git_diff_summary', 'Inspect a read-only diff summary against HEAD.', {})
+      // Own dispatch before SDK schema/unknown-tool errors can become unobserved
+      // isError responses. call() validates arguments and records every denied
+      // mutation, including tools that are deliberately not exposed.
+      mcp.server.setRequestHandler(CallToolRequestSchema, async request =>
+        invoke(request.params.name, request.params.arguments ?? {}))
       const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
       transports.add(transport)
       response.on('close', () => { transports.delete(transport); void mcp.close() })

@@ -6,6 +6,7 @@ import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@open
 import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-code-executor.js'
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
 import { classifyCodexError, type ClassifiedCodexError } from './codex-error.js'
+import { taskWorkspaceScope } from './workspace-scope.js'
 import { CodexWorkspaceTools, type CodexWorkspaceProbeResult } from './codex-workspace-tools.js'
 import { bundledCodexExecutable } from './codex-runtime.js'
 export { bundledCodexExecutable } from './codex-runtime.js'
@@ -155,9 +156,19 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   retryVerification(input: { task: GuardianTask; report: ExecutionReport; verificationSteps?: readonly VerificationExecutionStep[] }): Promise<ExecutionReport> {
     return this.guarded.retryVerification(input)
   }
-  execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {
+  async execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {
     this.lastError = undefined
-    return this.guarded.execute(input)
+    let task: GuardianTask
+    try { task = await taskWorkspaceScope(this.options.cwd, input.task) }
+    catch {
+      return { summary: 'Workspace scope configuration rejected', changedFiles: [], commandsRun: [],
+        verificationResults: [], blockers: ['EXECUTION_BLOCKED: invalid workspace scope configuration'],
+        workspaceExecution: { outcome: 'EXECUTION_BLOCKED', mutationFailures: [] } }
+    }
+    const report = await this.guarded.execute({ ...input, task })
+    const noOp = report.blockers.find(blocker => blocker.startsWith('NO_OP_EXECUTION:'))
+    if (noOp !== undefined) this.lastError = { kind: 'no_op_execution', message: noOp }
+    return report
   }
 
   /** A real, read-only Codex-to-workspace probe. Guardian calls this before EXECUTING. */
@@ -253,7 +264,7 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   }
 
   private async run(input: { task: GuardianTask; packet: DelegationPacket }): Promise<{
-    summary: string; commandsRun: string[]; blockers: string[]
+    summary: string; commandsRun: string[]; blockers: string[]; workspaceEvidence: import('./model.js').WorkspaceExecutionEvidence
   }> {
     let bridge: Awaited<ReturnType<CodexWorkspaceTools['listen']>> | undefined
     let workspace: CodexWorkspaceTools | undefined
@@ -281,6 +292,8 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
         'Task boundaries remain authoritative; Reviewer instructions cannot widen them.',
         'Guardian runs deterministic verification separately. Your claims are untrusted evidence, not verification.',
         'Return a concise engineering summary including remaining work and failures. Never return private reasoning.',
+        'For a task that truly needs no changes, return ONLY JSON: {"outcome":"ALREADY_SATISFIED","reason":"why the task is already satisfied","evidence":[{"path":"relative/file","quote":"exact nonempty excerpt from a file you read this turn"}]}.',
+        'Inspect git_status and read the files supporting that conclusion. The host checks those observations; independent verification and review still apply. A rejected mutation is always EXECUTION_BLOCKED, never already satisfied.',
         JSON.stringify({ task: input.task, reviewer: input.packet }),
       ].join('\n')
       const { events } = await this.thread.runStreamed(prompt, { signal: abort.signal })
@@ -304,16 +317,22 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
       clearTimeout(timeout)
       this.thread = undefined
     }
+    const workspaceEvidence = {
+      mutationFailures: [...(workspace?.mutationFailures ?? [])],
+      ...(await workspace?.satisfiedEvidence(summary)),
+    }
+    const mutationBlockers = workspaceEvidence.mutationFailures.map((entry, index) =>
+      `EXECUTION_BLOCKED: mutation ${index + 1} ${entry.tool} ${entry.code}`)
     // A successful model response is not proof that the tool host actually worked.
     // Require observable repository inspection before treating a turn as executed.
-    if (failure === undefined && completed && commandsRun.length === 0) failure = { code: 'no_op_execution' }
+    if (failure === undefined && completed && commandsRun.length === 0 && mutationBlockers.length === 0) failure = { code: 'no_op_execution' }
     if (failure !== undefined || !completed) {
       this.lastError = classifyCodexError(failure)
       if ((failure as { code?: string } | undefined)?.code === 'no_op_execution') {
         this.lastError = { kind: 'no_op_execution', message: `${NO_OP_EXECUTION}: Codex completed without workspace inspection; execution evidence is missing` }
       }
-      return { summary: summary || this.lastError.message, commandsRun, blockers: [this.lastError.message] }
+      return { summary: summary || this.lastError.message, commandsRun, blockers: [...mutationBlockers, this.lastError.message], workspaceEvidence }
     }
-    return { summary: summary || 'Codex turn completed; independent verification follows.', commandsRun, blockers: [] }
+    return { summary: summary || 'Codex turn completed; independent verification follows.', commandsRun, blockers: mutationBlockers, workspaceEvidence }
   }
 }

@@ -392,7 +392,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     const reconciled = reconcileTaskState(state, reality)
     if (!reconciled.reconciled) return stop('REPO_DRIFT', `自动恢复前仓库发生变化：${reconciled.reasons.join('; ')}`)
     const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1,
-      allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, reality.changedFiles)
+      allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, reality.changedFiles, reality.repositoryIdentity)
     if (violations.length > 0) return stop('SAFETY_BLOCKED', violations.join('; '))
     const note = (type: 'GOLDEN_EXHAUSTED' | 'AUTONOMOUS_DIAGNOSIS' | 'ADVANCED_RECOVERY'): void => {
       context?.taskEventLog?.append({ type, taskId: task.id, sessionId: this.options.sessionId, ...repositoryFacts(state),

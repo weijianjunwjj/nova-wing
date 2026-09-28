@@ -380,10 +380,11 @@ test('CodexExecutor passes effective SDK options, persists/resumes thread and ig
       try {
         await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
         await client.callTool({ name: 'git_status', arguments: {} })
+        await client.callTool({ name: 'read_file', arguments: { path: 'src/a.ts' } })
       } finally { await client.close() }
       yield { type: 'thread.started', thread_id: 'thread-1' } as ThreadEvent
       yield { type: 'item.completed', item: { id: 'r', type: 'reasoning', text: 'PRIVATE_NOT_FOR_HANDOFF' } } as ThreadEvent
-      yield { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: 'I claim all tests pass.' } } as ThreadEvent
+      yield { type: 'item.completed', item: { id: 'a', type: 'agent_message', text: JSON.stringify({ outcome: 'ALREADY_SATISFIED', reason: 'The fixture already exports value 1.', evidence: [{ path: 'src/a.ts', quote: 'value = 1' }] }) } } as ThreadEvent
       yield { type: 'turn.completed', usage: {} } as ThreadEvent
     })() }) } as unknown as Thread
   }

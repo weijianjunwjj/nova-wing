@@ -846,6 +846,7 @@ export async function createProductionWorkSessionUi(
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               summary: report.summary,
+              ...(report.workspaceExecution === undefined ? {} : { workspaceExecution: report.workspaceExecution }),
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),
               ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },

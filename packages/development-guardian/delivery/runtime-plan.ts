@@ -459,7 +459,7 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
           ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness))
           .map((binding) => `Completion-only verification gate ${binding.assertionId}: ${binding.stagedVerification.readiness}; ${binding.stagedVerification.policy}`),
         ...plan.customerDecisions.map((decision) => `Customer decision ${decision.questionId}: ${decision.selectedOptionText}`)],
-      allowedPaths: [plan.targetBinding.canonicalPath], forbiddenPaths: [], risk: 'HIGH',
+      allowedPaths: ['.'], forbiddenPaths: [], risk: 'HIGH',
       acceptanceCriteria: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map(criterionFor),
       acceptanceEvidenceBindings: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')

@@ -82,7 +82,7 @@ export function validateAutonomousDiagnosis(
     return { ok: false, category: 'SAFETY_BLOCKED', reason: '恢复建议必须明确列出仓库内的具体路径。' }
   }
   const violations = scopeBlockers({ id: task.identity.taskId, goal: task.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1,
-    allowedPaths: task.permissions.allowedPaths, forbiddenPaths: task.permissions.forbiddenPaths }, decision.paths)
+    allowedPaths: task.permissions.allowedPaths, forbiddenPaths: task.permissions.forbiddenPaths }, decision.paths, task.gitState.repositoryIdentity)
   if (violations.length > 0) return { ok: false, category: 'RECOVERY_REQUIRES_AUTHORIZATION', reason: `恢复建议超出当前路径授权：${violations.join('; ')}` }
   if ((decision.strategy === 'FIX_IMPLEMENTATION' || decision.strategy === 'REPLAN_VERIFICATION') && decision.paths.length === 0) return { ok: false, reason: '恢复没有明确的授权内路径，不能重复执行相同规划。' }
   const steps = task.verificationPlan?.steps ?? []

@@ -1,3 +1,4 @@
+import { relativeTaskWorkspaceScope } from './workspace-scope.js'
 import { gitExecutable } from './platform/windows-git.js'
 import { commandEnvironment } from './platform/environment.js'
 import { missingVerifierExecutable, resolveDesktopToolchainEnvironment } from './platform/posix-toolchain.js'
@@ -108,6 +109,7 @@ export interface ClaudeCodeExecutorOptions {
       commandsRun: readonly string[]
       blockers: readonly string[]
       incompleteReason?: string
+      workspaceEvidence?: import('./model.js').WorkspaceExecutionEvidence
     }>
   }
   cwd: string
@@ -509,6 +511,7 @@ function normalizePath(path: string): string {
 function matchesPathRule(path: string, rule: string): boolean {
   const normalizedPath = normalizePath(path)
   const normalizedRule = normalizePath(rule)
+  if (normalizedRule === '.') return normalizedPath !== '..' && !normalizedPath.startsWith('../') && !normalizedPath.startsWith('/')
   if (normalizedRule.endsWith('/**')) {
     const prefix = normalizedRule.slice(0, -3)
     return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`)
@@ -525,7 +528,11 @@ function isIgnoredScopePath(path: string): boolean {
     .some((segment) => SCOPE_IGNORED_DIR_SEGMENTS.has(segment))
 }
 
-export function scopeBlockers(task: GuardianTask, changedFiles: readonly string[]): string[] {
+export function scopeBlockers(task: GuardianTask, changedFiles: readonly string[], workspaceRoot?: string): string[] {
+  if (workspaceRoot !== undefined) {
+    try { task = relativeTaskWorkspaceScope(workspaceRoot, task) }
+    catch { return ['invalid workspace scope configuration'] }
+  }
   const blockers: string[] = []
   if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
     for (const path of changedFiles) {
@@ -1400,11 +1407,20 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
           : result.blockers
         const blockers = [...runtimeBlockers, ...scopeBlockers(input.task, changed.changedFiles),
           ...(changed.blocker === undefined ? [] : [changed.blocker])]
+        if (result.workspaceEvidence !== undefined && changed.changedFiles.length === 0 &&
+          result.workspaceEvidence.alreadySatisfied === undefined && blockers.length === 0) {
+          blockers.push('NO_OP_EXECUTION: No changes and no explicit, observed ALREADY_SATISFIED evidence')
+        }
         const verification = blockers.length === 0 && result.incompleteReason === undefined && input.packet.deferVerification !== true
           ? await this.verify(input.task, input.packet.verification)
           : { results: [], blockers: [], commandsRun: [] }
         return {
           summary: result.summary,
+          ...(result.workspaceEvidence === undefined ? {} : { workspaceExecution: {
+            ...result.workspaceEvidence,
+            outcome: blockers.length > 0 || result.incompleteReason !== undefined ? 'EXECUTION_BLOCKED' as const
+              : changed.changedFiles.length > 0 ? 'IMPLEMENTED' as const : 'ALREADY_SATISFIED' as const,
+          } }),
           changedFiles: changed.changedFiles,
           commandsRun: [...result.commandsRun, ...verification.commandsRun],
           verificationResults: verification.results,

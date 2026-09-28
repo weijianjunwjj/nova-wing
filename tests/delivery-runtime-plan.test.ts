@@ -864,3 +864,58 @@ test('Customer delivery API binds an exact snapshot and uses the production sess
     assert.equal(status.customerAssessment.status, 'CUSTOMER_DELIVERY_BLOCKED')
   } finally { await launchpad.close() }
 })
+
+test('delivery T1 external-deferred fixture has relative root scope and permits isolated implementation', async () => {
+  const { repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { resolver: () => ({
+    capability: 'REQUIRES_EXTERNAL_ENVIRONMENT', capabilityId: 'fixture-external-v1',
+    family: 'browser_ui', reason: 'Completion-only browser observation.' }),
+    runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'scope-fixture-T1')
+  const t1 = definition.tasks[0]!
+  assert.deepEqual(t1.allowedPaths, ['.'])
+  assert.ok(plan.acceptanceBindings.every(binding => binding.stagedVerification.readiness === 'EXTERNAL_DEFERRED'))
+  assert.deepEqual(t1.acceptanceEvidenceBindings?.map(binding => binding.requiredEvidence), [[]])
+  const { CodexWorkspaceTools } = await import('../packages/development-guardian/codex-workspace-tools.js')
+  const workspace = await CodexWorkspaceTools.create(repo, { ...t1, state: 'READY', iteration: 0, maxIterations: 3 })
+  try {
+    await workspace.call('write_file', { path: 'server/domain.js', content: 'export const orderDomain = { fixture: true }\n' })
+    assert.deepEqual(workspace.mutationFailures, [])
+    assert.match(await readFile(join(repo, 'server/domain.js'), 'utf8'), /fixture: true/u)
+    assert.match(await git(repo, 'status', '--porcelain', '--untracked-files=all'), /server\/domain.js/u)
+  } finally { await workspace.revoke() }
+})
+
+test('suspended T1 review recovery does not restart EXECUTE, including ALLOW REEXECUTE', async () => {
+  const { repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { resolver: () => ({ capability: 'REQUIRES_EXTERNAL_ENVIRONMENT',
+    capabilityId: 'fixture-external-v1', family: 'browser_ui', reason: 'Completion-only.' }),
+    runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'existing-work-session')
+  const t1 = definition.tasks[0]!
+  const initial = createTaskStateV2(definition, t1)
+  const implementer = { agent: 'executor', provider: 'codex', runtimeIdentity: 'same-session-executor' }
+  const reviewer = { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'independent-reviewer' }
+  const suspended = { ...initial, status: 'SUSPENDED' as const, currentAction: 'REVIEW',
+    implementer, providerHistory: ['codex'], gitState: await trustedGitState(repo),
+    verificationState: { results: [{ name: 'deferred', stepId: 'NOVAWING_DEFERRED:A1:EXTERNAL_DEFERRED', status: 'skipped' as const }] } }
+  for (const mode of ['ordinary', 'allow-reexecute', 'reviewer-repair']) {
+    const actions: string[] = []
+    const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+      agents: [implementer, reviewer].map(identity => ({ id: identity.agent, identity,
+        available: true, quotaExhausted: false, degraded: false,
+        capabilities: { coding: identity.agent === 'executor', reasoning: true, verification: true, review: identity.agent === 'reviewer' } })),
+      dispatcher: { inspectRepository: () => trustedGitState(repo), dispatch: async ({ action }) => {
+        actions.push(action)
+        return { status: 'BLOCKED', providerFailure: { provider: 'deepseek', status: 'DEGRADED', reason: 'independent REVIEW_FAILURE fixture' } }
+      } } })
+    const result = await runner.run(t1, mode === 'allow-reexecute' ? { decision: 'ALLOW REEXECUTE' } : undefined, undefined,
+      { taskStateV2: suspended, ...(mode === 'reviewer-repair' ? { chosenReviewer: reviewer } : {}) })
+    assert.equal(result.status, 'HUMAN_REQUIRED')
+    assert.equal(actions.includes('EXECUTE'), false)
+    if (mode !== 'ordinary') assert.deepEqual(actions, ['REVIEW'], JSON.stringify({ mode, humanRequired: result.humanRequired }))
+    assert.deepEqual(result.taskStateV2?.identity, { sessionId: definition.id, taskId: t1.id })
+  }
+})
