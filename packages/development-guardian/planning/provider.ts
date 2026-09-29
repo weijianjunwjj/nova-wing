@@ -1,4 +1,4 @@
-import { createCodexRepairModelRunner } from '../work-session/launchpad/repair-model.js'
+import { createCodexRepairModelRunner, type RepairModelRunner } from '../work-session/launchpad/repair-model.js'
 
 export interface PlanningModelResponse {
   text: string
@@ -38,8 +38,8 @@ const SYSTEM = [
 ].join('\n')
 
 /** Planning uses the existing read-only, no-tool Codex model transport. The product model stays provider-free. */
-export function createCodexPlanningProvider(options: { model?: string; env?: NodeJS.ProcessEnv } = {}): PlanningModelProvider {
-  const run = createCodexRepairModelRunner({ ...(options.env === undefined ? {} : { env: options.env }) })
+export function createCodexPlanningProvider(options: { model?: string; env?: NodeJS.ProcessEnv; runner?: RepairModelRunner } = {}): PlanningModelProvider {
+  const run = options.runner ?? createCodexRepairModelRunner({ ...(options.env === undefined ? {} : { env: options.env }) })
   const model = options.model ?? 'gpt-6-sol'
   return async ({ requirement, revisionFeedback, validationFeedback, priorDraft }) => {
     const response = await run({

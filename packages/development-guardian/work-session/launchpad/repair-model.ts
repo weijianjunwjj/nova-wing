@@ -52,7 +52,9 @@ export interface CodexRepairModelRunnerOptions {
 }
 
 function safeProviderFailure(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string'
+      ? error.message : String(error)
   return message
     .replace(/\b(api[_-]?key|access[_-]?token|token|secret|password|authorization)\b\s*[:=]\s*\S+/giu, '$1= [redacted]')
     .slice(0, 300)
@@ -69,13 +71,16 @@ async function defaultRunRepairTurn(
   let text = ''
   let completed = false
   let failure: unknown
+  let connectionError: unknown
   try {
     const { events } = await thread.runStreamed(prompt, { signal: abort.signal })
     // Drain to EOF: the CLI only exits once its event stream is fully consumed.
     for await (const event of events) {
-      if (event.type === 'turn.completed') completed = true
-      else if (event.type === 'turn.failed') failure = event.error
-      else if (event.type === 'error') failure ??= event
+      if (event.type === 'turn.completed') { completed = true; failure = undefined }
+      else if (event.type === 'turn.failed') { completed = false; failure = event.error }
+      // Codex emits error events while reconnecting. A later turn.completed
+      // proves that the turn recovered; only a final failure is fatal.
+      else if (event.type === 'error') connectionError = event
       else if (event.type === 'item.completed' && event.item.type === 'agent_message') {
         text = event.item.text.slice(0, 64_000)
       }
@@ -86,7 +91,7 @@ async function defaultRunRepairTurn(
     clearTimeout(timer)
   }
   if (failure !== undefined || !completed) {
-    const reason = safeProviderFailure(failure ?? 'Codex repair turn did not complete')
+    const reason = safeProviderFailure(failure ?? connectionError ?? 'Codex repair turn did not complete')
     throw new RepairProviderUnavailableError(`Codex repair turn failed: ${reason}`, reason)
   }
   return text

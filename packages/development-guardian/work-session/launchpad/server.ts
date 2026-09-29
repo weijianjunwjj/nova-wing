@@ -69,7 +69,7 @@ import {
 } from './repair.js'
 import { createDeterministicRepairAgent, type RepairAgent } from './repair-agent.js'
 import { createLlmRepairAgent } from './repair-agent-llm.js'
-import { REPAIR_DEFAULT_MODEL, REPAIR_DEFAULT_REASONING_EFFORT } from './repair-model.js'
+import { REPAIR_DEFAULT_MODEL, REPAIR_DEFAULT_REASONING_EFFORT, RepairProviderUnavailableError } from './repair-model.js'
 import {
   createFileRepairAuditSink,
   type AutoRepairAuditEvent,
@@ -1257,9 +1257,15 @@ export class NovaWingLaunchpad {
           ...(typeof body.changeRequestId === 'string' ? { changeRequestId: body.changeRequestId } : {}) } : undefined
       this.respondJson(response, 200, await this.planningService.generate(body.requirement, revision))
     } catch (error) {
-      this.respondJson(response, error instanceof PlanningInputError ? 400 : 503, {
-        error: error instanceof PlanningInputError ? error.message : 'Planning provider unavailable; the requirement was not approved.',
-      })
+      if (error instanceof PlanningInputError) {
+        this.respondJson(response, 400, { error: error.message })
+      } else if (error instanceof RepairProviderUnavailableError) {
+        this.respondJson(response, 503, { code: 'PLANNING_PROVIDER_UNAVAILABLE',
+          error: 'Planning generation is temporarily unavailable; the requirement was not approved.' })
+      } else {
+        this.respondJson(response, 503, { code: 'PLANNING_GENERATION_FAILURE',
+          error: 'Planning generation failed; the requirement was not approved.' })
+      }
     }
   }
 
