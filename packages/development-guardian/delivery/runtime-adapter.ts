@@ -4,9 +4,10 @@ import type { DeliveryStore } from './service.js'
 import type { CapabilityEvidence } from './capability-layer.js'
 import { CAPABILITY_REGISTRY, type ProviderAvailability } from './capability-layer.js'
 import { inspectDeliveryTarget } from './runtime-plan.js'
-import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer } from './verification-blueprint-planner.js'
+import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer, type BlueprintReviewer, type BlueprintRepairer } from './verification-blueprint-planner.js'
 import { taskCompletionGate, type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
-import { checkpointImplementationForVerification } from '../work-session/git-checkpoint.js'
+import { checkpointOwnedImplementation } from '../work-session/owned-checkpoint.js'
+import { randomUUID } from 'node:crypto'
 
 export function pendingEvidenceKey(assertionId: string, obligationId: string): string {
   return `NOVAWING_VERIFICATION_PENDING:${assertionId}:${obligationId}`
@@ -15,7 +16,8 @@ export function pendingEvidenceKey(assertionId: string, obligationId: string): s
 /** The trusted V2 seam keeps development possible and completion fail closed until a verifier is bound. */
 export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store: DeliveryStore,
   defaultDispatcher: V2ActionDispatcher,
-  providerAvailability?: (providerId: string) => ProviderAvailability): V2ActionDispatcher {
+  providerAvailability?: (providerId: string) => ProviderAvailability,
+  blueprintReview?: { reviewer: BlueprintReviewer; repairer?: BlueprintRepairer }): V2ActionDispatcher {
   const completionProofs = new Map<string, { transitions: VerificationBindingTransition[];
     evidence: AssertionCompletionEvidence[] }>()
   return {
@@ -104,13 +106,16 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
       if (unavailable) return { status: 'BLOCKED', blockers: [
         `${unavailable.assertionId} verification provider unavailable during execution.`] }
       try {
-        await checkpointImplementationForVerification({ repoPath: plan.targetBinding.canonicalPath,
-          expectedRepositoryIdentity: input.task.gitState.repositoryIdentity ?? '',
-          expectedBranch: plan.targetBinding.branch ?? '', baselineCommit: plan.targetBaselineCommit,
-          expectedHeadSha: input.task.gitState.headSha ?? '',
-          expectedChangedFiles: input.task.gitState.changedFiles,
-          expectedWorktreeFingerprint: input.task.gitState.worktreeFingerprint ?? '',
-          taskId: input.task.identity.taskId })
+        if (input.task.gitState.repositoryIdentity !== plan.targetBinding.canonicalPath ||
+          input.task.gitState.branch !== plan.targetBinding.branch)
+          throw new Error('OWNED_CHECKPOINT_TARGET_BINDING_MISMATCH')
+        if (!input.implementationCheckpoint && input.task.gitState.changedFiles.length)
+          throw new Error('OWNED_CHECKPOINT_HANDOFF_REQUIRED')
+        const task = await checkpointOwnedImplementation({ task: input.task, baselineCommit: plan.targetBaselineCommit,
+          inspect: () => defaultDispatcher.inspectRepository(),
+          handoff: input.implementationCheckpoint ?? { dispatchId: randomUUID(),
+            accept: async () => { throw new Error('OWNED_CHECKPOINT_HANDOFF_REQUIRED') } } })
+        input = { ...input, task }
       } catch (error) { return { status: 'BLOCKED', blockers: [
         `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${error instanceof Error ? error.message : String(error)}`] } }
       const results = [] as NonNullable<Awaited<ReturnType<V2ActionDispatcher['dispatch']>>['verificationResults']>[number][]
@@ -133,8 +138,9 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
             const assertion = criterion.assertions.find((item) => item.id === binding.assertionId)!
             const blueprint = await bindObligationAtCommit({ obligation, assertion, criterion,
               target: plan.targetBinding, commit: current.baselineCommit,
-              reviewer: createClaudeBlueprintReviewer({ cwd: process.cwd() }),
-              repairer: createClaudeBlueprintRepairer({ cwd: process.cwd() }) })
+              reviewer: blueprintReview?.reviewer ?? createClaudeBlueprintReviewer({ cwd: process.cwd() }),
+              ...(blueprintReview ? (blueprintReview.repairer ? { repairer: blueprintReview.repairer } : {})
+                : { repairer: createClaudeBlueprintRepairer({ cwd: process.cwd() }) }) })
             transition = await store.bindProvisionedVerifier(plan, binding.assertionId, binding.runtimeTaskId, blueprint)
           } catch (error) { return { status: 'BLOCKED', blockers: [
             `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }

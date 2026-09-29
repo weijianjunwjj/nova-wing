@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { acceptOwnedCheckpoint, type CheckpointHandoff } from './owned-checkpoint.js'
 import type { VerificationResult } from '../model.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
@@ -71,7 +73,7 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; implementationCheckpoint?: CheckpointHandoff; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
   /** Delivery-only durable assertion gate, checked immediately before Task finalization. */
@@ -586,8 +588,31 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const selected = structuredClone(agent)
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
         : createStructuredHandoff(dispatchedState, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
-      const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState, ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+      const dispatchId = randomUUID()
+      let acceptingCheckpoint = decision.action === 'VERIFY'
+      const implementationCheckpoint: CheckpointHandoff = { dispatchId, accept: async proof => {
+        if (!acceptingCheckpoint) throw new Error('OWNED_CHECKPOINT_ACTION_CLOSED')
+        const observation = await this.options.dispatcher.inspectRepository()
+        const record = await acceptOwnedCheckpoint(proof, state, dispatchId, observation)
+        const next: TaskStateV2 = { ...state, gitState: record.after,
+          ownedCheckpoints: [...(state.ownedCheckpoints ?? []), { ...record,
+            supersededEvidence: { verificationState: state.verificationState, completion: state.completion } }],
+          verificationState: { results: [] }, completion: { bindings: state.completion.bindings,
+            evidence: [] } }
+        // Persist before a verifier/reviewer can run or fail. A crash before this write remains ambiguous.
+        await context?.persistTaskStateV2?.(next)
+        state = next
+        note({ type: 'IMPLEMENTATION_CHECKPOINT_ACCEPTED', action: 'VERIFY', ...repositoryFacts(next),
+          metadata: { dispatchId, attemptId: state.attemptId, beforeHead: record.before.headSha,
+            implementationCommit: record.after.headSha, tree: record.tree, contentDigest: record.contentDigest } })
+        acceptingCheckpoint = false
+        return structuredClone(next)
+      } }
+      const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState,
+        ...(decision.action === 'VERIFY' ? { implementationCheckpoint } : {}),
+        ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
         recoveryInstructions: [...(context?.recoveryInstructions ?? []), ...(state.autonomousRecovery?.diagnosis?.instructions ? [state.autonomousRecovery.diagnosis.instructions] : [])] })
+        .finally(() => { acceptingCheckpoint = false })
       const actualProvider = result.providerHistory?.at(-1) ?? projectedProvider
       approvedVerificationCommand = undefined
       // Real runtime/router observations from this dispatch become Provider Health facts.

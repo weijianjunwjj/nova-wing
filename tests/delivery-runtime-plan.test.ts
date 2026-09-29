@@ -487,9 +487,9 @@ test('delivery V2 adapter lets implementation run without executing obligation m
   const beforeVerificationCommit = dirtyTask.gitState.headSha
   const missing = await dispatcher.dispatch({ action: 'VERIFY', agent, task: dirtyTask })
   assert.equal(missing.status, 'BLOCKED')
-  assert.match(missing.blockers?.[0] ?? '', /BLUEPRINT_CANDIDATE_MISSING/u)
-  assert.notEqual(await git(repo, 'rev-parse', 'HEAD'), beforeVerificationCommit)
-  assert.equal(await git(repo, 'status', '--porcelain'), '')
+  assert.match(missing.blockers?.[0] ?? '', /OWNED_CHECKPOINT_HANDOFF_REQUIRED/u)
+  assert.equal(await git(repo, 'rev-parse', 'HEAD'), beforeVerificationCommit)
+  assert.notEqual(await git(repo, 'status', '--porcelain'), '')
   assert.equal(received.length, 1)
 })
 

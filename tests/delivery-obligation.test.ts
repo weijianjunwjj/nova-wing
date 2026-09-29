@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, writeFile, readFile, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
@@ -469,4 +469,353 @@ test('21 mixed positive action and negative scope require executed test and revi
   assert.match(String(observed.facts.commandStdoutSha256), /^[a-f0-9]{64}$/u)
   assert.match(String(observed.facts.commandStderrSha256), /^[a-f0-9]{64}$/u)
   assert.equal(observed.facts.manifestHash, manifest.sha256)
+})
+
+// Production Delivery dispatcher + Controller, actual Git inspection and commit. Only LLM replies are fixtures.
+async function checkpointIntegrationFixture(local = false) {
+  const f = await fixture(local ? {} : { level: 'ui', behavior: '顾客在页面查看订单。', outcome: '页面呈现订单。', evidence: '浏览器截图。' })
+  const plan = await f.compile(), store = new DeliveryStore(join(f.root, 'delivery'))
+  await store.savePlan(plan)
+  const definition = workSessionDefinitionFor(plan, 'checkpoint-integration')
+  const inspectRepository = async () => {
+    const entries = parseGitStatus(await git(f.repo, 'status', '--porcelain', '-z', '--untracked-files=all'))
+    return { repositoryIdentity: await realpath(f.repo), branch: await git(f.repo, 'branch', '--show-current'),
+      headSha: await git(f.repo, 'rev-parse', 'HEAD'), changedFiles: entries.map(e => e.path),
+      worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(f.repo, entries, { strict: true }))
+        .update(await git(f.repo, 'diff', '--cached', '--binary')).digest('hex') }
+  }
+  const agents = [{ id: 'executor', identity: { agent: 'executor', provider: 'codex', runtimeIdentity: 'fixture-executor' },
+    available: true, degraded: false, quotaExhausted: false, capabilities: { coding: true, reasoning: true, verification: true } },
+  { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'fixture-reviewer' },
+    available: true, degraded: false, quotaExhausted: false, capabilities: { review: true, reasoning: true } }]
+  return { ...f, plan, store, definition, inspectRepository, agents }
+}
+
+test('owned checkpoint production wiring: EXECUTE -> real VERIFY commit -> REVIEW without false drift', async () => {
+  const f = await checkpointIntegrationFixture()
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  const { TaskEventLogV2 } = await import('../packages/development-guardian/work-session/task-observability.js')
+  const log = new TaskEventLogV2()
+  let reviews = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, {
+    inspectRepository: f.inspectRepository,
+    async dispatch({ action, task, agent }) {
+      if (action === 'EXECUTE') {
+        await writeFile(join(f.repo, 'feature.js'), 'export const feature = 1\n')
+        return { status: 'SUCCESS', changedFiles: ['feature.js'], workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
+      }
+      assert.equal(action, 'REVIEW'); reviews++
+      return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
+        reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
+        reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
+        reviewedFiles: [], timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1', verdict: 'DEFERRED', evidence: 'external browser pending' }] } }
+    },
+  })
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch, agents: f.agents, dispatcher })
+  const result = await runner.run(f.definition.tasks[0]!, undefined, undefined, { taskEventLog: log })
+  assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.equal(result.status, 'COMPLETED'); assert.equal(reviews, 1)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD^'), f.target.baselineCommit)
+  assert.equal(await git(f.repo, 'status', '--porcelain'), '')
+  assert.equal((await f.store.customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+})
+
+async function integrationRunner(f: Awaited<ReturnType<typeof checkpointIntegrationFixture>>, options: {
+  execute?: () => Promise<void>; noOp?: boolean;
+  wrap?: (dispatcher: import('../packages/development-guardian/work-session/v2-controller-task-runner.js').V2ActionDispatcher) => import('../packages/development-guardian/work-session/v2-controller-task-runner.js').V2ActionDispatcher;
+  blueprintReviewer?: import('../packages/development-guardian/delivery/verification-blueprint-planner.js').BlueprintReviewer
+} = {}) {
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  const { TaskEventLogV2 } = await import('../packages/development-guardian/work-session/task-observability.js')
+  const log = new TaskEventLogV2(), calls: string[] = []
+  const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, { inspectRepository: f.inspectRepository,
+    async dispatch({ action, task, agent }) {
+      calls.push(action)
+      if (action === 'EXECUTE') {
+        if (options.execute) await options.execute()
+        else if (!options.noOp) await writeFile(join(f.repo, 'feature.js'), 'export const feature = 1\n')
+        if (options.noOp) return { status: 'SUCCESS', changedFiles: [], workspaceExecution: {
+          outcome: 'ALREADY_SATISFIED', mutationFailures: [], alreadySatisfied: { reason: 'The fixture README already exists.',
+            files: [{ path: 'README.md', sha256: createHash('sha256').update(await readFile(join(f.repo, 'README.md'))).digest('hex') }] } } }
+        return { status: 'SUCCESS', changedFiles: (await f.inspectRepository()).changedFiles,
+          workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
+      }
+      assert.equal(action, 'REVIEW')
+      const verification = task.verificationState.results[0]
+      const external = f.plan.acceptanceBindings[0]!.stagedVerification.readiness === 'EXTERNAL_DEFERRED'
+      return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
+        reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
+        reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
+        reviewedFiles: [], timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1',
+          verdict: external ? 'DEFERRED' : 'PASS', evidence: external ? 'external platform pending' : verification!.rawOutputRef!,
+          ...(external ? {} : { capabilityEvidence: { family: 'command', providerId: 'existing-guarded-verifier', providerVersion: '1',
+            collector: 'existing-guarded-verifier', evidenceIds: [verification!.rawOutputRef!], verificationResult: 'OBSERVED' } }) }] } }
+    } }, undefined, { reviewer: options.blueprintReviewer ?? (async () => { throw new Error('No fixture blueprint reviewer configured') }) })
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: f.agents, dispatcher: options.wrap?.(dispatcher) ?? dispatcher })
+  return { runner, calls, log, run: (context?: import('../packages/development-guardian/work-session/task-runner.js').WorkSessionTaskRunContext) =>
+    runner.run(f.definition.tasks[0]!, undefined, undefined, { ...context, taskEventLog: log }) }
+}
+
+test('owned checkpoint: explicit already-satisfied makes no empty commit and still reviews DEFERRED', async () => {
+  const f = await checkpointIntegrationFixture(), h = await integrationRunner(f, { noOp: true })
+  const result = await h.run()
+  assert.equal(result.status, 'COMPLETED')
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+  assert.equal(result.taskStateV2?.ownedCheckpoints, undefined)
+  assert.equal(result.taskStateV2?.completion.review?.assertionVerdicts?.[0]?.verdict, 'DEFERRED')
+  assert.equal(h.log.count('IMPLEMENTATION_CHECKPOINT_ACCEPTED'), 0)
+})
+
+for (const field of ['canonicalPath', 'branch'] as const)
+  test(`owned checkpoint preserves frozen target ${field} binding`, async () => {
+    const f = await checkpointIntegrationFixture()
+    f.plan.targetBinding[field] += '-mismatch'
+    const h = await integrationRunner(f), result = await h.run()
+    assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+    assert.match(JSON.stringify(result), /OWNED_CHECKPOINT_TARGET_BINDING_MISMATCH/u)
+    assert.equal(result.taskStateV2?.ownedCheckpoints, undefined)
+    assert.ok(!h.calls.includes('REVIEW'))
+  })
+
+for (const change of ['extra-file', 'content', 'extra-commit', 'branch'] as const)
+  test(`owned checkpoint rejects real Git hook tampering: ${change}`, async () => {
+    const f = await checkpointIntegrationFixture()
+    const post = change === 'extra-commit' || change === 'branch'
+    const hook = join(f.repo, '.git/hooks', post ? 'post-commit' : 'pre-commit')
+    const body = change === 'extra-file' ? 'echo extra > smuggled.txt\ngit add smuggled.txt'
+      : change === 'content' ? 'echo changed > feature.js\ngit add feature.js'
+      : change === 'branch' ? 'git checkout -qb unexpected-branch'
+      : 'git -c core.hooksPath=.git/no-hooks commit --allow-empty -qm extra-commit'
+    await writeFile(hook, `#!/bin/sh\n${body}\n`); await chmod(hook, 0o755)
+    const h = await integrationRunner(f), result = await h.run()
+    assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+    assert.equal(result.taskStateV2?.ownedCheckpoints, undefined)
+    assert.equal(h.log.count('IMPLEMENTATION_CHECKPOINT_ACCEPTED'), 0)
+    assert.ok(!h.calls.includes('REVIEW'))
+  })
+
+for (const change of ['file-before', 'content-before', 'file-after', 'commit-after', 'forged-proof'] as const)
+  test(`owned checkpoint handoff rejects ${change}`, async () => {
+    const f = await checkpointIntegrationFixture()
+    const h = await integrationRunner(f, { wrap: dispatcher => ({ ...dispatcher, async dispatch(input) {
+      if (input.action !== 'VERIFY') return dispatcher.dispatch(input)
+      if (change === 'file-before') await writeFile(join(f.repo, 'extra.txt'), 'outside observed change set\n')
+      if (change === 'content-before') await writeFile(join(f.repo, 'feature.js'), 'raced content\n')
+      if (change === 'forged-proof') {
+        await git(f.repo, 'add', '.'); await git(f.repo, 'commit', '-qm', 'model claimed commit')
+        await assert.rejects(input.implementationCheckpoint!.accept({ kind: 'runtime-implementation-checkpoint' }), /HANDOFF_REJECTED/u)
+        return { status: 'SUCCESS' }
+      }
+      const original = input.implementationCheckpoint!
+      return dispatcher.dispatch({ ...input, implementationCheckpoint: { ...original, accept: async proof => {
+        if (change === 'file-after') await writeFile(join(f.repo, 'extra.txt'), 'after checkpoint\n')
+        if (change === 'commit-after') await git(f.repo, 'commit', '--allow-empty', '-qm', 'external descendant')
+        return original.accept(proof)
+      } } })
+    } }) })
+    const result = await h.run()
+    assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+    assert.equal(h.log.count('IMPLEMENTATION_CHECKPOINT_ACCEPTED'), 0)
+    assert.ok(!h.calls.includes('REVIEW'))
+  })
+
+for (const scope of ['forbidden', 'outside', 'symlink'] as const)
+  test(`owned checkpoint preserves ${scope} scope restriction`, async () => {
+    const f = await checkpointIntegrationFixture()
+    const configured = f.definition.tasks[0]!
+    if (scope === 'forbidden') configured.forbiddenPaths = ['feature.js']
+    if (scope === 'outside') configured.allowedPaths = ['README.md']
+    const h = await integrationRunner(f, { execute: async () => {
+      if (scope === 'symlink') await symlink(join(f.root, 'outside.txt'), join(f.repo, 'feature.js'))
+      else await writeFile(join(f.repo, 'feature.js'), 'not allowed\n')
+    } })
+    const result = await h.run()
+    assert.notEqual(result.status, 'COMPLETED')
+    assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+    assert.equal(h.log.count('IMPLEMENTATION_CHECKPOINT_ACCEPTED'), 0)
+  })
+
+test('owned checkpoint verifier failure persists C in WorkSession DB; reopen and VERIFY ONLY never reexecutes or recommits', async () => {
+  const { WorkSessionRuntime } = await import('../packages/development-guardian/work-session/runtime.js')
+  const f = await checkpointIntegrationFixture(true), h = await integrationRunner(f)
+  const storageUrl = `file:${join(f.root, 'workflow.db')}`
+  const first = new WorkSessionRuntime({ definition: f.definition, taskRunner: h.runner, storageUrl })
+  let persisted: import('../packages/development-guardian/work-session/task-state-v2.js').TaskStateV2
+  try {
+    const result = await first.start()
+    assert.equal(result.state, 'SUSPENDED')
+    assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
+    persisted = result.taskStatesV2!.T1!
+    assert.match(persisted.blockers.join(' '), /BLUEPRINT_CANDIDATE_MISSING/u)
+    assert.equal(persisted.ownedCheckpoints!.length, 1)
+    assert.equal(persisted.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
+  } finally { await first.close() }
+  const second = new WorkSessionRuntime({ definition: f.definition, taskRunner: h.runner, storageUrl })
+  try {
+    const state = await second.loadPersistedState()
+    assert.deepEqual(state!.taskStatesV2!.T1!.ownedCheckpoints, JSON.parse(JSON.stringify(persisted!.ownedCheckpoints)))
+    const resumed = await second.resume({ decision: 'VERIFY ONLY' })
+    assert.equal(resumed.state, 'SUSPENDED')
+    assert.notEqual(resumed.humanRequired?.category, 'REPO_DRIFT')
+    assert.equal(resumed.taskStatesV2!.T1!.gitState.headSha, persisted!.gitState.headSha)
+    assert.equal(resumed.taskStatesV2!.T1!.ownedCheckpoints!.length, 1)
+    assert.equal(h.calls.filter(action => action === 'EXECUTE').length, 1)
+    assert.equal(await git(f.repo, 'rev-list', '--count', `${f.target.baselineCommit}..HEAD`), '1')
+  } finally { await second.close() }
+})
+
+test('owned checkpoint persisted before verifier failure clears old evidence/review and survives interrupted verifier', async () => {
+  const { loadTaskStateV2 } = await import('../packages/development-guardian/work-session/task-state-v2.js')
+  const f = await checkpointIntegrationFixture(true)
+  const h = await integrationRunner(f, { wrap: dispatcher => ({ ...dispatcher, async dispatch(input) {
+    if (input.action !== 'VERIFY') return dispatcher.dispatch(input)
+    const original = input.implementationCheckpoint!
+    return dispatcher.dispatch({ ...input, implementationCheckpoint: { ...original, accept: async proof => {
+      const accepted = await original.accept(proof)
+      assert.equal(accepted.completion.review, undefined); assert.equal(accepted.completion.approval, undefined)
+      assert.deepEqual(accepted.verificationState.results, []); assert.deepEqual(accepted.completion.evidence, [])
+      throw new Error('fixture interrupted after durable checkpoint')
+    } } })
+  } }) })
+  const file = join(f.root, 'persisted-task.json')
+  const result = await h.run({ persistTaskStateV2: async state => { await writeFile(file, JSON.stringify(state)) } })
+  assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
+  const state = loadTaskStateV2(JSON.parse(await readFile(file, 'utf8')))
+  assert.equal(state.ownedCheckpoints!.length, 1)
+  assert.equal(state.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
+})
+
+test('owned checkpoint persistence interrupted before acknowledgement stays fail closed and does not adopt descendant', async () => {
+  const f = await checkpointIntegrationFixture(), h = await integrationRunner(f)
+  const file = join(f.root, 'task.json')
+  const result = await h.run({ persistTaskStateV2: async state => {
+    if (state.ownedCheckpoints?.length) throw new Error('fixture durable write failed')
+    await writeFile(file, JSON.stringify(state))
+  } })
+  assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.equal(result.taskStateV2?.ownedCheckpoints, undefined)
+  assert.equal(h.log.count('IMPLEMENTATION_CHECKPOINT_ACCEPTED'), 0)
+  assert.notEqual(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+  assert.ok(!h.calls.includes('REVIEW'))
+})
+
+test('owned checkpoint local obligation binds exact reviewed blueprint and collected evidence to C', async () => {
+  const f = await checkpointIntegrationFixture(true)
+  const originalHash = f.plan.runtimePlanHash
+  let blueprintReviews = 0
+  const h = await integrationRunner(f, {
+    execute: async () => {
+      await mkdir(join(f.repo, 'tests')); await mkdir(join(f.repo, 'verification'))
+      const candidate = blueprint(f.frozen, f.target)
+      await writeFile(join(f.repo, 'tests/assertion.test.js'), `const assert = require('node:assert/strict');\n` +
+        `const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');\n` +
+        `const assertionId = 'A1'; const assertionContractHash = '${candidate.sourceAssertionHash}';\n` +
+        `const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nw-owned-evidence-'));\n` +
+        `try { const file = path.join(root, 'order.json'); const order = { id: 'order-id', status: 0 };\n` +
+        `order.status = 24; fs.writeFileSync(file, JSON.stringify(order));\n` +
+        `const reread = JSON.parse(fs.readFileSync(file, 'utf8')); assert.equal(reread.id, order.id); assert.equal(reread.status, 24);\n` +
+        `} finally { fs.rmSync(root, { recursive: true, force: true }); }\n`)
+      const { schemaVersion: _schema, assertionId, runtimeTaskId, sourceAssertionHash, targetConstraints: _target,
+        provenance: _provenance, ...content } = candidate
+      await writeFile(join(f.repo, 'verification/blueprints.v1.json'), JSON.stringify({ schemaVersion: 1,
+        entries: [{ assertionId, runtimeTaskId, sourceAssertionHash, blueprint: content }] }))
+    },
+    blueprintReviewer: async input => {
+      blueprintReviews++
+      assert.equal(input.candidate.implementationCommit, await git(f.repo, 'rev-parse', 'HEAD'))
+      assert.notEqual(input.candidate.implementationCommit, f.target.baselineCommit)
+      assert.ok(input.reviewMaterial.some(item => item.source.includes('assert.equal(reread.status, 24)')))
+      return { verdict: 'PASS', reviewer: 'isolated-independent-blueprint-reviewer', issues: [] }
+    },
+  })
+  const result = await h.run()
+  assert.equal(result.status, 'COMPLETED', JSON.stringify(result.humanRequired))
+  assert.equal(blueprintReviews, 1)
+  const commit = await git(f.repo, 'rev-parse', 'HEAD')
+  const transition = await f.store.getBindingTransition(f.plan, 'A1', 'T1')
+  assert.equal(transition!.implementationCommit, commit)
+  const verification = result.taskStateV2!.verificationState.results[0]!
+  assert.equal(verification.status, 'passed')
+  const evidence = await f.store.getCapabilityEvidence(f.plan, verification.rawOutputRef!)
+  assert.equal(evidence!.facts.observedMatch, true)
+  assert.ok(result.taskStateV2!.completion.review!.assertionVerdicts![0]!.capabilityEvidence!.evidenceIds.includes(evidence!.id))
+  assert.equal(f.plan.runtimePlanHash, originalHash); assert.equal(f.plan.targetBaselineCommit, f.target.baselineCommit)
+  const proof = result.taskStateV2!.ownedCheckpoints![0]!
+  assert.equal(proof.before.headSha, f.target.baselineCommit); assert.equal(proof.after.headSha, commit)
+  assert.equal(taskCompletionGate(f.plan.acceptanceBindings, [transition!], []), 'BLOCKED')
+})
+
+test('owned checkpoint binds session/task/attempt/dispatch and cannot be replayed as model JSON', async () => {
+  const { acceptOwnedCheckpoint } = await import('../packages/development-guardian/work-session/owned-checkpoint.js')
+  const f = await checkpointIntegrationFixture()
+  let validated = 0
+  const h = await integrationRunner(f, { wrap: dispatcher => ({ ...dispatcher, async dispatch(input) {
+    if (input.action !== 'VERIFY') return dispatcher.dispatch(input)
+    const original = input.implementationCheckpoint!
+    return dispatcher.dispatch({ ...input, implementationCheckpoint: { ...original, accept: async proof => {
+      const observed = await f.inspectRepository()
+      for (const task of [
+        { ...input.task, identity: { ...input.task.identity, sessionId: 'another-session' } },
+        { ...input.task, identity: { ...input.task.identity, taskId: 'T2' } },
+        { ...input.task, attemptId: 'f'.repeat(64) },
+      ]) await assert.rejects(acceptOwnedCheckpoint(proof, task, original.dispatchId, observed), /HANDOFF_REJECTED/u)
+      await assert.rejects(acceptOwnedCheckpoint(proof, input.task, 'wrong-dispatch', observed), /HANDOFF_REJECTED/u)
+      await assert.rejects(acceptOwnedCheckpoint(JSON.parse(JSON.stringify(proof)), input.task, original.dispatchId, observed), /HANDOFF_REJECTED/u)
+      const accepted = await original.accept(proof); validated++
+      await assert.rejects(original.accept(proof), /ACTION_CLOSED/u)
+      return accepted
+    } } })
+  } }) })
+  const initial = { ...createTaskStateV2(f.definition, f.definition.tasks[0]!), attemptId: 'a'.repeat(64) }
+  const result = await h.run({ taskStateV2: initial })
+  assert.equal(result.status, 'COMPLETED'); assert.equal(validated, 1)
+  assert.equal(result.taskStateV2!.ownedCheckpoints![0]!.attemptId, initial.attemptId)
+})
+
+test('owned checkpoint archives and invalidates old commit evidence, review and approval before new verification', async () => {
+  const f = await checkpointIntegrationFixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const feature = 1\n')
+  const current = await f.inspectRepository(), initial = createTaskStateV2(f.definition, f.definition.tasks[0]!)
+  const oldReview = { passed: true, findings: [], blockingFindings: [], severity: 'LOW' as const,
+    reviewer: f.agents[1]!.identity, implementer: f.agents[0]!.identity, reviewedRepository: current.repositoryIdentity,
+    reviewedBranch: current.branch, reviewedCommit: current.headSha, reviewedWorkspace: current.worktreeFingerprint,
+    reviewedFiles: ['feature.js'], timestamp: new Date().toISOString() }
+  const state: typeof initial = { ...initial, status: 'ACTIVE', gitState: current, implementer: f.agents[0]!.identity,
+    currentAgent: 'executor', providerHistory: ['codex'], verificationState: { results: [], evidenceHeadSha: current.headSha,
+      evidenceWorktreeFingerprint: current.worktreeFingerprint }, completion: { ...initial.completion,
+      evidence: [{ type: 'old', status: 'PASSED', source: 'deterministic', headSha: current.headSha, timestamp: new Date().toISOString() }],
+      review: oldReview, approval: { approved: true, workspaceIdentity: current.worktreeFingerprint,
+        reviewedCommit: current.headSha, risk: 'LOW', timestamp: new Date().toISOString() } } }
+  let checked = false
+  const h = await integrationRunner(f, { wrap: dispatcher => ({ ...dispatcher, async dispatch(input) {
+    if (input.action !== 'VERIFY') return dispatcher.dispatch(input)
+    const original = input.implementationCheckpoint!
+    return dispatcher.dispatch({ ...input, implementationCheckpoint: { ...original, accept: async proof => {
+      const next = await original.accept(proof)
+      assert.deepEqual(next.verificationState, { results: [] }); assert.deepEqual(next.completion.evidence, [])
+      assert.equal(next.completion.review, undefined); assert.equal(next.completion.approval, undefined)
+      assert.deepEqual((next.ownedCheckpoints![0]!.supersededEvidence as { completion: unknown }).completion, state.completion)
+      checked = true; return next
+    } } })
+  } }) })
+  const result = await h.run({ taskStateV2: state })
+  assert.equal(result.status, 'COMPLETED'); assert.equal(checked, true)
+  assert.deepEqual(h.calls, ['REVIEW'])
+  assert.notEqual(result.taskStateV2!.completion.review!.reviewedCommit, oldReview.reviewedCommit)
+})
+
+test('owned checkpoint survives subsequent reviewer unavailability without claiming completion or drift', async () => {
+  const f = await checkpointIntegrationFixture()
+  const h = await integrationRunner(f, { wrap: dispatcher => ({ ...dispatcher, async dispatch(input) {
+    return input.action === 'REVIEW' ? { status: 'BLOCKED', blockers: ['fixture reviewer offline'],
+      providerFailure: { provider: 'deepseek', status: 'OFFLINE', reason: 'fixture reviewer offline' } } : dispatcher.dispatch(input)
+  } }) })
+  const result = await h.run()
+  assert.equal(result.status, 'HUMAN_REQUIRED'); assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.match(result.humanRequired!.reason, /reviewer offline/u)
+  assert.equal(result.taskStateV2!.ownedCheckpoints!.length, 1)
+  assert.equal(result.taskStateV2!.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
+  assert.equal(await git(f.repo, 'rev-list', '--count', `${f.target.baselineCommit}..HEAD`), '1')
+  assert.notEqual(result.taskStateV2!.completion.review?.passed, true)
 })

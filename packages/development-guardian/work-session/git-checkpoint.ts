@@ -241,6 +241,8 @@ export async function checkpointImplementationForVerification(options: {
   baselineCommit: string; expectedHeadSha: string; expectedChangedFiles: readonly string[];
   expectedWorktreeFingerprint: string; taskId: string;
   commandRunner?: GitCheckpointCommandRunner
+  /** Host-only staged content validation, before commit. Never model supplied. */
+  validateStagedTree?: (tree: string) => Promise<void>
 }): Promise<string> {
   const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
   if (PROTECTED_BRANCHES.has(options.expectedBranch) || !/^[a-f0-9]{40}$/u.test(options.baselineCommit) ||
@@ -269,12 +271,18 @@ export async function checkpointImplementationForVerification(options: {
     return options.expectedHeadSha
   }
   let stagingStarted = false
+  let stagedTree: string | undefined
   try {
     stagingStarted = true
     await runGitChecked(runGit, ['add', '--', ...meaningful])
     await runGitChecked(runGit, ['diff', '--cached', '--check'])
     if (!samePathSet(parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])), meaningful))
       throw new GitCheckpointError('delivery staged files differ from inspected implementation files')
+    stagedTree = await runGitString(runGit, ['write-tree'])
+    await options.validateStagedTree?.(stagedTree)
+    if (await runGitString(runGit, ['rev-parse', 'HEAD']) !== options.expectedHeadSha ||
+      await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch)
+      throw new GitCheckpointError('delivery implementation changed before commit')
     await runGitChecked(runGit, ['commit', '-m', `${options.taskId}: implementation for verification`])
   } catch (error) {
     const rollback = stagingStarted ? await restoreIndexAfterFailedCheckpoint(runGit, options.expectedHeadSha) : undefined
@@ -282,7 +290,10 @@ export async function checkpointImplementationForVerification(options: {
       (rollback ? `; ${rollback}` : '; restored index after failed delivery checkpoint'))
   }
   const commit = await runGitString(runGit, ['rev-parse', 'HEAD'])
-  if (!/^[a-f0-9]{40}$/u.test(commit) || await runGitString(runGit,
+  if (!/^[a-f0-9]{40}$/u.test(commit) || await realpath(options.repoPath) !== options.expectedRepositoryIdentity ||
+    await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
+    await runGitString(runGit, ['rev-list', '--parents', '-n', '1', commit]) !== `${commit} ${options.expectedHeadSha}` ||
+    await runGitString(runGit, ['rev-parse', `${commit}^{tree}`]) !== stagedTree || await runGitString(runGit,
     ['status', '--porcelain', '--untracked-files=all']) !== '')
     throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
   return commit
