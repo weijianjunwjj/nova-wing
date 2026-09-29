@@ -184,6 +184,41 @@ test('validator rejects uncovered requirements, invalid graph, orphan acceptance
   assert.ok(validateDevelopmentPlan(createDevelopmentPlan(optionalOnly, { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan')).issues.some((issue) => issue.code === 'NO_MUST_REQUIREMENT'))
 })
 
+test('runtime wiring gate accepts negative command evidence but rejects actual runtime assignments', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const validate = (change: (draft: PlanDraft) => void) => {
+    const draft = requirement001Draft(text)
+    change(draft)
+    return validateDevelopmentPlan(createDevelopmentPlan(draft,
+      { id: 'req', text, receivedAt: new Date().toISOString() }, 'plan'))
+  }
+  for (const sentence of [
+    '每项业务行为都有浏览器实际结果；仅有测试命令成功时验收不通过。',
+    '不能仅凭 npm test 通过认定业务功能完成。',
+    '即使测试命令成功，也必须实际观察新增、编辑、删除结果。',
+    '测试成功不是最终业务验收。',
+  ]) {
+    const result = validate((draft) => {
+      const assertion = draft.acceptancePlan.criteria[0]!.assertions[0]!
+      assertion.expectedOutcome = `${assertion.expectedOutcome} ${sentence}`
+    })
+    assert.equal(result.pass, true, `${sentence}: ${JSON.stringify(result.issues)}`)
+  }
+  for (const sentence of [
+    '验证命令使用 npm test。',
+    '测试命令：pnpm test。',
+    'Reviewer 使用 DeepSeek。',
+    'Executor 使用 Codex。',
+    '模型选择 gpt-6-sol。',
+    'allowedPaths 设置为 src/**。',
+    'WorkSession 由 Agent 执行。',
+    '使用 shell 执行 npm test。',
+  ]) {
+    const result = validate((draft) => { draft.architecture.decisions.push(sentence) })
+    assert.ok(result.issues.some((issue) => issue.code === 'RUNTIME_WIRING'), sentence)
+  }
+})
+
 test('Customer Mode HTTP flow generates, revises and approves without starting a Work Session', async () => {
   const text = await readFile(requirementPath, 'utf8')
   const directory = await mkdtemp(join(tmpdir(), 'nw-customer-http-'))

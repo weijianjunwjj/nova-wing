@@ -4,7 +4,24 @@ export interface PlanIssue { code: string; path: string; message: string }
 export interface PlanValidation { pass: boolean; issues: PlanIssue[]; mustTaskCoverage: number; mustAcceptanceCoverage: number }
 
 const TECHNICAL_QUESTION = /\b(?:React|Vue|Angular|Svelte|SQLite|PostgreSQL|MySQL|MongoDB|REST|GraphQL|Codex|Claude|GPT|DeepSeek|reviewer|executor|agent|model|framework|database|db|shell|command|verification|test runner|Docker|Kubernetes)\b|技术栈|技术方案|数据库|模型|评审器|执行器|验证命令|测试命令|框架|前端框架|后端框架|前端技术|后端技术|接口协议|编程语言|用什么语言|什么语言开发|用什么开发|部署方式/iu
-const RUNTIME_WIRING = /\b(?:Codex|Claude|DeepSeek|Reviewer|Executor|Agent|WorkSession|checkpoint internals?|shell|npm\s+run|npx|pnpm|yarn|pytest|tsc|model selection|allowed paths)\b|评审器|执行器|验证命令|测试命令|模型分配|模型选择|检查点内部|允许路径/iu
+const RUNTIME_ENTITY = String.raw`(?:\b(?:Codex|Claude|DeepSeek|Reviewer|Executor|Agent|WorkSession|shell|model selection|allowedPaths|allowed paths|checkpoint internals?)\b|评审器|执行器|模型(?:选择|分配)|检查点内部|允许路径)`
+const COMMAND_EXECUTABLE = String.raw`\b(?:npm|npx|pnpm|yarn|pytest|tsc|node|python|bash|sh|go|cargo|make|git)\b`
+// These patterns require an assignment or execution action. Mentioning a test
+// command as insufficient business evidence is not Customer Mode runtime wiring.
+const RUNTIME_ASSIGNMENTS = [
+  new RegExp(String.raw`\b(?:assign|use|configure|select|set|run|invoke|route|wire|bind)\b\s+(?:(?:the|a|an)\s+)?${RUNTIME_ENTITY}`, 'giu'),
+  new RegExp(String.raw`(?:使用|采用|指定|选择|配置|设置|调用|运行|执行|交由)\s*${RUNTIME_ENTITY}`, 'giu'),
+  new RegExp(String.raw`${RUNTIME_ENTITY}\s*(?:使用|采用|指定|选择|配置|设置|调用|运行|执行|作为|交由|由|设为|设置为|[:：=]|\b(?:uses?|as|runs?|assigned|configured|selected|via)\b)`, 'giu'),
+  /模型(?:选择|分配)\s*(?:(?:为|使用|采用|指定|[:：=])\s*)?(?:gpt-[\w.-]+|Codex|Claude|DeepSeek)\b/giu,
+  new RegExp(String.raw`(?:验证命令|测试命令|\b(?:verification|test)\s+commands?\b)\s*(?:使用|采用|指定|设为|设置为|为|[:：=])\s*[\x60"']?\s*${COMMAND_EXECUTABLE}`, 'giu'),
+  new RegExp(String.raw`(?:执行|运行|调用)\s*${COMMAND_EXECUTABLE}\s+\S+`, 'giu'),
+]
+const NEGATED_ASSIGNMENT = /(?:\b(?:do\s+not|don't|never|without|not)\b|(?:不得|禁止|避免|无需|不(?:应|可|能|要)?))(?:\s*(?:使用|采用|指定|选择|配置|设置|调用|运行|执行|use|assign|run))?\s*$/iu
+
+function hasRuntimeWiring(value: string): boolean {
+  return RUNTIME_ASSIGNMENTS.some((pattern) => [...value.matchAll(pattern)].some((match) =>
+    !NEGATED_ASSIGNMENT.test(value.slice(Math.max(0, match.index - 24), match.index))))
+}
 const COMMAND_ONLY = /^(?:npm|npx|pnpm|yarn|node|python|pytest|go|cargo|make|git|tsc|bash)\s+[^。.!?]+(?:\s+(?:passes?|成功|通过))?[。.!?]?$/iu
 const COMMAND_SUCCESS = /\b(?:npm|npx|pnpm|yarn|node|python|pytest|go|cargo|make|git|tsc|bash)\s+[^。；;.!?]*(?:pass(?:es|ed)?|succeed(?:s|ed)?|成功|通过)|(?:build|typecheck|check|tests?)\s*(?:pass(?:es|ed)?|succeed(?:s|ed)?|成功|通过)/iu
 const GENERIC_ASSERTION = /^(?:满足|实现|覆盖|验证|检查|确认)?(?:该|此|相关|全部|所有)?(?:需求|功能|业务|流程|行为|结果)(?:已)?(?:通过|正确|正常|成功|完成|可用|符合要求)[。.!]?$/iu
@@ -145,7 +162,7 @@ export function validateDevelopmentPlan(plan: DevelopmentPlan): PlanValidation {
     ...draft.risks.flatMap((risk) => [risk.description, risk.mitigation]),
     ...draft.assumptions.flatMap((assumption) => [assumption.statement, assumption.impactIfFalse]),
   ]
-  if (planningText.some((value) => RUNTIME_WIRING.test(value))) {
+  if (planningText.some(hasRuntimeWiring)) {
     add('RUNTIME_WIRING', 'plan', 'Customer plan may not assign agents, models, reviewers or verification commands.')
   }
   const coverage = buildCoverage(draft)
