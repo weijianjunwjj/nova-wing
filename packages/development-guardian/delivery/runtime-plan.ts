@@ -338,6 +338,11 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
         continue
       }
       const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+      if (bindings.length === 0) {
+        blockers.push({ code: 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE',
+          message: `任务 ${task.id} 关联冻结验收断言，但其结果由下游任务证明；当前缺少可安全完成该贡献任务的独立证明契约。` })
+        continue
+      }
       if (bindings.every((binding) => binding.stagedVerification.readiness === 'BOUND_EXECUTABLE')) {
         const verification = await planVerification({ repositoryRoot: plan.targetBinding.canonicalPath,
           task, risk: 'HIGH' }).catch(() => undefined)
@@ -440,6 +445,14 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
     `AcceptanceAssertion ${binding.assertionId}: ${binding.observableBehavior} → ${binding.expectedOutcome} | Expected evidence: ${binding.expectedEvidence}` +
     ` | VerificationReadiness: ${binding.stagedVerification.readiness}` +
     ` | CapabilityContract: ${binding.verificationCapability.family}/${binding.verificationCapability.providerId}@${binding.verificationCapability.providerVersion}`
+  const criteriaForTask = (task: RuntimeTaskBinding): string[] => {
+    const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
+    const owned = bindings.filter((binding) => binding.ownership === 'OWNER')
+    if (owned.length > 0) return owned.map(criterionFor)
+    // Contribution scope is visible to the task, but never becomes owner evidence.
+    return bindings.filter((binding) => binding.ownership === 'CONTRIBUTES').map((binding) =>
+      `Contribution to AcceptanceAssertion ${binding.assertionId}; canonical owner: ${binding.canonicalOwnerTaskId}`)
+  }
   return { id: sessionId, targetRepo: plan.targetBinding.canonicalPath, branch: plan.targetBinding.branch ?? '',
     controlPlane: 'v2', directPath: { enabled: false }, goldenPath: { enabled: false },
     limits: { softMinutes: 60, hardMinutes: 240, maxTasks: plan.tasks.length },
@@ -460,8 +473,7 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
           .map((binding) => `Completion-only verification gate ${binding.assertionId}: ${binding.stagedVerification.readiness}; ${binding.stagedVerification.policy}`),
         ...plan.customerDecisions.map((decision) => `Customer decision ${decision.questionId}: ${decision.selectedOptionText}`)],
       allowedPaths: ['.'], forbiddenPaths: [], risk: 'HIGH',
-      acceptanceCriteria: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
-        .map(criterionFor),
+      acceptanceCriteria: criteriaForTask(task),
       acceptanceEvidenceBindings: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map((binding) => ({ criterion: criterionFor(binding),
           requiredEvidence: ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness) ? [] :

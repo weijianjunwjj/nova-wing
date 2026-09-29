@@ -62,7 +62,7 @@ export const CUSTOMER_APP_JS = `(() => {
     if (!response.ok) throw new Error(result.error || '请求失败')
     return result
   }
-  const render = (result) => {
+  const render = (result, scrollTarget = 'plan') => {
     const plan = result.plan || result
     current = plan
     requirement.value = plan.requirement.text
@@ -146,7 +146,8 @@ export const CUSTOMER_APP_JS = `(() => {
     for (const item of issues) validationIssues.append(node('li', item.code + '：' + item.message))
     document.getElementById('approve').disabled = plan.status !== 'ready_for_approval'
     document.getElementById('revise').disabled = plan.status === 'approved' || plan.status === 'frozen'
-    planElement.scrollIntoView({ behavior: 'smooth' })
+    if (scrollTarget === 'freeze' && plan.status === 'frozen') freezeResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    else planElement.scrollIntoView({ behavior: 'smooth' })
   }
   const loadRecent = async () => {
     try {
@@ -210,7 +211,7 @@ export const CUSTOMER_APP_JS = `(() => {
   document.getElementById('approve').addEventListener('click', async () => {
     if (!current || busy) return
     busy = true; error.textContent = ''
-    try { render(await post('/api/planning/approve', { planId: current.id, version: current.version })); await loadRecent() }
+    try { render(await post('/api/planning/approve', { planId: current.id, version: current.version }), 'freeze'); await loadRecent() }
     catch (failure) { error.textContent = failure.message || '批准失败' }
     finally { busy = false }
   })

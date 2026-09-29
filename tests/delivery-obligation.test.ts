@@ -206,10 +206,21 @@ test('9 completion-only external assertion is locally verified but customer deli
 test('10 three covering tasks yield one canonical owner and one obligation', async () => {
   const f = await fixture({ tasks: [{ id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] },
     { id: 'T3', dependencyIds: ['T2'] }] })
+  assert.equal(verifyPlanSnapshot(f.frozen).sourcePlanVersion, 1)
   const plan = await f.compile()
+  assert.deepEqual(verifyRuntimePlanCoverage(f.frozen, plan).blockingAssertionRuntime, 100)
+  assert.deepEqual(plan.tasks.map((task) => task.dependencyIds), [[], ['T1'], ['T2']])
   assert.equal(plan.acceptanceBindings.filter((item) => item.stagedVerification.obligation).length, 1)
   assert.equal(plan.acceptanceBindings.find((item) => item.ownership === 'OWNER')?.runtimeTaskId, 'T3')
-  assert.equal(plan.admission.blockers.filter((item) => item.assertionId === 'A1').length, 0)
+  assert.deepEqual(plan.acceptanceBindings.map((item) => [item.runtimeTaskId, item.ownership, item.canonicalOwnerTaskId]),
+    [['T1', 'CONTRIBUTES', 'T3'], ['T2', 'CONTRIBUTES', 'T3'], ['T3', 'OWNER', 'T3']])
+  const definition = workSessionDefinitionFor({ ...plan, admission: { ...plan.admission, status: 'READY', blockers: [] } }, 'admission-probe')
+  assert.deepEqual(definition.tasks.map((task) => task.acceptanceCriteria?.length), [1, 1, 1])
+  assert.deepEqual(definition.tasks.map((task) => task.acceptanceEvidenceBindings?.length), [0, 0, 1])
+  assert.equal(plan.admission.status, 'ADMISSION_BLOCKED')
+  assert.deepEqual(plan.admission.blockers.filter((item) => item.code === 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE')
+    .map((item) => item.message.includes('任务 T1') ? 'T1' : item.message.includes('任务 T2') ? 'T2' : '?'), ['T1', 'T2'])
+  assert.equal(plan.admission.blockers.filter((item) => item.code === 'TASK_NO_BLOCKING_ASSERTION').length, 0)
   assert.equal(taskCompletionGate(plan.acceptanceBindings.filter((item) => item.runtimeTaskId === 'T1'), [], []), 'BLOCKED')
 })
 
