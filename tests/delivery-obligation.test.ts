@@ -754,30 +754,23 @@ test('owned checkpoint local obligation binds exact reviewed blueprint and colle
 
 test('delivery vertical: T1 finalizes and persists, then reopened Runtime executes dependent deferred T2', async () => {
   const { WorkSessionRuntime } = await import('../packages/development-guardian/work-session/runtime.js')
-  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
-  const { createReviewDispatcher } = await import('../packages/development-guardian/work-session/review-dispatcher.js')
   const { ReviewerRuntimeRegistry } = await import('../packages/development-guardian/work-session/reviewer-runtime.js')
+  const { createProductionWorkSessionUi } = await import('../packages/development-guardian/work-session/production.js')
+  type TrustedWorkSessionConfig = import('../packages/development-guardian/work-session/production.js').TrustedWorkSessionConfig
   // Keep the real compiled plan and bindings; use a second frozen external assertion.
   const vertical = await fixture({ tasks: [{ id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] }],
     separateTaskAssertions: true, secondExternal: true })
   const plan = await vertical.compile(), store = new DeliveryStore(join(vertical.root, 'delivery'))
   await store.savePlan(plan)
-  const definition = workSessionDefinitionFor(plan, 'delivery-vertical-two-task')
-  const inspectRepository = async () => {
-    const entries = parseGitStatus((await run('git', ['status', '--porcelain', '-z', '--untracked-files=all'],
-      { cwd: vertical.repo })).stdout)
-    return { repositoryIdentity: await realpath(vertical.repo), branch: await git(vertical.repo, 'branch', '--show-current'),
-      headSha: await git(vertical.repo, 'rev-parse', 'HEAD'), changedFiles: entries.map(entry => entry.path),
-      worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(vertical.repo, entries, { strict: true }))
-        .update((await run('git', ['diff', '--cached', '--binary'], { cwd: vertical.repo })).stdout).digest('hex') }
-  }
+  const deliveryDigest = createHash('sha256').update('novawing-delivery-session-v1\0')
+    .update(`${vertical.frozen.id}\0${plan.runtimePlanHash}\0${plan.targetBinding.id}`).digest('hex')
+  const definition = workSessionDefinitionFor(plan, `delivery-${deliveryDigest}-000000000000-${deliveryDigest.slice(0, 6)}`)
   const t1Files = ['tests/assertion.test.js', 'verification/blueprints.v1.json']
   const seen: Array<{ task: string; base: string; head: string; files: string[]; evidenceId?: string }> = []
   let t1Commit = ''
   let persistedBeforeT2 = false
   let executeT1 = 0, executeT2 = 0, blueprintReviews = 0
-  const reviewDispatcher = createReviewDispatcher({ inspectRepository,
-    registry: new ReviewerRuntimeRegistry([{ provider: 'deepseek', async review({ task }) {
+  const reviewerRegistry = new ReviewerRuntimeRegistry([{ provider: 'codex', async review({ task }) {
       assert.deepEqual(task.changedFiles, [], 'review must see the real clean worktree')
       assert.equal(task.reviewHeadCommit, task.headSha)
       assert.equal(task.reviewBaseCommit, task.taskId === 'T1' ? vertical.target.baselineCommit : t1Commit)
@@ -801,23 +794,20 @@ test('delivery vertical: T1 finalizes and persists, then reopened Runtime execut
       seen.push({ task: task.taskId, base: task.reviewBaseCommit!, head: task.reviewHeadCommit!,
         files: [...task.reviewChangedFiles!], ...(evidenceId ? { evidenceId } : {}) })
       return { kind: 'VERDICT' as const, passed: true, findings: [], blockingFindings: [],
-        summary: 'Exact submitted scope and assertion evidence checked.', provider: 'deepseek',
+        summary: 'Exact submitted scope and assertion evidence checked.', provider: 'codex',
         assertionVerdicts: [{ assertionId, verdict: task.taskId === 'T1' ? 'PASS' as const : 'DEFERRED' as const,
           evidence: task.taskId === 'T1' ? `Executed verifier evidence ${evidenceId}` : 'Customer browser evidence remains pending.',
           ...(task.taskId === 'T1' ? { capabilityEvidence: { family: 'command', providerId: 'existing-guarded-verifier',
             providerVersion: '1', collector: 'existing-guarded-verifier', evidenceIds: [evidenceId!],
             verificationResult: 'OBSERVED' as const } } : {}) }] }
-    } }]) })
-  const agents = [{ id: 'executor', identity: { agent: 'executor', provider: 'codex', runtimeIdentity: 'fixture-executor' },
+    } }])
+  const agents = [{ id: 'executor', identity: { agent: 'executor', provider: 'deepseek', runtimeIdentity: 'fixture-executor' },
     available: true, degraded: false, quotaExhausted: false,
     capabilities: { coding: true, reasoning: true, verification: true } },
-  { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'fixture-reviewer' },
+  { id: 'reviewer', identity: { agent: 'reviewer', provider: 'codex', runtimeIdentity: 'fixture-reviewer' },
     available: true, degraded: false, quotaExhausted: false, capabilities: { review: true, reasoning: true } }]
-  const dispatcher = createDeliveryRuntimeDispatcher(plan, store, { inspectRepository,
-    async dispatch({ action, task, agent }) {
-      if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task })
-      assert.equal(action, 'EXECUTE')
-      if (task.identity.taskId === 'T1') {
+  const executeFixtureTask = async (taskId: string) => {
+      if (taskId === 'T1') {
         executeT1++
         assert.equal(await git(vertical.repo, 'rev-parse', 'HEAD'), vertical.target.baselineCommit)
         await mkdir(join(vertical.repo, 'tests')); await mkdir(join(vertical.repo, 'verification'))
@@ -840,24 +830,60 @@ test('delivery vertical: T1 finalizes and persists, then reopened Runtime execut
         assert.equal(await git(vertical.repo, 'rev-parse', 'HEAD'), t1Commit)
         await writeFile(join(vertical.repo, 'external.js'), 'export const externalView = true\n')
       }
-      return { status: 'SUCCESS', changedFiles: (await inspectRepository()).changedFiles,
-        workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
-    } }, undefined, { reviewer: async input => {
+      const entries = parseGitStatus((await run('git', ['status', '--porcelain', '-z', '--untracked-files=all'],
+        { cwd: vertical.repo })).stdout)
+      return entries.map(entry => entry.path)
+  }
+  const blueprintReviewer: import('../packages/development-guardian/delivery/verification-blueprint-planner.js').BlueprintReviewer = async input => {
     blueprintReviews++
     assert.equal(input.candidate.implementationCommit, t1Commit || await git(vertical.repo, 'rev-parse', 'HEAD'))
     assert.ok(input.reviewMaterial.some(item => item.source.includes('assert.equal(reread.status, 24)')))
     return { verdict: 'PASS', reviewer: 'isolated-independent-blueprint-reviewer', issues: [] }
-  } })
-  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents, dispatcher })
+  }
   const storageUrl = `file:${join(vertical.root, 'workflow.db')}`
-  let first: InstanceType<typeof WorkSessionRuntime>
-  const controlledRunner = { run: (...args: Parameters<typeof runner.run>) => runner.run(...args),
-    afterRuntimeTaskFinalized: async (...args: Parameters<typeof runner.afterRuntimeTaskFinalized>) => {
-      await runner.afterRuntimeTaskFinalized(...args)
-      if (args[0].identity.taskId === 'T1') assert.equal(first.requestPause().accepted, true)
-    } }
-  first = new WorkSessionRuntime({ definition, taskRunner: controlledRunner, storageUrl,
-    gitCheckpoint: { policy: { autoCommit: true, autoPush: false } } })
+  const config: TrustedWorkSessionConfig = { session: { id: definition.id, targetRepo: definition.targetRepo,
+    branch: definition.branch, controlPlane: 'v2', directPath: { enabled: false },
+    goldenPath: { enabled: false }, limits: definition.limits },
+  tasks: definition.tasks.map(task => ({ id: task.id, goal: task.goal, risk: task.risk!,
+    guardian: { constraints: [...(task.constraints ?? [])], acceptanceCriteria: [...(task.acceptanceCriteria ?? [])],
+      doNotDo: [], allowedPaths: [...(task.allowedPaths ?? [])], forbiddenPaths: [...(task.forbiddenPaths ?? [])] },
+    acceptanceEvidenceBindings: (task.acceptanceEvidenceBindings ?? []).map(binding => ({
+      criterion: binding.criterion, requiredEvidence: [...binding.requiredEvidence],
+      ...(binding.requiresApproval === undefined ? {} : { requiresApproval: binding.requiresApproval }),
+      ...(binding.commandCanonicalizations === undefined ? {} : { commandCanonicalizations: binding.commandCanonicalizations.map(item => ({ ...item })) }) })) })),
+  gitCheckpoint: { autoCommit: true, autoPush: false },
+  executor: { defaultMode: 'deepseek', model: 'fixture-only', maxTurns: 1, allowNpmInstall: false, allowPythonBootstrap: false },
+  storageUrl }
+  const createApp = async (pauseAfterT1: boolean) => {
+    let runtime: InstanceType<typeof WorkSessionRuntime> | undefined
+    const app = await createProductionWorkSessionUi(config, { desktopNotifier: null, serverPort: 0,
+      env: { ...process.env, NOVAWING_DATA_DIR: vertical.root }, v2Agents: agents,
+      createExecutor: () => ({ async execute({ task }) {
+        const changedFiles = await executeFixtureTask(task.id)
+        return { summary: 'Deterministic implementation response', changedFiles, commandsRun: [],
+          verificationResults: [], blockers: [], workspaceExecution: { outcome: 'IMPLEMENTED' as const,
+            mutationFailures: [] } }
+      } }),
+      createReviewerRegistry: () => reviewerRegistry,
+      createV2Dispatcher: ({ defaultDispatcher }) => createDeliveryRuntimeDispatcher(plan, store,
+        defaultDispatcher, undefined, { reviewer: blueprintReviewer }),
+      createRuntime(runtimeConfig) {
+        if (pauseAfterT1) {
+          const realRunner = runtimeConfig.taskRunner
+          runtime = new WorkSessionRuntime({ ...runtimeConfig, taskRunner: {
+            run: (...args) => realRunner.run(...args),
+            async afterRuntimeTaskFinalized(task, commitSha) {
+              await realRunner.afterRuntimeTaskFinalized?.(task, commitSha)
+              if (task.identity.taskId === 'T1') assert.equal(runtime!.requestPause().accepted, true)
+            },
+          } })
+        } else runtime = new WorkSessionRuntime(runtimeConfig)
+        return runtime
+      },
+    })
+    return { app, runtime: runtime! }
+  }
+  const { app: firstApp, runtime: first } = await createApp(true)
   try {
     const stopped = await first.start()
     assert.equal(stopped.state, 'SUSPENDED', JSON.stringify(stopped.humanRequired))
@@ -869,9 +895,8 @@ test('delivery vertical: T1 finalizes and persists, then reopened Runtime execut
     assert.equal(stopped.taskStatesV2?.T2, undefined)
     assert.equal(executeT2, 0)
     assert.deepEqual((await store.customerAssessment(plan.id)).completedRuntimeTaskIds, ['T1'])
-  } finally { await first.close() }
-  const second = new WorkSessionRuntime({ definition, taskRunner: runner, storageUrl,
-    gitCheckpoint: { policy: { autoCommit: true, autoPush: false } } })
+  } finally { await firstApp.close() }
+  const { app: secondApp, runtime: second } = await createApp(false)
   try {
     const reopened = await second.loadPersistedState()
     assert.deepEqual(reopened?.completedTaskIds, ['T1'])
@@ -896,7 +921,7 @@ test('delivery vertical: T1 finalizes and persists, then reopened Runtime execut
     assert.equal(assessment.status, 'CUSTOMER_DELIVERY_BLOCKED')
     const completedReadback = await second.loadPersistedState()
     assert.equal(completedReadback?.taskStatesV2?.T2?.completion.review?.assertionVerdicts?.[0]?.verdict, 'DEFERRED')
-  } finally { await second.close() }
+  } finally { await secondApp.close() }
 })
 
 test('owned checkpoint binds session/task/attempt/dispatch and cannot be replayed as model JSON', async () => {
