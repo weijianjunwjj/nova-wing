@@ -415,7 +415,7 @@ export async function runArchitectureBenchmark(spec: ArchitectureBenchmarkSpec, 
             const failed = spec.firstVerificationFails === true && verifyCount === 1
             return { status: 'SUCCESS' as const, verificationResults: evidence.map((item) => ({ ...item, status: failed ? 'failed' as const : 'passed' as const, ...(failed ? { classification: 'CODE_FAILURE' as const } : {}) })) } }
           if (action === 'REVIEW') { modelProviderCallCount += 1; const reviewer = agent.identity!; return { status: 'SUCCESS' as const, review: { passed: true, findings: [], blockingFindings: [], severity: 'HIGH' as const, reviewer,
-            implementer: state.implementer!, reviewedRepository: state.gitState.repositoryIdentity!, reviewedBranch: state.gitState.branch!, reviewedCommit: state.gitState.headSha!, reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } } }
+            implementer: state.implementer!, reviewedRepository: state.gitState.repositoryIdentity!, reviewedBranch: state.gitState.branch!, reviewedCommit: state.gitState.headSha!, reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewBaseCommit: state.taskBaseCommit!, reviewHeadCommit: state.gitState.headSha!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } } }
           return { status: 'SUCCESS' as const }
         },
       } })

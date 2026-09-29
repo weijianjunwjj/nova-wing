@@ -160,7 +160,7 @@ async function directRun(root: string, options: ScriptOptions = {}) {
         const identity = agent.identity!
         return { status: 'SUCCESS' as const, review: { passed: true, findings: [], blockingFindings: [], severity: 'HIGH' as const, reviewer: identity,
           implementer: state.implementer!, reviewedRepository: state.gitState.repositoryIdentity!, reviewedBranch: state.gitState.branch!, reviewedCommit: state.gitState.headSha!,
-          reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } }
+          reviewedWorkspace: state.gitState.worktreeFingerprint!, reviewBaseCommit: state.taskBaseCommit!, reviewHeadCommit: state.gitState.headSha!, reviewedFiles: state.gitState.changedFiles, timestamp: new Date().toISOString() } }
       }
       return { status: 'SUCCESS' as const }
     },

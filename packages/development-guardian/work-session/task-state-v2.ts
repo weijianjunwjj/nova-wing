@@ -43,6 +43,8 @@ export interface TaskActionBudgetV2 {
 
 /** A serializable, task-centric projection of the established Work Session facts. */
 export interface TaskStateV2 {
+  /** HEAD when this Task was first claimed; never the Delivery-wide baseline. */
+  taskBaseCommit?: string
   /** Host-owned retry identity; transport metadata is partitioned by this attempt. */
   ownedCheckpoints?: readonly (OwnedCheckpointRecord & { supersededEvidence?: unknown })[]
   attemptId?: string
@@ -153,6 +155,7 @@ const verificationPlan = z.object({
   escalationSequence: strings, estimatedScope: z.enum(['FILE', 'PACKAGE', 'WORKSPACE', 'REPOSITORY']), estimatedCost: z.enum(['LOW', 'MEDIUM', 'HIGH']), confidence: z.enum(['HIGH', 'MEDIUM', 'INSUFFICIENT']), approvalRequired: z.boolean(), invalidationConditions: strings, packageRoots: strings, explicitBindings: z.boolean(), rationale: strings,
 })
 const persistedTask = z.object({
+  taskBaseCommit: z.string().min(1).optional(),
   ownedCheckpoints: z.array(ownedCheckpointRecordSchema.extend({ supersededEvidence: z.unknown().optional() })).optional(),
   attemptId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   version: z.literal(2), identity: z.object({ taskId: z.string().min(1), sessionId: z.string().min(1) }),
@@ -167,7 +170,7 @@ const persistedTask = z.object({
     bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional(),
       commandCanonicalizations: z.array(z.object({ sourceText: z.string(), command: z.string(), grammar: z.literal('acceptance-command-v1'), assessment: z.enum(['ALLOWED', 'APPROVAL_REQUIRED']) })).optional() })),
     evidence: z.array(z.object({ type: z.string(), status: z.enum(['PASSED', 'FAILED', 'MISSING', 'STALE']), source: z.string(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), headSha: z.string().optional(), workspaceIdentity: z.string().optional(), timestamp: z.string() }).passthrough()),
-    review: z.object({ passed: z.boolean(), findings: strings, severity: riskLevel, blockingFindings: strings, reviewer: actor, implementer: actor, reviewedRepository: z.string().optional(), reviewedBranch: z.string().optional(), reviewedCommit: z.string().optional(), reviewedWorkspace: z.string().optional(), reviewedFiles: strings, timestamp: z.string(), assertionVerdicts: z.array(z.object({ assertionId: z.string(), verdict: z.enum(['PASS', 'FAIL']), evidence: z.string() })).optional() }).optional(),
+    review: z.object({ passed: z.boolean(), findings: strings, severity: riskLevel, blockingFindings: strings, reviewer: actor, implementer: actor, reviewedRepository: z.string().optional(), reviewedBranch: z.string().optional(), reviewedCommit: z.string().optional(), reviewedWorkspace: z.string().optional(), reviewBaseCommit: z.string().optional(), reviewHeadCommit: z.string().optional(), reviewedFiles: strings, timestamp: z.string(), assertionVerdicts: z.array(z.object({ assertionId: z.string(), verdict: z.enum(['PASS', 'FAIL', 'DEFERRED']), evidence: z.string(), capabilityEvidence: z.object({ family: z.string(), providerId: z.string(), providerVersion: z.string(), collector: z.string(), evidenceIds: strings, verificationResult: z.enum(['OBSERVED', 'FAILED']) }).optional() })).optional() }).optional(),
     approval: z.object({ approved: z.boolean(), repositoryIdentity: z.string().optional(), branch: z.string().optional(), workspaceIdentity: z.string(), reviewedCommit: z.string().optional(), risk: riskLevel, riskContext: z.string().optional(), timestamp: z.string() }).optional(),
   }),
   providerHistory: strings,

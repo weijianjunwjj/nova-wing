@@ -12,6 +12,9 @@
  */
 
 import type { TaskActorIdentity, TaskStateV2 } from './task-state-v2.js'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { gitExecutable } from '../platform/windows-git.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
 import { acceptanceAssertionIds, assertionCapabilityEvidenceValid, type ReviewEvidence } from './risk-evidence.js'
@@ -57,7 +60,28 @@ export interface ReviewDispatcherOptions {
   requireIndependentReviewer?: boolean
 }
 
-function reviewContext(task: TaskStateV2): ReviewerTaskContext {
+const run = promisify(execFile)
+
+async function reviewScope(task: TaskStateV2, reality: RepositoryReality): Promise<{
+  base?: string; head?: string; files: string[]
+}> {
+  const base = task.taskBaseCommit ?? task.ownedCheckpoints?.[0]?.before.headSha ??
+    task.execution?.startCheckpoint?.headSha
+  const head = reality.headSha
+  if (!base) return { files: [...task.gitState.changedFiles] } // Legacy standalone review without a captured Task base.
+  if (task.gitState.headSha !== head || task.gitState.repositoryIdentity !== reality.repositoryIdentity ||
+    task.gitState.branch !== reality.branch || task.gitState.worktreeFingerprint !== reality.worktreeFingerprint ||
+    JSON.stringify(task.gitState.changedFiles) !== JSON.stringify(reality.changedFiles))
+    throw new Error('review repository differs from the trusted Task observation')
+  const repo = reality.repositoryIdentity
+  await run(gitExecutable(), ['merge-base', '--is-ancestor', base, head], { cwd: repo })
+  const { stdout } = await run(gitExecutable(), ['diff', '--no-renames', '--name-only', '-z', base, head, '--'],
+    { cwd: repo, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+  const files = [...new Set([...stdout.split('\0').filter(Boolean), ...reality.changedFiles])].sort()
+  return { base, head, files }
+}
+
+function reviewContext(task: TaskStateV2, scope: Awaited<ReturnType<typeof reviewScope>>): ReviewerTaskContext {
   return {
     taskId: task.identity.taskId,
     goal: task.goal,
@@ -69,6 +93,9 @@ function reviewContext(task: TaskStateV2): ReviewerTaskContext {
     branch: task.gitState.branch,
     headSha: task.gitState.headSha,
     workspaceFingerprint: task.gitState.worktreeFingerprint,
+    reviewBaseCommit: scope.base,
+    reviewHeadCommit: scope.head,
+    reviewChangedFiles: scope.files,
     changedFiles: task.gitState.changedFiles,
     verificationEvidence: task.verificationState.results,
     evidence: task.completion.evidence,
@@ -121,7 +148,15 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
       }
 
       const before = await options.inspectRepository()
-      const outcome = await runtime.review({ task: reviewContext(task), agent, timeoutMs })
+      let scope: Awaited<ReturnType<typeof reviewScope>>
+      try { scope = await reviewScope(task, before) }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        return { status: 'BLOCKED', blockers: [`cannot establish exact review scope: ${reason}`],
+          providerHealth: [{ provider, status: 'DEGRADED', reason, observedAt: now(), source: 'runtime' }],
+          providerFailure: { provider, status: 'DEGRADED', reason } }
+      }
+      const outcome = await runtime.review({ task: reviewContext(task, scope), agent, timeoutMs })
 
       if (outcome.kind === 'RUNTIME_FAILURE') {
         const reason = `reviewer provider failure (${outcome.status}): ${outcome.reason}`
@@ -180,7 +215,9 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
         reviewedBranch: after.branch,
         reviewedCommit: after.headSha,
         reviewedWorkspace: after.worktreeFingerprint,
-        reviewedFiles: [...task.gitState.changedFiles],
+        ...(scope.base === undefined ? {} : { reviewBaseCommit: scope.base }),
+        ...(scope.head === undefined ? {} : { reviewHeadCommit: scope.head }),
+        reviewedFiles: [...scope.files],
         timestamp: now(),
         ...(requiredAssertionIds.length === 0 ? {} : { assertionVerdicts: [...assertionVerdicts] }),
       }

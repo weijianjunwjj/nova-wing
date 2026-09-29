@@ -100,7 +100,7 @@ function reviewRunner(
     async inspectRepository() {
       return { repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }
     },
-    async dispatch({ action, agent }) {
+    async dispatch({ action, agent, task }) {
       calls.push({ action, agent: agent.id })
       if (action === 'EXECUTE') {
         changedFiles = ['src/public-api.mjs']
@@ -112,7 +112,7 @@ function reviewRunner(
           passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
           reviewer: agent.identity!, implementer,
           reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h',
-          reviewedWorkspace: 'w', reviewedFiles: ['src/public-api.mjs'], timestamp: 'now',
+          reviewedWorkspace: 'w', reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: 'h', reviewedFiles: ['src/public-api.mjs'], timestamp: 'now',
         } }
       }
       return { status: 'SUCCESS' }

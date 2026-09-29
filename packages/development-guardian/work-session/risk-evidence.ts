@@ -9,7 +9,7 @@ export interface EvidenceV2 { type: string; status: EvidenceStatus; source: stri
 export interface AssertionReviewVerdict { assertionId: string; verdict: 'PASS' | 'FAIL' | 'DEFERRED'; evidence: string;
   capabilityEvidence?: { family: string; providerId: string; providerVersion: string; collector: string;
     evidenceIds: readonly string[]; verificationResult: 'OBSERVED' | 'FAILED' } }
-export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewedFiles: readonly string[]; timestamp: string; assertionVerdicts?: readonly AssertionReviewVerdict[] }
+export interface ReviewEvidence { passed: boolean; findings: readonly string[]; severity: RiskLevel; blockingFindings: readonly string[]; reviewer: TaskActorIdentity; implementer: TaskActorIdentity; reviewedRepository?: string; reviewedBranch?: string; reviewedCommit?: string; reviewedWorkspace?: string; reviewBaseCommit?: string; reviewHeadCommit?: string; reviewedFiles: readonly string[]; timestamp: string; assertionVerdicts?: readonly AssertionReviewVerdict[] }
 export interface ApprovalEvidence { approved: boolean; repositoryIdentity?: string; branch?: string; workspaceIdentity: string; reviewedCommit?: string; risk: RiskLevel; riskContext?: string; timestamp: string }
 export interface VerifierCommandCanonicalization {
   sourceText: string
@@ -137,6 +137,7 @@ export function reviewSatisfied(task: TaskStateV2): boolean {
     r.reviewer.runtimeIdentity !== i.runtimeIdentity &&
     r.reviewedRepository === task.gitState.repositoryIdentity && r.reviewedBranch === task.gitState.branch &&
     r.reviewedCommit === task.gitState.headSha && r.reviewedWorkspace === task.gitState.worktreeFingerprint &&
+    (task.taskBaseCommit === undefined || (r.reviewBaseCommit === task.taskBaseCommit && r.reviewHeadCommit === task.gitState.headSha)) &&
     task.gitState.changedFiles.every((file) => r.reviewedFiles.includes(file))
 }
 

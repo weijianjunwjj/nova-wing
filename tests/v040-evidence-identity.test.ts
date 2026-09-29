@@ -95,6 +95,7 @@ function identityRunner(root: string, shape: EvidenceShape) {
           reviewer: input.agent.identity!, implementer: EXECUTOR.identity!,
           reviewedRepository: input.task.gitState.repositoryIdentity!, reviewedBranch: input.task.gitState.branch!,
           reviewedCommit: input.task.gitState.headSha!, reviewedWorkspace: input.task.gitState.worktreeFingerprint!,
+          reviewBaseCommit: input.task.taskBaseCommit!, reviewHeadCommit: input.task.gitState.headSha!,
           reviewedFiles: input.task.gitState.changedFiles, timestamp: '2026-09-22T00:00:00.000Z',
         } }
       }

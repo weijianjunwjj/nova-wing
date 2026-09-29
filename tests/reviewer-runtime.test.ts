@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -22,10 +24,83 @@ import type { AgentCapabilityProfile } from '../packages/development-guardian/wo
 import type { RepositoryReality } from '../packages/development-guardian/work-session/reconciliation.js'
 import type { TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { reviewSatisfied } from '../packages/development-guardian/work-session/risk-evidence.js'
+import { buildReviewPrompt } from '../packages/development-guardian/work-session/reviewer-adapters.js'
+
+const runGit = promisify(execFile)
 
 const REALITY: RepositoryReality = {
   repositoryIdentity: 'repo', branch: 'main', headSha: 'h1', changedFiles: ['src/a.ts'], worktreeFingerprint: 'w1',
 }
+
+test('submitted review spans every Task commit but excludes the previous Task', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'nw-review-scope-'))
+  const git = async (...args: string[]) => (await runGit('git', args, { cwd: repo })).stdout.trim()
+  await git('init', '-q'); await git('checkout', '-qb', 'codex/review-scope')
+  await git('config', 'user.name', 'Fixture'); await git('config', 'user.email', 'fixture@example.invalid')
+  await writeFile(join(repo, 'baseline.txt'), 'baseline\n'); await git('add', '.'); await git('commit', '-qm', 'baseline')
+  const deliveryBase = await git('rev-parse', 'HEAD')
+  await writeFile(join(repo, 'previous-task.txt'), 'prior\n'); await git('add', '.'); await git('commit', '-qm', 'T0')
+  const taskBase = await git('rev-parse', 'HEAD')
+  await writeFile(join(repo, 'first.txt'), 'first\n'); await git('add', '.'); await git('commit', '-qm', 'T1 first checkpoint')
+  const firstHead = await git('rev-parse', 'HEAD')
+  await writeFile(join(repo, 'second.txt'), 'second\n'); await git('add', '.'); await git('commit', '-qm', 'T1 revision checkpoint')
+  const head = await git('rev-parse', 'HEAD')
+  assert.notEqual(firstHead, head)
+  const reality = { repositoryIdentity: repo, branch: 'codex/review-scope', headSha: head,
+    changedFiles: [] as string[], worktreeFingerprint: 'clean-worktree' }
+  const task: TaskStateV2 = { ...reviewedTask({
+    reviewer: { agent: 'independent', provider: 'acme', runtimeIdentity: 'reviewer' },
+    implementer: { agent: 'executor', provider: 'other', runtimeIdentity: 'executor' },
+  }), taskBaseCommit: taskBase, gitState: reality, completion: {
+    ...reviewedTask({ reviewer: { agent: 'independent', provider: 'acme', runtimeIdentity: 'reviewer' },
+      implementer: { agent: 'executor', provider: 'other', runtimeIdentity: 'executor' } }).completion,
+    review: undefined } }
+  let calls = 0
+  const dispatcher = createReviewDispatcher({ inspectRepository: async () => reality,
+    registry: new ReviewerRuntimeRegistry([{ provider: 'acme', async review({ task: context }) {
+      calls++
+      assert.equal(context.reviewBaseCommit, taskBase)
+      assert.equal(context.reviewHeadCommit, head)
+      assert.deepEqual(context.reviewChangedFiles, ['first.txt', 'second.txt'])
+      assert.deepEqual(context.changedFiles, [])
+      assert.match(buildReviewPrompt(context), new RegExp(`git diff ${taskBase} ${head} --`, 'u'))
+      return { kind: 'VERDICT' as const, passed: true, findings: [], blockingFindings: [],
+        summary: 'Both Task checkpoints reviewed.', provider: 'acme' }
+    } }]) })
+  const result = await dispatcher.dispatch({ agent: profile({ id: 'independent', provider: 'acme',
+    runtimeIdentity: 'reviewer', review: true }), task })
+  assert.equal(calls, 1)
+  assert.equal(result.status, 'SUCCESS')
+  assert.equal(result.review?.reviewBaseCommit, taskBase)
+  assert.equal(result.review?.reviewHeadCommit, head)
+  assert.deepEqual(result.review?.reviewedFiles, ['first.txt', 'second.txt'])
+  assert.equal(reviewSatisfied({ ...task, completion: { ...task.completion, review: result.review } }), true)
+  assert.equal((await git('diff', '--name-only', deliveryBase, head)).split('\n').filter(Boolean).length, 3)
+  assert.equal(await git('diff', '--name-only'), '')
+
+  const deferredCriterion = 'AcceptanceAssertion A2: customer view → visible order | Expected evidence: browser screenshot | VerificationReadiness: EXTERNAL_DEFERRED | CapabilityContract: browser_ui/browser-harness-pending@1'
+  const noOp: TaskStateV2 = { ...task, taskBaseCommit: head, identity: { ...task.identity, taskId: 'T2' },
+    acceptanceCriteria: [deferredCriterion], completion: { evidence: [],
+      bindings: [{ criterion: deferredCriterion, requiredEvidence: [] }] },
+    verificationState: { results: [{ name: 'NOVAWING_DEFERRED:A2:EXTERNAL_DEFERRED',
+      stepId: 'NOVAWING_DEFERRED:A2:EXTERNAL_DEFERRED', status: 'skipped' }] } }
+  const noOpDispatcher = createReviewDispatcher({ inspectRepository: async () => reality,
+    registry: new ReviewerRuntimeRegistry([{ provider: 'acme', async review({ task: context }) {
+      assert.equal(context.reviewBaseCommit, head)
+      assert.equal(context.reviewHeadCommit, head)
+      assert.deepEqual(context.reviewChangedFiles, [])
+      assert.ok(context.verificationEvidence.some(item => item.stepId === 'NOVAWING_DEFERRED:A2:EXTERNAL_DEFERRED'))
+      return { kind: 'VERDICT' as const, passed: true, findings: [], blockingFindings: [],
+        summary: 'No new diff; external evidence remains open.', provider: 'acme',
+        assertionVerdicts: [{ assertionId: 'A2', verdict: 'DEFERRED' as const,
+          evidence: 'Customer browser screenshot is pending.' }] }
+    } }]) })
+  const noOpResult = await noOpDispatcher.dispatch({ agent: profile({ id: 'independent', provider: 'acme',
+    runtimeIdentity: 'reviewer', review: true }), task: noOp })
+  assert.equal(noOpResult.review?.passed, true)
+  assert.deepEqual(noOpResult.review?.reviewedFiles, [])
+  assert.equal(reviewSatisfied({ ...noOp, completion: { ...noOp.completion, review: noOpResult.review } }), true)
+})
 
 function profile(input: {
   id: string

@@ -81,6 +81,8 @@ export interface WorkSessionTaskResult {
  * Runtime 不把 Mastra 直接耦合进 Guardian；这里只传最小 deadline 事实。
  */
 export interface WorkSessionTaskRunContext {
+  /** Runtime's durable HEAD captured before this Task began. */
+  taskBaseCommit?: string
   /** Durable supplemental instructions for this exact Session and Task only. */
   recoveryInstructions?: readonly string[]
   /**

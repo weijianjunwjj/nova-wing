@@ -33,6 +33,10 @@ export interface ReviewerTaskContext {
   branch?: string | undefined
   headSha?: string | undefined
   workspaceFingerprint?: string | undefined
+  reviewBaseCommit?: string | undefined
+  reviewHeadCommit?: string | undefined
+  /** Exact base..head diff, plus current uncommitted files when present. */
+  reviewChangedFiles?: readonly string[]
   changedFiles: readonly string[]
   verificationEvidence: readonly VerificationResult[]
   evidence: readonly EvidenceV2[]

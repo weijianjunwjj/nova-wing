@@ -95,7 +95,7 @@ test('HIGH risk selects an independent reviewer distinct from the implementer wi
   let changedFiles: readonly string[] = []
   const runner = new V2ControllerTaskRunner({ sessionId: 's', branch: 'main', agents: [implementer, reviewer], dispatcher: {
     inspectRepository: async () => ({ repositoryIdentity: 'repo', branch: 'main', headSha: 'h', changedFiles, worktreeFingerprint: 'w' }),
-    dispatch: async ({ action }) => {
+    dispatch: async ({ action, task: state }) => {
       if (action === 'EXECUTE') { changedFiles = ['src/public-api.ts']; return { status: 'SUCCESS', changedFiles } }
       if (action === 'VERIFY') return { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
       if (action === 'REVIEW') {
@@ -103,7 +103,7 @@ test('HIGH risk selects an independent reviewer distinct from the implementer wi
           passed: true, findings: [], severity: 'HIGH' as const, blockingFindings: [],
           reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'R2' },
           implementer: { agent: 'codex', provider: 'codex', runtimeIdentity: 'R1' },
-          reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewedFiles: ['src/public-api.ts'], timestamp: 'now',
+          reviewedRepository: 'repo', reviewedBranch: 'main', reviewedCommit: 'h', reviewedWorkspace: 'w', reviewBaseCommit: state.taskBaseCommit!, reviewHeadCommit: 'h', reviewedFiles: ['src/public-api.ts'], timestamp: 'now',
         } }
       }
       return { status: 'SUCCESS' }

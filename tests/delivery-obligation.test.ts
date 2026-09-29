@@ -30,7 +30,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior?: string; outcome?: string;
   evidence?: string; tasks?: Array<{ id: string; dependencyIds: string[] }>;
-  separateTaskAssertions?: boolean } = {}) {
+  separateTaskAssertions?: boolean; secondExternal?: boolean } = {}) {
   const requirement = '顾客创建订单后必须能重新读取同一订单的持久化业务状态，并获得可复核的结果。'
   const behavior = options.behavior ?? '创建订单并保存。'
   const outcome = options.outcome ?? '订单状态持久化且同一订单可重新读取。'
@@ -53,10 +53,13 @@ function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior
       assertions: [{ id: 'A1', requirementId: 'R1', observableBehavior: behavior,
         expectedOutcome: outcome, expectedEvidence: evidence, blocking: true }] },
       ...(options.separateTaskAssertions ? [{ id: 'C2', requirementIds: ['R1'],
-        description: '本地订单状态可验证。', level: 'integration' as const,
-        expectedEvidence: '订单状态证据。', blocking: true,
-        assertions: [{ id: 'A2', requirementId: 'R1', observableBehavior: '创建订单并保存。',
-          expectedOutcome: '订单状态持久化。', expectedEvidence: '订单操作和重读。', blocking: true }] }] : [])] },
+        description: options.secondExternal ? '顾客在外部页面查看订单。' : '本地订单状态可验证。',
+        level: options.secondExternal ? 'ui' as const : 'integration' as const,
+        expectedEvidence: options.secondExternal ? '客户浏览器交互和截图。' : '订单状态证据。', blocking: true,
+        assertions: [{ id: 'A2', requirementId: 'R1',
+          observableBehavior: options.secondExternal ? '顾客在外部页面查看订单。' : '创建订单并保存。',
+          expectedOutcome: options.secondExternal ? '页面呈现已保存的订单状态。' : '订单状态持久化。',
+          expectedEvidence: options.secondExternal ? '客户浏览器交互和截图。' : '订单操作和重读。', blocking: true }] }] : [])] },
     risks: [], assumptions: [], customerQuestions: [],
   }
   const id = '22222222-2222-4222-8222-222222222222'
@@ -508,7 +511,8 @@ test('owned checkpoint production wiring: EXECUTE -> real VERIFY commit -> REVIE
       return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
         reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
         reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
-        reviewedFiles: [], timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1', verdict: 'DEFERRED', evidence: 'external browser pending' }] } }
+        reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: task.gitState.headSha!,
+        reviewedFiles: ['feature.js'], timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1', verdict: 'DEFERRED', evidence: 'external browser pending' }] } }
     },
   })
   const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch, agents: f.agents, dispatcher })
@@ -546,7 +550,9 @@ async function integrationRunner(f: Awaited<ReturnType<typeof checkpointIntegrat
       return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
         reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
         reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
-        reviewedFiles: [], timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1',
+        reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: task.gitState.headSha!,
+        reviewedFiles: options.noOp ? [] : [...new Set([...(task.ownedCheckpoints?.flatMap(item => item.before.changedFiles) ?? []), ...task.gitState.changedFiles])],
+        timestamp: new Date().toISOString(), assertionVerdicts: [{ assertionId: 'A1',
           verdict: external ? 'DEFERRED' : 'PASS', evidence: external ? 'external platform pending' : verification!.rawOutputRef!,
           ...(external ? {} : { capabilityEvidence: { family: 'command', providerId: 'existing-guarded-verifier', providerVersion: '1',
             collector: 'existing-guarded-verifier', evidenceIds: [verification!.rawOutputRef!], verificationResult: 'OBSERVED' } }) }] } }
@@ -744,6 +750,153 @@ test('owned checkpoint local obligation binds exact reviewed blueprint and colle
   const proof = result.taskStateV2!.ownedCheckpoints![0]!
   assert.equal(proof.before.headSha, f.target.baselineCommit); assert.equal(proof.after.headSha, commit)
   assert.equal(taskCompletionGate(f.plan.acceptanceBindings, [transition!], []), 'BLOCKED')
+})
+
+test('delivery vertical: T1 finalizes and persists, then reopened Runtime executes dependent deferred T2', async () => {
+  const { WorkSessionRuntime } = await import('../packages/development-guardian/work-session/runtime.js')
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  const { createReviewDispatcher } = await import('../packages/development-guardian/work-session/review-dispatcher.js')
+  const { ReviewerRuntimeRegistry } = await import('../packages/development-guardian/work-session/reviewer-runtime.js')
+  // Keep the real compiled plan and bindings; use a second frozen external assertion.
+  const vertical = await fixture({ tasks: [{ id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] }],
+    separateTaskAssertions: true, secondExternal: true })
+  const plan = await vertical.compile(), store = new DeliveryStore(join(vertical.root, 'delivery'))
+  await store.savePlan(plan)
+  const definition = workSessionDefinitionFor(plan, 'delivery-vertical-two-task')
+  const inspectRepository = async () => {
+    const entries = parseGitStatus((await run('git', ['status', '--porcelain', '-z', '--untracked-files=all'],
+      { cwd: vertical.repo })).stdout)
+    return { repositoryIdentity: await realpath(vertical.repo), branch: await git(vertical.repo, 'branch', '--show-current'),
+      headSha: await git(vertical.repo, 'rev-parse', 'HEAD'), changedFiles: entries.map(entry => entry.path),
+      worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(vertical.repo, entries, { strict: true }))
+        .update((await run('git', ['diff', '--cached', '--binary'], { cwd: vertical.repo })).stdout).digest('hex') }
+  }
+  const t1Files = ['tests/assertion.test.js', 'verification/blueprints.v1.json']
+  const seen: Array<{ task: string; base: string; head: string; files: string[]; evidenceId?: string }> = []
+  let t1Commit = ''
+  let persistedBeforeT2 = false
+  let executeT1 = 0, executeT2 = 0, blueprintReviews = 0
+  const reviewDispatcher = createReviewDispatcher({ inspectRepository,
+    registry: new ReviewerRuntimeRegistry([{ provider: 'deepseek', async review({ task }) {
+      assert.deepEqual(task.changedFiles, [], 'review must see the real clean worktree')
+      assert.equal(task.reviewHeadCommit, task.headSha)
+      assert.equal(task.reviewBaseCommit, task.taskId === 'T1' ? vertical.target.baselineCommit : t1Commit)
+      assert.deepEqual(task.reviewChangedFiles, task.taskId === 'T1' ? t1Files : ['external.js'])
+      const actual = (await git(vertical.repo, 'diff', '--no-renames', '--name-only',
+        task.reviewBaseCommit!, task.reviewHeadCommit!, '--')).split('\n').filter(Boolean).sort()
+      assert.deepEqual(actual, task.reviewChangedFiles)
+      const assertionId = task.taskId === 'T1' ? 'A1' : 'A2'
+      assert.ok(task.acceptanceCriteria.some(item => item.startsWith(`AcceptanceAssertion ${assertionId}: `)))
+      const evidenceId = task.verificationEvidence.find(item => item.status === 'passed')?.rawOutputRef
+      if (task.taskId === 'T1') {
+        assert.match(evidenceId ?? '', /^[a-f0-9]{64}$/u)
+        assert.ok(task.verificationEvidence.some(item => item.stepId?.startsWith('NOVAWING_VERIFICATION_PENDING:A1:') &&
+          item.rawOutputRef === evidenceId && item.command === 'node --test tests/assertion.test.js'))
+        t1Commit = task.reviewHeadCommit!
+      } else {
+        assert.equal(persistedBeforeT2, true)
+        assert.equal(evidenceId, undefined)
+        assert.ok(task.verificationEvidence.some(item => item.stepId === 'NOVAWING_DEFERRED:A2:EXTERNAL_DEFERRED' && item.status === 'skipped'))
+      }
+      seen.push({ task: task.taskId, base: task.reviewBaseCommit!, head: task.reviewHeadCommit!,
+        files: [...task.reviewChangedFiles!], ...(evidenceId ? { evidenceId } : {}) })
+      return { kind: 'VERDICT' as const, passed: true, findings: [], blockingFindings: [],
+        summary: 'Exact submitted scope and assertion evidence checked.', provider: 'deepseek',
+        assertionVerdicts: [{ assertionId, verdict: task.taskId === 'T1' ? 'PASS' as const : 'DEFERRED' as const,
+          evidence: task.taskId === 'T1' ? `Executed verifier evidence ${evidenceId}` : 'Customer browser evidence remains pending.',
+          ...(task.taskId === 'T1' ? { capabilityEvidence: { family: 'command', providerId: 'existing-guarded-verifier',
+            providerVersion: '1', collector: 'existing-guarded-verifier', evidenceIds: [evidenceId!],
+            verificationResult: 'OBSERVED' as const } } : {}) }] }
+    } }]) })
+  const agents = [{ id: 'executor', identity: { agent: 'executor', provider: 'codex', runtimeIdentity: 'fixture-executor' },
+    available: true, degraded: false, quotaExhausted: false,
+    capabilities: { coding: true, reasoning: true, verification: true } },
+  { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'fixture-reviewer' },
+    available: true, degraded: false, quotaExhausted: false, capabilities: { review: true, reasoning: true } }]
+  const dispatcher = createDeliveryRuntimeDispatcher(plan, store, { inspectRepository,
+    async dispatch({ action, task, agent }) {
+      if (action === 'REVIEW') return reviewDispatcher.dispatch({ agent, task })
+      assert.equal(action, 'EXECUTE')
+      if (task.identity.taskId === 'T1') {
+        executeT1++
+        assert.equal(await git(vertical.repo, 'rev-parse', 'HEAD'), vertical.target.baselineCommit)
+        await mkdir(join(vertical.repo, 'tests')); await mkdir(join(vertical.repo, 'verification'))
+        const candidate = blueprint(vertical.frozen, vertical.target)
+        await writeFile(join(vertical.repo, 'tests/assertion.test.js'), `const assert = require('node:assert/strict');\n` +
+          `const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');\n` +
+          `const assertionId = 'A1'; const assertionContractHash = '${candidate.sourceAssertionHash}';\n` +
+          `const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nw-vertical-evidence-'));\n` +
+          `try { const file = path.join(root, 'order.json'); const order = { id: 'order-id', status: 0 };\n` +
+          `order.status = 24; fs.writeFileSync(file, JSON.stringify(order));\n` +
+          `const reread = JSON.parse(fs.readFileSync(file, 'utf8')); assert.equal(reread.id, order.id); assert.equal(reread.status, 24);\n` +
+          `} finally { fs.rmSync(root, { recursive: true, force: true }); }\n`)
+        const { schemaVersion: _schema, assertionId, runtimeTaskId, sourceAssertionHash,
+          targetConstraints: _target, provenance: _provenance, ...content } = candidate
+        await writeFile(join(vertical.repo, 'verification/blueprints.v1.json'), JSON.stringify({ schemaVersion: 1,
+          entries: [{ assertionId, runtimeTaskId, sourceAssertionHash, blueprint: content }] }))
+      } else {
+        executeT2++
+        assert.equal(persistedBeforeT2, true)
+        assert.equal(await git(vertical.repo, 'rev-parse', 'HEAD'), t1Commit)
+        await writeFile(join(vertical.repo, 'external.js'), 'export const externalView = true\n')
+      }
+      return { status: 'SUCCESS', changedFiles: (await inspectRepository()).changedFiles,
+        workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
+    } }, undefined, { reviewer: async input => {
+    blueprintReviews++
+    assert.equal(input.candidate.implementationCommit, t1Commit || await git(vertical.repo, 'rev-parse', 'HEAD'))
+    assert.ok(input.reviewMaterial.some(item => item.source.includes('assert.equal(reread.status, 24)')))
+    return { verdict: 'PASS', reviewer: 'isolated-independent-blueprint-reviewer', issues: [] }
+  } })
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents, dispatcher })
+  const storageUrl = `file:${join(vertical.root, 'workflow.db')}`
+  let first: InstanceType<typeof WorkSessionRuntime>
+  const controlledRunner = { run: (...args: Parameters<typeof runner.run>) => runner.run(...args),
+    afterRuntimeTaskFinalized: async (...args: Parameters<typeof runner.afterRuntimeTaskFinalized>) => {
+      await runner.afterRuntimeTaskFinalized(...args)
+      if (args[0].identity.taskId === 'T1') assert.equal(first.requestPause().accepted, true)
+    } }
+  first = new WorkSessionRuntime({ definition, taskRunner: controlledRunner, storageUrl,
+    gitCheckpoint: { policy: { autoCommit: true, autoPush: false } } })
+  try {
+    const stopped = await first.start()
+    assert.equal(stopped.state, 'SUSPENDED', JSON.stringify(stopped.humanRequired))
+    assert.equal(stopped.suspensionReason, 'USER_PAUSED')
+    assert.deepEqual(stopped.completedTaskIds, ['T1'])
+    assert.equal(stopped.taskStatesV2!.T1!.status, 'COMPLETED')
+    assert.equal(await git(vertical.repo, 'rev-parse', 'HEAD'), t1Commit)
+    assert.equal(stopped.checkpointCommits?.T1, undefined, 'Runtime finalizer accepts the already committed implementation')
+    assert.equal(stopped.taskStatesV2?.T2, undefined)
+    assert.equal(executeT2, 0)
+    assert.deepEqual((await store.customerAssessment(plan.id)).completedRuntimeTaskIds, ['T1'])
+  } finally { await first.close() }
+  const second = new WorkSessionRuntime({ definition, taskRunner: runner, storageUrl,
+    gitCheckpoint: { policy: { autoCommit: true, autoPush: false } } })
+  try {
+    const reopened = await second.loadPersistedState()
+    assert.deepEqual(reopened?.completedTaskIds, ['T1'])
+    assert.equal(reopened?.taskStatesV2?.T1?.status, 'COMPLETED')
+    assert.deepEqual(reopened?.taskStatesV2?.T1?.completion.review?.assertionVerdicts?.[0]?.capabilityEvidence?.evidenceIds,
+      [seen[0]?.evidenceId])
+    persistedBeforeT2 = true
+    const done = await second.resume({})
+    assert.equal(done.state, 'COMPLETED', JSON.stringify(done.humanRequired))
+    assert.deepEqual(done.completedTaskIds, ['T1', 'T2'])
+    assert.equal(done.taskStatesV2?.T2?.status, 'COMPLETED')
+    assert.equal(done.taskStatesV2?.T2?.completion.review?.assertionVerdicts?.[0]?.verdict, 'DEFERRED')
+    assert.equal(done.taskStatesV2?.T1?.ownedCheckpoints?.length, 1)
+    assert.equal(done.taskStatesV2?.T2?.ownedCheckpoints?.length, 1)
+    assert.equal(done.checkpointCommits?.T1, undefined)
+    assert.equal(done.checkpointCommits?.T2, undefined)
+    assert.equal(await git(vertical.repo, 'rev-list', '--count', `${vertical.target.baselineCommit}..HEAD`), '2')
+    assert.deepEqual([executeT1, executeT2, blueprintReviews], [1, 1, 1])
+    assert.deepEqual(seen.map(item => item.task), ['T1', 'T2'])
+    const assessment = await store.customerAssessment(plan.id)
+    assert.deepEqual(assessment.completedRuntimeTaskIds, ['T1', 'T2'])
+    assert.equal(assessment.status, 'CUSTOMER_DELIVERY_BLOCKED')
+    const completedReadback = await second.loadPersistedState()
+    assert.equal(completedReadback?.taskStatesV2?.T2?.completion.review?.assertionVerdicts?.[0]?.verdict, 'DEFERRED')
+  } finally { await second.close() }
 })
 
 test('owned checkpoint binds session/task/attempt/dispatch and cannot be replayed as model JSON', async () => {

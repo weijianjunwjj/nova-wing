@@ -261,11 +261,15 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     if (context?.taskStateV2 !== undefined) {
       try { state = loadTaskStateV2(context.taskStateV2) } catch { return { result: { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } } } }
     }
+    if (context?.taskBaseCommit && state.taskBaseCommit && context.taskBaseCommit !== state.taskBaseCommit)
+      return { result: { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'Task base differs from durable Runtime base' } } }
     note({ type: 'TASK_CREATED', ...repositoryFacts(state) })
     emit('PLANNING', 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
     const start = await this.options.dispatcher.inspectRepository()
     const initial = reconcileTaskState(state, start)
     state = initial.state
+    state = { ...state, taskBaseCommit: state.taskBaseCommit ?? context?.taskBaseCommit ??
+      state.ownedCheckpoints?.[0]?.before.headSha ?? start.headSha }
     const plan = await planVerification({ repositoryRoot: this.options.directPath!.repositoryRoot, task, risk: assessRisk(state).level, ...(task.allowedPaths === undefined ? {} : { changedAreaHint: task.allowedPaths }) })
     state = { ...state, verificationPlan: plan, completion: { ...state.completion, bindings: bindingsFromVerificationPlan(plan, { identity: 'step' }) },
       execution: { path: 'DIRECT', escalated: false, startCheckpoint: { ...state.gitState } }, updatedAt: new Date().toISOString() }
@@ -371,6 +375,14 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           JSON.stringify([configured.goal, configured.constraints, configured.acceptanceCriteria, configured.permissions, trustedBindings])) throw new Error('persisted task policy does not match trusted definition')
     } catch {
       return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'invalid persisted TaskStateV2' } }
+    }
+    if (context?.taskBaseCommit && state.taskBaseCommit && context.taskBaseCommit !== state.taskBaseCommit)
+      return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'RECOVERY_BLOCKED', reason: 'Task base differs from durable Runtime base' } }
+    if (state.taskBaseCommit === undefined) {
+      const startingHead = context?.taskBaseCommit ?? state.ownedCheckpoints?.[0]?.before.headSha ??
+        state.execution?.startCheckpoint?.headSha ?? state.gitState.headSha ??
+        (await this.options.dispatcher.inspectRepository()).headSha
+      state = { ...state, taskBaseCommit: startingHead }
     }
     const originalLimit = this.options.maxActions ?? state.actionBudget?.originalLimit ?? 20
     state = { ...state,

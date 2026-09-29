@@ -2059,6 +2059,7 @@ export class WorkSessionRuntime {
           const taskEventLog = v2 ? new TaskEventLogV2(currentState.taskEventLogs?.[task.id]) : undefined
           const providerHealth = v2 ? new ProviderHealthRegistry(currentState.providerHealth) : undefined
           const runContext: WorkSessionTaskRunContext = {
+            ...(currentState.currentTaskBaseHeadSha === undefined ? {} : { taskBaseCommit: currentState.currentTaskBaseHeadSha }),
             recoveryInstructions: (currentState.taskRecoveryInstructions?.[task.id] ?? [])
               .filter((entry) => entry.sessionId === currentState.sessionId && entry.taskId === task.id &&
                 (currentState.taskRetry?.receipt.taskId !== task.id || entry.generation >= currentState.taskRetry.receipt.generation))
