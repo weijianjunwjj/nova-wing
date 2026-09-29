@@ -3,7 +3,7 @@
 import {
   createNovaWingLaunchpad,
   defaultTrustedConfigDirectory,
-  openLaunchpadInAppMode,
+  openLaunchpadInDefaultBrowser,
 } from 'nova-wing/development-guardian'
 
 let launchpad
@@ -16,7 +16,7 @@ try {
     enableProductionPreflight: true,
   })
   const address = await launchpad.start()
-  const browser = await openLaunchpadInAppMode(address.url)
+  const browser = await openLaunchpadInDefaultBrowser(address.url)
 
   console.log(`NovaWing Launchpad: ${address.url}`)
   if (!browser.opened) console.log('Open the URL above in your browser.')

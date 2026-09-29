@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -14,10 +15,12 @@ import {
   findBrowserExecutable,
   loadTrustedWorkSessionConfig,
   openLaunchpadInAppMode,
+  openLaunchpadInDefaultBrowser,
   persistComposedTrustedWorkSessionConfig,
   analyzeTaskBrief,
   runProductionDependencyPreflight,
   type BrowserProcessSpawner,
+  type DefaultBrowserOpenerSpawner,
   NovaWingLaunchpad,
   type TrustedWorkSessionConfig,
 } from 'nova-wing/development-guardian'
@@ -2070,6 +2073,51 @@ await test('App Mode uses spawn argv without a shell and browser absence does no
   assert.equal(spawnCalled, false)
 })
 
+await test('Default Browser opener uses platform URL handlers with argv and no App Mode flags', async () => {
+  const url = 'http://127.0.0.1:43199'
+  for (const [platform, executable, args] of [
+    ['darwin', 'open', [url]],
+    ['linux', 'xdg-open', [url]],
+    ['win32', 'rundll32.exe', ['url.dll,FileProtocolHandler', url]],
+  ] as const) {
+    const calls: Array<{ executable: string; args: readonly string[]; options: unknown }> = []
+    const spawnOpener: DefaultBrowserOpenerSpawner = (command, argv, options) => {
+      calls.push({ executable: command, args: argv, options })
+      const child = new EventEmitter()
+      queueMicrotask(() => child.emit('close', 0))
+      return child
+    }
+    assert.deepEqual(await openLaunchpadInDefaultBrowser(url, { platform, spawnOpener }),
+      { opened: true, browser: 'default' })
+    assert.deepEqual(calls, [{ executable, args, options: {
+      stdio: 'ignore', shell: false, windowsHide: true,
+    } }])
+    assert.doesNotMatch(calls[0]!.args.join(' '), /--app=|--new-window|--window-size/u)
+  }
+})
+
+await test('Default Browser opener rejects non-Launchpad URLs and reports opener failures', async () => {
+  const url = 'http://127.0.0.1:43199'
+  for (const invalid of ['http://localhost:43199', 'https://127.0.0.1:43199', 'http://127.0.0.1']) {
+    await assert.rejects(openLaunchpadInDefaultBrowser(invalid, {
+      spawnOpener() { throw new Error('should not spawn') },
+    }), /Launchpad URL must be an HTTP 127\.0\.0\.1 URL with a dynamic port/u)
+  }
+  for (const failure of ['error', 'nonzero', 'throw'] as const) {
+    const spawnOpener: DefaultBrowserOpenerSpawner = () => {
+      if (failure === 'throw') throw new Error('opener unavailable')
+      const child = new EventEmitter()
+      queueMicrotask(() => {
+        if (failure === 'error') child.emit('error', new Error('opener unavailable'))
+        else child.emit('close', 1)
+      })
+      return child
+    }
+    assert.deepEqual(await openLaunchpadInDefaultBrowser(url, { platform: 'darwin', spawnOpener }),
+      { opened: false })
+  }
+})
+
 await test('Repository exposes the launchpad npm script and relocatable hidden VBS entry', async () => {
   const packageJson = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
     scripts: Record<string, string>
@@ -2078,6 +2126,9 @@ await test('Repository exposes the launchpad npm script and relocatable hidden V
     packageJson.scripts['guardian:launchpad'],
     'npm run build && node scripts/guardian-launchpad.mjs',
   )
+  const launchpadScript = await readFile(join(process.cwd(), 'scripts/guardian-launchpad.mjs'), 'utf8')
+  assert.match(launchpadScript, /openLaunchpadInDefaultBrowser\(address\.url\)/u)
+  assert.doesNotMatch(launchpadScript, /openLaunchpadInAppMode/u)
   const vbs = await readFile(join(process.cwd(), 'NovaWing.vbs'), 'utf8')
   assert.match(vbs, /WScript\.ScriptFullName/u)
   assert.match(vbs, /shell\.Run command, 0, False/u)

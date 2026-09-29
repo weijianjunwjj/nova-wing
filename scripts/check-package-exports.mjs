@@ -120,6 +120,7 @@ const expectedRuntimeExports = {
     'loadTaskStateV2',
     'normalizePath',
     'openLaunchpadInAppMode',
+    'openLaunchpadInDefaultBrowser',
     'loadTrustedWorkSessionConfig',
     'normalizeAskBridgeDiagnostics',
     'parseDelegationPacket',

@@ -27,6 +27,17 @@ export type BrowserProcessSpawner = (
   },
 ) => DetachedBrowserProcess
 
+export interface DefaultBrowserOpenerProcess {
+  once(event: 'error', listener: (error: Error) => void): unknown
+  once(event: 'close', listener: (code: number | null) => void): unknown
+}
+
+export type DefaultBrowserOpenerSpawner = (
+  executable: string,
+  args: readonly string[],
+  options: { stdio: 'ignore'; shell: false; windowsHide: true },
+) => DefaultBrowserOpenerProcess
+
 async function defaultPathExists(path: string): Promise<boolean> {
   return access(path).then(() => true, () => false)
 }
@@ -82,6 +93,14 @@ function defaultSpawnBrowser(
   return spawn(executable, [...args], options)
 }
 
+function defaultSpawnOpener(
+  executable: string,
+  args: readonly string[],
+  options: { stdio: 'ignore'; shell: false; windowsHide: true },
+): DefaultBrowserOpenerProcess {
+  return spawn(executable, [...args], options)
+}
+
 function assertLoopbackLaunchpadUrl(url: string): void {
   const parsed = new URL(url)
   if (
@@ -93,6 +112,37 @@ function assertLoopbackLaunchpadUrl(url: string): void {
   ) {
     throw new Error('Launchpad URL must be an HTTP 127.0.0.1 URL with a dynamic port')
   }
+}
+
+export async function openLaunchpadInDefaultBrowser(
+  launchpadUrl: string,
+  options: {
+    platform?: NodeJS.Platform
+    spawnOpener?: DefaultBrowserOpenerSpawner
+  } = {},
+): Promise<{ opened: boolean; browser?: BrowserKind }> {
+  assertLoopbackLaunchpadUrl(launchpadUrl)
+  const platform = options.platform ?? process.platform
+  const executable = platform === 'darwin' ? 'open' : platform === 'win32' ? 'rundll32.exe' : 'xdg-open'
+  const args = platform === 'win32' ? ['url.dll,FileProtocolHandler', launchpadUrl] : [launchpadUrl]
+
+  return new Promise((resolveOpen) => {
+    let settled = false
+    const finish = (opened: boolean): void => {
+      if (settled) return
+      settled = true
+      resolveOpen(opened ? { opened: true, browser: 'default' } : { opened: false })
+    }
+    try {
+      const child = (options.spawnOpener ?? defaultSpawnOpener)(executable, args, {
+        stdio: 'ignore', shell: false, windowsHide: true,
+      })
+      child.once('error', () => finish(false))
+      child.once('close', (code) => finish(code === 0))
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 export async function openLaunchpadInAppMode(
