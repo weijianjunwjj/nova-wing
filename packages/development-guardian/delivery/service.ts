@@ -14,7 +14,7 @@ import { verificationPlanFingerprintValid } from '../work-session/verification-p
 import { collectCommandEvidence, collectFilesystemEvidence, collectHttpEvidence, collectProcessEvidence, collectScopeReviewEvidence,
   verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
 import { assessCustomerDeliveryCompletion, bindProvisionedVerifier, taskCompletionGate, verifyBindingTransition,
-  type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
+  type AssertionCompletionEvidence, type ExternalAcceptanceRecord, type VerificationBindingTransition } from './staged-verification.js'
 import {
   admitRuntimePlan, bindDeliveryTarget, compileRuntimePlan, inspectDeliveryTarget, verifyRuntimePlanCoverage, verifyRuntimePlanIdentity,
   workSessionDefinitionFor, type CompiledRuntimePlan, type DeliveryTargetBinding, type RuntimeAdmission,
@@ -88,7 +88,7 @@ export class DeliveryStore {
     return createHash('sha256').update(`novawing-obligation-commit-v2\0${obligationId}\0${commit}`).digest('hex')
   }
   private path(kind: 'binding' | 'plan' | 'session' | 'evidence' | 'transition' | 'blueprint' |
-    'local-completion' | 'local-completion-index', id: string): string {
+    'local-completion' | 'local-completion-index' | 'external-acceptance' | 'external-evidence', id: string): string {
     if (!/^[a-z0-9-]{36,120}$/u.test(id)) throw new Error('Invalid delivery artifact ID.')
     return join(this.directory, `${kind}-${id}.json`)
   }
@@ -125,6 +125,90 @@ export class DeliveryStore {
     const plan = await this.read<CompiledRuntimePlan>(this.path('plan', id))
     if (plan !== undefined) verifyRuntimePlanIdentity(plan)
     return plan
+  }
+  private externalAcceptanceKey(plan: CompiledRuntimePlan, assertionId: string): string {
+    return createHash('sha256').update(`${plan.runtimePlanHash}\0${assertionId}`).digest('hex')
+  }
+  async recordExternalAcceptance(planId: string, input: { assertionId: string; kind: 'EXTERNAL' | 'HUMAN';
+    reviewerVerdict: 'PASS'; reviewerIdentity: string;
+    evidence: readonly { kind: string; content: string }[] }): Promise<ExternalAcceptanceRecord> {
+    const plan = await this.getPlan(planId)
+    if (!plan) throw new Error('Runtime plan does not exist.')
+    const binding = plan.acceptanceBindings.find((item) => item.assertionId === input.assertionId &&
+      item.blocking && item.ownership === 'OWNER')
+    const expectedKind = binding?.stagedVerification.readiness === 'HUMAN_DEFERRED' ? 'HUMAN' :
+      binding?.stagedVerification.readiness === 'EXTERNAL_DEFERRED' || binding?.stagedVerification.obligation?.externalResidual
+        ? 'EXTERNAL' : undefined
+    if (expectedKind === undefined || input.kind !== expectedKind || input.reviewerVerdict !== 'PASS' ||
+      typeof input.reviewerIdentity !== 'string' || !/^[A-Za-z0-9_.:@ -]{3,120}$/u.test(input.reviewerIdentity.trim()) ||
+      !Array.isArray(input.evidence) || input.evidence.length === 0 || input.evidence.length > 20 ||
+      input.evidence.some((item) => !item || typeof item.kind !== 'string' || !/^[a-z][a-z0-9_]{2,40}$/u.test(item.kind) ||
+        typeof item.content !== 'string' || item.content.trim().length < 20 || item.content.length > 64_000))
+      throw new Error('External acceptance requires a bound assertion, identified reviewer and concrete evidence.')
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    if (!current.clean || current.gitRepositoryIdentity !== plan.targetBinding.gitRepositoryIdentity ||
+      current.branch !== plan.targetBinding.branch) throw new Error('Delivery target changed before external acceptance.')
+    const evidenceIds: string[] = []
+    for (const item of input.evidence) {
+      const artifact = { runtimePlanHash: plan.runtimePlanHash, targetCommit: current.baselineCommit,
+        assertionId: input.assertionId, kind: item.kind, content: item.content }
+      const id = createHash('sha256').update(JSON.stringify(artifact)).digest('hex')
+      const path = this.path('external-evidence', id)
+      const existing = await this.read<typeof artifact>(path)
+      if (existing === undefined) await this.writeOnce(path, artifact)
+      else if (JSON.stringify(existing) !== JSON.stringify(artifact)) throw new Error('External evidence identity collision.')
+      evidenceIds.push(id)
+    }
+    const record: ExternalAcceptanceRecord = { assertionId: input.assertionId, kind: input.kind,
+      evidenceIds: [...new Set(evidenceIds)], reviewerVerdict: 'PASS',
+      reviewerIdentity: input.reviewerIdentity.trim(), acceptedAt: new Date().toISOString() }
+    const envelope = { runtimePlanHash: plan.runtimePlanHash, targetCommit: current.baselineCommit, record }
+    const recordHash = createHash('sha256').update(JSON.stringify(envelope)).digest('hex')
+    const path = this.path('external-acceptance', this.externalAcceptanceKey(plan, input.assertionId))
+    const existing = await this.read<typeof envelope & { recordHash: string }>(path)
+    if (existing !== undefined) {
+      if (existing.runtimePlanHash !== plan.runtimePlanHash || existing.targetCommit !== current.baselineCommit ||
+        JSON.stringify({ ...existing.record, acceptedAt: record.acceptedAt }) !== JSON.stringify(record) ||
+        createHash('sha256').update(JSON.stringify({ runtimePlanHash: existing.runtimePlanHash,
+          targetCommit: existing.targetCommit, record: existing.record })).digest('hex') !== existing.recordHash)
+        throw new Error('External acceptance is immutable for this assertion and commit.')
+      return existing.record
+    }
+    await this.writeOnce(path, { ...envelope, recordHash })
+    return record
+  }
+  private async validExternalAcceptances(plan: CompiledRuntimePlan, commit: string): Promise<ExternalAcceptanceRecord[]> {
+    const records: ExternalAcceptanceRecord[] = []
+    const ids = new Set(plan.acceptanceBindings.filter((item) => item.blocking && item.ownership === 'OWNER')
+      .map((item) => item.assertionId))
+    for (const assertionId of ids) {
+      const saved = await this.read<{ runtimePlanHash: string; targetCommit: string; record: ExternalAcceptanceRecord;
+        recordHash: string }>(
+        this.path('external-acceptance', this.externalAcceptanceKey(plan, assertionId)))
+      const record = saved?.record
+      if (!saved || saved.runtimePlanHash !== plan.runtimePlanHash || saved.targetCommit !== commit ||
+        createHash('sha256').update(JSON.stringify({ runtimePlanHash: saved.runtimePlanHash,
+          targetCommit: saved.targetCommit, record: saved.record })).digest('hex') !== saved.recordHash ||
+        record?.assertionId !== assertionId || record.reviewerVerdict !== 'PASS' ||
+        !record.reviewerIdentity?.trim() || !Number.isFinite(Date.parse(record.acceptedAt)) ||
+        !Array.isArray(record.evidenceIds) || record.evidenceIds.length === 0 ||
+        record.evidenceIds.some((id) => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) continue
+      const binding = plan.acceptanceBindings.find((item) => item.assertionId === assertionId && item.ownership === 'OWNER')!
+      const expectedKind = binding.stagedVerification.readiness === 'HUMAN_DEFERRED' ? 'HUMAN' :
+        binding.stagedVerification.readiness === 'EXTERNAL_DEFERRED' || binding.stagedVerification.obligation?.externalResidual
+          ? 'EXTERNAL' : undefined
+      if (record.kind !== expectedKind) continue
+      let valid = true
+      for (const id of record.evidenceIds) {
+        const artifact = await this.read<{ runtimePlanHash: string; targetCommit: string; assertionId: string;
+          kind: string; content: string }>(this.path('external-evidence', id))
+        if (!artifact || artifact.runtimePlanHash !== plan.runtimePlanHash || artifact.targetCommit !== commit ||
+          artifact.assertionId !== assertionId || typeof artifact.content !== 'string' ||
+          createHash('sha256').update(JSON.stringify(artifact)).digest('hex') !== id) { valid = false; break }
+      }
+      if (valid) records.push(record)
+    }
+    return records
   }
   async saveCapabilityEvidence(plan: CompiledRuntimePlan, item: CapabilityEvidence): Promise<void> {
     verifyRuntimePlanIdentity(plan)
@@ -476,8 +560,10 @@ export class DeliveryStore {
       transitions.push(...record.transitions)
       evidence.push(...record.evidence)
     }
+    const externalAccepted = current?.clean
+      ? await this.validExternalAcceptances(plan, current.baselineCommit) : []
     return assessCustomerDeliveryCompletion(plan.tasks, plan.acceptanceBindings, transitions, evidence, completed,
-      [], contributorCompleted)
+      externalAccepted, contributorCompleted)
   }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
     try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }

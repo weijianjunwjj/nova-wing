@@ -872,6 +872,30 @@ test('durable contributor T1 then T2 advances the Runtime DAG only after each pr
     assert.deepEqual(executions, ['T1', 'T2', 'T3'])
     assert.equal((await f.store.customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
   } finally { await final.close() }
+  const accepted = await f.store.recordExternalAcceptance(f.plan.id, {
+    assertionId: 'A1', kind: 'EXTERNAL', reviewerVerdict: 'PASS', reviewerIdentity: 'independent-browser-fixture',
+    evidence: [{ kind: 'browser_trace', content: 'Opened the delivered app in a browser and observed the persisted order after restart.' }],
+  })
+  assert.equal(accepted.evidenceIds.length, 1)
+  assert.equal((await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)).status,
+    'CUSTOMER_DELIVERY_COMPLETED')
+  const evidenceFile = (await readdir(join(f.root, 'delivery'))).find((file) => file.startsWith('external-evidence-'))!
+  const evidencePath = join(f.root, 'delivery', evidenceFile)
+  const storedEvidence = JSON.parse(await readFile(evidencePath, 'utf8'))
+  const originalContent = storedEvidence.content
+  storedEvidence.content = 'tampered observation'
+  await writeFile(evidencePath, JSON.stringify(storedEvidence))
+  assert.equal((await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)).status,
+    'CUSTOMER_DELIVERY_BLOCKED')
+  storedEvidence.content = originalContent
+  await writeFile(evidencePath, JSON.stringify(storedEvidence))
+  const acceptanceFile = (await readdir(join(f.root, 'delivery'))).find((file) => file.startsWith('external-acceptance-'))!
+  const acceptancePath = join(f.root, 'delivery', acceptanceFile)
+  const storedAcceptance = JSON.parse(await readFile(acceptancePath, 'utf8'))
+  storedAcceptance.record.reviewerIdentity = 'forged-reviewer'
+  await writeFile(acceptancePath, JSON.stringify(storedAcceptance))
+  assert.equal((await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)).status,
+    'CUSTOMER_DELIVERY_BLOCKED')
 })
 
 async function integrationRunner(f: Awaited<ReturnType<typeof checkpointIntegrationFixture>>, options: {

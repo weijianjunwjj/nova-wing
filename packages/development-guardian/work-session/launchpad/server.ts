@@ -1089,6 +1089,28 @@ export class NovaWingLaunchpad {
       } catch { this.respondJson(response, 409, { error: '交付准备状态已变化，请重新检查后再开始。' }) }
       return
     }
+    if (method === 'POST' && path === '/api/delivery/acceptance') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.runtimePlanId !== 'string' || typeof body.runtimePlanHash !== 'string' ||
+        typeof body.assertionId !== 'string' || (body.kind !== 'EXTERNAL' && body.kind !== 'HUMAN') ||
+        body.reviewerVerdict !== 'PASS' || typeof body.reviewerIdentity !== 'string' || !Array.isArray(body.evidence)) {
+        this.respondJson(response, 400, { error: 'Exact runtime plan, assertion, reviewer and evidence are required.' }); return
+      }
+      try {
+        const plan = await this.deliveryStore.getPlan(body.runtimePlanId)
+        if (!plan || plan.runtimePlanHash !== body.runtimePlanHash) {
+          this.respondJson(response, 409, { error: 'Runtime plan identity mismatch.' }); return
+        }
+        const record = await this.deliveryStore.recordExternalAcceptance(plan.id, {
+          assertionId: body.assertionId, kind: body.kind, reviewerVerdict: 'PASS',
+          reviewerIdentity: body.reviewerIdentity,
+          evidence: body.evidence as Array<{ kind: string; content: string }>,
+        })
+        this.respondJson(response, 201, { record, customerAssessment: await this.deliveryStore.customerAssessment(plan.id) })
+      } catch { this.respondJson(response, 409, { error: 'External acceptance evidence was not recorded.' }) }
+      return
+    }
     if (method === 'POST' && path === '/api/planning/answers') {
       const body = await this.planningBody(request, response)
       if (body === undefined) return
