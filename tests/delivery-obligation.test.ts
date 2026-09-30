@@ -128,6 +128,20 @@ test('1 implementation-dependent endpoint absent but exact obligation admits Sta
   assert.equal(obligation.targetConstraints.baselineCommit, f.target.baselineCommit)
 })
 
+test('external delivery handoff keeps repository preparation separate from deferred customer proof', async () => {
+  const f = await fixture({ level: 'delivery', behavior: '用户在浏览器完成订单并重新打开页面。',
+    outcome: '浏览器显示同一订单的最终状态。', evidence: '真实浏览器操作和重新打开后的页面记录。' })
+  const plan = await f.compile()
+  assert.equal(plan.acceptanceBindings[0]!.stagedVerification.readiness, 'EXTERNAL_DEFERRED')
+  const task = workSessionDefinitionFor(plan, 'external-handoff-fixture').tasks[0]!
+  assert.match(task.goal, /Prepare repository deliverables for deferred external acceptance/u)
+  assert.match((task.constraints ?? []).join(' '), /ALREADY_SATISFIED.*file quotes/u)
+  assert.match((task.constraints ?? []).join(' '), /external customer evidence remains deferred/u)
+  const local = await fixture({ level: 'integration', behavior: '创建订单并保存。' })
+  const localPlan = await local.compile()
+  assert.equal(workSessionDefinitionFor(localPlan, 'local-owner-fixture').tasks[0]!.goal, localPlan.tasks[0]!.objective)
+})
+
 test('committed assertion-marked node test supplies a reviewed and executed exact blueprint', async () => {
   const f = await fixture()
   const plan = await f.compile()

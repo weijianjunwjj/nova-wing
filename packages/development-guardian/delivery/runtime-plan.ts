@@ -457,14 +457,28 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
     if (owned.length > 0) return owned.map(criterionFor)
     return task.outputs.map((output, index) => `TechnicalOutput ${task.id}/${index + 1}: ${output}`)
   }
+  const externalDeliveryHandoff = (task: RuntimeTaskBinding): boolean => {
+    const owned = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id &&
+      binding.blocking && binding.ownership === 'OWNER')
+    const levels = task.acceptanceCriterionIds.map((id) => plan.acceptanceCriteria.find((criterion) => criterion.id === id)?.level)
+    return owned.length > 0 && owned.every((binding) =>
+      binding.stagedVerification.readiness === 'EXTERNAL_DEFERRED' || binding.stagedVerification.readiness === 'HUMAN_DEFERRED') &&
+      levels.length > 0 && levels.every((level) => level === 'platform' || level === 'delivery') && levels.includes('delivery')
+  }
   return { id: sessionId, targetRepo: plan.targetBinding.canonicalPath, branch: plan.targetBinding.branch ?? '',
     controlPlane: 'v2', directPath: { enabled: false }, goldenPath: { enabled: false },
     limits: { softMinutes: 60, hardMinutes: 240, maxTasks: plan.tasks.length },
     tasks: ordered.map((task) => ({ id: task.id,
-      goal: task.objective, constraints: [`Frozen plan SHA-256: ${plan.sourcePlanHash}`,
+      goal: externalDeliveryHandoff(task)
+        ? 'Prepare repository deliverables for deferred external acceptance; inspect existing local code and instructions and make only needed repository changes.'
+        : task.objective, constraints: [`Frozen plan SHA-256: ${plan.sourcePlanHash}`,
         `Delivery target baseline: ${plan.targetBaselineCommit}`,
         `PlannedTask ID: ${task.plannedTaskId}`,
         `PlannedTask title and complexity: ${task.title} (${task.complexity})`,
+        ...(externalDeliveryHandoff(task) ? [
+          `Frozen PlannedTask objective: ${task.objective}`,
+          'This executor can prepare and inspect repository artifacts only. Installation, process startup, browser interaction and restart are external acceptance actions. Do not claim to have performed them. If repository deliverables are already present and no file changes are needed, inspect them and return ALREADY_SATISFIED with exact file quotes. This only proves local preparation; external customer evidence remains deferred.',
+        ] : []),
         ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
           ? [] : ['Provide a task-local deterministic test for each technical output. Exercise the implemented behavior and assert its observable result; do not use a placeholder assertion or an unrelated suite. Keep the test in the repository so NovaWing can run it independently before review.']),
         ...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking &&
