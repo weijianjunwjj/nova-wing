@@ -118,6 +118,26 @@ await test('R1 planner accepts a relevant repository-local node test without a p
   } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
 })
 
+await test('R1 planner runs a relevant node test directly when the root npm test script adds runtime flags', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-flagged-script-'))
+  try {
+    await mkdir(join(repositoryRoot, 'test'), { recursive: true })
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ type: 'module', scripts: {
+      test: 'node --experimental-strip-types --test test/storage.test.ts',
+    } }))
+    await writeFile(join(repositoryRoot, 'test/storage.test.ts'), "import test from 'node:test'; test('storage', () => {})\n")
+
+    const plan = await planVerification({ repositoryRoot, task: { id: 'storage', goal: 'Implement storage',
+      acceptanceCriteria: ['Stored items can be read after restart'], allowedPaths: ['.'], forbiddenPaths: [] },
+    changedAreaHint: ['src/storage.ts', 'test/storage.test.ts'] })
+
+    assert.equal(plan.confidence, 'HIGH')
+    assert.equal(plan.approvalRequired, false)
+    assert.deepEqual(plan.steps.filter((step) => step.id === 'targeted-test').map((step) => step.command),
+      ['node --test test/storage.test.ts'])
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 const TASK: GuardianTask = { id: 'verification-contract', goal: 'verify contract', state: 'EXECUTING', iteration: 0, maxIterations: 2 }
 
 function pendingReport(steps: readonly VerificationExecutionStep[]): ExecutionReport {

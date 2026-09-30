@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
 import type { VerificationExecutionStep } from '../model.js'
-import { assessVerificationCommand, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
+import { assessVerificationCommand, canonicalScopedNodeTest, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
 import type { WorkSessionTask } from './model.js'
 import type { AcceptanceEvidenceBinding, RiskLevel, VerifierCommandCanonicalization } from './risk-evidence.js'
 import { isRuntimeAcceptanceBinding, runtimeAcceptanceEvidence } from './completion-criteria.js'
@@ -289,8 +289,9 @@ export async function planVerification(input: VerificationPlannerInput): Promise
     if (!selected.some((step) => step.id === 'targeted-test') && nearbyTests[0]?.score &&
         (owner.scripts.test !== undefined || bestNamed === undefined)) {
       const local = owner.root.length === 0 ? nearbyTests[0].file : nearbyTests[0].file.slice(owner.root.length + 1)
-      const command = owner.scripts.test === undefined || /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test)
-        ? `node --test ${local}` : `npm test -- ${local}`
+      const command = bestNamed === undefined || owner.scripts.test === undefined ||
+        /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test)
+        ? canonicalScopedNodeTest(local) : `npm test -- ${local}`
       const admission = assessVerificationCommand(command)
       selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
