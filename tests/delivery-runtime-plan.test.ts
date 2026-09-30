@@ -553,6 +553,13 @@ test('capability registry classifies all families without claiming unsupported a
   } }
   assert.equal(classifyCapability(pageReload).family, 'browser_ui')
   assert.equal(conservativeCapabilityResolver(pageReload).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  const reopenedPage = { ...input, criterion: { ...criterion, level: 'integration' as const }, assertion: {
+    ...assertion, observableBehavior: '停止并重启本地服务后重新打开页面。',
+    expectedOutcome: '任务、标题和完成状态与重启前一致。',
+    expectedEvidence: '重启前后的页面及同一批任务状态对照。',
+  } }
+  assert.equal(classifyCapability(reopenedPage).family, 'browser_ui')
+  assert.equal(conservativeCapabilityResolver(reopenedPage).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   const browserEvidenceReview = { ...input, criterion: { ...criterion, level: 'delivery' as const }, assertion: {
     ...assertion, observableBehavior: '审查最终验收证据。',
     expectedOutcome: '每项业务结果均有实际浏览器行为证据，测试命令成功不单独构成业务通过。',
@@ -565,6 +572,7 @@ test('capability registry classifies all families without claiming unsupported a
     ['在浏览器中删除一项验收任务。', '删除前后的任务列表与重新读取的结果。', 'browser_ui'],
     ['在没有第三方 API 配置或调用的本地环境操作任务。', '应用配置、操作期间的请求记录及对应任务结果。', 'external_platform'],
     ['不配置云服务，启动并操作应用。', '本地配置、任务操作结果和 SQLite 中的对应记录。', 'external_platform'],
+    ['在无云服务配置的本地环境中启动并操作应用。', '本地配置、运行时连接记录、操作结果及本地数据记录。', 'external_platform'],
     ['在干净环境安装项目依赖。', '干净环境和依赖安装记录。', 'external_platform'],
   ] as const) {
     const scenario = { ...input, criterion: { ...criterion, level: 'delivery' as const },

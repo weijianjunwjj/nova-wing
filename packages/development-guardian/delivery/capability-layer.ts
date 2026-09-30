@@ -142,12 +142,12 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
   const { criterion, assertion } = input
   const observed = `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`
   if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
-    /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
+    /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|重新打开页面|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
     return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
       reason: 'Explicit browser interaction requires a browser trace; a scope manifest or HTTP read cannot replace it.' }
   if (criterion.level === 'delivery' &&
     (/(?:干净|全新|fresh|clean)[^，。；;]{0,24}(?:环境|安装|依赖|install)/iu.test(observed) ||
-      /(?:没有|不配置|无需|不依赖|without|no\s+)[^，。；;]{0,24}(?:第三方|云服务|Docker|外部|external|cloud)/iu.test(observed)) &&
+      /(?:没有|不配置|无需|不依赖|无|without|no\s+)[^，。；;]{0,24}(?:第三方|云服务|Docker|外部|external|cloud)/iu.test(observed)) &&
     /(?:操作|运行|启动|安装|访问|请求|执行|install|run|start|operate)/iu.test(observed))
     return { family: 'external_platform', ruleId: 'delivery-environment-scenario-v1',
       reason: 'A clean or isolated environment and its actual behavior require external execution evidence.' }
