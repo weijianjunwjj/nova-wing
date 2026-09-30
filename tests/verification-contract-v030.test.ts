@@ -161,7 +161,7 @@ await test('R1 planner proves a hook-free package test glob covers the relevant 
   try {
     await mkdir(join(repositoryRoot, 'test'))
     await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'tsx --test test/**/*.test.ts' } }))
-    await writeFile(join(repositoryRoot, 'test/database.test.ts'), "import '../src/database.js'\n")
+    await writeFile(join(repositoryRoot, 'test/database.test.ts'), "import '.." + "/src/database.js'\n")
     const task = { id: 'foundation', goal: 'Implement SQLite database',
       acceptanceCriteria: ['database retains tasks after restart'], allowedPaths: ['.'], forbiddenPaths: [] }
     const covered = await planVerification({ repositoryRoot, task,
