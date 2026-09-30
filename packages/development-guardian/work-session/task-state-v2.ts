@@ -45,6 +45,8 @@ export interface TaskActionBudgetV2 {
 export interface TaskStateV2 {
   /** HEAD when this Task was first claimed; never the Delivery-wide baseline. */
   taskBaseCommit?: string
+  /** Host-observed read proof for a contributor whose frozen output already exists. */
+  contributorNoOp?: { headSha: string; reason: string; files: readonly { path: string; sha256: string }[] }
   /** Host-owned retry identity; transport metadata is partitioned by this attempt. */
   ownedCheckpoints?: readonly (OwnedCheckpointRecord & { supersededEvidence?: unknown })[]
   attemptId?: string
@@ -156,6 +158,8 @@ const verificationPlan = z.object({
 })
 const persistedTask = z.object({
   taskBaseCommit: z.string().min(1).optional(),
+  contributorNoOp: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/u), reason: z.string().min(1),
+    files: z.array(z.object({ path: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/u) })).min(1) }).optional(),
   ownedCheckpoints: z.array(ownedCheckpointRecordSchema.extend({ supersededEvidence: z.unknown().optional() })).optional(),
   attemptId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   version: z.literal(2), identity: z.object({ taskId: z.string().min(1), sessionId: z.string().min(1) }),

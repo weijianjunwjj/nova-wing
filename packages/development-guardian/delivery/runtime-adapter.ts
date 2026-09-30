@@ -7,7 +7,10 @@ import { inspectDeliveryTarget } from './runtime-plan.js'
 import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer, type BlueprintReviewer, type BlueprintRepairer } from './verification-blueprint-planner.js'
 import { taskCompletionGate, type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
 import { checkpointOwnedImplementation } from '../work-session/owned-checkpoint.js'
+import { completionGate, assessRisk, reviewSatisfied } from '../work-session/risk-evidence.js'
+import { verificationPlanFingerprintValid } from '../work-session/verification-planner.js'
 import { randomUUID } from 'node:crypto'
+import { inspectAtCommit } from './repo-capability-inspector.js'
 
 export function pendingEvidenceKey(assertionId: string, obligationId: string): string {
   return `NOVAWING_VERIFICATION_PENDING:${assertionId}:${obligationId}`
@@ -20,15 +23,47 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
   blueprintReview?: { reviewer: BlueprintReviewer; repairer?: BlueprintRepairer }): V2ActionDispatcher {
   const completionProofs = new Map<string, { transitions: VerificationBindingTransition[];
     evidence: AssertionCompletionEvidence[] }>()
+  const contributionProofs = new Set<string>()
+  const contributor = (taskId: string): boolean =>
+    plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === taskId && binding.blocking && binding.ownership === 'CONTRIBUTES') &&
+    !plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === taskId && binding.blocking && binding.ownership === 'OWNER')
   return {
     inspectRepository: () => defaultDispatcher.inspectRepository(),
     async deliveryCompletionGate(task) {
+      completionProofs.delete(task.identity.taskId)
+      contributionProofs.delete(task.identity.taskId)
       const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === task.identity.taskId &&
         item.blocking && item.ownership === 'OWNER')
       const transitions: VerificationBindingTransition[] = []
       const evidence: AssertionCompletionEvidence[] = []
       const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath).catch(() => undefined)
       if (!current?.clean) return { status: 'BLOCKED', reason: 'Implementation repository is not clean.' }
+      if (bindings.length === 0 && contributor(task.identity.taskId)) {
+        const source = plan.tasks.find((item) => item.id === task.identity.taskId)
+        const expectedCriteria = source?.outputs.map((output, index) => `TechnicalOutput ${task.identity.taskId}/${index + 1}: ${output}`)
+        const verification = task.verificationPlan
+        if (!source || !expectedCriteria?.length || JSON.stringify(task.acceptanceCriteria) !== JSON.stringify(expectedCriteria) ||
+          task.goal !== source.objective || !verification || !verificationPlanFingerprintValid(verification) ||
+          verification.confidence !== 'HIGH' || !verification.steps.some((step) => step.id === 'targeted-test' || step.id === 'package-test') ||
+          verification.steps.some((step) => step.admission !== 'ALLOWED') ||
+          task.verificationState.results.length < verification.steps.length ||
+          !verification.steps.every((step) => task.verificationState.results.some((result) => result.stepId === step.id && result.status === 'passed')) ||
+          task.completion.review?.assertionVerdicts?.length || !reviewSatisfied(task) ||
+          !completionGate({ task, ...task.completion, risk: assessRisk(task) }) ||
+          task.gitState.headSha !== current.baselineCommit ||
+          (task.taskBaseCommit !== current.baselineCommit && !task.ownedCheckpoints?.some((checkpoint) =>
+            checkpoint.after.headSha === current.baselineCommit)))
+          return { status: 'BLOCKED', reason: 'Contributor technical verification, checkpoint or independent review is incomplete.' }
+        if (task.taskBaseCommit === current.baselineCommit) {
+          const noOp = task.contributorNoOp
+          const facts = noOp ? await inspectAtCommit(plan.targetBinding, current.baselineCommit).catch(() => undefined) : undefined
+          if (!noOp || noOp.headSha !== current.baselineCommit || !noOp.reason.trim() ||
+            !noOp.files.length || !facts || noOp.files.some((file) => facts.artifactHashes[file.path] !== file.sha256))
+            return { status: 'BLOCKED', reason: 'Contributor ALREADY_SATISFIED lacks exact host-observed file proof.' }
+        }
+        contributionProofs.add(task.identity.taskId)
+        return { status: 'CONTRIBUTION_VERIFIED' }
+      }
       for (const binding of bindings) {
         const stage = binding.stagedVerification
         const verdict = task.completion.review?.assertionVerdicts?.find((item) => item.assertionId === binding.assertionId)
@@ -70,20 +105,45 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
     },
     async deliveryTaskCompleted(task) {
       const proof = completionProofs.get(task.identity.taskId)
-      if (!proof) throw new Error('Task has no current delivery completion proof.')
+      if (!proof && !contributionProofs.has(task.identity.taskId)) throw new Error('Task has no current delivery completion proof.')
     },
     async deliveryTaskFinalized(task, commitSha) {
       const proof = completionProofs.get(task.identity.taskId)
-      if (!proof) throw new Error('Finalized Task has no current delivery completion proof.')
+      if (!proof && !contributionProofs.has(task.identity.taskId)) throw new Error('Finalized Task has no current delivery completion proof.')
       const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
       if (!current.clean || current.baselineCommit !== commitSha)
         throw new Error('Finalized Task implementation commit changed.')
-      await store.recordLocalTaskCompletion(plan, task.identity.taskId, proof.transitions, proof.evidence)
+      if (proof) await store.recordLocalTaskCompletion(plan, task.identity.taskId, proof.transitions, proof.evidence)
+      else await store.recordContributorTaskCompletion(plan, task, commitSha)
       completionProofs.delete(task.identity.taskId)
+      contributionProofs.delete(task.identity.taskId)
     },
     async dispatch(input) {
       const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === input.task.identity.taskId &&
         item.blocking && item.ownership === 'OWNER')
+      if (bindings.length === 0 && contributor(input.task.identity.taskId)) {
+        if (input.action === 'EXECUTE') {
+          const sanitized = { ...input.task, completion: { ...input.task.completion,
+            bindings: input.task.completion.bindings.map((item) => ({ ...item,
+              requiredEvidence: item.requiredEvidence.filter((value) => !value.startsWith('NOVAWING_TECHNICAL_PENDING:')) })) } }
+          return defaultDispatcher.dispatch({ ...input, task: sanitized })
+        }
+        if (input.action === 'VERIFY') {
+          if (!input.task.verificationPlan || !verificationPlanFingerprintValid(input.task.verificationPlan))
+            return { status: 'BLOCKED', blockers: ['Contributor verification plan is unavailable.'] }
+          try {
+            if (!input.implementationCheckpoint && input.task.gitState.changedFiles.length)
+              throw new Error('OWNED_CHECKPOINT_HANDOFF_REQUIRED')
+            const task = await checkpointOwnedImplementation({ task: input.task, baselineCommit: plan.targetBaselineCommit,
+              inspect: () => defaultDispatcher.inspectRepository(),
+              handoff: input.implementationCheckpoint ?? { dispatchId: randomUUID(),
+                accept: async () => { throw new Error('OWNED_CHECKPOINT_HANDOFF_REQUIRED') } } })
+            return defaultDispatcher.dispatch({ ...input, task })
+          } catch (error) { return { status: 'BLOCKED', blockers: [
+            `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${error instanceof Error ? error.message : String(error)}`] } }
+        }
+        return defaultDispatcher.dispatch(input)
+      }
       if (bindings.length === 0) return { status: 'BLOCKED', blockers: ['Delivery task has no blocking assertions.'] }
       const pending = bindings.filter((item) => item.stagedVerification.readiness !== 'BOUND_EXECUTABLE')
       if (input.action === 'EXECUTE') {

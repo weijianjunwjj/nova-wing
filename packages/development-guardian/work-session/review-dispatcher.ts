@@ -194,6 +194,9 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
       const identity = agentIdentityOf(agent)
       const requiredAssertionIds = acceptanceAssertionIds(task.acceptanceCriteria)
       const assertionVerdicts = outcome.assertionVerdicts ?? []
+      if (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`TechnicalOutput ${task.identity.taskId}/`)) &&
+          assertionVerdicts.length > 0) return { status: 'BLOCKED',
+        blockers: ['Contributor review returned a customer assertion verdict.'] }
       const unprovedAssertionIds = requiredAssertionIds.filter((id) =>
         assertionVerdicts.filter((item) => item.assertionId === id &&
           item.verdict === (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`AcceptanceAssertion ${id}: `) &&
@@ -202,7 +205,7 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
           assertionCapabilityEvidenceValid(task, item)).length !== 1)
       const blockingFindings = [...outcome.blockingFindings,
         ...unprovedAssertionIds.map((id) => `AcceptanceAssertion ${id} lacks an explicit PASS with evidence.`),
-        ...(requiredAssertionIds.length > 0 && assertionVerdicts.some((item) => !requiredAssertionIds.includes(item.assertionId))
+        ...(assertionVerdicts.some((item) => !requiredAssertionIds.includes(item.assertionId))
           ? ['Reviewer returned an unexpected AcceptanceAssertion ID.'] : [])]
       const review: ReviewEvidence = {
         passed: outcome.passed && blockingFindings.length === 0,

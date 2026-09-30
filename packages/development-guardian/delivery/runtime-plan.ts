@@ -339,8 +339,14 @@ export async function admitRuntimePlan(snapshotInput: PlanSnapshot, plan: Compil
       }
       const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
       if (bindings.length === 0) {
-        blockers.push({ code: 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE',
-          message: `任务 ${task.id} 关联冻结验收断言，但其结果由下游任务证明；当前缺少可安全完成该贡献任务的独立证明契约。` })
+        const source = plan.tasks.find((item) => item.id === task.id)
+        const contributions = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'CONTRIBUTES')
+        if (!source?.objective.trim() || source.outputs.length === 0 || source.outputs.some((output) => !output.trim()) ||
+          contributions.length === 0 || task.acceptanceCriteria?.length !== source.outputs.length ||
+          task.acceptanceEvidenceBindings?.length !== source.outputs.length) {
+          blockers.push({ code: 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE',
+            message: `任务 ${task.id} 缺少冻结产出对应的技术验证合同。` })
+        }
         continue
       }
       if (bindings.every((binding) => binding.stagedVerification.readiness === 'BOUND_EXECUTABLE')) {
@@ -449,9 +455,7 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
     const bindings = plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
     const owned = bindings.filter((binding) => binding.ownership === 'OWNER')
     if (owned.length > 0) return owned.map(criterionFor)
-    // Contribution scope is visible to the task, but never becomes owner evidence.
-    return bindings.filter((binding) => binding.ownership === 'CONTRIBUTES').map((binding) =>
-      `Contribution to AcceptanceAssertion ${binding.assertionId}; canonical owner: ${binding.canonicalOwnerTaskId}`)
+    return task.outputs.map((output, index) => `TechnicalOutput ${task.id}/${index + 1}: ${output}`)
   }
   return { id: sessionId, targetRepo: plan.targetBinding.canonicalPath, branch: plan.targetBinding.branch ?? '',
     controlPlane: 'v2', directPath: { enabled: false }, goldenPath: { enabled: false },
@@ -474,11 +478,18 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
         ...plan.customerDecisions.map((decision) => `Customer decision ${decision.questionId}: ${decision.selectedOptionText}`)],
       allowedPaths: ['.'], forbiddenPaths: [], risk: 'HIGH',
       acceptanceCriteria: criteriaForTask(task),
-      acceptanceEvidenceBindings: plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+      acceptanceEvidenceBindings: [...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map((binding) => ({ criterion: criterionFor(binding),
           requiredEvidence: ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness) ? [] :
             [binding.stagedVerification.readiness === 'BOUND_EXECUTABLE'
             ? binding.verificationCapability.verificationCommand!
             : `NOVAWING_VERIFICATION_PENDING:${binding.assertionId}:${binding.stagedVerification.obligation?.obligationId ?? binding.stagedVerification.readiness}`] })),
+        ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+          ? [] : criteriaForTask(task).map((criterion, index) => ({ criterion,
+            requiredEvidence: [`NOVAWING_TECHNICAL_PENDING:${task.id}:${index + 1}`] })))],
+      ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+        ? {} : { contribution: { taskId: task.id, sourcePlanHash: plan.sourcePlanHash, runtimePlanHash: plan.runtimePlanHash,
+          objective: task.objective, outputs: [...task.outputs], dependencyIds: [...task.dependencyIds],
+          requirementIds: [...task.requirementIds] } }),
     })) }
 }

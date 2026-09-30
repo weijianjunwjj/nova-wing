@@ -77,7 +77,7 @@ export interface V2ActionDispatcher {
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
   /** Delivery-only durable assertion gate, checked immediately before Task finalization. */
-  deliveryCompletionGate?(task: TaskStateV2): Promise<{ status: 'LOCALLY_VERIFIED' | 'BLOCKED'; reason?: string }>
+  deliveryCompletionGate?(task: TaskStateV2): Promise<{ status: 'LOCALLY_VERIFIED' | 'CONTRIBUTION_VERIFIED' | 'BLOCKED'; reason?: string }>
   deliveryTaskCompleted?(task: TaskStateV2): Promise<void>
   deliveryTaskFinalized?(task: TaskStateV2, commitSha: string): Promise<void>
 }
@@ -348,7 +348,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
     }
     if (this.options.dispatcher.deliveryCompletionGate) {
       const delivery = await this.options.dispatcher.deliveryCompletionGate(state)
-      if (delivery.status !== 'LOCALLY_VERIFIED') return { escalationState: { ...state,
+      if (delivery.status !== (task.contribution ? 'CONTRIBUTION_VERIFIED' : 'LOCALLY_VERIFIED')) return { escalationState: { ...state,
         blockers: [...state.blockers, delivery.reason ?? 'Delivery assertion evidence is incomplete.'] } }
     }
     emit('FINALIZING', 'active', { kind: 'CONTROLLER_PHASE_CHANGED' })
@@ -498,6 +498,28 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles, state.gitState.repositoryIdentity)
       if (violations.length) state = { ...state, blockers: [...new Set([...state.blockers, ...violations])] }
       const decision = controller.decide(state, { reconciliationRequired: !reconciliation.reconciled })
+      if (decision.action === 'VERIFY' && task.contribution !== undefined && state.verificationPlan === undefined) {
+        const repositoryRoot = state.gitState.repositoryIdentity
+        if (!repositoryRoot) return { status: 'HUMAN_REQUIRED', humanRequired: {
+          category: 'RECOVERY_BLOCKED', reason: 'Contributor repository identity is unavailable.' }, taskStateV2: state }
+        const technical = await planVerification({ repositoryRoot,
+          task: { ...task, acceptanceEvidenceBindings: [] }, risk: assessRisk(state).level,
+          changedAreaHint: state.gitState.changedFiles.length ? [...state.gitState.changedFiles] : ['.'] })
+        if (technical.confidence !== 'HIGH' || technical.steps.length === 0 ||
+          !technical.steps.some((step) => step.id === 'targeted-test' || step.id === 'package-test') ||
+          technical.steps.some((step) => step.admission !== 'ALLOWED') ||
+          technical.mappings.length !== task.acceptanceCriteria?.length ||
+          technical.mappings.some((mapping) => mapping.evidence.length === 0)) {
+          state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',
+            blockers: [...state.blockers, 'CONTRIBUTOR_VERIFIER_UNAVAILABLE'] }
+          await context?.persistTaskStateV2?.(state)
+          return { status: 'HUMAN_REQUIRED', humanRequired: {
+            category: 'CONFIGURATION_REQUIRED', reason: 'No safe task-local contributor verifier is available.' }, taskStateV2: state }
+        }
+        state = { ...state, verificationPlan: technical,
+          completion: { ...state.completion, bindings: bindingsFromVerificationPlan(technical, { identity: 'step' }) } }
+        await context?.persistTaskStateV2?.(state)
+      }
       state = { ...state, currentAction: decision.action,
         ...((decision.action === 'REQUEST_APPROVAL' || decision.action === 'SUSPEND') ? { status: 'SUSPENDED' as const } : {}) }
       note({ type: 'CONTROLLER_DECIDED', action: decision.action, reasonCode: decision.reasonCode, ...repositoryFacts(state), explanation: explanation(decision.reasonCode, decision.action, {}, [], []) })
@@ -527,7 +549,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       if (decision.action === 'COMPLETE') {
         if (this.options.dispatcher.deliveryCompletionGate) {
           const delivery = await this.options.dispatcher.deliveryCompletionGate(state)
-          if (delivery.status !== 'LOCALLY_VERIFIED') return { status: 'HUMAN_REQUIRED',
+          if (delivery.status !== (task.contribution ? 'CONTRIBUTION_VERIFIED' : 'LOCALLY_VERIFIED')) return { status: 'HUMAN_REQUIRED',
             humanRequired: { category: 'RECOVERY_BLOCKED', reason: delivery.reason ?? 'Delivery assertion evidence is incomplete.' },
             taskStateV2: state }
         }
@@ -659,6 +681,24 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         : result.providerHistory ?? (actualProvider === undefined ? state.providerHistory : appendProviderHistory(state.providerHistory, actualProvider))
       state = controller.applyResult({ ...observedState, currentAgent: agent.id, providerHistory: nextProviderHistory,
         ...(decision.action === 'EXECUTE' && actualImplementer !== undefined ? { implementer: actualImplementer } : {}) }, decision.action, { ...result, repositoryChanged, implementationEvidenceAdded })
+      if (decision.action === 'EXECUTE' && task.contribution !== undefined && result.status === 'SUCCESS') {
+        if (!repositoryChanged) {
+          const noOp = result.workspaceExecution?.alreadySatisfied
+          if (result.workspaceExecution?.outcome !== 'ALREADY_SATISFIED' || !noOp?.reason.trim() ||
+            !noOp.files.length || noOp.files.some((file) => !/^[a-f0-9]{64}$/u.test(file.sha256))) {
+            state = { ...state, status: 'SUSPENDED', currentAction: 'SUSPEND',
+              blockers: [...state.blockers, 'CONTRIBUTOR_NO_OP_UNPROVEN'] }
+            await context?.persistTaskStateV2?.(state)
+            return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'CONFIGURATION_REQUIRED',
+              reason: 'Contributor no-op has no host-observed file evidence.' }, taskStateV2: state }
+          }
+          state = { ...state, contributorNoOp: { headSha: observed.headSha, reason: noOp.reason,
+            files: [...noOp.files] } }
+        } else {
+          const { contributorNoOp: _previousNoOp, ...withoutNoOp } = state
+          state = withoutNoOp
+        }
+      }
       // Provider switches are derived from the authoritative providerHistory delta,
       // never reconstructed from memory or agent narrative after the fact.
       const providerSwitches = deriveProviderSwitches(providerHistoryBefore, state.providerHistory)

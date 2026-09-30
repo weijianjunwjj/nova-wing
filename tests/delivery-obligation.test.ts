@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, realpath, writeFile, readFile, chmod, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, writeFile, readFile, readdir, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
@@ -29,7 +29,8 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await run('git', args, { cwd })).stdout.trim()
 }
 function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior?: string; outcome?: string;
-  evidence?: string; tasks?: Array<{ id: string; dependencyIds: string[] }>;
+  evidence?: string; tasks?: Array<{ id: string; dependencyIds: string[]; acceptanceCriterionIds?: string[];
+    objective?: string; outputs?: string[] }>;
   separateTaskAssertions?: boolean; secondExternal?: boolean } = {}) {
   const requirement = '顾客创建订单后必须能重新读取同一订单的持久化业务状态，并获得可复核的结果。'
   const behavior = options.behavior ?? '创建订单并保存。'
@@ -45,9 +46,9 @@ function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior
       businessFlows: [{ id: 'F1', title: '订单', steps: ['创建订单', '检查结果'], requirementIds: ['R1'] }] },
     productScope: { inScope: ['订单'], outOfScope: ['会员'] },
     architecture: { summary: '用持久化订单和隔离测试提供证据。', components: ['订单'], decisions: [] },
-    tasks: taskSpecs.map((item, index) => ({ id: item.id, title: `任务 ${item.id}`, objective: '实现并验证订单',
-      requirementIds: ['R1'], outputs: ['订单结果'], dependencyIds: item.dependencyIds,
-      acceptanceCriterionIds: [options.separateTaskAssertions && index === 1 ? 'C2' : 'C1'], complexity: 'small' as const })),
+    tasks: taskSpecs.map((item, index) => ({ id: item.id, title: `任务 ${item.id}`, objective: item.objective ?? '实现并验证订单',
+      requirementIds: ['R1'], outputs: item.outputs ?? ['订单结果'], dependencyIds: item.dependencyIds,
+      acceptanceCriterionIds: item.acceptanceCriterionIds ?? [options.separateTaskAssertions && index === 1 ? 'C2' : 'C1'], complexity: 'small' as const })),
     acceptancePlan: { strategy: '按冻结断言独立验证。', criteria: [{ id: 'C1', requirementIds: ['R1'],
       description: behavior, level: options.level ?? 'integration', expectedEvidence: evidence, blocking: true,
       assertions: [{ id: 'A1', requirementId: 'R1', observableBehavior: behavior,
@@ -70,7 +71,7 @@ function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior
     source: 'customer_mode' as const, contentHash: planContentHash(canonicalPlanContent(plan)) }
   return createPlanSnapshot(plan, approval, null)
 }
-async function fixture(options: Parameters<typeof snapshot>[0] = {}) {
+async function fixture(options: Parameters<typeof snapshot>[0] = {}, seed?: (repo: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'nw-obligation-'))
   const repo = join(root, 'repo')
   await mkdir(repo)
@@ -79,6 +80,7 @@ async function fixture(options: Parameters<typeof snapshot>[0] = {}) {
   await git(repo, 'config', 'user.name', 'Fixture')
   await git(repo, 'config', 'user.email', 'fixture@example.invalid')
   await writeFile(join(repo, 'README.md'), 'fixture\n')
+  await seed?.(repo)
   await git(repo, 'add', '.')
   await git(repo, 'commit', '-qm', 'baseline')
   const frozen = snapshot(options)
@@ -214,14 +216,37 @@ test('10 three covering tasks yield one canonical owner and one obligation', asy
   assert.equal(plan.acceptanceBindings.find((item) => item.ownership === 'OWNER')?.runtimeTaskId, 'T3')
   assert.deepEqual(plan.acceptanceBindings.map((item) => [item.runtimeTaskId, item.ownership, item.canonicalOwnerTaskId]),
     [['T1', 'CONTRIBUTES', 'T3'], ['T2', 'CONTRIBUTES', 'T3'], ['T3', 'OWNER', 'T3']])
-  const definition = workSessionDefinitionFor({ ...plan, admission: { ...plan.admission, status: 'READY', blockers: [] } }, 'admission-probe')
+  const definition = workSessionDefinitionFor(plan, 'admission-probe')
   assert.deepEqual(definition.tasks.map((task) => task.acceptanceCriteria?.length), [1, 1, 1])
-  assert.deepEqual(definition.tasks.map((task) => task.acceptanceEvidenceBindings?.length), [0, 0, 1])
-  assert.equal(plan.admission.status, 'ADMISSION_BLOCKED')
-  assert.deepEqual(plan.admission.blockers.filter((item) => item.code === 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE')
-    .map((item) => item.message.includes('任务 T1') ? 'T1' : item.message.includes('任务 T2') ? 'T2' : '?'), ['T1', 'T2'])
+  assert.deepEqual(definition.tasks.map((task) => task.acceptanceEvidenceBindings?.length), [1, 1, 1])
+  assert.equal(plan.admission.status, 'READY')
+  assert.deepEqual(plan.admission.blockers.filter((item) => item.code === 'CONTRIBUTOR_TASK_PROOF_UNAVAILABLE'), [])
+  assert.deepEqual(definition.tasks.slice(0, 2).map((task) => task.contribution?.taskId), ['T1', 'T2'])
+  assert.ok(definition.tasks[0]!.acceptanceCriteria?.[0]?.startsWith('TechnicalOutput T1/1:'))
+  assert.ok(definition.tasks[0]!.acceptanceEvidenceBindings?.[0]?.requiredEvidence[0]?.startsWith('NOVAWING_TECHNICAL_PENDING:'))
   assert.equal(plan.admission.blockers.filter((item) => item.code === 'TASK_NO_BLOCKING_ASSERTION').length, 0)
   assert.equal(taskCompletionGate(plan.acceptanceBindings.filter((item) => item.runtimeTaskId === 'T1'), [], []), 'BLOCKED')
+  assert.equal(customerDeliveryCompletionGate(plan.tasks, plan.acceptanceBindings, [], [],
+    new Set(['T1', 'T2', 'T3']), [], new Set(['T1', 'T2'])), false)
+})
+
+test('four-task contributor DAG preserves unique customer owners and blocks customer completion', async () => {
+  const f = await fixture({ separateTaskAssertions: true, secondExternal: true, tasks: [
+    { id: 'T1', dependencyIds: [], acceptanceCriterionIds: ['C1'] },
+    { id: 'T2', dependencyIds: ['T1'], acceptanceCriterionIds: ['C1'] },
+    { id: 'T3', dependencyIds: ['T2'], acceptanceCriterionIds: ['C1', 'C2'] },
+    { id: 'T4', dependencyIds: ['T3'], acceptanceCriterionIds: ['C2'] },
+  ] })
+  const plan = await f.compile()
+  assert.equal(plan.admission.status, 'READY')
+  assert.deepEqual(plan.tasks.map((task) => task.dependencyIds), [[], ['T1'], ['T2'], ['T3']])
+  assert.deepEqual(plan.acceptanceBindings.filter((binding) => binding.ownership === 'OWNER')
+    .map((binding) => [binding.assertionId, binding.runtimeTaskId]), [['A1', 'T3'], ['A2', 'T4']])
+  assert.deepEqual(workSessionDefinitionFor(plan, 'four-task-fixture').tasks.map((task) =>
+    task.contribution ? 'CONTRIBUTION_VERIFIED' : 'LOCALLY_VERIFIED'),
+  ['CONTRIBUTION_VERIFIED', 'CONTRIBUTION_VERIFIED', 'LOCALLY_VERIFIED', 'LOCALLY_VERIFIED'])
+  assert.equal(customerDeliveryCompletionGate(plan.tasks, plan.acceptanceBindings, [], [],
+    new Set(['T1', 'T2', 'T3', 'T4']), [], new Set(['T1', 'T2'])), false)
 })
 
 test('11 artifact or baseline drift blocks commit inspection', async () => {
@@ -486,8 +511,10 @@ test('21 mixed positive action and negative scope require executed test and revi
 })
 
 // Production Delivery dispatcher + Controller, actual Git inspection and commit. Only LLM replies are fixtures.
-async function checkpointIntegrationFixture(local = false) {
-  const f = await fixture(local ? {} : { level: 'ui', behavior: '顾客在页面查看订单。', outcome: '页面呈现订单。', evidence: '浏览器截图。' })
+async function checkpointIntegrationFixture(local = false, tasks?: NonNullable<Parameters<typeof snapshot>[0]>['tasks'],
+  seed?: (repo: string) => Promise<void>) {
+  const f = await fixture({ ...(local ? {} : { level: 'ui' as const, behavior: '顾客在页面查看订单。', outcome: '页面呈现订单。', evidence: '浏览器截图。' }),
+    ...(tasks ? { tasks } : {}) }, seed)
   const plan = await f.compile(), store = new DeliveryStore(join(f.root, 'delivery'))
   await store.savePlan(plan)
   const definition = workSessionDefinitionFor(plan, 'checkpoint-integration')
@@ -533,6 +560,313 @@ test('owned checkpoint production wiring: EXECUTE -> real VERIFY commit -> REVIE
   assert.equal(await git(f.repo, 'rev-parse', 'HEAD^'), f.target.baselineCommit)
   assert.equal(await git(f.repo, 'status', '--porcelain'), '')
   assert.equal((await f.store.customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+})
+
+test('contributor completion persists technical proof across Store reopen without customer assertion evidence', async () => {
+  const f = await checkpointIntegrationFixture(false, [{ id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] }])
+  assert.equal(f.plan.admission.status, 'READY')
+  assert.equal(f.definition.tasks[0]!.contribution?.taskId, 'T1')
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  const { loadTaskStateV2 } = await import('../packages/development-guardian/work-session/task-state-v2.js')
+  const actions: string[] = []
+  const defaultDispatcher: import('../packages/development-guardian/work-session/v2-controller-task-runner.js').V2ActionDispatcher = {
+    inspectRepository: f.inspectRepository,
+    async dispatch({ action, task, agent }) {
+      actions.push(action)
+      if (action === 'EXECUTE') {
+        assert.ok(task.completion.bindings.every((binding) =>
+          binding.requiredEvidence.every((evidence) => !evidence.startsWith('NOVAWING_TECHNICAL_PENDING:'))))
+        await mkdir(join(f.repo, 'tests'))
+        await writeFile(join(f.repo, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }))
+        await writeFile(join(f.repo, 'order.js'), 'export const order = { result: 1 }\n')
+        await writeFile(join(f.repo, 'tests/order.test.js'),
+          'import test from "node:test"; import assert from "node:assert/strict"; import { order } from "../order.js"; test("order result", () => assert.equal(order.result, 1));\n')
+        return { status: 'SUCCESS', changedFiles: ['package.json', 'order.js', 'tests/order.test.js'],
+          workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
+      }
+      if (action === 'VERIFY') {
+        assert.ok(task.verificationPlan)
+        const results = []
+        for (const step of task.verificationPlan.steps) {
+          assert.equal(step.admission, 'ALLOWED')
+          if (step.id === 'targeted-test') {
+            assert.equal(step.command, 'node --test tests/order.test.js')
+            await run(process.execPath, ['--test', 'tests/order.test.js'], { cwd: f.repo })
+          } else if (step.id === 'diff-check') await git(f.repo, 'diff', '--check')
+          else assert.fail(`Unexpected verifier: ${step.id}`)
+          results.push({ name: step.id, stepId: step.id, command: step.command, status: 'passed' as const })
+        }
+        return { status: 'SUCCESS', verificationResults: results }
+      }
+      assert.equal(action, 'REVIEW')
+      assert.equal(task.verificationPlan?.confidence, 'HIGH')
+      assert.ok(task.verificationState.results.some((result) => result.stepId === 'targeted-test' && result.status === 'passed'))
+      return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
+        reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
+        reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
+        reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: task.gitState.headSha!,
+        reviewedFiles: ['package.json', 'order.js', 'tests/order.test.js'], timestamp: new Date().toISOString() } }
+    },
+  }
+  const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, defaultDispatcher)
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: f.agents, dispatcher })
+  const savedStates: import('../packages/development-guardian/work-session/task-state-v2.js').TaskStateV2[] = []
+  const result = await runner.run(f.definition.tasks[0]!, undefined, undefined, {
+    persistTaskStateV2: async (state) => { savedStates.push(loadTaskStateV2(JSON.parse(JSON.stringify(state)))) },
+  })
+  assert.equal(result.status, 'COMPLETED', JSON.stringify(result.humanRequired))
+  assert.equal(result.taskStateV2?.completion.review?.assertionVerdicts, undefined)
+  assert.equal(result.taskStateV2?.ownedCheckpoints?.length, 1)
+  const proof = result.taskStateV2!
+  const head = await git(f.repo, 'rev-parse', 'HEAD')
+  const reopenAt = async (stage: 'before-verify' | 'before-review' | 'before-finalizer') => {
+    const state = stage === 'before-verify'
+      ? savedStates.find((item) => item.ownedCheckpoints?.length === 1 && item.verificationPlan &&
+        item.verificationState.results.length === 0 && item.completion.review === undefined)
+      : stage === 'before-review'
+        ? savedStates.find((item) => item.currentAction === 'REVIEW' &&
+          item.verificationState.results.some((entry) => entry.status === 'passed') && item.completion.review === undefined)
+        : proof
+    assert.ok(state, `${stage} must have an actual persisted TaskStateV2 boundary`)
+    const reopened = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+      agents: f.agents, dispatcher: createDeliveryRuntimeDispatcher(f.plan,
+        new DeliveryStore(join(f.root, 'delivery')), defaultDispatcher) })
+    actions.length = 0
+    const result = await reopened.run(f.definition.tasks[0]!, undefined, undefined, {
+      taskStateV2: loadTaskStateV2(JSON.parse(JSON.stringify(state))),
+    })
+    assert.equal(result.status, 'COMPLETED', `${stage}: ${JSON.stringify(result.humanRequired)}`)
+    assert.equal(actions.includes('EXECUTE'), false, stage)
+    assert.deepEqual(actions, stage === 'before-verify' ? ['VERIFY', 'REVIEW'] :
+      stage === 'before-review' ? ['REVIEW'] : [], stage)
+    assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), head)
+  }
+  await reopenAt('before-verify')
+  await reopenAt('before-review')
+  await reopenAt('before-finalizer')
+  assert.deepEqual((await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)).completedRuntimeTaskIds, [],
+    'Review and checkpoint without a durable contributor record cannot advance delivery')
+  const { verificationPlan: _verificationPlan, ...withoutVerifier } = proof
+  const { ownedCheckpoints: _ownedCheckpoints, ...withoutCheckpoint } = proof
+  const broken = [
+    { label: 'verifier failed', state: { ...proof, verificationState: { ...proof.verificationState,
+      results: proof.verificationState.results.map((item) => ({ ...item, status: 'failed' as const })) } } },
+    { label: 'reviewer failed', state: { ...proof, completion: { ...proof.completion,
+      review: { ...proof.completion.review!, passed: false } } } },
+    { label: 'verifier unavailable', state: withoutVerifier },
+    { label: 'checkpoint missing', state: withoutCheckpoint },
+    { label: 'customer assertion verdict', state: { ...proof, completion: { ...proof.completion,
+      review: { ...proof.completion.review!, assertionVerdicts: [{ assertionId: 'A1', verdict: 'PASS' as const,
+        evidence: 'forbidden customer proof' }] } } } },
+  ]
+  for (const item of broken) {
+    assert.equal((await dispatcher.deliveryCompletionGate!(item.state)).status, 'BLOCKED', item.label)
+    await assert.rejects(f.store.recordContributorTaskCompletion(f.plan, item.state, head), /incomplete/u, item.label)
+  }
+  assert.equal((await dispatcher.deliveryCompletionGate!(proof)).status, 'CONTRIBUTION_VERIFIED')
+  await runner.afterRuntimeTaskFinalized(result.taskStateV2!, head)
+  const afterRecord = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: f.agents, dispatcher: createDeliveryRuntimeDispatcher(f.plan,
+      new DeliveryStore(join(f.root, 'delivery')), defaultDispatcher) })
+  actions.length = 0
+  const replay = await afterRecord.run(f.definition.tasks[0]!, undefined, undefined, {
+    taskStateV2: loadTaskStateV2(JSON.parse(JSON.stringify(proof))),
+  })
+  assert.equal(replay.status, 'COMPLETED', JSON.stringify(replay.humanRequired))
+  assert.deepEqual(actions, [], 'A durable proof replay never reruns Executor, verifier or reviewer')
+  await afterRecord.afterRuntimeTaskFinalized(replay.taskStateV2!, head)
+  const reopened = new DeliveryStore(join(f.root, 'delivery'))
+  const assessment = await reopened.customerAssessment(f.plan.id)
+  assert.deepEqual(assessment.completedRuntimeTaskIds, ['T1'])
+  assert.deepEqual(assessment.blockedRuntimeTaskIds, ['T2'])
+  assert.equal(assessment.status, 'CUSTOMER_DELIVERY_BLOCKED')
+  const files = await readdir(join(f.root, 'delivery'))
+  const saved = JSON.parse(await readFile(join(f.root, 'delivery', files.find((file) => file.startsWith('local-completion-'))!), 'utf8'))
+  assert.equal(saved.kind, 'CONTRIBUTION_VERIFIED')
+  assert.equal(saved.evidence, undefined)
+  assert.equal(saved.transitions, undefined)
+  saved.taskState.completion.review.assertionVerdicts = [{ assertionId: 'A1', verdict: 'PASS', evidence: 'forged' }]
+  await writeFile(join(f.root, 'delivery', files.find((file) => file.startsWith('local-completion-'))!), JSON.stringify(saved))
+  assert.deepEqual((await reopened.customerAssessment(f.plan.id)).completedRuntimeTaskIds, [])
+})
+
+test('contributor ALREADY_SATISFIED needs host-read file hashes, executed test and independent review', async () => {
+  const seed = async (repo: string) => {
+    await mkdir(join(repo, 'tests'))
+    await writeFile(join(repo, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }))
+    await writeFile(join(repo, 'order.js'), 'export const order = { result: 1 }\n')
+    await writeFile(join(repo, 'tests/order.test.js'),
+      'import test from "node:test"; import assert from "node:assert/strict"; import { order } from "../order.js"; test("order", () => assert.equal(order.result, 1));\n')
+  }
+  const tasks = [{ id: 'T1', dependencyIds: [], objective: 'Verify existing order result', outputs: ['order result'] },
+    { id: 'T2', dependencyIds: ['T1'] }]
+  const runFixture = async (withProof: boolean) => {
+    const f = await checkpointIntegrationFixture(false, tasks, seed)
+    const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+    let reviews = 0
+    const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, {
+      inspectRepository: f.inspectRepository,
+      async dispatch({ action, task, agent }) {
+        if (action === 'EXECUTE') return { status: 'SUCCESS', changedFiles: [], workspaceExecution: {
+          outcome: 'ALREADY_SATISFIED', mutationFailures: [], ...(withProof ? { alreadySatisfied: {
+            reason: 'Read existing order source and compared its result with frozen output.',
+            files: [{ path: 'order.js', sha256: createHash('sha256').update(await readFile(join(f.repo, 'order.js'))).digest('hex') }],
+          } } : {}) } }
+        if (action === 'VERIFY') {
+          const results = []
+          for (const step of task.verificationPlan?.steps ?? []) {
+            if (step.id === 'targeted-test') await run(process.execPath, ['--test', 'tests/order.test.js'], { cwd: f.repo })
+            else if (step.id === 'diff-check') await git(f.repo, 'diff', '--check')
+            else assert.fail(`Unexpected verifier ${step.id}`)
+            results.push({ name: step.id, stepId: step.id, command: step.command, status: 'passed' as const })
+          }
+          return { status: 'SUCCESS', verificationResults: results }
+        }
+        assert.equal(action, 'REVIEW'); reviews++
+        return { status: 'SUCCESS', review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW',
+          reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
+          reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
+          reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: task.gitState.headSha!, reviewedFiles: [], timestamp: new Date().toISOString() } }
+      },
+    })
+    const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+      agents: f.agents, dispatcher })
+    return { f, runner, result: await runner.run(f.definition.tasks[0]!), reviews }
+  }
+  const blocked = await runFixture(false)
+  assert.notEqual(blocked.result.status, 'COMPLETED')
+  assert.match(blocked.result.taskStateV2?.blockers.join(' ') ?? '', /CONTRIBUTOR_NO_OP_UNPROVEN/u)
+  assert.equal(blocked.reviews, 0)
+  const valid = await runFixture(true)
+  assert.equal(valid.result.status, 'COMPLETED', JSON.stringify(valid.result.humanRequired))
+  assert.equal(valid.reviews, 1)
+  assert.equal(valid.result.taskStateV2?.contributorNoOp?.files[0]?.path, 'order.js')
+  assert.equal(await git(valid.f.repo, 'rev-parse', 'HEAD'), valid.f.target.baselineCommit)
+  await valid.runner.afterRuntimeTaskFinalized(valid.result.taskStateV2!, valid.f.target.baselineCommit)
+  assert.deepEqual((await new DeliveryStore(join(valid.f.root, 'delivery')).customerAssessment(valid.f.plan.id)).completedRuntimeTaskIds, ['T1'])
+})
+
+test('contributor without a safe verifier suspends before checkpoint, review or dependency advance', async () => {
+  const f = await checkpointIntegrationFixture(false, [{ id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] }])
+  assert.equal(f.plan.admission.status, 'READY', 'The executor may provision a verifier during implementation')
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  let reviews = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, {
+    inspectRepository: f.inspectRepository,
+    async dispatch({ action }) {
+      if (action === 'EXECUTE') {
+        await writeFile(join(f.repo, 'order.js'), 'export const order = true\n')
+        return { status: 'SUCCESS', changedFiles: ['order.js'], workspaceExecution: { outcome: 'IMPLEMENTED', mutationFailures: [] } }
+      }
+      reviews++
+      return { status: 'BLOCKED', blockers: ['Unexpected action after no verifier.'] }
+    },
+  })
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: f.agents, dispatcher })
+  const result = await runner.run(f.definition.tasks[0]!)
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.match(result.taskStateV2?.blockers.join(' ') ?? '', /CONTRIBUTOR_VERIFIER_UNAVAILABLE/u)
+  assert.equal(reviews, 0)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+  assert.deepEqual((await f.store.customerAssessment(f.plan.id)).completedRuntimeTaskIds, [])
+})
+
+test('durable contributor T1 then T2 advances the Runtime DAG only after each proof survives reopen', async () => {
+  const { WorkSessionRuntime } = await import('../packages/development-guardian/work-session/runtime.js')
+  const { V2ControllerTaskRunner } = await import('../packages/development-guardian/work-session/v2-controller-task-runner.js')
+  const f = await checkpointIntegrationFixture(false, [
+    { id: 'T1', dependencyIds: [] }, { id: 'T2', dependencyIds: ['T1'] }, { id: 'T3', dependencyIds: ['T2'] },
+  ])
+  const definition = { ...f.definition, id: `delivery-${'c'.repeat(64)}-000000000000-cccccc` }
+  const storageUrl = `file:${join(f.root, 'contributor-workflow.db')}`
+  const executions: string[] = []
+  const defaultDispatcher = {
+    inspectRepository: f.inspectRepository,
+    async dispatch({ action, task, agent }: Parameters<import('../packages/development-guardian/work-session/v2-controller-task-runner.js').V2ActionDispatcher['dispatch']>[0]) {
+      const taskId = task.identity.taskId
+      if (action === 'EXECUTE') {
+        if (taskId !== 'T3') assert.ok(task.completion.bindings.every((binding) =>
+          binding.requiredEvidence.every((evidence) => !evidence.startsWith('NOVAWING_TECHNICAL_PENDING:'))))
+        executions.push(taskId)
+        if (taskId !== 'T1') {
+          const prior = await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)
+          assert.ok(prior.completedRuntimeTaskIds.includes(taskId === 'T2' ? 'T1' : 'T2'))
+        }
+        if (taskId === 'T1') {
+          await mkdir(join(f.repo, 'tests'))
+          await writeFile(join(f.repo, 'package.json'), JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }))
+        }
+        const source = `order${taskId}.js`, spec = `tests/order${taskId}.test.js`
+        await writeFile(join(f.repo, source), `export const order${taskId} = true\n`)
+        if (taskId !== 'T3') await writeFile(join(f.repo, spec),
+          `import test from 'node:test'; import assert from 'node:assert/strict'; import { order${taskId} } from '../${source}'; test('${taskId}', () => assert.equal(order${taskId}, true));\n`)
+        return { status: 'SUCCESS' as const, changedFiles: (await f.inspectRepository()).changedFiles,
+          workspaceExecution: { outcome: 'IMPLEMENTED' as const, mutationFailures: [] } }
+      }
+      if (action === 'VERIFY') {
+        const results = []
+        for (const step of task.verificationPlan?.steps ?? []) {
+          assert.equal(step.admission, 'ALLOWED')
+          if (step.id === 'targeted-test') {
+            assert.match(step.command, /^node --test tests\/orderT[12]\.test\.js$/u)
+            await run(process.execPath, ['--test', step.command.split(' ').at(-1)!], { cwd: f.repo })
+          } else if (step.id === 'diff-check') await git(f.repo, 'diff', '--check')
+          else assert.fail(`Unexpected verifier ${step.id}`)
+          results.push({ name: step.id, stepId: step.id, command: step.command, status: 'passed' as const })
+        }
+        return { status: 'SUCCESS' as const, verificationResults: results }
+      }
+      assert.equal(action, 'REVIEW')
+      return { status: 'SUCCESS' as const, review: { passed: true, findings: [], blockingFindings: [], severity: 'LOW' as const,
+        reviewer: agent.identity!, implementer: task.implementer!, reviewedRepository: task.gitState.repositoryIdentity!,
+        reviewedBranch: task.gitState.branch!, reviewedCommit: task.gitState.headSha!, reviewedWorkspace: task.gitState.worktreeFingerprint!,
+        reviewBaseCommit: task.taskBaseCommit!, reviewHeadCommit: task.gitState.headSha!,
+        reviewedFiles: (await git(f.repo, 'diff', '--no-renames', '--name-only', task.taskBaseCommit!, task.gitState.headSha!, '--')).split('\n').filter(Boolean),
+        timestamp: new Date().toISOString(), ...(taskId === 'T3' ? { assertionVerdicts: [{ assertionId: 'A1' as const,
+          verdict: 'DEFERRED' as const, evidence: 'External customer browser remains open.' }] } : {}) } }
+    },
+  }
+  const dispatcher = createDeliveryRuntimeDispatcher(f.plan, f.store, defaultDispatcher)
+  const makeRuntime = (pauseTask?: string) => {
+    const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+      agents: f.agents, dispatcher })
+    let runtime: InstanceType<typeof WorkSessionRuntime>
+    runtime = new WorkSessionRuntime({ definition, storageUrl,
+      gitCheckpoint: { policy: { autoCommit: true, autoPush: false } }, taskRunner: {
+        run: (...args) => runner.run(...args),
+        async afterRuntimeTaskFinalized(task, commitSha) {
+          await runner.afterRuntimeTaskFinalized(task, commitSha)
+          if (task.identity.taskId === pauseTask) assert.equal(runtime.requestPause().accepted, true)
+        },
+      } })
+    return runtime
+  }
+  for (const taskId of ['T1', 'T2'] as const) {
+    const runtime = makeRuntime(taskId)
+    try {
+      const before = taskId === 'T1' ? undefined : await runtime.loadPersistedState()
+      if (taskId === 'T2') assert.deepEqual(before?.completedTaskIds, ['T1'])
+      const paused = taskId === 'T1' ? await runtime.start() : await runtime.resume({})
+      assert.equal(paused.state, 'SUSPENDED', JSON.stringify(paused.humanRequired))
+      assert.equal(paused.suspensionReason, 'USER_PAUSED')
+      assert.deepEqual(paused.completedTaskIds, taskId === 'T1' ? ['T1'] : ['T1', 'T2'])
+      assert.equal(paused.taskStatesV2?.[taskId]?.status, 'COMPLETED')
+      assert.equal(paused.taskStatesV2?.[taskId]?.completion.review?.assertionVerdicts, undefined)
+      assert.deepEqual((await new DeliveryStore(join(f.root, 'delivery')).customerAssessment(f.plan.id)).completedRuntimeTaskIds,
+        taskId === 'T1' ? ['T1'] : ['T1', 'T2'])
+    } finally { await runtime.close() }
+  }
+  const final = makeRuntime()
+  try {
+    assert.deepEqual((await final.loadPersistedState())?.completedTaskIds, ['T1', 'T2'])
+    const done = await final.resume({})
+    assert.equal(done.state, 'COMPLETED', JSON.stringify(done.humanRequired))
+    assert.deepEqual(done.completedTaskIds, ['T1', 'T2', 'T3'])
+    assert.deepEqual(executions, ['T1', 'T2', 'T3'])
+    assert.equal((await f.store.customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  } finally { await final.close() }
 })
 
 async function integrationRunner(f: Awaited<ReturnType<typeof checkpointIntegrationFixture>>, options: {

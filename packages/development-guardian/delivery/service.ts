@@ -7,6 +7,10 @@ import { promisify } from 'node:util'
 import { scopedNodeTestPath } from '../verification-command-policy.js'
 import { type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
+import { loadTaskStateV2, type TaskStateV2 } from '../work-session/task-state-v2.js'
+import { TaskController } from '../work-session/task-controller.js'
+import { completionGate, assessRisk, reviewSatisfied } from '../work-session/risk-evidence.js'
+import { verificationPlanFingerprintValid } from '../work-session/verification-planner.js'
 import { collectCommandEvidence, collectFilesystemEvidence, collectHttpEvidence, collectProcessEvidence, collectScopeReviewEvidence,
   verifyCapabilityEvidence, type CapabilityEvidence, type ProviderAvailability } from './capability-layer.js'
 import { assessCustomerDeliveryCompletion, bindProvisionedVerifier, taskCompletionGate, verifyBindingTransition,
@@ -261,6 +265,72 @@ export class DeliveryStore {
   private completionIndexKey(plan: CompiledRuntimePlan, taskId: string): string {
     return createHash('sha256').update(`${plan.runtimePlanHash}\0${taskId}`).digest('hex')
   }
+  private async contributorCompletionValid(plan: CompiledRuntimePlan, candidate: unknown,
+    currentCommit: string, exactHead: boolean): Promise<boolean> {
+    if (candidate === null || typeof candidate !== 'object') return false
+    const record = candidate as Record<string, unknown>
+    const source = plan.tasks.find((item) => item.id === record.taskId)
+    if (!source || record.kind !== 'CONTRIBUTION_VERIFIED' || record.runtimePlanHash !== plan.runtimePlanHash ||
+      record.sourcePlanHash !== plan.sourcePlanHash || record.objective !== source.objective ||
+      JSON.stringify(record.outputs) !== JSON.stringify(source.outputs) ||
+      JSON.stringify(record.dependencyIds) !== JSON.stringify(source.dependencyIds) ||
+      JSON.stringify(record.requirementIds) !== JSON.stringify(source.requirementIds) ||
+      typeof record.commit !== 'string' || !/^[a-f0-9]{40}$/u.test(record.commit) ||
+      typeof record.baseCommit !== 'string' || !/^[a-f0-9]{40}$/u.test(record.baseCommit) ||
+      (exactHead && record.commit !== currentCommit)) return false
+    const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === source.id && item.blocking)
+    if (!bindings.some((item) => item.ownership === 'CONTRIBUTES') ||
+      bindings.some((item) => item.ownership === 'OWNER')) return false
+    let task: TaskStateV2
+    try { task = loadTaskStateV2(record.taskState) } catch { return false }
+    const expectedCriteria = source.outputs.map((output, index) => `TechnicalOutput ${source.id}/${index + 1}: ${output}`)
+    const verification = task.verificationPlan
+    if (task.status !== 'COMPLETED' || task.identity.taskId !== source.id || task.goal !== source.objective ||
+      JSON.stringify(task.acceptanceCriteria) !== JSON.stringify(expectedCriteria) ||
+      task.gitState.repositoryIdentity !== plan.targetBinding.canonicalPath ||
+      task.gitState.branch !== plan.targetBinding.branch || task.gitState.headSha !== record.commit ||
+      task.gitState.changedFiles.length !== 0 || task.taskBaseCommit !== record.baseCommit ||
+      !verification || !verificationPlanFingerprintValid(verification) || verification.confidence !== 'HIGH' ||
+      !verification.steps.some((step) => step.id === 'targeted-test' || step.id === 'package-test') ||
+      verification.steps.some((step) => step.admission !== 'ALLOWED') ||
+      !verification.steps.every((step) => task.verificationState.results.some((result) =>
+        result.stepId === step.id && result.status === 'passed')) ||
+      task.completion.review?.assertionVerdicts?.length || !reviewSatisfied(task) ||
+      !completionGate({ task, ...task.completion, risk: assessRisk(task) }) ||
+      new TaskController().decide(task).action !== 'COMPLETE') return false
+    const repo = plan.targetBinding.canonicalPath
+    if (record.baseCommit === record.commit) {
+      const noOp = task.contributorNoOp
+      if (!noOp || noOp.headSha !== record.commit || !noOp.reason.trim() || !noOp.files.length) return false
+      for (const file of noOp.files) {
+        if (!/^[A-Za-z0-9._/-]+$/u.test(file.path) || file.path.split('/').some((part) =>
+          !part || part === '.' || part === '..' || part === '.git')) return false
+        const entry = await this.git('git', ['ls-tree', record.commit, '--', file.path],
+          { cwd: repo, timeout: 10_000 }).then((item) => item.stdout.trim(), () => '')
+        if (!/^100(?:644|755) blob [a-f0-9]{40}\t/u.test(entry)) return false
+        const contents = await this.git('git', ['show', `${record.commit}:${file.path}`],
+          { cwd: repo, encoding: 'buffer', timeout: 10_000, maxBuffer: 600_000 }).then((item) => item.stdout, () => undefined)
+        if (!contents || createHash('sha256').update(contents).digest('hex') !== file.sha256) return false
+      }
+    } else {
+      const checkpoint = task.ownedCheckpoints?.find((item) => item.sessionId === task.identity.sessionId &&
+        item.taskId === source.id && item.baselineCommit === plan.targetBaselineCommit &&
+        item.after.headSha === record.commit)
+      if (!checkpoint) return false
+      const [parents, tree] = await Promise.all([
+        this.git('git', ['rev-list', '--parents', '-n', '1', record.commit], { cwd: repo, timeout: 10_000 }),
+        this.git('git', ['rev-parse', `${record.commit}^{tree}`], { cwd: repo, timeout: 10_000 }),
+      ])
+      if (parents.stdout.trim() !== `${record.commit} ${checkpoint.before.headSha}` ||
+        tree.stdout.trim() !== checkpoint.tree) return false
+    }
+    for (const [ancestor, descendant] of [[plan.targetBaselineCommit, record.baseCommit],
+      [record.baseCommit, record.commit], [record.commit, currentCommit]] as const) {
+      if (!await this.git('git', ['merge-base', '--is-ancestor', ancestor, descendant],
+        { cwd: repo, timeout: 10_000 }).then(() => true, () => false)) return false
+    }
+    return true
+  }
   async recordLocalTaskCompletion(plan: CompiledRuntimePlan, taskId: string,
     transitions: VerificationBindingTransition[], evidence: AssertionCompletionEvidence[]): Promise<void> {
     verifyRuntimePlanIdentity(plan)
@@ -285,19 +355,69 @@ export class DeliveryStore {
         throw new Error('Task completion evidence was not persisted or did not match.')
     }
     const path = this.path('local-completion', this.completionKey(plan, taskId, current.baselineCommit))
-    const record = { runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit,
+    const record = { kind: 'LOCALLY_VERIFIED' as const, runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit,
       transitions, evidence }
-    const existing = await this.read<typeof record>(path)
+    const existing = await this.read<typeof record & { kind?: 'LOCALLY_VERIFIED' }>(path)
     if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error('Local completion identity collision.')
+      // Records written before the discriminant existed remain valid OWNER proof.
+      if (JSON.stringify({ kind: 'LOCALLY_VERIFIED', runtimePlanHash: existing.runtimePlanHash,
+        taskId: existing.taskId, commit: existing.commit, transitions: existing.transitions,
+        evidence: existing.evidence }) !== JSON.stringify(record))
+        throw new Error('Local completion identity collision.')
     } else await this.writeOnce(path, record)
     await this.writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, taskId)),
       { runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit })
+  }
+  async recordContributorTaskCompletion(plan: CompiledRuntimePlan, input: TaskStateV2, commit: string): Promise<void> {
+    verifyRuntimePlanIdentity(plan)
+    const task = loadTaskStateV2(input)
+    const source = plan.tasks.find((item) => item.id === task.identity.taskId)
+    const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === task.identity.taskId && item.blocking)
+    const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+    const expectedCriteria = source?.outputs.map((output, index) => `TechnicalOutput ${source.id}/${index + 1}: ${output}`)
+    const verification = task.verificationPlan
+    if (!source || !expectedCriteria?.length || !bindings.some((item) => item.ownership === 'CONTRIBUTES') ||
+      bindings.some((item) => item.ownership === 'OWNER') || task.status !== 'COMPLETED' ||
+      task.identity.taskId !== source.id || task.goal !== source.objective ||
+      JSON.stringify(task.acceptanceCriteria) !== JSON.stringify(expectedCriteria) ||
+      !current.clean || current.baselineCommit !== commit || task.gitState.headSha !== commit ||
+      !verification || !verificationPlanFingerprintValid(verification) || verification.confidence !== 'HIGH' ||
+      !verification.steps.some((step) => step.id === 'targeted-test' || step.id === 'package-test') ||
+      verification.steps.some((step) => step.admission !== 'ALLOWED') ||
+      !verification.steps.every((step) => task.verificationState.results.some((result) =>
+        result.stepId === step.id && result.status === 'passed')) ||
+      task.completion.review?.assertionVerdicts?.length || !reviewSatisfied(task) ||
+      !completionGate({ task, ...task.completion, risk: assessRisk(task) }) ||
+      new TaskController().decide(task).action !== 'COMPLETE' ||
+      !task.taskBaseCommit || (task.taskBaseCommit !== commit &&
+        !task.ownedCheckpoints?.some((checkpoint) => checkpoint.after.headSha === commit)))
+      throw new Error('Contributor completion proof is incomplete.')
+    await this.git('git', ['merge-base', '--is-ancestor', plan.targetBaselineCommit, commit],
+      { cwd: plan.targetBinding.canonicalPath, timeout: 10_000 })
+    await this.git('git', ['merge-base', '--is-ancestor', task.taskBaseCommit, commit],
+      { cwd: plan.targetBinding.canonicalPath, timeout: 10_000 })
+    const record = { kind: 'CONTRIBUTION_VERIFIED' as const, runtimePlanHash: plan.runtimePlanHash,
+      sourcePlanHash: plan.sourcePlanHash, taskId: source.id, objective: source.objective,
+      outputs: [...source.outputs], dependencyIds: [...source.dependencyIds], requirementIds: [...source.requirementIds],
+      baseCommit: task.taskBaseCommit, commit, taskState: task }
+    if (!await this.contributorCompletionValid(plan, record, current.baselineCommit, true))
+      throw new Error('Contributor completion proof failed durable validation.')
+    const path = this.path('local-completion', this.completionKey(plan, source.id, commit))
+    const existing = await this.read<unknown>(path)
+    if (existing) {
+      // Replaying COMPLETE after a crash may update TaskStateV2 timestamps. A
+      // valid immutable proof for the same commit is sufficient; never rewrite it.
+      if (!await this.contributorCompletionValid(plan, existing, current.baselineCommit, true))
+        throw new Error('Contributor completion identity collision.')
+    } else await this.writeOnce(path, record)
+    await this.writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, source.id)),
+      { runtimePlanHash: plan.runtimePlanHash, taskId: source.id, commit })
   }
   async customerAssessment(planId: string): Promise<ReturnType<typeof assessCustomerDeliveryCompletion>> {
     const plan = await this.getPlan(planId)
     if (!plan) throw new Error('Runtime plan does not exist.')
     const completed = new Set<string>()
+    const contributorCompleted = new Set<string>()
     const transitions: VerificationBindingTransition[] = []
     const evidence: AssertionCompletionEvidence[] = []
     const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath).catch(() => undefined)
@@ -308,11 +428,23 @@ export class DeliveryStore {
         this.path('local-completion-index', this.completionIndexKey(plan, task.id)))
       if (!index || index.runtimePlanHash !== plan.runtimePlanHash || index.taskId !== task.id ||
         !/^[a-f0-9]{40}$/u.test(index.commit)) continue
+      const completionPath = this.path('local-completion', this.completionKey(plan, task.id, index.commit))
+      const candidate = await this.read<unknown>(completionPath)
+      if (candidate !== null && typeof candidate === 'object' && 'kind' in candidate &&
+        candidate.kind === 'CONTRIBUTION_VERIFIED') {
+        if (await this.contributorCompletionValid(plan, candidate, current.baselineCommit, false) &&
+          'commit' in candidate && candidate.commit === index.commit) {
+          completed.add(task.id)
+          contributorCompleted.add(task.id)
+        }
+        continue
+      }
       const record = await this.read<{ runtimePlanHash: string; taskId: string; commit: string;
         transitions: VerificationBindingTransition[]; evidence: AssertionCompletionEvidence[] }>(
-        this.path('local-completion', this.completionKey(plan, task.id, index.commit)))
+        completionPath)
       if (!record || record.runtimePlanHash !== plan.runtimePlanHash || record.taskId !== task.id ||
-        record.commit !== index.commit || !Array.isArray(record.transitions) || !Array.isArray(record.evidence)) continue
+        record.commit !== index.commit || !Array.isArray(record.transitions) || !Array.isArray(record.evidence) ||
+        ('kind' in record && record.kind !== 'LOCALLY_VERIFIED')) continue
       const ancestor = await this.git('git', ['merge-base', '--is-ancestor', record.commit, current.baselineCommit],
         { cwd: plan.targetBinding.canonicalPath, timeout: 10_000 }).then(() => true, () => false)
       if (!ancestor) continue
@@ -344,7 +476,8 @@ export class DeliveryStore {
       transitions.push(...record.transitions)
       evidence.push(...record.evidence)
     }
-    return assessCustomerDeliveryCompletion(plan.tasks, plan.acceptanceBindings, transitions, evidence, completed)
+    return assessCustomerDeliveryCompletion(plan.tasks, plan.acceptanceBindings, transitions, evidence, completed,
+      [], contributorCompleted)
   }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
     try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }

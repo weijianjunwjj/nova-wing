@@ -309,14 +309,20 @@ export interface ExternalAcceptanceRecord { assertionId: string; kind: 'EXTERNAL
 export function customerDeliveryCompletionGate(tasks: readonly { id: string }[],
   bindings: readonly CompletionBinding[], transitions: readonly VerificationBindingTransition[],
   evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>,
-  externalAccepted: readonly ExternalAcceptanceRecord[] = []): boolean {
+  externalAccepted: readonly ExternalAcceptanceRecord[] = [],
+  contributorCompletedTaskIds: ReadonlySet<string> = new Set()): boolean {
   const unique = [...new Map(bindings.filter((binding) => binding.blocking && binding.ownership !== 'CONTRIBUTES')
     .map((binding) => [binding.assertionId, binding])).values()]
   const accepted = (id: string, kind: ExternalAcceptanceRecord['kind']): boolean =>
     externalAccepted.some((item) => item.assertionId === id && item.kind === kind && item.reviewerVerdict === 'PASS' &&
       item.reviewerIdentity.trim().length > 0 && item.evidenceIds.length > 0 && Number.isFinite(Date.parse(item.acceptedAt)))
-  return tasks.length > 0 && bindings.some((binding) => binding.blocking) && tasks.every((task) => completedTaskIds.has(task.id) &&
-    taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence) === 'LOCALLY_VERIFIED') &&
+  return tasks.length > 0 && bindings.some((binding) => binding.blocking) && tasks.every((task) => {
+    if (!completedTaskIds.has(task.id)) return false
+    const taskBindings = bindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
+    return taskBindings.some((binding) => binding.ownership === 'OWNER')
+      ? taskCompletionGate(taskBindings, transitions, evidence) === 'LOCALLY_VERIFIED'
+      : taskBindings.some((binding) => binding.ownership === 'CONTRIBUTES') && contributorCompletedTaskIds.has(task.id)
+  }) &&
     unique.every((binding) => {
       if (binding.stagedVerification.readiness === 'EXTERNAL_DEFERRED') return accepted(binding.assertionId, 'EXTERNAL')
       if (binding.stagedVerification.readiness === 'HUMAN_DEFERRED') return accepted(binding.assertionId, 'HUMAN')
@@ -336,11 +342,14 @@ export interface CustomerDeliveryCompletionAssessment {
 export function assessCustomerDeliveryCompletion(tasks: readonly { id: string }[],
   bindings: readonly CompletionBinding[], transitions: readonly VerificationBindingTransition[],
   evidence: readonly AssertionCompletionEvidence[], completedTaskIds: ReadonlySet<string>,
-  externalAccepted: readonly ExternalAcceptanceRecord[] = []): CustomerDeliveryCompletionAssessment {
+  externalAccepted: readonly ExternalAcceptanceRecord[] = [],
+  contributorCompletedTaskIds: ReadonlySet<string> = new Set()): CustomerDeliveryCompletionAssessment {
   const blockedRuntimeTaskIds = tasks.filter((task) => !completedTaskIds.has(task.id) ||
-    taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence) !== 'LOCALLY_VERIFIED').map((task) => task.id)
+    (bindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+      ? taskCompletionGate(bindings.filter((binding) => binding.runtimeTaskId === task.id), transitions, evidence) !== 'LOCALLY_VERIFIED'
+      : !contributorCompletedTaskIds.has(task.id))).map((task) => task.id)
   return { gate: 'CUSTOMER_DELIVERY_COMPLETION_GATE',
-    status: customerDeliveryCompletionGate(tasks, bindings, transitions, evidence, completedTaskIds, externalAccepted)
+    status: customerDeliveryCompletionGate(tasks, bindings, transitions, evidence, completedTaskIds, externalAccepted, contributorCompletedTaskIds)
       ? 'CUSTOMER_DELIVERY_COMPLETED' : 'CUSTOMER_DELIVERY_BLOCKED',
     completedRuntimeTaskIds: tasks.filter((task) => completedTaskIds.has(task.id)).map((task) => task.id),
     blockedRuntimeTaskIds, blockingAssertionIds: [...new Set(bindings.filter((binding) => binding.blocking)

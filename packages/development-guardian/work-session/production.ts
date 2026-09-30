@@ -126,6 +126,9 @@ const TrustedConfigSchema = z.object({
     guardian: GuardianPolicySchema,
     executorMode: z.enum(['auto', 'codex', 'deepseek']).optional(),
     acceptanceEvidenceBindings: z.array(AcceptanceEvidenceBindingSchema).optional(),
+    contribution: z.object({ taskId: z.string(), sourcePlanHash: z.string(), runtimePlanHash: z.string(),
+      objective: z.string(), outputs: z.array(z.string()), dependencyIds: z.array(z.string()),
+      requirementIds: z.array(z.string()) }).strict().optional(),
     risk: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
   }).strict()).min(1),
   gitCheckpoint: z.object({
@@ -660,6 +663,7 @@ export async function createProductionWorkSessionUi(
     tasks: trusted.tasks.map((task) => ({ id: task.id, goal: task.goal, constraints: task.guardian.constraints,
       acceptanceCriteria: task.guardian.acceptanceCriteria, allowedPaths: task.guardian.allowedPaths, forbiddenPaths: task.guardian.forbiddenPaths,
       ...(task.acceptanceEvidenceBindings === undefined ? {} : { acceptanceEvidenceBindings: task.acceptanceEvidenceBindings }),
+      ...(task.contribution === undefined ? {} : { contribution: task.contribution }),
       ...(task.risk === undefined ? {} : { risk: task.risk }) })),
     limits: { ...trusted.session.limits },
     ...(trusted.session.scheduledStartAt === undefined ? {} : { scheduledStartAt: trusted.session.scheduledStartAt }),
