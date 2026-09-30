@@ -537,6 +537,15 @@ test('capability registry classifies all families without claiming unsupported a
   const input = { criterion, assertion, requirement }
   assert.equal(classifyCapability(input).family, 'command')
   assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'ui' } }).family, 'browser_ui')
+  const browserIntegration = { ...input, criterion: { ...criterion, level: 'integration' as const }, assertion: {
+    ...assertion, observableBehavior: '编辑任务后重启服务并打开浏览器页面',
+    expectedOutcome: '同一任务仍显示修改后的标题',
+    expectedEvidence: '重启前后的浏览器结果和同一任务的 SQLite 记录',
+  } }
+  assert.equal(classifyCapability(browserIntegration).family, 'browser_ui')
+  assert.equal(conservativeCapabilityResolver(browserIntegration).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  assert.equal(classifyCapability({ ...browserIntegration,
+    criterion: { ...browserIntegration.criterion, level: 'delivery' } }).family, 'browser_ui')
   assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'platform' } }).family, 'external_platform')
   assert.equal(conservativeCapabilityResolver({ ...input, criterion: { ...criterion, level: 'platform' },
     assertion: { ...assertion, observableBehavior: '开始开发前必须先取得平台 SDK 权限。' } }).startPrerequisite, 'EXECUTION')

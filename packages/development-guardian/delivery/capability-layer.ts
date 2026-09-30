@@ -150,6 +150,10 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       return { family: 'desktop_ui', ruleId: 'desktop-surface-v1', reason: 'Assertion names a desktop user interface.' }
     return { family: 'browser_ui', ruleId: 'browser-surface-v1', reason: 'UI criterion requires observable browser interaction.' }
   }
+  if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
+    /(?:浏览器|browser|Web\s*UI)/iu.test(observed))
+    return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
+      reason: 'Integration evidence explicitly requires browser interaction; an HTTP read cannot substitute for it.' }
   if ((criterion.level === 'api' || criterion.level === 'integration') && claimRequirements(assertion).requiresMutation)
     return { family: 'command', ruleId: 'mutation-repository-test-v2', reason: 'Mutation requires an assertion-scoped repository test with action and reread.' }
   if (criterion.level === 'api')
