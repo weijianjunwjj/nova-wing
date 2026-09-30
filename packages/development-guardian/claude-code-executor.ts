@@ -6,7 +6,7 @@ import { SHELL_START_FAILURE } from './platform/shell.js'
 import { pythonRuntime } from './platform/executables.js'
 import { sep } from 'node:path'
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
@@ -754,6 +754,28 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
     })
   }
 
+  private async prepareNpmVerifierDependencies(cwd: string): Promise<{
+    command: string; result: GuardianCommandResult; classification: 'ENVIRONMENT_FAILURE' | 'VERIFIER_CONFIGURATION_FAILURE'
+  } | undefined> {
+    if (this.options.allowNpmInstall !== true) return undefined
+    const manifestPath = join(cwd, 'package.json')
+    let manifest: { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> }
+    try { manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest }
+    catch { return undefined }
+    if (Object.keys(manifest.dependencies ?? {}).length + Object.keys(manifest.devDependencies ?? {}).length === 0 ||
+      await access(join(cwd, 'node_modules')).then(() => true, () => false)) return undefined
+    const ignored = await this.runBash('git check-ignore -q node_modules/', 10_000, cwd)
+    if (ignored.exitCode !== 0) return { command: 'npm install', classification: 'VERIFIER_CONFIGURATION_FAILURE', result: {
+      exitCode: 1, signal: null, stdout: '', stderr: 'node_modules is not ignored by this Git repository; dependency setup would change the verification workspace.',
+    } }
+    // The toolchain is prepared outside assertion evidence and cannot rewrite
+    // the manifest or lockfile. Lifecycle hooks are never run by this setup.
+    const command = await access(join(cwd, 'package-lock.json')).then(() => true, () => false)
+      ? 'npm ci --ignore-scripts --no-audit --no-fund'
+      : 'npm install --ignore-scripts --no-save --no-package-lock --no-audit --no-fund'
+    return { command, classification: 'ENVIRONMENT_FAILURE', result: await this.runBash(command, this.timeoutMs, cwd) }
+  }
+
   private async readChangedFiles(): Promise<{
     changedFiles: string[]
     blocker?: string
@@ -1045,6 +1067,26 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
           status: 'skipped', details: reason, classification: 'ENVIRONMENT_FAILURE' })
         blockers.push(`verification step ${step.stepId} was not started: ${reason}`)
         continue
+      }
+      if (/^npm(?:\s+run)?\s+(?:test|typecheck|build|lint|check)(?:\s|$)/u.test(command)) {
+        const setup = await this.prepareNpmVerifierDependencies(actualCwd)
+        if (setup !== undefined) {
+          commandsRun.push(setup.command)
+          if (setup.result.terminationConfirmed === false) this.executionOwnershipReleased = false
+          if (setup.result.exitCode !== 0) {
+            const rawOutputRef = await persistVerificationOutput({
+              ...(this.options.verificationOutputDirectory === undefined
+                ? {} : { directory: this.options.verificationOutputDirectory }),
+              taskId: task.id, iteration: task.iteration, index, command: setup.command, result: setup.result,
+            })
+            const reason = `Required npm verifier dependencies could not be prepared: ${setup.result.stderr || setup.result.stdout || setup.command}`
+            results.push({ name: command, ...(scoped ? { stepId: step.stepId, command, cwd: step.cwd, admission: admission.status } : {}),
+              status: 'skipped', details: reason, classification: setup.classification,
+              ...(rawOutputRef === undefined ? {} : { rawOutputRef }) })
+            blockers.push(`verification step ${step.stepId} was not started: ${reason}`)
+            continue
+          }
+        }
       }
       commandsRun.push(command)
       this.options.onVerification?.({ command, status: 'running', iteration: task.iteration, index })

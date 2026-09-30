@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,6 +9,8 @@ import { ClaudeCodeExecutor } from '../packages/development-guardian/claude-code
 import type { ExecutionReport, GuardianTask, VerificationExecutionStep } from '../packages/development-guardian/model.js'
 import { assessGoldenVerification } from '../packages/development-guardian/work-session/golden-path.js'
 import { planVerification, type VerificationPlan, type VerificationPlanStep } from '../packages/development-guardian/work-session/verification-planner.js'
+
+const TASK: GuardianTask = { id: 'verification-contract', goal: 'verify contract', state: 'EXECUTING', iteration: 0, maxIterations: 2 }
 
 async function withPlannerFixture(run: (repositoryRoot: string) => Promise<void>): Promise<void> {
   const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-verification-contract-'))
@@ -138,7 +141,45 @@ await test('R1 planner runs a relevant node test directly when the root npm test
   } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
 })
 
-const TASK: GuardianTask = { id: 'verification-contract', goal: 'verify contract', state: 'EXECUTING', iteration: 0, maxIterations: 2 }
+await test('R1 planner preserves a package test runner that resolves TypeScript imports', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-ts-runner-'))
+  try {
+    await mkdir(join(repositoryRoot, 'test'))
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'tsx --test test/server-api.test.ts' } }))
+    await writeFile(join(repositoryRoot, 'test/server-api.test.ts'), "import '.." + "/src/server.js'\n")
+    const plan = await planVerification({ repositoryRoot, task: {
+      id: 'foundation', goal: 'Implement server API', constraints: [], acceptanceCriteria: ['server API test passes'],
+      allowedPaths: ['src/server.ts', 'test/server-api.test.ts'], forbiddenPaths: [],
+    } })
+    assert.deepEqual(plan.steps.filter((step) => step.id === 'targeted-test').map((step) => step.command), ['npm test'])
+    assert.equal(plan.approvalRequired, false)
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
+await test('R1 verifier provisions ignored package tools before running an admitted npm test', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-verifier-package-tool-'))
+  try {
+    await mkdir(join(repositoryRoot, 'tool'))
+    await writeFile(join(repositoryRoot, '.gitignore'), 'node_modules/\n')
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ private: true,
+      scripts: { test: 'local-test', postinstall: "node -e \"require('node:fs').writeFileSync('install-hook-ran', 'bad')\"" },
+      devDependencies: { 'local-test': 'file:tool' },
+    }))
+    await writeFile(join(repositoryRoot, 'tool/package.json'), JSON.stringify({ name: 'local-test', version: '1.0.0', bin: { 'local-test': 'bin.mjs' } }))
+    await writeFile(join(repositoryRoot, 'tool/bin.mjs'), '#!/usr/bin/env node\nprocess.stdout.write("test passed\\n")\n')
+    await chmod(join(repositoryRoot, 'tool/bin.mjs'), 0o755)
+    execFileSync('git', ['init', '-q'], { cwd: repositoryRoot })
+    const executor = new ClaudeCodeExecutor({ cwd: repositoryRoot, allowNpmInstall: true })
+    const report: ExecutionReport = { summary: 'fixture', changedFiles: [], commandsRun: [], blockers: [],
+      verificationResults: [{ name: 'npm test', status: 'failed' }] }
+    const result = await executor.retryVerification({ task: TASK, report, verificationSteps: [{ stepId: 'targeted-test', command: 'npm test', cwd: '.' }] })
+    assert.equal(result.verificationResults[0]?.status, 'passed', JSON.stringify(result.verificationResults[0]))
+    assert.ok(result.commandsRun.some((command) => command.startsWith('npm install --ignore-scripts')))
+    await assert.rejects(access(join(repositoryRoot, 'package-lock.json')))
+    await assert.rejects(access(join(repositoryRoot, 'install-hook-ran')))
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 
 function pendingReport(steps: readonly VerificationExecutionStep[]): ExecutionReport {
   return { summary: 'verification requested', changedFiles: [], commandsRun: [], blockers: [],

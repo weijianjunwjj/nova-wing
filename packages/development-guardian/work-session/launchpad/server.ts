@@ -1632,7 +1632,7 @@ export class NovaWingLaunchpad {
         ...(task.contribution === undefined ? {} : { contribution: task.contribution }), risk: 'HIGH' })),
       gitCheckpoint: { autoCommit: true, autoPush: false }, runtimeConfig: { managed: true },
       executor: { defaultMode: 'codex', model: 'deepseek-chat', maxTurns: 10,
-        allowNpmInstall: false, allowPythonBootstrap: false },
+        allowNpmInstall: true, allowPythonBootstrap: false },
       codex: { model: CODING_EXECUTOR_DEFAULTS.codex.model,
         reasoningEffort: CODING_EXECUTOR_DEFAULTS.codex.reasoningEffort },
       notification: { email: { enabled: false } },

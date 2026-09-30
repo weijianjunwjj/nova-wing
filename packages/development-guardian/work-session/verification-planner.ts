@@ -289,11 +289,14 @@ export async function planVerification(input: VerificationPlannerInput): Promise
     if (!selected.some((step) => step.id === 'targeted-test') && nearbyTests[0]?.score &&
         (owner.scripts.test !== undefined || bestNamed === undefined)) {
       const local = owner.root.length === 0 ? nearbyTests[0].file : nearbyTests[0].file.slice(owner.root.length + 1)
-      const command = bestNamed === undefined || owner.scripts.test === undefined ||
-        /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test)
+      const packageTest = owner.scripts.test
+      const packageRunner = bestNamed === undefined && packageTest !== undefined &&
+        !/^\s*node(?:\.exe)?(?:\s+--[^\s]+)*\s+--test(?:\s|$)/iu.test(packageTest)
+      const command = packageRunner ? 'npm test' : bestNamed === undefined || packageTest === undefined ||
+        /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(packageTest)
         ? canonicalScopedNodeTest(local) : `npm test -- ${local}`
       const admission = assessVerificationCommand(command)
-      selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
+      selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: packageRunner ? 'PACKAGE' : 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
       rationale.push('Selected the nearest existing test file before a package suite.')
     } else if (!selected.some((step) => step.id === 'targeted-test') && owner.root.length > 0 && owner.scripts.test !== undefined) {
