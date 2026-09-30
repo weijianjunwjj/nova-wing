@@ -553,6 +553,13 @@ test('capability registry classifies all families without claiming unsupported a
   } }
   assert.equal(classifyCapability(pageReload).family, 'browser_ui')
   assert.equal(conservativeCapabilityResolver(pageReload).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  const browserEvidenceReview = { ...input, criterion: { ...criterion, level: 'delivery' as const }, assertion: {
+    ...assertion, observableBehavior: '审查最终验收证据。',
+    expectedOutcome: '每项业务结果均有实际浏览器行为证据，测试命令成功不单独构成业务通过。',
+    expectedEvidence: '实际操作与结果记录。',
+  } }
+  assert.equal(classifyCapability(browserEvidenceReview).family, 'browser_ui')
+  assert.equal(conservativeCapabilityResolver(browserEvidenceReview).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   for (const [behavior, evidence, family] of [
     ['未登录的用户打开应用并操作任务。', '无登录步骤的浏览器访问及任务操作结果。', 'browser_ui'],
     ['在浏览器中删除一项验收任务。', '删除前后的任务列表与重新读取的结果。', 'browser_ui'],

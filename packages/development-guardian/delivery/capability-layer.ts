@@ -140,7 +140,7 @@ export function claimExternalResidual(assertion: AcceptanceAssertion, criterion:
 export function classifyCapability(input: { assertion: AcceptanceAssertion; criterion: AcceptanceCriterion;
   requirement: RequirementClause }): CapabilityClassification {
   const { criterion, assertion } = input
-  const observed = `${assertion.observableBehavior} ${assertion.expectedEvidence}`
+  const observed = `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`
   if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
     /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
     return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
