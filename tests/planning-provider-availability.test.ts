@@ -64,6 +64,17 @@ test('Planning provider accepts a recovered Codex turn and returns a schema-vali
   assert.equal(parsed.success, true, parsed.success ? '' : JSON.stringify(parsed.error.issues))
 })
 
+test('planning repair gets a longer bounded turn for the prior draft and reviewer feedback', async () => {
+  const timeouts: number[] = []
+  const provider = createCodexPlanningProvider({ runner: async (request) => {
+    timeouts.push(request.timeoutMs)
+    return { text: JSON.stringify(draft) }
+  } })
+  await provider({ requirement })
+  await provider({ requirement, priorDraft: JSON.stringify(draft), validationFeedback: 'Preserve and repair one assertion.' })
+  assert.deepEqual(timeouts, [8 * 60 * 1000, 12 * 60 * 1000])
+})
+
 test('a completed turn is required; structured terminal failures keep a useful safe reason', async () => {
   const run = scriptedRunner([
     { type: 'error', message: 'Reconnecting... 5/5' },
