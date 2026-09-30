@@ -560,6 +560,13 @@ test('capability registry classifies all families without claiming unsupported a
   } }
   assert.equal(classifyCapability(reopenedPage).family, 'browser_ui')
   assert.equal(conservativeCapabilityResolver(reopenedPage).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  const restartAndOpenPage = { ...input, criterion: { ...criterion, level: 'integration' as const }, assertion: {
+    ...assertion, observableBehavior: '停止并重新启动本地服务后打开页面。',
+    expectedOutcome: '原任务、编辑后的标题和完成状态仍存在。',
+    expectedEvidence: '重启前后的页面及同一任务的 SQLite 记录。',
+  } }
+  assert.equal(classifyCapability(restartAndOpenPage).family, 'browser_ui')
+  assert.equal(conservativeCapabilityResolver(restartAndOpenPage).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   const browserEvidenceReview = { ...input, criterion: { ...criterion, level: 'delivery' as const }, assertion: {
     ...assertion, observableBehavior: '审查最终验收证据。',
     expectedOutcome: '每项业务结果均有实际浏览器行为证据，测试命令成功不单独构成业务通过。',

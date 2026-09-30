@@ -142,7 +142,7 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
   const { criterion, assertion } = input
   const observed = `${assertion.observableBehavior} ${assertion.expectedOutcome} ${assertion.expectedEvidence}`
   if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
-    /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|重新打开页面|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
+    /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|重新打开页面|(?:重启|重新启动|restart)[^。；;]{0,30}打开页面|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
     return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
       reason: 'Explicit browser interaction requires a browser trace; a scope manifest or HTTP read cannot replace it.' }
   if (criterion.level === 'delivery' &&
