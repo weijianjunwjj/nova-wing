@@ -156,6 +156,27 @@ await test('R1 planner preserves a package test runner that resolves TypeScript 
   } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
 })
 
+await test('R1 planner proves a hook-free package test glob covers the relevant TypeScript test', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-ts-glob-'))
+  try {
+    await mkdir(join(repositoryRoot, 'test'))
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: 'tsx --test test/**/*.test.ts' } }))
+    await writeFile(join(repositoryRoot, 'test/database.test.ts'), "import '../src/database.js'\n")
+    const task = { id: 'foundation', goal: 'Implement SQLite database',
+      acceptanceCriteria: ['database retains tasks after restart'], allowedPaths: ['.'], forbiddenPaths: [] }
+    const covered = await planVerification({ repositoryRoot, task,
+      changedAreaHint: ['src/database.ts', 'test/database.test.ts'] })
+    assert.equal(covered.confidence, 'HIGH')
+    assert.equal(covered.steps.find((step) => step.id === 'targeted-test')?.command, 'npm test')
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: {
+      test: 'tsx --test test/**/*.test.ts', pretest: 'node arbitrary-script.js',
+    } }))
+    const hooked = await planVerification({ repositoryRoot, task,
+      changedAreaHint: ['src/database.ts', 'test/database.test.ts'] })
+    assert.equal(hooked.confidence, 'MEDIUM')
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 await test('R1 verifier provisions ignored package tools before running an admitted npm test', async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-verifier-package-tool-'))
   try {

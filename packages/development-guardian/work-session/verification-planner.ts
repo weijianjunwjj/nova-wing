@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, matchesGlob, relative, resolve } from 'node:path'
 
 import type { VerificationExecutionStep } from '../model.js'
 import { assessVerificationCommand, canonicalScopedNodeTest, normalizeNamedNpmTestScript } from '../verification-command-policy.js'
@@ -146,6 +146,13 @@ function trustedNodeTestSource(file: string, owner: PackageFacts, packages: read
   return TEST_FILE.test(file) && NODE_TEST_SOURCE.test(file) && ownerOf(file, packages)?.root === owner.root
 }
 
+function packageTestCoversFile(owner: PackageFacts, localTestFile: string): boolean {
+  if (owner.scripts.pretest !== undefined || owner.scripts.posttest !== undefined) return false
+  const script = owner.scripts.test?.trim() ?? ''
+  const match = /^(?:tsx|node(?:\.exe)?)\s+--test\s+([A-Za-z0-9_.*\/-]+\.[cm]?[jt]s)$/u.exec(script)
+  return match !== null && matchesGlob(localTestFile, match[1]!)
+}
+
 function scopeRank(scope: VerificationScope): number {
   return { FILE: 0, PACKAGE: 1, WORKSPACE: 2, REPOSITORY: 3 }[scope]
 }
@@ -264,6 +271,7 @@ export async function planVerification(input: VerificationPlannerInput): Promise
   const words = keywords(input)
   const selected: VerificationPlanStep[] = []
   const rationale: string[] = []
+  let provenPackageTestCoverage = false
 
   if (candidates.length === 1) {
     const owner = candidates[0]!
@@ -295,6 +303,7 @@ export async function planVerification(input: VerificationPlannerInput): Promise
       const command = packageRunner ? 'npm test' : bestNamed === undefined || packageTest === undefined ||
         /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(packageTest)
         ? canonicalScopedNodeTest(local) : `npm test -- ${local}`
+      provenPackageTestCoverage = packageRunner && packageTestCoversFile(owner, local)
       const admission = assessVerificationCommand(command)
       selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: packageRunner ? 'PACKAGE' : 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })
@@ -335,7 +344,7 @@ export async function planVerification(input: VerificationPlannerInput): Promise
   if (unavailablePrerequisites.length > 0) rationale.push(`Known environment prerequisites are unavailable: ${unavailablePrerequisites.join(', ')}.`)
   return finish({ mappings: criteria.map((criterion) => ({ criterion, evidence: sufficient ? evidence : [], scope: estimatedScope, reason: sufficient ? 'Minimal sufficient package evidence selected from repository facts.' : 'Planning requires human evidence selection.' })),
     steps: selected, escalationSequence: ['PLAN_INVALIDATED', 'CONTROLLER'], estimatedScope, estimatedCost: selected.length <= 2 ? 'LOW' : 'MEDIUM',
-    confidence: sufficient ? (selected[0]?.scope === 'FILE' ? 'HIGH' : 'MEDIUM') : 'INSUFFICIENT', approvalRequired: selected.some((step) => step.admission !== 'ALLOWED'),
+    confidence: sufficient ? (selected[0]?.scope === 'FILE' || provenPackageTestCoverage ? 'HIGH' : 'MEDIUM') : 'INSUFFICIENT', approvalRequired: selected.some((step) => step.admission !== 'ALLOWED'),
     invalidationConditions: ['changed paths leave allowed scope', 'package boundary expands', 'risk surface expands', 'repository scripts or tests change'],
     packageRoots: owners, explicitBindings: false, rationale })
 }

@@ -505,7 +505,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         const technical = await planVerification({ repositoryRoot,
           task: { ...task, acceptanceEvidenceBindings: [] }, risk: assessRisk(state).level,
           changedAreaHint: state.gitState.changedFiles.length ? [...state.gitState.changedFiles] : ['.'] })
-        if (technical.confidence === 'INSUFFICIENT' || technical.steps.length === 0 ||
+        if (technical.confidence !== 'HIGH' || technical.steps.length === 0 ||
           !technical.steps.some((step) => step.id === 'targeted-test' || step.id === 'package-test') ||
           technical.steps.some((step) => step.admission !== 'ALLOWED') ||
           technical.mappings.length !== task.acceptanceCriteria?.length ||
