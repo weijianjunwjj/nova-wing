@@ -1501,6 +1501,59 @@ await test('Browser can submit only a discovered configId, never an arbitrary co
   }
 })
 
+await test('Launchpad accepts only legacy or safe generated config IDs before trusted lookup', async () => {
+  const directory = await createConfigDirectory()
+  const state = emptyFakeState()
+  const launchpad = new NovaWingLaunchpad(await discoverTrustedWorkSessionConfigs(directory), directory,
+    { createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}) })
+  const deliveryId = `delivery-${'a'.repeat(64)}-000000000000-abcdef`
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const legacyId = launchpad.getConfigs()[0]!.configId
+    assert.match(legacyId, /^[a-f0-9]{32}$/u)
+    assert.equal((await postStart(launchpad, { configId: legacyId }, auth)).status, 202)
+    assert.equal((await postStart(launchpad, { configId: deliveryId }, auth)).status, 404)
+    assert.equal((await postDelete(launchpad, { configId: deliveryId }, auth)).status, 404)
+    for (const invalid of ['delivery-abc-000000000000-zzzzzz',
+      'delivery-../etc/passwd-000000000000-abcdef', '../fly-weave.json', 'arbitrary']) {
+      assert.equal((await postStart(launchpad, { configId: invalid }, auth)).status, 400, invalid)
+      assert.equal((await postDelete(launchpad, { configId: invalid }, auth)).status, 400, invalid)
+    }
+    assert.equal(state.createCalls, 1, 'Rejected and unknown IDs cannot create a Work Session.')
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+await test('A discovered suspended delivery card opens control without resuming and its ID can be deleted', async () => {
+  const directory = await createConfigDirectory()
+  const deliveryId = `delivery-${'a'.repeat(64)}-000000000000-abcdef`
+  const discovered = (await discoverTrustedWorkSessionConfigs(directory))[0]!
+  const state = emptyFakeState()
+  const launchpad = new NovaWingLaunchpad([{ ...discovered,
+    summary: { ...discovered.summary, configId: deliveryId } }], directory, {
+    createWorkSession: fakeWorkSessionFactory(state, { controllerStarted: false, sessionActive: false }),
+    resolveEnvironment: async () => ({}), readSessionStatus: async () => 'SUSPENDED',
+  })
+  const store = (launchpad as unknown as { deliveryStore: {
+    getSession: (id: string) => Promise<unknown>; getPlan: (id: string) => Promise<unknown>
+  } }).deliveryStore
+  store.getSession = async () => ({ status: 'STARTED', runtimePlanId: 'a'.repeat(64), runtimePlanHash: 'a'.repeat(64),
+    targetBindingId: 'b'.repeat(64) })
+  store.getPlan = async () => ({ runtimePlanHash: 'a'.repeat(64), targetBinding: { id: 'b'.repeat(64) } })
+  try {
+    const address = await launchpad.start()
+    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    assert.equal(launchpad.getConfigs()[0]?.status, 'SUSPENDED')
+    const opened = await postStart(launchpad, { configId: deliveryId }, auth)
+    assert.equal(opened.status, 202)
+    assert.deepEqual(await opened.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321', alreadyStarted: true })
+    assert.equal(state.createCalls, 1)
+    assert.equal(state.controllerStartCalls, 1)
+    assert.equal(launchpad.getConfigs()[0]?.status, 'SUSPENDED')
+    assert.equal((await postDelete(launchpad, { configId: deliveryId }, auth)).status, 200)
+  } finally { await launchpad.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 await test('Deleting a trusted config removes its file, Map entry, and rediscovered card', async () => {
   const directory = await createConfigDirectory()
   const configPath = join(directory, 'fly-weave.json')

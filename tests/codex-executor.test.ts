@@ -46,6 +46,37 @@ function executorWithWorkspaceProbe(root: string, probe: (client: Client) => Pro
     } })
 }
 
+function scriptedExecutor(root: string, events: readonly ThreadEvent[], options: {
+  inspect?: boolean; rejectedMutation?: boolean; throwAfter?: boolean
+} = {}): CodexExecutor {
+  let runtime: CodexOptions | undefined
+  return new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+    createCodex: (configuration) => {
+      runtime = configuration
+      const thread = { runStreamed: async () => ({ events: (async function* () {
+        if (options.inspect !== false || options.rejectedMutation) {
+          const url = /url="([^"]+)"/u.exec(runtime!.configOverrides!.at(-1)!)![1]!
+          const client = new Client({ name: 'scripted-sdk', version: '1' })
+          try {
+            await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
+            if (options.inspect !== false) {
+              await client.callTool({ name: 'git_status', arguments: {} })
+              await client.callTool({ name: 'read_file', arguments: { path: 'src/a.ts' } })
+            }
+            if (options.rejectedMutation) await client.callTool({ name: 'write_file',
+              arguments: { path: 'src/private/secret.ts', content: 'forbidden' } })
+          } finally { await client.close() }
+        }
+        yield { type: 'item.completed', item: { id: 'answer', type: 'agent_message',
+          text: JSON.stringify({ outcome: 'ALREADY_SATISFIED', reason: 'Fixture already exports value 1.',
+            evidence: [{ path: 'src/a.ts', quote: 'value = 1' }] }) } } as ThreadEvent
+        for (const event of events) yield event
+        if (options.throwAfter) throw new Error('stream disconnected')
+      })() }) } as unknown as Thread
+      return { startThread: () => thread, resumeThread: () => thread }
+    } })
+}
+
 test('Codex classifier prioritizes structured causes; ordinary 429, auth and model errors never become quota', () => {
   for (const [error, kind] of [
     [{ code: 'usage_limit_reached' }, 'quota_exhausted'],
@@ -414,6 +445,74 @@ test('CodexExecutor passes effective SDK options, persists/resumes thread and ig
     assert.equal(threads[0]?.modelReasoningEffort, 'high')
     assert.equal(runtimes[0]?.apiKey, undefined)
     assert.ok(runtimes.every((runtime) => runtime.env?.NO_PROXY === 'localhost,127.0.0.1,::1'))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex EXECUTE uses terminal events after reconnect errors and keeps real failures closed', async () => {
+  const root = await codexTestRepo()
+  const reconnect = { type: 'error', message: 'stream disconnected' } as ThreadEvent
+  const completed = { type: 'turn.completed', usage: {} } as ThreadEvent
+  const failed = { type: 'turn.failed', error: { message: 'stream disconnected' } } as ThreadEvent
+  try {
+    for (const events of [[reconnect, completed], [reconnect, reconnect, completed], [completed, reconnect]]) {
+      const executor = scriptedExecutor(root, events)
+      const report = await executor.execute({ task, packet })
+      assert.equal(executor.lastError, undefined)
+      assert.deepEqual(report.blockers, [])
+    }
+    for (const events of [[reconnect], [reconnect, failed], [failed, completed], [completed, failed]]) {
+      const executor = scriptedExecutor(root, events)
+      const report = await executor.execute({ task, packet })
+      assert.ok(executor.lastError)
+      assert.ok(report.blockers.length > 0)
+    }
+    const disconnected = scriptedExecutor(root, [completed], { throwAfter: true })
+    assert.ok((await disconnected.execute({ task, packet })).blockers.length > 0,
+      'A thrown transport failure after a completed event is still fatal.')
+    assert.equal(disconnected.lastError?.kind, 'transient')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex completed terminal cannot clear rejected mutations or missing workspace inspection', async () => {
+  const root = await codexTestRepo()
+  const completed = { type: 'turn.completed', usage: {} } as ThreadEvent
+  try {
+    const rejected = scriptedExecutor(root, [{ type: 'error', message: 'reconnecting' } as ThreadEvent, completed],
+      { rejectedMutation: true })
+    const mutationReport = await rejected.execute({ task, packet })
+    assert.ok(mutationReport.blockers.some((blocker) => blocker.startsWith('EXECUTION_BLOCKED: mutation')))
+    assert.equal(mutationReport.workspaceExecution?.outcome, 'EXECUTION_BLOCKED')
+
+    const noOp = scriptedExecutor(root, [completed], { inspect: false })
+    const noOpReport = await noOp.execute({ task, packet })
+    assert.equal(noOp.lastError?.kind, 'no_op_execution')
+    assert.match(noOpReport.blockers[0] ?? '', /^NO_OP_EXECUTION:/u)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Codex preflight accepts a completed terminal after reconnect errors without relaxing its probes', async () => {
+  const root = await codexTestRepo()
+  let runtime: CodexOptions | undefined
+  try {
+    const executor = new CodexExecutor({ cwd: root, preflight: async () => ({ executable: 'fake.exe', mcpNames: [] }),
+      createCodex: (configuration) => {
+        runtime = configuration
+        const thread = { runStreamed: async () => ({ events: (async function* () {
+          yield { type: 'error', message: 'network (connection failed); reconnecting' } as ThreadEvent
+          yield { type: 'error', message: 'responses_websocket reconnecting again' } as ThreadEvent
+          const url = /url="([^"]+)"/u.exec(runtime!.configOverrides!.at(-1)!)![1]!
+          const client = new Client({ name: 'preflight-reconnect', version: '1' })
+          try {
+            await client.connect(new StreamableHTTPClientTransport(new URL(url)) as Parameters<Client['connect']>[0])
+            await client.callTool({ name: 'git_status', arguments: {} })
+            await client.callTool({ name: 'list_files', arguments: {} })
+            await client.callTool({ name: 'read_file', arguments: { path: 'package.json' } })
+          } finally { await client.close() }
+          yield { type: 'turn.completed', usage: {} } as ThreadEvent
+        })() }) } as unknown as Thread
+        return { startThread: () => thread, resumeThread: () => thread }
+      } })
+    await executor.preflight(task)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

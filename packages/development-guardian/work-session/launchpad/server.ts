@@ -2446,10 +2446,14 @@ function parseStartBody(body: string):
   if (Object.keys(record).length !== 1 || !Object.hasOwn(record, 'configId')) {
     return { ok: false, error: 'start body must contain only configId' }
   }
-  if (typeof record.configId !== 'string' || !/^[a-f0-9]{32}$/u.test(record.configId)) {
+  if (!safeConfigId(record.configId)) {
     return { ok: false, error: 'configId is invalid' }
   }
   return { ok: true, configId: record.configId }
+}
+
+function safeConfigId(value: unknown): value is string {
+  return typeof value === 'string' && (/^[a-f0-9]{32}$/u.test(value) || SAFE_COMPOSER_SESSION_ID.test(value))
 }
 
 function parseConfigIdBody(body: string):
@@ -2462,8 +2466,7 @@ function parseConfigIdBody(body: string):
     if (
       Object.keys(record).length !== 1 ||
       !Object.hasOwn(record, 'configId') ||
-      typeof record.configId !== 'string' ||
-      !/^[a-f0-9]{32}$/u.test(record.configId)
+      !safeConfigId(record.configId)
     ) {
       return { ok: false }
     }
