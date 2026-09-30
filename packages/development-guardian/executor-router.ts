@@ -210,13 +210,28 @@ export class ExecutorRouter implements GuardianRecoverableExecutor {
           return this.report({ summary: 'Codex Local is disabled in configuration', changedFiles: [], commandsRun: [],
             verificationResults: [], blockers: ['Codex Local configuration error: explicitly select DeepSeek or enable Codex'] })
         }
-        const codex = this.codexExecutor()
+        let codex = this.codexExecutor()
         report = await codex.execute(input)
         let error = codex.lastError
         const retries = this.options.transientRetries ?? CODING_EXECUTOR_DEFAULTS.codex.transientRetries
         for (let attempt = 0; error?.kind === 'transient' && attempt < retries; attempt++) {
           if (codex.hasReleasedExecutionOwnership?.() === false) break
           if (report.blockers.some((blocker) => blocker !== error!.message)) break
+          report = await codex.execute(input)
+          error = codex.lastError
+        }
+        // A completed turn with no workspace inspection has no implementation
+        // authority. One fresh thread can recover a transient missing tool host;
+        // retain the same Task, provider and workspace lease, then fail closed if
+        // the replacement also produces no inspected evidence.
+        if (error?.kind === 'no_op_execution' && report.changedFiles.length === 0 &&
+            report.blockers.every((blocker) => blocker === error!.message) &&
+            codex.hasReleasedExecutionOwnership?.() !== false) {
+          this.metadata!.lastError = error.message
+          this.metadata!.lastErrorKind = error.kind
+          this.save({ type: 'executor_error', executor: 'codex', reason: error.kind })
+          this.prepareNoOpRetry()
+          codex = this.codexExecutor()
           report = await codex.execute(input)
           error = codex.lastError
         }
