@@ -467,6 +467,9 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
         `PlannedTask title and complexity: ${task.title} (${task.complexity})`,
         ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
           ? [] : ['Provide a task-local deterministic test for each technical output. Exercise the implemented behavior and assert its observable result; do not use a placeholder assertion or an unrelated suite. Keep the test in the repository so NovaWing can run it independently before review.']),
+        ...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking &&
+          binding.ownership === 'OWNER' && binding.stagedVerification.obligation?.strategy === 'assertion_scoped_repository_test')
+          .map((binding) => `Exact verifier ${binding.assertionId}: create one committed .mjs node:test file runnable with node --test. Include literal markers const assertionId = '${binding.assertionId}'; const assertionContractHash = '${binding.stagedVerification.obligation!.sourceAssertionHash}'; in that file. Exercise the frozen observable behavior with isolated setup, action, an exact result assertion, reread of the same entity when required, and cleanup. A package test suite or a marker-only test does not prove this assertion.`),
         ...task.requirementIds.map((id) => `RequirementClause ${id}: ${canonicalSerialize(plan.requirements.find((item) => item.id === id)!)}`),
         ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
           ? task.acceptanceCriterionIds.map((id) => `AcceptanceCriterion ${id}: ${canonicalSerialize(plan.acceptanceCriteria.find((item) => item.id === id)!)}`)

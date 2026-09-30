@@ -141,6 +141,16 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
   requirement: RequirementClause }): CapabilityClassification {
   const { criterion, assertion } = input
   const observed = `${assertion.observableBehavior} ${assertion.expectedEvidence}`
+  if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
+    /(?:浏览器|browser|Web\s*UI|刷新页面|页面刷新|(?:refresh|reload)\s+(?:the\s+)?page)/iu.test(observed))
+    return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
+      reason: 'Explicit browser interaction requires a browser trace; a scope manifest or HTTP read cannot replace it.' }
+  if (criterion.level === 'delivery' &&
+    (/(?:干净|全新|fresh|clean)[^，。；;]{0,24}(?:环境|安装|依赖|install)/iu.test(observed) ||
+      /(?:没有|不配置|无需|不依赖|without|no\s+)[^，。；;]{0,24}(?:第三方|云服务|Docker|外部|external|cloud)/iu.test(observed)) &&
+    /(?:操作|运行|启动|安装|访问|请求|执行|install|run|start|operate)/iu.test(observed))
+    return { family: 'external_platform', ruleId: 'delivery-environment-scenario-v1',
+      reason: 'A clean or isolated environment and its actual behavior require external execution evidence.' }
   if (isDeliveryScopeClaim(assertion, criterion)) return { family: 'filesystem', ruleId: 'delivery-scope-review-v2',
     reason: 'Negative delivery scope requires a generated manifest and independent review.' }
   if (criterion.level === 'platform' || /小程序|微信|Android|iOS/u.test(observed))
@@ -150,10 +160,6 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       return { family: 'desktop_ui', ruleId: 'desktop-surface-v1', reason: 'Assertion names a desktop user interface.' }
     return { family: 'browser_ui', ruleId: 'browser-surface-v1', reason: 'UI criterion requires observable browser interaction.' }
   }
-  if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
-    /(?:浏览器|browser|Web\s*UI)/iu.test(observed))
-    return { family: 'browser_ui', ruleId: 'browser-integration-surface-v1',
-      reason: 'Integration evidence explicitly requires browser interaction; an HTTP read cannot substitute for it.' }
   if ((criterion.level === 'api' || criterion.level === 'integration') && claimRequirements(assertion).requiresMutation)
     return { family: 'command', ruleId: 'mutation-repository-test-v2', reason: 'Mutation requires an assertion-scoped repository test with action and reread.' }
   if (criterion.level === 'api')

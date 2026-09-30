@@ -128,6 +128,64 @@ test('1 implementation-dependent endpoint absent but exact obligation admits Sta
   assert.equal(obligation.targetConstraints.baselineCommit, f.target.baselineCommit)
 })
 
+test('committed assertion-marked node test supplies a reviewed and executed exact blueprint', async () => {
+  const f = await fixture()
+  const plan = await f.compile()
+  const criterion = f.frozen.content.acceptancePlan.criteria[0]!
+  const assertion = criterion.assertions[0]!
+  const obligation = plan.acceptanceBindings[0]!.stagedVerification.obligation!
+  const task = workSessionDefinitionFor(plan, 'assertion-test-fixture').tasks[0]!
+  assert.match((task.constraints ?? []).join(' '), new RegExp(`Exact verifier A1.*${assertionContractHash(assertion)}`, 'u'))
+  await mkdir(join(f.repo, 'tests'))
+  const path = 'tests/order.test.mjs'
+  await writeFile(join(f.repo, path), `import test from 'node:test';\nimport assert from 'node:assert/strict';\n` +
+    `const assertionId = 'A1'; const assertionContractHash = '${assertionContractHash(assertion)}';\n` +
+    `test('same order persists after a separate read', () => { const rows = new Map(); const id = 'order-1';` +
+    ` rows.set(id, { id, status: 'saved' }); const reread = rows.get(id);` +
+    ` assert.deepEqual(reread, { id, status: 'saved' }); rows.delete(id);` +
+    ` assert.equal(rows.has(id), false); assert.equal(assertionId, 'A1');` +
+    ` assert.equal(assertionContractHash.length, 64) });\n`)
+  await git(f.repo, 'add', '.')
+  await git(f.repo, 'commit', '-qm', 'Implement exact order test')
+  const commit = await git(f.repo, 'rev-parse', 'HEAD')
+  let reviewed = false
+  const approved = await bindObligationAtCommit({ obligation, assertion, criterion, target: f.target, commit,
+    reviewer: async ({ candidate, reviewMaterial }) => { reviewed = true
+      assert.equal(candidate.provenance.kind, 'deterministic_resolver')
+      assert.equal(candidate.plannedVerifier?.family, 'command')
+      assert.ok(reviewMaterial.some((item) => item.path === path && item.source.includes('rows.get(id)')))
+      return { verdict: 'PASS', reviewer: 'independent-fixture', issues: [] }
+    } })
+  assert.equal(reviewed, true)
+  const store = new DeliveryStore(join(f.root, 'delivery'))
+  await store.savePlan(plan)
+  await store.bindProvisionedVerifier(plan, 'A1', 'T1', approved)
+  const observed = await store.collectProvisionedEvidence(plan, 'A1', 'T1')
+  assert.equal(observed.facts.observedMatch, true)
+})
+
+test('assertion test fallback rejects missing hash marker and ambiguous matching files', async () => {
+  const f = await fixture()
+  const plan = await f.compile()
+  const criterion = f.frozen.content.acceptancePlan.criteria[0]!
+  const assertion = criterion.assertions[0]!
+  const obligation = plan.acceptanceBindings[0]!.stagedVerification.obligation!
+  await mkdir(join(f.repo, 'tests'))
+  await writeFile(join(f.repo, 'tests/one.test.mjs'), "const assertionId = 'A1';\n")
+  await git(f.repo, 'add', '.')
+  await git(f.repo, 'commit', '-qm', 'Incomplete verifier')
+  const reviewer = async () => ({ verdict: 'PASS' as const, reviewer: 'independent-fixture', issues: [] })
+  await assert.rejects(bindObligationAtCommit({ obligation, assertion, criterion, target: f.target,
+    commit: await git(f.repo, 'rev-parse', 'HEAD'), reviewer }), /BLUEPRINT_CANDIDATE_MISSING/u)
+  const source = `const assertionId = 'A1'; const assertionContractHash = '${assertionContractHash(assertion)}';\n`
+  await writeFile(join(f.repo, 'tests/one.test.mjs'), source)
+  await writeFile(join(f.repo, 'tests/two.test.mjs'), source)
+  await git(f.repo, 'add', '.')
+  await git(f.repo, 'commit', '-qm', 'Ambiguous verifiers')
+  await assert.rejects(bindObligationAtCommit({ obligation, assertion, criterion, target: f.target,
+    commit: await git(f.repo, 'rev-parse', 'HEAD'), reviewer }), /BLUEPRINT_CANDIDATE_MISSING/u)
+})
+
 test('2 strategy or input names alone fail the minimum obligation contract', async () => {
   const f = await fixture()
   const plan = await f.compile()

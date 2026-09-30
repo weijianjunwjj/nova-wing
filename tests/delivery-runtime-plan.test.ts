@@ -546,6 +546,25 @@ test('capability registry classifies all families without claiming unsupported a
   assert.equal(conservativeCapabilityResolver(browserIntegration).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   assert.equal(classifyCapability({ ...browserIntegration,
     criterion: { ...browserIntegration.criterion, level: 'delivery' } }).family, 'browser_ui')
+  const pageReload = { ...input, criterion: { ...criterion, level: 'integration' as const }, assertion: {
+    ...assertion, observableBehavior: '用户创建并修改任务后刷新页面。',
+    expectedOutcome: '同一任务及其最新标题、完成状态仍然存在。',
+    expectedEvidence: '刷新前后同一任务的页面结果和重新读取的数据。',
+  } }
+  assert.equal(classifyCapability(pageReload).family, 'browser_ui')
+  assert.equal(conservativeCapabilityResolver(pageReload).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  for (const [behavior, evidence, family] of [
+    ['未登录的用户打开应用并操作任务。', '无登录步骤的浏览器访问及任务操作结果。', 'browser_ui'],
+    ['在浏览器中删除一项验收任务。', '删除前后的任务列表与重新读取的结果。', 'browser_ui'],
+    ['在没有第三方 API 配置或调用的本地环境操作任务。', '应用配置、操作期间的请求记录及对应任务结果。', 'external_platform'],
+    ['不配置云服务，启动并操作应用。', '本地配置、任务操作结果和 SQLite 中的对应记录。', 'external_platform'],
+    ['在干净环境安装项目依赖。', '干净环境和依赖安装记录。', 'external_platform'],
+  ] as const) {
+    const scenario = { ...input, criterion: { ...criterion, level: 'delivery' as const },
+      assertion: { ...assertion, observableBehavior: behavior, expectedEvidence: evidence } }
+    assert.equal(classifyCapability(scenario).family, family)
+    assert.equal(conservativeCapabilityResolver(scenario).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
+  }
   assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'platform' } }).family, 'external_platform')
   assert.equal(conservativeCapabilityResolver({ ...input, criterion: { ...criterion, level: 'platform' },
     assertion: { ...assertion, observableBehavior: '开始开发前必须先取得平台 SDK 权限。' } }).startPrerequisite, 'EXECUTION')

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { canonicalSerialize } from '../planning/freeze.js'
+import { scopedNodeTestPath } from '../verification-command-policy.js'
 import { hasClaudeRoute, resolveClaudeProviderEnvironment } from '../deepseek-executor.js'
 import type { AcceptanceAssertion, AcceptanceCriterion } from '../planning/model.js'
 import type { RepoCapabilityFacts } from './repo-capability-inspector.js'
@@ -42,9 +43,44 @@ function repositoryContractCandidate(facts: RepoCapabilityFacts, assertion: Acce
       contractHash: facts.contract!.sha256 } }
 }
 
+/** A committed, assertion-marked test can supply the candidate without a hand-written JSON contract. */
+function assertionTestCandidate(facts: RepoCapabilityFacts, assertion: AcceptanceAssertion,
+  obligation: VerificationObligation, target: DeliveryTargetBinding): VerificationBlueprint | undefined {
+  if (obligation.strategy !== 'assertion_scoped_repository_test' || obligation.capabilityFamily !== 'command') return undefined
+  const hash = assertionContractHash(assertion)
+  const matching = facts.testFiles.filter((file) => file.assertionIds.includes(assertion.id) &&
+    file.assertionContractHashes.includes(hash) && scopedNodeTestPath(`node --test ${file.path}`) === file.path)
+  if (matching.length !== 1) return undefined
+  const path = matching[0]!.path
+  const step = (kind: 'setup' | 'action' | 'observation' | 'predicate' | 'reread' | 'cleanup',
+    operation: string, mutates = false, expected?: string) => ({ kind, mechanism: 'repository_test' as const,
+    artifact: path, operation, mutates, ...(expected === undefined ? {} : { expected }),
+    ...(obligation.requirements.requiresEntityContinuity ? { entityRef: 'same_entity_under_test' } : {}) })
+  return { schemaVersion: 1, assertionId: assertion.id, runtimeTaskId: obligation.canonicalOwnerTaskId,
+    sourceAssertionHash: hash, provider: { id: obligation.providerId, version: obligation.providerVersion }, family: 'command',
+    setup: [step('setup', 'prepare isolated assertion fixture')],
+    action: obligation.requirements.requiresMutation ? [step('action', assertion.observableBehavior.slice(0, 260), true)] : [],
+    observation: [step('observation', 'observe result of the assertion action')],
+    predicate: [step('predicate', 'equals frozen expected outcome', false, assertion.expectedOutcome)],
+    reread: obligation.requirements.requiresReread ? [step('reread', 'read the same entity again from persisted state')] : [],
+    cleanup: obligation.requirements.requiresCleanup || obligation.requirements.requiresMutation
+      ? [step('cleanup', 'stop owned processes and remove isolated fixture')] : [],
+    timeoutMs: 120_000, requiredArtifacts: [path],
+    targetConstraints: { canonicalPath: target.canonicalPath,
+      gitRepositoryIdentity: target.gitRepositoryIdentity, baselineCommit: facts.implementationCommit },
+    provenance: { kind: 'deterministic_resolver', relativePath: path, contractHash: facts.artifactHashes[path]! },
+    ...(obligation.requirements.requiresEntityContinuity ? { entityIdentity: {
+      setupRef: 'same_entity_under_test', actionRef: 'same_entity_under_test',
+      observationRef: 'same_entity_under_test' } } : {}),
+    plannedVerifier: { family: 'command', assertionId: assertion.id, providerId: obligation.providerId,
+      providerVersion: obligation.providerVersion, command: `node --test ${path}` } }
+}
+
 function relevantFacts(facts: RepoCapabilityFacts, candidate: VerificationBlueprint): boolean {
   if (candidate.provenance.kind === 'repository_contract' &&
     (candidate.provenance.relativePath !== facts.contract?.relativePath || candidate.provenance.contractHash !== facts.contract.sha256)) return false
+  if (candidate.provenance.kind === 'deterministic_resolver' &&
+    facts.artifactHashes[candidate.provenance.relativePath] !== candidate.provenance.contractHash) return false
   if (!candidate.plannedVerifier) return false
   const verifier = candidate.plannedVerifier
   if (verifier.family === 'command') {
@@ -76,7 +112,8 @@ export async function bindObligationAtCommit(input: { obligation: VerificationOb
   if (!Number.isInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > 3) throw new Error('Invalid bounded repair limit.')
   const facts = await inspectAtCommit(input.target, input.commit)
   const manifest = generateScopeManifest(facts)
-  let candidate = repositoryContractCandidate(facts, input.assertion, input.obligation.canonicalOwnerTaskId, input.target)
+  let candidate = repositoryContractCandidate(facts, input.assertion, input.obligation.canonicalOwnerTaskId, input.target) ??
+    assertionTestCandidate(facts, input.assertion, input.obligation, input.target)
   if (!candidate) throw new Error('BLUEPRINT_CANDIDATE_MISSING')
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
     const paths = candidate.plannedVerifier?.family === 'command'
