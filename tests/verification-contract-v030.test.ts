@@ -180,6 +180,31 @@ await test('R1 verifier provisions ignored package tools before running an admit
   } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
 })
 
+await test('R1 verifier rebuilds only declared better-sqlite3 while keeping project hooks disabled', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-verifier-native-sqlite-'))
+  try {
+    await mkdir(join(repositoryRoot, 'tool'))
+    await writeFile(join(repositoryRoot, '.gitignore'), 'node_modules/\n')
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ private: true,
+      scripts: { test: "node -e \"require('node:fs').accessSync('node_modules/better-sqlite3/native-ready')\"",
+        postinstall: "node -e \"require('node:fs').writeFileSync('root-hook-ran', 'bad')\"" },
+      dependencies: { 'better-sqlite3': 'file:tool' },
+    }))
+    await writeFile(join(repositoryRoot, 'tool/package.json'), JSON.stringify({ name: 'better-sqlite3', version: '12.4.1',
+      scripts: { install: "node -e \"require('node:fs').writeFileSync('native-ready', 'built')\"" } }))
+    execFileSync('git', ['init', '-q'], { cwd: repositoryRoot })
+    const executor = new ClaudeCodeExecutor({ cwd: repositoryRoot, allowNpmInstall: true })
+    const report: ExecutionReport = { summary: 'fixture', changedFiles: [], commandsRun: [], blockers: [],
+      verificationResults: [{ name: 'npm test', status: 'failed' }] }
+    const result = await executor.retryVerification({ task: TASK, report,
+      verificationSteps: [{ stepId: 'targeted-test', command: 'npm test', cwd: '.' }] })
+    assert.equal(result.verificationResults[0]?.status, 'passed', JSON.stringify(result.verificationResults[0]))
+    assert.ok(result.commandsRun.some((command) => command.includes('npm rebuild better-sqlite3')))
+    await access(join(repositoryRoot, 'node_modules', 'better-sqlite3', 'native-ready'))
+    await assert.rejects(access(join(repositoryRoot, 'root-hook-ran')))
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 
 function pendingReport(steps: readonly VerificationExecutionStep[]): ExecutionReport {
   return { summary: 'verification requested', changedFiles: [], commandsRun: [], blockers: [],

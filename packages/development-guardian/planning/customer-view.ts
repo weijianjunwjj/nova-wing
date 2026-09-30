@@ -46,6 +46,7 @@ export const CUSTOMER_APP_JS = `(() => {
   let current = null
   let prepared = null
   let deliverySerial = 0
+  let deliverySession = null
   let busy = false
   const steps = ['理解需求', '识别角色与业务流程', '规划功能与架构', '拆解任务与依赖', '制定验收标准', '完整性检查']
   const node = (tag, value, className) => {
@@ -62,6 +63,33 @@ export const CUSTOMER_APP_JS = `(() => {
     if (!response.ok) throw new Error(result.error || '请求失败')
     return result
   }
+  const refreshDeliveryStatus = async () => {
+    const session = deliverySession
+    if (!session || !prepared || !current || current.status !== 'frozen' ||
+      session.runtimePlanId !== prepared.runtimePlanId || session.planId !== current.id ||
+      session.version !== current.version) return
+    try {
+      const response = await fetch('/api/session/configs')
+      if (!response.ok) throw new Error('session status unavailable')
+      const configs = await response.json()
+      const state = configs.find(item => item.configId === session.id)?.status
+      if (deliverySession !== session) return
+      if (!state) { deliveryStatus.textContent = '工作会话状态暂不可用'; deliveryStart.hidden = true; return }
+      if (state === 'COMPLETED') {
+        const assessmentResponse = await fetch('/api/delivery/plans/' + encodeURIComponent(session.runtimePlanId) +
+          '?planId=' + encodeURIComponent(session.planId) + '&version=' + session.version)
+        if (!assessmentResponse.ok) throw new Error('delivery assessment unavailable')
+        const assessment = (await assessmentResponse.json()).customerAssessment
+        if (deliverySession !== session) return
+        deliveryStatus.textContent = assessment?.status === 'CUSTOMER_DELIVERY_COMPLETED' ?
+          '客户交付已完成' : '工作会话已完成 · 客户验收待完成'
+      } else deliveryStatus.textContent = ({ READY: '工作会话待启动', SCHEDULED: '工作会话已排程',
+        RUNNING: '工作会话正在执行', SUSPENDED: '工作会话已暂停，需要处理',
+        RECOVERABLE: '工作会话可恢复', FAILED: '工作会话失败', CANCELLED: '工作会话已取消' })[state] ||
+        '工作会话状态暂不可用'
+      deliveryStart.hidden = true
+    } catch { if (deliverySession === session) deliveryStatus.textContent = '工作会话状态暂不可用' }
+  }
   const render = (result, scrollTarget = 'plan') => {
     const plan = result.plan || result
     current = plan
@@ -74,6 +102,7 @@ export const CUSTOMER_APP_JS = `(() => {
     delivery.hidden = plan.status !== 'frozen'
     deliverySerial += 1
     prepared = null
+    deliverySession = null
     deliveryStart.hidden = true
     deliveryStatus.textContent = ''
     deliveryBlockers.replaceChildren()
@@ -81,6 +110,11 @@ export const CUSTOMER_APP_JS = `(() => {
       const key = 'novawing-delivery-' + plan.id + '-v' + plan.version
       deliveryFolder.value = localStorage.getItem(key + '-folder') || ''
       const savedPlanId = localStorage.getItem(key)
+      try {
+        const savedSession = JSON.parse(localStorage.getItem(key + '-session') || 'null')
+        if (savedSession && typeof savedSession.id === 'string' && savedSession.runtimePlanId === savedPlanId &&
+          savedSession.planId === plan.id && savedSession.version === plan.version) deliverySession = savedSession
+      } catch { /* Invalid local state cannot prove delivery status. */ }
       const restoreSerial = deliverySerial
       if (savedPlanId) void fetch('/api/delivery/plans/' + encodeURIComponent(savedPlanId) + '?planId=' + encodeURIComponent(plan.id) + '&version=' + plan.version)
         .then(async response => { if (!response.ok) throw new Error('readiness unavailable'); return response.json() })
@@ -88,9 +122,10 @@ export const CUSTOMER_APP_JS = `(() => {
           if (deliverySerial !== restoreSerial || current?.id !== plan.id || current.version !== plan.version) return
           prepared = result
           deliveryStatus.textContent = result.admission.status === 'READY' ? 'DELIVERY READY' : 'DELIVERY BLOCKED'
-          deliveryStart.hidden = result.admission.status !== 'READY'
+          deliveryStart.hidden = !!deliverySession || result.admission.status !== 'READY'
           deliveryBlockers.replaceChildren()
           for (const item of result.admission.blockers) deliveryBlockers.append(node('li', item.message))
+          if (deliverySession) void refreshDeliveryStatus()
         }).catch(() => { if (deliverySerial === restoreSerial) deliveryStatus.textContent = '请重新检查交付准备情况。' })
     }
     freezeDetails.textContent = plan.status === 'frozen' ? '方案 v' + plan.version + ' · 冻结时间 ' + plan.frozenAt + ' · 指纹 ' + (plan.approval?.contentHash || '').slice(0, 12) : ''
@@ -230,7 +265,7 @@ export const CUSTOMER_APP_JS = `(() => {
       localStorage.setItem('novawing-delivery-' + current.id + '-v' + current.version, prepared.runtimePlanId)
       localStorage.setItem('novawing-delivery-' + current.id + '-v' + current.version + '-folder', deliveryFolder.value.trim())
       deliveryBlockers.replaceChildren()
-      if (prepared.admission.status === 'READY') { deliveryStatus.textContent = 'DELIVERY READY'; deliveryStart.hidden = false }
+      if (prepared.admission.status === 'READY') { deliveryStatus.textContent = 'DELIVERY READY'; deliveryStart.hidden = !!deliverySession }
       else { deliveryStatus.textContent = 'DELIVERY BLOCKED';
         for (const item of prepared.admission.blockers) deliveryBlockers.append(node('li', item.message)) }
     } catch (failure) { if (requestSerial === deliverySerial) {
@@ -239,7 +274,7 @@ export const CUSTOMER_APP_JS = `(() => {
     finally { busy = false }
   })
   deliveryFolder.addEventListener('input', () => {
-    deliverySerial += 1; prepared = null; deliveryStart.hidden = true
+    deliverySerial += 1; prepared = null; deliverySession = null; deliveryStart.hidden = true
     deliveryStatus.textContent = '请检查交付准备情况。'; deliveryBlockers.replaceChildren()
   })
   deliveryStart.addEventListener('click', async () => {
@@ -252,13 +287,19 @@ export const CUSTOMER_APP_JS = `(() => {
       const result = await post('/api/delivery/start', { planId: current.id, version: current.version,
         snapshotId: snapshot.id, sourcePlanHash: snapshot.planHash.value, runtimePlanId: prepared.runtimePlanId,
         runtimePlanHash: prepared.runtimePlanHash, targetBindingId: prepared.targetBindingId })
-      deliveryStatus.textContent = '交付已开始 · 工作会话 ' + result.workSessionId.slice(0, 12)
+      deliverySession = { id: result.workSessionId, runtimePlanId: prepared.runtimePlanId,
+        planId: current.id, version: current.version }
+      localStorage.setItem('novawing-delivery-' + current.id + '-v' + current.version + '-session',
+        JSON.stringify(deliverySession))
+      deliveryStatus.textContent = '工作会话正在启动'
       deliveryStart.hidden = true
+      void refreshDeliveryStatus()
     } catch (failure) { error.textContent = failure.message || '开始交付失败'; deliveryStatus.textContent = 'DELIVERY BLOCKED'; deliveryStart.hidden = true }
     finally { busy = false }
   })
   const saved = sessionStorage.getItem('novawing-customer-requirement')
   if (saved) { requirement.value = saved; sessionStorage.removeItem('novawing-customer-requirement') }
+  if (typeof setInterval === 'function') setInterval(() => { void refreshDeliveryStatus() }, 10000)
   void loadRecent()
 })()`
 

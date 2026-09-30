@@ -769,11 +769,19 @@ export class ClaudeCodeExecutor implements GuardianRecoverableExecutor {
       exitCode: 1, signal: null, stdout: '', stderr: 'node_modules is not ignored by this Git repository; dependency setup would change the verification workspace.',
     } }
     // The toolchain is prepared outside assertion evidence and cannot rewrite
-    // the manifest or lockfile. Lifecycle hooks are never run by this setup.
+    // the manifest or lockfile. Root and unrelated dependency hooks stay disabled.
     const command = await access(join(cwd, 'package-lock.json')).then(() => true, () => false)
       ? 'npm ci --ignore-scripts --no-audit --no-fund'
       : 'npm install --ignore-scripts --no-save --no-package-lock --no-audit --no-fund'
-    return { command, classification: 'ENVIRONMENT_FAILURE', result: await this.runBash(command, this.timeoutMs, cwd) }
+    const installed = await this.runBash(command, this.timeoutMs, cwd)
+    if (installed.exitCode !== 0 ||
+      (manifest.dependencies?.['better-sqlite3'] === undefined && manifest.devDependencies?.['better-sqlite3'] === undefined))
+      return { command, classification: 'ENVIRONMENT_FAILURE', result: installed }
+    // better-sqlite3 needs its own native binding. Rebuild only this known package;
+    // do not enable arbitrary project postinstall scripts or rebuild all packages.
+    const rebuild = 'npm rebuild better-sqlite3 --no-audit --no-fund'
+    return { command: `${command} && ${rebuild}`, classification: 'ENVIRONMENT_FAILURE',
+      result: await this.runBash(rebuild, this.timeoutMs, cwd) }
   }
 
   private async readChangedFiles(): Promise<{
