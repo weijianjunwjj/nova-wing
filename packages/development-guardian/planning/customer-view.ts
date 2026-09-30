@@ -279,7 +279,7 @@ export const CUSTOMER_APP_JS = `(() => {
   })
   deliveryStart.addEventListener('click', async () => {
     if (!current || !prepared || busy) return
-    busy = true; error.textContent = ''
+    busy = true; error.textContent = ''; deliveryStatus.textContent = '工作会话正在启动'
     try {
       const response = await fetch('/api/planning/plans/' + encodeURIComponent(current.id) + '/snapshots/' + current.version)
       if (!response.ok) throw new Error('冻结方案无法读取。')

@@ -130,6 +130,14 @@ test('Customer Mode restores and refreshes the real delivery session outcome', a
   await flush()
   assert.equal(get('delivery-status').textContent, '工作会话正在执行')
   assert.equal(get('delivery-start').hidden, true)
+  state = 'SUSPENDED'
+  tick!()
+  await flush()
+  assert.equal(get('delivery-status').textContent, '工作会话已暂停，需要处理')
+  state = 'FAILED'
+  tick!()
+  await flush()
+  assert.equal(get('delivery-status').textContent, '工作会话失败')
   state = 'COMPLETED'
   tick!()
   await flush()
