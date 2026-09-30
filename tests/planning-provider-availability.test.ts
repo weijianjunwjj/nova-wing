@@ -46,16 +46,18 @@ test('Planning provider accepts a recovered Codex turn and returns a schema-vali
     { type: 'item.completed', item: { id: 'plan', type: 'agent_message', text: output } },
     { type: 'turn.completed', usage: {} },
   ] as ThreadEvent[]
-  const requests: Array<{ model: string; reasoningEffort: string; targetRepo: string }> = []
+  const requests: Array<{ model: string; reasoningEffort: string; targetRepo: string; system: string }> = []
   const run = scriptedRunner(events)
   const provider = createCodexPlanningProvider({ runner: async (request) => {
-    requests.push({ model: request.model, reasoningEffort: request.reasoningEffort, targetRepo: request.targetRepo })
+    requests.push({ model: request.model, reasoningEffort: request.reasoningEffort, targetRepo: request.targetRepo, system: request.system })
     return run(request)
   } })
   const response = await provider({ requirement })
   assert.equal(response.provider, 'codex')
   assert.equal(response.model, 'gpt-6-sol')
-  assert.deepEqual(requests, [{ model: 'gpt-6-sol', reasoningEffort: 'medium', targetRepo: process.cwd() }])
+  assert.deepEqual(requests.map(({ system: _system, ...request }) => request),
+    [{ model: 'gpt-6-sol', reasoningEffort: 'medium', targetRepo: process.cwd() }])
+  assert.match(requests[0]!.system, /foundation task must not be its sole owner when the behavior needs later UI/u)
   const parsed = planDraftSchema.safeParse(JSON.parse(response.text))
   assert.equal(parsed.success, true, parsed.success ? '' : JSON.stringify(parsed.error.issues))
 })

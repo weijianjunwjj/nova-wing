@@ -286,9 +286,11 @@ export async function planVerification(input: VerificationPlannerInput): Promise
         rationale.push(`Named script ${bestNamed.name} was not auto-approved because it is not one existing, hook-free scoped node --test command.`)
       }
     }
-    if (!selected.some((step) => step.id === 'targeted-test') && nearbyTests[0]?.score && owner.scripts.test !== undefined) {
+    if (!selected.some((step) => step.id === 'targeted-test') && nearbyTests[0]?.score &&
+        (owner.scripts.test !== undefined || bestNamed === undefined)) {
       const local = owner.root.length === 0 ? nearbyTests[0].file : nearbyTests[0].file.slice(owner.root.length + 1)
-      const command = /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test) ? `node --test ${local}` : `npm test -- ${local}`
+      const command = owner.scripts.test === undefined || /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(owner.scripts.test)
+        ? `node --test ${local}` : `npm test -- ${local}`
       const admission = assessVerificationCommand(command)
       selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })

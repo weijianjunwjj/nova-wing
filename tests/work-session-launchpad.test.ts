@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import test from 'node:test'
 import vm from 'node:vm'
 
@@ -792,7 +792,9 @@ await test('Launchpad discovery uses the trusted validator and ignores invalid J
     const discovered = await discoverTrustedWorkSessionConfigs(directory)
     assert.equal(discovered.length, 1)
     assert.match(discovered[0]!.summary.configId, /^[a-f0-9]{32}$/u)
-    assert.equal(discovered[0]!.summary.project, 'Nova-Wing')
+    assert.equal(discovered[0]!.summary.project,
+      basename(process.cwd()).split(/[-_\s]+/u).filter(Boolean)
+        .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join('-'))
     assert.equal(discovered[0]!.summary.taskId, 'T010')
     assert.equal(discovered[0]!.summary.goal, 'AgentRun Persistence')
     assert.equal(discovered[0]!.summary.reviewer, 'GPT Reviewer')
@@ -980,7 +982,8 @@ await test('Composer creates a fresh validated session from structured input and
     assert.deepEqual(await response.json(), { accepted: true, controlUrl: 'http://127.0.0.1:54321' })
     assert.equal(state.createCalls, 1)
     assert.equal(state.receivedConfigIds.length, 1)
-    assert.match(state.receivedConfigIds[0]!, /^nova-wing-\d{12}-[a-f0-9]{6}$/u)
+    const projectSlug = basename(process.cwd()).toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '').slice(0, 48)
+    assert.match(state.receivedConfigIds[0]!, new RegExp(`^${projectSlug}-\\d{12}-[a-f0-9]{6}$`, 'u'))
     assert.deepEqual(state.receivedExecutorModels, ['sonnet'])
     assert.equal(state.controllerStartCalls, 1)
     assert.equal(state.receivedConfigs[0]!.tasks[0]!.id, 'T011')
