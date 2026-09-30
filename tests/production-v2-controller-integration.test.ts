@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import test from 'node:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -6,12 +7,62 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createProductionWorkSessionUi, validateTrustedWorkSessionConfig } from '../packages/development-guardian/work-session/production.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
+import type { V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
 import { codexTestRepo } from './codex-test-fixture.js'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
+import type { DelegationPacket } from '../packages/development-guardian/model.js'
+
+test('production V2 passes failed independent review findings to the next coding turn as untrusted observations', async () => {
+  const root = await codexTestRepo()
+  const data = await mkdtemp(join(tmpdir(), 'novawing-v2-review-feedback-'))
+  let dispatch: V2ActionDispatcher['dispatch'] | undefined
+  let packet: DelegationPacket | undefined
+  const finding = 'src/a.ts: returned object has createdAt and updatedAt; strict expected shape omits both fields'
+  try {
+    const config = await validateTrustedWorkSessionConfig({
+      session: { id: 'v2-review-feedback', targetRepo: root, branch: 'main', controlPlane: 'v2', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
+      tasks: [{ id: 'T1', goal: 'Fix returned object test', executorMode: 'codex', guardian: { constraints: [], acceptanceCriteria: ['test passes'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] } }],
+      executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false },
+      codex: { enabled: true, model: 'gpt-5.6-sol', reasoningEffort: 'high' },
+      gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
+    })
+    const app = await createProductionWorkSessionUi(config, {
+      env: { ...process.env, NOVAWING_DATA_DIR: data },
+      createRuntime(input) { return new FakeRuntime(input.definition) },
+      createV2Dispatcher({ defaultDispatcher }) { dispatch = defaultDispatcher.dispatch; return defaultDispatcher },
+      createCodexExecutor: () => ({ async execute(input) {
+        packet = input.packet
+        return { summary: 'captured repair prompt', changedFiles: [], commandsRun: [], verificationResults: [], blockers: [] }
+      } }),
+    })
+    try {
+      assert.ok(dispatch)
+      const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      const state = { ...createTaskStateV2(app.definition, app.definition.tasks[0]!),
+        gitState: { repositoryIdentity: root, branch: 'main', headSha, changedFiles: [], worktreeFingerprint: 'fixture' },
+        completion: { evidence: [], bindings: [], review: {
+          passed: false, findings: [finding], blockingFindings: [finding], severity: 'HIGH' as const,
+          reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'reviewer-runtime' },
+          implementer: { agent: 'implementer', provider: 'codex', runtimeIdentity: 'implementer-runtime' },
+          reviewedFiles: ['src/a.ts'], timestamp: new Date().toISOString(),
+        } },
+      }
+      await dispatch({ action: 'EXECUTE', task: state, agent: {
+        id: 'executor', identity: { agent: 'executor', provider: 'codex', runtimeIdentity: 'executor-runtime' },
+        available: true, quotaExhausted: false, degraded: false,
+        capabilities: { coding: true, reasoning: true, verification: true, review: false },
+      } })
+      assert.ok(packet)
+      assert.ok(packet.instructions.some((instruction) => instruction.includes(finding)))
+      assert.ok(packet.instructions.some((instruction) => instruction.includes('untrusted observations')))
+      assert.ok(packet.instructions.some((instruction) => instruction.includes('Do not claim ALREADY_SATISFIED')))
+    } finally { await app.close() }
+  } finally { await rm(root, { recursive: true, force: true }); await cleanupRuntimeData(data) }
+})
 
 test('production V2 composition root dispatches controller actions without Guardian orchestration', async () => {
   const root = await mkdtemp(join(tmpdir(), 'novawing-production-v2-repo-'))
