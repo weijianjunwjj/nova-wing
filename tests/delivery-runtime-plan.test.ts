@@ -580,6 +580,13 @@ test('capability registry classifies all families without claiming unsupported a
     assert.equal(classifyCapability(scenario).family, family)
     assert.equal(conservativeCapabilityResolver(scenario).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   }
+  const thirdPartyAbsent = { ...input, criterion: { ...criterion, level: 'delivery' as const }, assertion: {
+    ...assertion, observableBehavior: '在本地完成任务操作。',
+    expectedOutcome: '操作不需要第三方 API。',
+    expectedEvidence: '实际操作结果、应用依赖配置及操作期间的请求记录。',
+  } }
+  assert.equal(classifyCapability(thirdPartyAbsent).family, 'external_platform')
+  assert.equal(conservativeCapabilityResolver(thirdPartyAbsent).capability, 'REQUIRES_EXTERNAL_ENVIRONMENT')
   assert.equal(classifyCapability({ ...input, criterion: { ...criterion, level: 'platform' } }).family, 'external_platform')
   assert.equal(conservativeCapabilityResolver({ ...input, criterion: { ...criterion, level: 'platform' },
     assertion: { ...assertion, observableBehavior: '开始开发前必须先取得平台 SDK 权限。' } }).startPrerequisite, 'EXECUTION')

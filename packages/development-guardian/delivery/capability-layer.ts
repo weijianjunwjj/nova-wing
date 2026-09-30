@@ -147,7 +147,7 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       reason: 'Explicit browser interaction requires a browser trace; a scope manifest or HTTP read cannot replace it.' }
   if (criterion.level === 'delivery' &&
     (/(?:干净|全新|fresh|clean)[^，。；;]{0,24}(?:环境|安装|依赖|install)/iu.test(observed) ||
-      /(?:没有|不配置|无需|不依赖|无|without|no\s+)[^，。；;]{0,24}(?:第三方|云服务|Docker|外部|external|cloud)/iu.test(observed)) &&
+      /(?:没有|不配置|不需要|无需|无须|不依赖|无|without|no\s+)[^，。；;]{0,24}(?:第三方|云服务|Docker|外部|external|cloud)/iu.test(observed)) &&
     /(?:操作|运行|启动|安装|访问|请求|执行|install|run|start|operate)/iu.test(observed))
     return { family: 'external_platform', ruleId: 'delivery-environment-scenario-v1',
       reason: 'A clean or isolated environment and its actual behavior require external execution evidence.' }
