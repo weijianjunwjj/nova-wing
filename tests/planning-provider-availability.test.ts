@@ -58,6 +58,8 @@ test('Planning provider accepts a recovered Codex turn and returns a schema-vali
   assert.deepEqual(requests.map(({ system: _system, ...request }) => request),
     [{ model: 'gpt-6-sol', reasoningEffort: 'medium', targetRepo: process.cwd() }])
   assert.match(requests[0]!.system, /foundation task must not be its sole owner when the behavior needs later UI/u)
+  assert.match(requests[0]!.system, /do not combine the integration stage with final acceptance/u)
+  assert.match(requests[0]!.system, /final end-to-end scenario criteria/u)
   const parsed = planDraftSchema.safeParse(JSON.parse(response.text))
   assert.equal(parsed.success, true, parsed.success ? '' : JSON.stringify(parsed.error.issues))
 })
