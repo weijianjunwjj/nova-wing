@@ -468,7 +468,9 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
         ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
           ? [] : ['Provide a task-local deterministic test for each technical output. Exercise the implemented behavior and assert its observable result; do not use a placeholder assertion or an unrelated suite. Keep the test in the repository so NovaWing can run it independently before review.']),
         ...task.requirementIds.map((id) => `RequirementClause ${id}: ${canonicalSerialize(plan.requirements.find((item) => item.id === id)!)}`),
-        ...task.acceptanceCriterionIds.map((id) => `AcceptanceCriterion ${id}: ${canonicalSerialize(plan.acceptanceCriteria.find((item) => item.id === id)!)}`),
+        ...(plan.acceptanceBindings.some((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
+          ? task.acceptanceCriterionIds.map((id) => `AcceptanceCriterion ${id}: ${canonicalSerialize(plan.acceptanceCriteria.find((item) => item.id === id)!)}`)
+          : []),
         ...task.outputs.map((output) => `Expected output: ${output}`),
         ...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking &&
           binding.ownership === 'OWNER' && binding.stagedVerification.obligation !== undefined)

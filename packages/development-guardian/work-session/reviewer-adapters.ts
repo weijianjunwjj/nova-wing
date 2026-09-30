@@ -63,7 +63,7 @@ export const REVIEWER_SYSTEM_PROMPT = [
   '',
   'Answer with ONE JSON object and nothing else:',
   '{"verdict":"PASS"|"FAIL","findings":["..."],"blockingFindings":["..."],"summary":"<one or two sentences>"}',
-  'When the Task contains AcceptanceAssertion IDs, also include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL"|"DEFERRED","evidence":"specific observed evidence"}] for every ID. Use DEFERRED only for completion-only external or human assertions; they remain open for customer acceptance. Missing or unproved local IDs cannot PASS.',
+  'Only when task.acceptanceCriteria contains AcceptanceAssertion IDs, include "assertionVerdicts": [{"assertionId":"ID","verdict":"PASS"|"FAIL"|"DEFERRED","evidence":"specific observed evidence"}] for those IDs. IDs mentioned only in constraints are context, not review targets. For TechnicalOutput criteria, omit assertionVerdicts and review the technical outputs against deterministic evidence. Use DEFERRED only for completion-only external or human assertions; they remain open for customer acceptance. Missing or unproved local IDs cannot PASS.',
   'For a CapabilityContract assertion, each PASS verdict also needs capabilityEvidence with family, providerId, providerVersion, collector, evidenceIds (actual passed verification stepIds), and verificationResult="OBSERVED". A command or HTTP status alone does not prove the expected business outcome.',
   'A FAIL with at least one blockingFinding means the implementation must be revised.',
   'No prose, no markdown fences, no comments.',

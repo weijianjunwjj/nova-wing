@@ -225,6 +225,9 @@ test('10 three covering tasks yield one canonical owner and one obligation', asy
   assert.ok(definition.tasks[0]!.acceptanceCriteria?.[0]?.startsWith('TechnicalOutput T1/1:'))
   assert.ok(definition.tasks[0]!.constraints?.some((constraint) =>
     constraint.includes('task-local deterministic test') && constraint.includes('technical output')))
+  assert.equal(definition.tasks[0]!.constraints?.some((constraint) => constraint.startsWith('AcceptanceCriterion ')), false,
+    'contributor reviewer must not receive customer assertion IDs as its task contract')
+  assert.equal(definition.tasks[2]!.constraints?.some((constraint) => constraint.startsWith('AcceptanceCriterion ')), true)
   assert.ok(definition.tasks[0]!.acceptanceEvidenceBindings?.[0]?.requiredEvidence[0]?.startsWith('NOVAWING_TECHNICAL_PENDING:'))
   assert.equal(plan.admission.blockers.filter((item) => item.code === 'TASK_NO_BLOCKING_ASSERTION').length, 0)
   assert.equal(taskCompletionGate(plan.acceptanceBindings.filter((item) => item.runtimeTaskId === 'T1'), [], []), 'BLOCKED')
