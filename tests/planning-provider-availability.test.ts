@@ -64,7 +64,7 @@ test('Planning provider accepts a recovered Codex turn and returns a schema-vali
   assert.equal(parsed.success, true, parsed.success ? '' : JSON.stringify(parsed.error.issues))
 })
 
-test('planning repair gets a longer bounded turn for the prior draft and reviewer feedback', async () => {
+test('planning generation and repair retain bounded turns for full requirement coverage', async () => {
   const timeouts: number[] = []
   const provider = createCodexPlanningProvider({ runner: async (request) => {
     timeouts.push(request.timeoutMs)
@@ -72,7 +72,7 @@ test('planning repair gets a longer bounded turn for the prior draft and reviewe
   } })
   await provider({ requirement })
   await provider({ requirement, priorDraft: JSON.stringify(draft), validationFeedback: 'Preserve and repair one assertion.' })
-  assert.deepEqual(timeouts, [8 * 60 * 1000, 12 * 60 * 1000])
+  assert.deepEqual(timeouts, [12 * 60 * 1000, 15 * 60 * 1000])
 })
 
 test('a completed turn is required; structured terminal failures keep a useful safe reason', async () => {
