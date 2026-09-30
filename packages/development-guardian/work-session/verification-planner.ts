@@ -146,11 +146,19 @@ function trustedNodeTestSource(file: string, owner: PackageFacts, packages: read
   return TEST_FILE.test(file) && NODE_TEST_SOURCE.test(file) && ownerOf(file, packages)?.root === owner.root
 }
 
-function packageTestCoversFile(owner: PackageFacts, localTestFile: string): boolean {
+function packageTestCoversFile(owner: PackageFacts, localTestFile: string, packages: readonly PackageFacts[]): boolean {
   if (owner.scripts.pretest !== undefined || owner.scripts.posttest !== undefined) return false
   const script = owner.scripts.test?.trim() ?? ''
-  const match = /^(?:tsx|node(?:\.exe)?)\s+--test\s+([A-Za-z0-9_.*\/-]+\.[cm]?[jt]s)$/u.exec(script)
-  return match !== null && matchesGlob(localTestFile, match[1]!)
+  const match = /^(?:tsx|node(?:\.exe)?)\s+--test\s+(.+)$/u.exec(script)
+  if (match === null) return false
+  const patterns = match[1]!.split(/\s+/u)
+  if (patterns.length === 0 || patterns.length > 30 || patterns.some((pattern) =>
+    !/^[A-Za-z0-9_.*\/-]+\.[cm]?[jt]s$/u.test(pattern) || pattern.split('/').some((part) => part === '..' || part === '.')))
+    return false
+  const localTests = owner.files.filter((file) => trustedNodeTestSource(file, owner, packages))
+    .map((file) => owner.root.length === 0 ? file : file.slice(owner.root.length + 1))
+  return patterns.some((pattern) => matchesGlob(localTestFile, pattern)) &&
+    patterns.every((pattern) => localTests.some((file) => matchesGlob(file, pattern)))
 }
 
 function scopeRank(scope: VerificationScope): number {
@@ -303,7 +311,7 @@ export async function planVerification(input: VerificationPlannerInput): Promise
       const command = packageRunner ? 'npm test' : bestNamed === undefined || packageTest === undefined ||
         /^\s*node(?:\.exe)?\s+--test(?:\s|$)/iu.test(packageTest)
         ? canonicalScopedNodeTest(local) : `npm test -- ${local}`
-      provenPackageTestCoverage = packageRunner && packageTestCoversFile(owner, local)
+      provenPackageTestCoverage = packageRunner && packageTestCoversFile(owner, local, packages)
       const admission = assessVerificationCommand(command)
       selected.push({ id: 'targeted-test', command, cwd: cwdFor(owner.root), admission: admission.status, admissionReason: admission.reason, scope: packageRunner ? 'PACKAGE' : 'FILE', reason: `Nearest existing test file (${nearbyTests[0].file}) matches task terms.`,
         expectedCoverage: input.task.acceptanceCriteria ?? [], environmentPrerequisites: ['node', 'package manager'], failureClassifications: ['CODE_FAILURE', 'ENVIRONMENT_FAILURE', 'VERIFIER_CONFIGURATION_FAILURE', 'UNRELATED_TEST_FAILURE', 'UNKNOWN'] })

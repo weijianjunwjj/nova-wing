@@ -177,6 +177,31 @@ await test('R1 planner proves a hook-free package test glob covers the relevant 
   } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
 })
 
+await test('R1 planner proves an explicit multi-file TypeScript package test includes the relevant test', async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-planner-ts-list-'))
+  try {
+    await mkdir(join(repositoryRoot, 'test'))
+    for (const name of ['task-store', 'server', 'start-command'])
+      await writeFile(join(repositoryRoot, `test/${name}.test.ts`), `import test from 'node:test'; test('${name}', () => {})\n`)
+    const script = 'tsx --test test/task-store.test.ts test/server.test.ts test/start-command.test.ts'
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: { test: script } }))
+    const task = { id: 'foundation', goal: 'Implement task store and server',
+      acceptanceCriteria: ['task store and server behavior'], allowedPaths: ['.'], forbiddenPaths: [] }
+    const input = { repositoryRoot, task, changedAreaHint: ['src/server.ts', 'test/server.test.ts'] }
+    const covered = await planVerification(input)
+    assert.equal(covered.confidence, 'HIGH')
+    assert.equal(covered.steps.find((step) => step.id === 'targeted-test')?.command, 'npm test')
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: {
+      test: script, pretest: 'node arbitrary-script.js',
+    } }))
+    assert.equal((await planVerification(input)).confidence, 'MEDIUM')
+    await writeFile(join(repositoryRoot, 'package.json'), JSON.stringify({ scripts: {
+      test: `${script} && node arbitrary-script.js`,
+    } }))
+    assert.equal((await planVerification(input)).confidence, 'MEDIUM')
+  } finally { await rm(repositoryRoot, { recursive: true, force: true }) }
+})
+
 await test('R1 verifier provisions ignored package tools before running an admitted npm test', async () => {
   const repositoryRoot = await mkdtemp(join(tmpdir(), 'novawing-verifier-package-tool-'))
   try {
