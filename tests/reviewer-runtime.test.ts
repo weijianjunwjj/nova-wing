@@ -102,6 +102,55 @@ test('submitted review spans every Task commit but excludes the previous Task', 
   assert.equal(reviewSatisfied({ ...noOp, completion: { ...noOp.completion, review: noOpResult.review } }), true)
 })
 
+test('incomplete external-deferred reviewer verdict retries once without sending implementation back', async () => {
+  const criterion = 'AcceptanceAssertion AS2: create task | Expected evidence: browser trace | VerificationReadiness: EXTERNAL_DEFERRED | CapabilityContract: browser_ui/browser-harness-pending@1'
+  const base = reviewedTask({ reviewer: { agent: 'independent', provider: 'acme', runtimeIdentity: 'reviewer' },
+    implementer: { agent: 'executor', provider: 'other', runtimeIdentity: 'executor' } })
+  const task: TaskStateV2 = { ...base, acceptanceCriteria: [criterion],
+    completion: { ...base.completion, review: undefined, bindings: [{ criterion, requiredEvidence: [] }] },
+    verificationState: { results: [{ name: 'NOVAWING_DEFERRED:AS2:EXTERNAL_DEFERRED',
+      stepId: 'NOVAWING_DEFERRED:AS2:EXTERNAL_DEFERRED', status: 'skipped' }] } }
+  let calls = 0
+  const reviewer: ReviewerRuntime = { provider: 'acme', async review({ task: context }) {
+    calls++
+    if (calls === 1) return { kind: 'VERDICT', passed: true, findings: [], blockingFindings: [],
+      summary: 'implementation reviewed', provider: 'acme', assertionVerdicts: [] }
+    assert.match(context.reviewProtocolFeedback ?? '', /AS2/u)
+    return { kind: 'VERDICT', passed: true, findings: [], blockingFindings: [],
+      summary: 'implementation reviewed; customer browser evidence remains pending', provider: 'acme',
+      assertionVerdicts: [{ assertionId: 'AS2', verdict: 'DEFERRED', evidence: 'Browser trace remains pending.' }] }
+  } }
+  const result = await createReviewDispatcher({ registry: new ReviewerRuntimeRegistry([reviewer]),
+    inspectRepository: async () => REALITY }).dispatch({
+    agent: profile({ id: 'independent', provider: 'acme', runtimeIdentity: 'reviewer', review: true }), task })
+  assert.equal(calls, 2)
+  assert.equal(result.status, 'SUCCESS')
+  assert.equal(result.review?.passed, true)
+  assert.deepEqual(result.review?.assertionVerdicts?.map((item) => item.assertionId), ['AS2'])
+})
+
+test('repeated incomplete reviewer verdict is a provider protocol failure, not an implementation finding', async () => {
+  const criterion = 'AcceptanceAssertion AS2: create task | Expected evidence: browser trace | VerificationReadiness: EXTERNAL_DEFERRED | CapabilityContract: browser_ui/browser-harness-pending@1'
+  const base = reviewedTask({ reviewer: { agent: 'independent', provider: 'acme', runtimeIdentity: 'reviewer' },
+    implementer: { agent: 'executor', provider: 'other', runtimeIdentity: 'executor' } })
+  const task: TaskStateV2 = { ...base, acceptanceCriteria: [criterion],
+    completion: { ...base.completion, review: undefined, bindings: [{ criterion, requiredEvidence: [] }] } }
+  let calls = 0
+  const reviewer: ReviewerRuntime = { provider: 'acme', async review() {
+    calls++
+    return { kind: 'VERDICT', passed: true, findings: [], blockingFindings: [],
+      summary: 'implementation reviewed', provider: 'acme', assertionVerdicts: [] }
+  } }
+  const result = await createReviewDispatcher({ registry: new ReviewerRuntimeRegistry([reviewer]),
+    inspectRepository: async () => REALITY }).dispatch({
+    agent: profile({ id: 'independent', provider: 'acme', runtimeIdentity: 'reviewer', review: true }), task })
+  assert.equal(calls, 2)
+  assert.equal(result.status, 'BLOCKED')
+  assert.equal(result.review, undefined)
+  assert.equal(result.providerFailure?.status, 'DEGRADED')
+  assert.match(result.providerFailure?.reason ?? '', /AS2/u)
+})
+
 function profile(input: {
   id: string
   provider: string
@@ -290,7 +339,9 @@ test('delivery review PASS requires a verdict with evidence for every Acceptance
   const dispatcher = createReviewDispatcher({ registry: new ReviewerRuntimeRegistry([runtime]), inspectRepository: async () => REALITY })
   const agent = profile({ id: 'acme-reviewer', provider: 'acme', runtimeIdentity: 'R9', review: true })
   const missing = await dispatcher.dispatch({ agent, task: pending })
-  assert.equal(missing.review?.passed, false)
+  assert.equal(missing.status, 'BLOCKED')
+  assert.equal(missing.review, undefined)
+  assert.equal(missing.providerFailure?.status, 'DEGRADED')
   assert.equal(reviewSatisfied({ ...pending, completion: { ...pending.completion, review: missing.review } }), false)
   includeAssertion = true
   const explicit = await dispatcher.dispatch({ agent, task: pending })

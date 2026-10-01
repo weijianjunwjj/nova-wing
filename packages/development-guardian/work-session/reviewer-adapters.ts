@@ -199,6 +199,10 @@ export function buildReviewPrompt(context: ReviewerTaskContext): string {
       `Return one assertionVerdict for each of these exact IDs: ${acceptanceAssertionIds(context.acceptanceCriteria).join(', ')}.`,
       'For every local PASS, cite specific verification evidence and capabilityEvidence.evidenceIds. For completion-only external or human assertions, return DEFERRED; never PASS without accepted external evidence.',
     ]),
+    ...(context.reviewProtocolFeedback === undefined ? [] : [
+      `Review response protocol correction: ${context.reviewProtocolFeedback}`,
+      'Inspect the same immutable Task and repository state again. Keep your independent judgment; do not invent evidence or treat deferred customer evidence as locally passed.',
+    ]),
     `Implementer identity: ${context.implementer === undefined ? '(none)' : JSON.stringify(context.implementer)}`,
     `Providers that produced the implementation: ${context.implementerProviders.join(', ') || '(none)'}`,
     `Risk: ${context.risk}`,

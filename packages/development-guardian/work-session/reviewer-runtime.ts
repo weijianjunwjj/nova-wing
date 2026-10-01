@@ -26,6 +26,8 @@ export interface ReviewerTaskContext {
   goal: string
   constraints: readonly string[]
   acceptanceCriteria: readonly string[]
+  /** Bounded retry feedback for a malformed assertion-verdict set, never a change to the Task contract. */
+  reviewProtocolFeedback?: string
   implementer?: TaskActorIdentity | undefined
   /** 真实产生实现的 provider 序列（runtime provider history），不是自报身份。 */
   implementerProviders: readonly string[]

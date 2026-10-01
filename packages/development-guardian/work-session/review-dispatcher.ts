@@ -17,7 +17,7 @@ import { promisify } from 'node:util'
 import { gitExecutable } from '../platform/windows-git.js'
 import type { AgentCapabilityProfile } from './v2-controller-task-runner.js'
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
-import { acceptanceAssertionIds, assertionCapabilityEvidenceValid, type ReviewEvidence } from './risk-evidence.js'
+import { acceptanceAssertionIds, assertionCapabilityEvidenceValid, type AssertionReviewVerdict, type ReviewEvidence } from './risk-evidence.js'
 import type { RepositoryReality } from './reconciliation.js'
 import {
   ReviewerRuntimeRegistry,
@@ -111,6 +111,19 @@ function sameReality(left: RepositoryReality, right: RepositoryReality): boolean
     left.worktreeFingerprint === right.worktreeFingerprint
 }
 
+function unprovedAssertionIds(task: TaskStateV2, verdicts: readonly AssertionReviewVerdict[]): string[] {
+  return acceptanceAssertionIds(task.acceptanceCriteria).filter((id) =>
+    verdicts.filter((item) => item.assertionId === id &&
+      item.verdict === (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`AcceptanceAssertion ${id}: `) &&
+        /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(criterion)) ? 'DEFERRED' : 'PASS') &&
+      item.evidence.trim() && assertionCapabilityEvidenceValid(task, item)).length !== 1)
+}
+
+function missingAssertionIds(task: TaskStateV2, verdicts: readonly AssertionReviewVerdict[]): string[] {
+  return acceptanceAssertionIds(task.acceptanceCriteria).filter((id) =>
+    verdicts.filter((item) => item.assertionId === id).length !== 1)
+}
+
 export function createReviewDispatcher(options: ReviewDispatcherOptions): ReviewDispatcher {
   const timeoutMs = options.timeoutMs ?? REVIEW_DEFAULT_TIMEOUT_MS
   const now = options.now ?? ((): string => new Date().toISOString())
@@ -156,7 +169,8 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
           providerHealth: [{ provider, status: 'DEGRADED', reason, observedAt: now(), source: 'runtime' }],
           providerFailure: { provider, status: 'DEGRADED', reason } }
       }
-      const outcome = await runtime.review({ task: reviewContext(task, scope), agent, timeoutMs })
+      const context = reviewContext(task, scope)
+      let outcome = await runtime.review({ task: context, agent, timeoutMs })
 
       if (outcome.kind === 'RUNTIME_FAILURE') {
         const reason = `reviewer provider failure (${outcome.status}): ${outcome.reason}`
@@ -191,20 +205,52 @@ export function createReviewDispatcher(options: ReviewDispatcherOptions): Review
         }
       }
 
+      // A PASS that omits an exact assertion verdict is a reviewer protocol
+      // failure, not an implementation defect. Retry the same independent
+      // reviewer once at the same repository state before failing closed.
+      const missing = outcome.passed ? missingAssertionIds(task, outcome.assertionVerdicts ?? []) : []
+      if (missing.length > 0) {
+        const retry = await runtime.review({ task: { ...context,
+          reviewProtocolFeedback: `The previous response omitted exact verdicts for ${missing.join(', ')}. Return exactly one evidence-backed verdict for every AcceptanceAssertion ID listed above, including DEFERRED for completion-only external or human evidence.` },
+        agent, timeoutMs })
+        if (retry.kind === 'RUNTIME_FAILURE') {
+          const reason = `reviewer provider failure (${retry.status}): ${retry.reason}`
+          return { status: 'BLOCKED', blockers: [reason],
+            providerHealth: [{ provider: retry.provider, status: retry.status, reason: retry.reason, observedAt: now(), source: 'runtime' }],
+            providerFailure: { provider: retry.provider, status: retry.status, reason: retry.reason } }
+        }
+        outcome = retry
+        try { after = await options.inspectRepository() }
+        catch (error) {
+          const reason = `cannot verify reviewer read-only guarantee: ${error instanceof Error ? error.message : String(error)}`
+          return { status: 'BLOCKED', blockers: [reason],
+            providerHealth: [{ provider: retry.provider, status: 'DEGRADED', reason, observedAt: now(), source: 'runtime' }],
+            providerFailure: { provider: retry.provider, status: 'DEGRADED', reason } }
+        }
+        if (!sameReality(before, after)) {
+          const reason = 'repository changed during review; the reviewer write attempt was rejected'
+          return { status: 'BLOCKED', blockers: [reason],
+            providerHealth: [{ provider: retry.provider, status: 'DEGRADED', reason, observedAt: now(), source: 'runtime' }],
+            providerFailure: { provider: retry.provider, status: 'DEGRADED', reason } }
+        }
+        const stillMissing = outcome.passed ? missingAssertionIds(task, outcome.assertionVerdicts ?? []) : []
+        if (stillMissing.length > 0) {
+          const reason = `reviewer omitted exact assertion verdicts after one retry: ${stillMissing.join(', ')}`
+          return { status: 'BLOCKED', blockers: [reason],
+            providerHealth: [{ provider: retry.provider, status: 'DEGRADED', reason, observedAt: now(), source: 'runtime' }],
+            providerFailure: { provider: retry.provider, status: 'DEGRADED', reason } }
+        }
+      }
+
       const identity = agentIdentityOf(agent)
       const requiredAssertionIds = acceptanceAssertionIds(task.acceptanceCriteria)
       const assertionVerdicts = outcome.assertionVerdicts ?? []
       if (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`TechnicalOutput ${task.identity.taskId}/`)) &&
           assertionVerdicts.length > 0) return { status: 'BLOCKED',
         blockers: ['Contributor review returned a customer assertion verdict.'] }
-      const unprovedAssertionIds = requiredAssertionIds.filter((id) =>
-        assertionVerdicts.filter((item) => item.assertionId === id &&
-          item.verdict === (task.acceptanceCriteria.some((criterion) => criterion.startsWith(`AcceptanceAssertion ${id}: `) &&
-            /\| VerificationReadiness: (?:EXTERNAL_DEFERRED|HUMAN_DEFERRED) \|/u.test(criterion)) ? 'DEFERRED' : 'PASS') &&
-          item.evidence.trim() &&
-          assertionCapabilityEvidenceValid(task, item)).length !== 1)
+      const unproved = unprovedAssertionIds(task, assertionVerdicts)
       const blockingFindings = [...outcome.blockingFindings,
-        ...unprovedAssertionIds.map((id) => `AcceptanceAssertion ${id} lacks an explicit PASS with evidence.`),
+        ...unproved.map((id) => `AcceptanceAssertion ${id} lacks its required exact verdict with evidence.`),
         ...(assertionVerdicts.some((item) => !requiredAssertionIds.includes(item.assertionId))
           ? ['Reviewer returned an unexpected AcceptanceAssertion ID.'] : [])]
       const review: ReviewEvidence = {
