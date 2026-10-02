@@ -1,5 +1,5 @@
 import { canonicalSerialize, verifyPlanSnapshot, type PlanSnapshot } from '../planning/freeze.js'
-import { DEFAULT_WORKSPACE_FORBIDDEN_PATHS, relativeTaskWorkspaceScope } from '../workspace-scope.js'
+import { relativeTaskWorkspaceScope } from '../workspace-scope.js'
 import type { GuardianTask } from '../model.js'
 import type { WorkSessionDefinition, WorkSessionTask } from '../work-session/model.js'
 import type { TaskRetryRequest } from '../work-session/task-retry.js'
@@ -42,7 +42,7 @@ export function createDeliveryTaskRetryValidator(store: DeliveryStore,
       return [task.id, task.goal, task.constraints ?? [], task.acceptanceCriteria ?? [],
         normalized.allowedPaths ?? [], normalized.forbiddenPaths ?? [], task.risk ?? 'NORMAL', task.acceptanceEvidenceBindings ?? []]
     }
-    if (canonicalSerialize(definition.tasks.map(policy)) !== canonicalSerialize(expected.tasks.map(task => policy({ ...task, forbiddenPaths: [...DEFAULT_WORKSPACE_FORBIDDEN_PATHS] }))))
+    if (canonicalSerialize(definition.tasks.map(policy)) !== canonicalSerialize(expected.tasks.map(policy)))
       throw new Error('TASK_RETRY_TASK_POLICY_DRIFT')
   }
 }

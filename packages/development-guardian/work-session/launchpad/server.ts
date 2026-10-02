@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE_FORBIDDEN_PATHS } from '../../workspace-scope.js'
+import { effectiveWorkspacePermissions } from '../../workspace-scope.js'
 import { createDeliveryTaskRetryValidator } from '../../delivery/task-retry-binding.js'
 import { VENV_PYTEST_COMMANDS } from '../../platform/executables.js'
 import { platformPaths } from '../../platform/paths.js'
@@ -151,7 +151,6 @@ const DEFAULT_GUARDIAN_POLICY = {
     'Do not modify files outside allowedPaths.',
     'Do not push changes.',
   ],
-  forbiddenPaths: DEFAULT_WORKSPACE_FORBIDDEN_PATHS,
 } as const
 
 export interface LaunchpadConfigSummary {
@@ -1700,8 +1699,7 @@ export class NovaWingLaunchpad {
       agents: composerAgentProfiles(definition.id, reviewerProvider),
       tasks: definition.tasks.map((task) => ({ id: task.id, goal: task.goal,
         guardian: { constraints: [...(task.constraints ?? [])], acceptanceCriteria: [...(task.acceptanceCriteria ?? [])],
-          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], allowedPaths: [...(task.allowedPaths ?? [])],
-          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths] },
+          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], ...effectiveWorkspacePermissions(task) },
         acceptanceEvidenceBindings: [...(task.acceptanceEvidenceBindings ?? [])],
         ...(task.contribution === undefined ? {} : { contribution: task.contribution }), risk: 'HIGH' })),
       gitCheckpoint: { autoCommit: true, autoPush: false }, runtimeConfig: { managed: true },
@@ -1977,8 +1975,7 @@ export class NovaWingLaunchpad {
           constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
           acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...contract.acceptanceCriteria],
           doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo, ...(input.guardian.doNotDo ?? [])],
-          allowedPaths: input.guardian.allowedPaths,
-          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
+          ...effectiveWorkspacePermissions(input.guardian),
         },
         acceptanceEvidenceBindings: composerEvidenceBindings(
           contract.acceptanceCriteria,

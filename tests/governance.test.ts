@@ -9,12 +9,22 @@ import { createDeepSeekPlanningSemanticReviewer } from '../packages/development-
 import { TaskController } from '../packages/development-guardian/work-session/task-controller.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
+import { effectiveWorkspacePermissions, DEFAULT_WORKSPACE_FORBIDDEN_PATHS } from '../packages/development-guardian/workspace-scope.js'
 
 const packet: EscalationPacket = { schemaVersion: 1, planId: '00000000-0000-0000-0000-000000000001',
   planVersion: 1, reason: 'Plan conflicts with the original requirement.',
   plan: { requirement: 'Deliver the requested product.', must: ['preserve acceptance'] }, evidence: { missing: ['fresh tests'] } }
 const verdict = { verdict: 'NEEDS_EVIDENCE', rootCause: 'No fresh test evidence.',
   keep: ['Frozen acceptance'], remove: [], change: [], nextAction: ['Collect scoped evidence.'], acceptanceCriteria: [] }
+
+test('effective permissions preserve system and task bans and are idempotent without mutating inputs', () => {
+  const scope = { allowedPaths: ['src/**'], forbiddenPaths: ['custom/**', '.env'] }
+  const original = structuredClone(scope)
+  const effective = effectiveWorkspacePermissions(scope)
+  assert.deepEqual(effective, { allowedPaths: ['src/**'], forbiddenPaths: [...DEFAULT_WORKSPACE_FORBIDDEN_PATHS, 'custom/**'] })
+  assert.deepEqual(effectiveWorkspacePermissions(effective), effective)
+  assert.deepEqual(scope, original)
+})
 
 test('manual adjudication makes exactly one tool-free advisory call and survives restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'nw-adjudication-'))

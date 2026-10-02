@@ -94,8 +94,7 @@ async function fixture() {
     runtimePlanId: plan.id, runtimePlanHash: plan.runtimePlanHash, targetBindingId: target.id,
     targetBaselineCommit: target.baselineCommit, compilerVersion: plan.compilerImplementationVersion,
     status: 'STARTED', createdAt: new Date().toISOString() })
-  const compiled = workSessionDefinitionFor(plan, id)
-  const definition = { ...compiled, tasks: compiled.tasks.map(task => ({ ...task, forbiddenPaths: [...DEFAULT_WORKSPACE_FORBIDDEN_PATHS] })) }
+  const definition = workSessionDefinitionFor(plan, id)
   const coding = new CodingExecutionStore(join(data, 'coding.sqlite'))
   const root = workspacePathKey(await realpath(repo))
   let snapshotSource = frozen
