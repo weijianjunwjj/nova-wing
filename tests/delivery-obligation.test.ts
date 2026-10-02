@@ -1455,7 +1455,8 @@ test('delivery executor cannot alter frozen goal or acceptance before dispatch',
     { inspectRepository: async () => { throw new Error('not used') }, dispatch: async () => { calls++; return { status: 'SUCCESS' } } })
   const agent = { id: 'fixture', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true } }
   for (const altered of [ { ...task, goal: 'a different product' }, { ...task, acceptanceCriteria: ['test passes'] },
-    { ...task, constraints: [] }, { ...task, permissions: { ...task.permissions, allowedPaths: ['../'] } } ]) {
+    { ...task, constraints: [] }, { ...task, permissions: { ...task.permissions, allowedPaths: ['../'] } },
+    { ...task, permissions: { ...task.permissions, forbiddenPaths: ['src/**'] } } ]) {
     const result = await dispatcher.dispatch({ action: 'EXECUTE', agent, task: altered })
     assert.equal(result.status, 'BLOCKED')
     assert.match(result.blockers?.[0] ?? '', /GOVERNANCE_DRIFT/u)

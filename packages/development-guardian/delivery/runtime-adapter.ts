@@ -124,7 +124,7 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
         JSON.stringify(input.task.constraints) !== JSON.stringify(expected.constraints) ||
         JSON.stringify(input.task.acceptanceCriteria) !== JSON.stringify(expected.acceptanceCriteria) ||
         JSON.stringify(input.task.permissions.allowedPaths) !== JSON.stringify(expected.allowedPaths) ||
-        !(expected.forbiddenPaths ?? []).every((path) => input.task.permissions.forbiddenPaths.includes(path))) {
+        JSON.stringify(input.task.permissions.forbiddenPaths) !== JSON.stringify(expected.forbiddenPaths ?? [])) {
         return { status: 'BLOCKED', blockers: ['GOVERNANCE_DRIFT: runtime task differs from its frozen execution contract.'] }
       }
       const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === input.task.identity.taskId &&

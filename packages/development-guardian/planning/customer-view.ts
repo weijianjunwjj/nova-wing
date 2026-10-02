@@ -95,6 +95,9 @@ export const CUSTOMER_APP_JS = `(() => {
   const render = (result, scrollTarget = 'plan') => {
     const plan = result.plan || result
     current = plan
+    adjudication = null
+    document.getElementById('apply-adjudication').hidden = true
+    document.getElementById('adjudication-result').textContent = ''
     requirement.value = plan.requirement.text
     planElement.hidden = false
     sections.replaceChildren()
@@ -241,7 +244,9 @@ export const CUSTOMER_APP_JS = `(() => {
       if (result.planId !== current.id || result.version !== current.version) throw new Error('方案已改变，请重新纠偏。')
       adjudication = result
       const verdict = result.decision.verdict
-      output.textContent = '建议：' + verdict.verdict + '\\n原因：' + verdict.rootCause + '\\n' + verdict.nextAction.join('\\n')
+      output.textContent = ['建议：' + verdict.verdict, '原因：' + verdict.rootCause,
+        '保留：', ...verdict.keep, '移除：', ...verdict.remove, '修改：', ...verdict.change,
+        '下一步：', ...verdict.nextAction, '验收标准：', ...verdict.acceptanceCriteria].join('\\n')
       apply.hidden = verdict.verdict === 'NEEDS_EVIDENCE'
     } catch (failure) { output.textContent = ''; error.textContent = failure.message || '纠偏失败' }
     finally { busy = false }
