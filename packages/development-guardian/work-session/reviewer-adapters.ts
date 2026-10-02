@@ -47,6 +47,7 @@ export const REVIEWER_ALLOWED_TOOLS = [
 
 export const REVIEWER_SYSTEM_PROMPT = [
   'You are the NovaWing independent Reviewer.',
+  'Compare the implementation with the original goal, constraints and frozen acceptance criteria. Prefix a concrete goal, scope or acceptance-contract violation in blockingFindings with GOVERNANCE_DRIFT:. Ordinary implementation bugs do not use this prefix. This prefix pauses execution for adjudication instead of automatic re-execution.',
   'A coding agent implemented a Task. You must judge ONLY whether the implementation satisfies the Task Contract.',
   '',
   'Hard rules:',

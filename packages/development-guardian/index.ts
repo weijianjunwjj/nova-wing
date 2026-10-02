@@ -135,7 +135,10 @@ export { createClaudeBlueprintReviewer, createClaudeBlueprintRepairer,
 export type { BlueprintReviewInput, BlueprintReviewer, BlueprintRepairer } from './delivery/verification-blueprint-planner.js'
 export { createCodexPlanningProvider } from './planning/provider.js'
 export type { PlanningModelProvider, PlanningModelResponse } from './planning/provider.js'
-export { createCodexPlanningSemanticReviewer } from './planning/semantic-reviewer.js'
+export { createCodexPlanningSemanticReviewer, createDeepSeekPlanningSemanticReviewer } from './planning/semantic-reviewer.js'
+export { GOVERNANCE_ROLES, GOVERNANCE_DRIFT, hasGovernanceDrift } from './governance/index.js'
+export { EscalationService, adjudicationSchema } from './escalation/index.js'
+export type { Adjudication, EscalationPacket, EscalationRecord } from './escalation/index.js'
 export type { PlanningSemanticReviewer, PlanningSemanticReviewResponse } from './planning/semantic-reviewer.js'
 export {
   buildVerificationResult,

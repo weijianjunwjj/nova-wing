@@ -33,6 +33,8 @@ const expectedRuntimeExports = {
     'AskBridgeBrain',
     'PlanningEventStore', 'PlanningInputError', 'PlanningService', 'PlanningStore',
     'buildCoverage', 'createCodexPlanningProvider', 'createCodexPlanningSemanticReviewer', 'createDevelopmentPlan',
+    'createDeepSeekPlanningSemanticReviewer', 'GOVERNANCE_ROLES', 'GOVERNANCE_DRIFT', 'hasGovernanceDrift',
+    'EscalationService', 'adjudicationSchema',
     'planDraftSchema', 'requirementClauseSchema', 'semanticReviewSchema', 'validateCustomerQuestion', 'validateDevelopmentPlan',
     'canonicalSerialize', 'canonicalPlanContent', 'planContentHash', 'createPlanSnapshot', 'verifyPlanSnapshot',
     'bindDeliveryTarget', 'inspectDeliveryTarget', 'compileRuntimePlan', 'admitRuntimePlan',

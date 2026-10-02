@@ -14,9 +14,12 @@ const MAX_FEEDBACK_CHARS = 4_000
 export class PlanningInputError extends Error {}
 
 function hasPassedApprovalGates(plan: DevelopmentPlan): boolean {
-  return plan.semanticReview?.verdict === 'PASS' && plan.semanticReview.issues.length === 0 &&
+  const binding = plan.semanticReviewBinding
+  return binding !== undefined && binding.planId === plan.id && binding.planVersion === plan.version &&
+    binding.reviewer.trim().length > 0 && binding.model.trim().length > 0 &&
+    plan.semanticReview?.verdict === 'PASS' && plan.semanticReview.issues.length === 0 &&
     Array.isArray(plan.customerQuestions) && !plan.customerQuestions.some((question) => question.blocking) &&
-    validateDevelopmentPlan(plan).pass
+    validateDevelopmentPlan(plan).pass && binding.contentHash === planContentHash(canonicalPlanContent(plan))
 }
 
 export class PlanningStore {
@@ -306,10 +309,15 @@ export class PlanningService {
         await emit('planning.semantic_review.started', 'planning', { planVersion: plan.version })
         const reviewStarted = Date.now()
         try {
-          const result = await this.semanticReviewer({ requirement: [text, ...requirement.revisionNotes].join('\n\n'), plan })
+          const result = await this.semanticReviewer({ requirement: [text, ...requirement.revisionNotes].join('\n\n'), plan: structuredClone(plan) })
+          if (response.provider !== undefined && result.provider === response.provider) throw new Error('Planner cannot approve its own provider output.')
           const reviewed = semanticReviewSchema.parse(result.review)
           if ((reviewed.verdict === 'PASS') !== (reviewed.issues.length === 0)) throw new Error('Contradictory planning review.')
           plan.semanticReview = reviewed
+          if (reviewed.verdict === 'PASS') plan.semanticReviewBinding = {
+            planId: plan.id, planVersion: plan.version, contentHash: planContentHash(canonicalPlanContent(plan)),
+            reviewer: result.provider ?? 'injected-independent-auditor', model: result.model ?? 'injected',
+          }
           await this.events.append({
             planningSessionId: id,
             type: result.review.verdict === 'PASS' ? 'planning.semantic_review.passed' : 'planning.semantic_review.failed',

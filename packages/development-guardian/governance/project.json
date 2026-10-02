@@ -1,0 +1,9 @@
+{
+  "name": "governance",
+  "root": "packages/development-guardian/governance",
+  "sourceRoot": "packages/development-guardian/governance",
+  "tags": [
+    "layer:policy"
+  ],
+  "implicitDependencies": []
+}

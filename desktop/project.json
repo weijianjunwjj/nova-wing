@@ -1,0 +1,11 @@
+{
+  "name": "desktop",
+  "root": "desktop",
+  "sourceRoot": "desktop",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": [
+    "guardian"
+  ]
+}

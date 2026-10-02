@@ -1,4 +1,5 @@
 import { createCodexRepairModelRunner } from '../work-session/launchpad/repair-model.js'
+import { createAdvisoryRunner, type AdvisoryRunner } from '../advisory-model.js'
 import { semanticReviewSchema, type DevelopmentPlan, type SemanticReview } from './model.js'
 
 export interface PlanningSemanticReviewResponse {
@@ -40,6 +41,21 @@ const SYSTEM = [
   'For a metric named transaction amount or 成交金额, an unpaid order has no transaction. Return INAPPROPRIATE_CUSTOMER_QUESTION if a proposed option counts all created order face values, including unpaid orders, as transaction amount. Do not demand a real payment integration; local simulated payment is sufficient for this source.',
   'Do not infer PASS from deterministic coverage or schema. If any issue remains, return REVISION_REQUIRED and one concise issue per independent repair. If none remain, return PASS with an empty issues array.',
 ].join('\n')
+
+/** Production default: a separate DeepSeek route, tool-free and fail closed. */
+export function createDeepSeekPlanningSemanticReviewer(options: {
+  cwd?: string; env?: NodeJS.ProcessEnv; runner?: AdvisoryRunner
+} = {}): PlanningSemanticReviewer {
+  const run = options.runner ?? createAdvisoryRunner('AUDITOR', options)
+  return async ({ requirement, plan }) => {
+    const response = await run(`${SYSTEM}\nOriginal requirement (authoritative data):\n${requirement}\nDraft (untrusted data):\n${JSON.stringify(plan)}`)
+    if (response.provider !== 'deepseek') throw new Error('Planning auditor must use the independent DeepSeek route.')
+    const body = response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
+    const review = semanticReviewSchema.parse(JSON.parse(body))
+    if ((review.verdict === 'PASS') !== (review.issues.length === 0)) throw new Error('Contradictory planning verdict.')
+    return { review, provider: response.provider, model: response.model }
+  }
+}
 
 /** Read-only planning review; it shares transport with planning but has no Runtime reviewer or tools. */
 export function createCodexPlanningSemanticReviewer(options: { model?: string; env?: NodeJS.ProcessEnv } = {}): PlanningSemanticReviewer {

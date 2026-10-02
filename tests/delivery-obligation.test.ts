@@ -1443,3 +1443,22 @@ test('owned checkpoint survives subsequent reviewer unavailability without claim
   assert.equal(await git(f.repo, 'rev-list', '--count', `${f.target.baselineCommit}..HEAD`), '1')
   assert.notEqual(result.taskStateV2!.completion.review?.passed, true)
 })
+
+
+test('delivery executor cannot alter frozen goal or acceptance before dispatch', async () => {
+  const f = await fixture()
+  const plan = await f.compile()
+  const definition = workSessionDefinitionFor(plan, 'fixture-session')
+  const task = createTaskStateV2(definition, definition.tasks[0]!)
+  let calls = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(plan, new DeliveryStore(join(f.root, 'governance-delivery')),
+    { inspectRepository: async () => { throw new Error('not used') }, dispatch: async () => { calls++; return { status: 'SUCCESS' } } })
+  const agent = { id: 'fixture', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true } }
+  for (const altered of [ { ...task, goal: 'a different product' }, { ...task, acceptanceCriteria: ['test passes'] },
+    { ...task, constraints: [] }, { ...task, permissions: { ...task.permissions, allowedPaths: ['../'] } } ]) {
+    const result = await dispatcher.dispatch({ action: 'EXECUTE', agent, task: altered })
+    assert.equal(result.status, 'BLOCKED')
+    assert.match(result.blockers?.[0] ?? '', /GOVERNANCE_DRIFT/u)
+  }
+  assert.equal(calls, 0)
+})

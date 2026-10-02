@@ -1,0 +1,11 @@
+{
+  "name": "sqlite",
+  "root": "packages/sqlite",
+  "sourceRoot": "packages/sqlite",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": [
+    "core"
+  ]
+}

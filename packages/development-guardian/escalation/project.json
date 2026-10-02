@@ -1,0 +1,9 @@
+{
+  "name": "escalation",
+  "root": "packages/development-guardian/escalation",
+  "sourceRoot": "packages/development-guardian/escalation",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": []
+}

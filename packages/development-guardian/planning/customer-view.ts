@@ -16,6 +16,7 @@ export function renderCustomerHtml(token: string): string {
       <div id="delivery" hidden><h4>准备交付</h4><label for="delivery-folder">交付项目文件夹</label><input id="delivery-folder" type="text" autocomplete="off" placeholder="选择或输入本机 Git 项目文件夹"><div class="actions"><button id="delivery-prepare" type="button" class="secondary">检查交付准备情况</button><button id="delivery-start" type="button" hidden>开始交付</button></div><p id="delivery-status" role="status"></p><ul id="delivery-blockers"></ul></div>
     </section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
+    <section class="panel"><h3>独立纠偏</h3><p>意见冲突或方向不清时，手动调用已配置的付费纠偏模型。建议保存后，可生成新版方案并重新审查。</p><div class="actions"><button id="escalate" type="button" class="secondary">请求独立纠偏</button><button id="apply-adjudication" type="button" hidden>按建议生成新版方案</button></div><pre id="adjudication-result" role="status" style="white-space:pre-wrap"></pre></section>
   </section><footer>规划批准不会启动执行。</footer>
 </main><script id="customer-bootstrap" type="application/json">${bootstrap}</script><script src="/customer/app.js"></script></body></html>`
 }
@@ -48,6 +49,7 @@ export const CUSTOMER_APP_JS = `(() => {
   let deliverySerial = 0
   let deliverySession = null
   let busy = false
+  let adjudication = null
   const steps = ['理解需求', '识别角色与业务流程', '规划功能与架构', '拆解任务与依赖', '制定验收标准', '完整性检查']
   const node = (tag, value, className) => {
     const el = document.createElement(tag)
@@ -226,6 +228,45 @@ export const CUSTOMER_APP_JS = `(() => {
     finally { clearInterval(timer); progress.hidden = true; busy = false }
   }
   document.getElementById('generate').addEventListener('click', () => run(false))
+  document.getElementById('escalate').addEventListener('click', async () => {
+    if (!current || busy) return
+    busy = true; error.textContent = ''; adjudication = null
+    const output = document.getElementById('adjudication-result')
+    const apply = document.getElementById('apply-adjudication')
+    apply.hidden = true; output.textContent = '正在独立纠偏…'
+    try {
+      const result = await post('/api/governance/escalate', { planId: current.id, version: current.version,
+        reason: feedback.value.trim() || '独立检查是否偏离原始需求、过度设计或存在无法验收的方案。',
+        ...(prepared ? { runtimePlanId: prepared.runtimePlanId } : {}) })
+      if (result.planId !== current.id || result.version !== current.version) throw new Error('方案已改变，请重新纠偏。')
+      adjudication = result
+      const verdict = result.decision.verdict
+      output.textContent = '建议：' + verdict.verdict + '\\n原因：' + verdict.rootCause + '\\n' + verdict.nextAction.join('\\n')
+      apply.hidden = verdict.verdict === 'NEEDS_EVIDENCE'
+    } catch (failure) { output.textContent = ''; error.textContent = failure.message || '纠偏失败' }
+    finally { busy = false }
+  })
+  document.getElementById('apply-adjudication').addEventListener('click', async () => {
+    if (!current || busy || !adjudication || adjudication.planId !== current.id || adjudication.version !== current.version) return
+    busy = true; error.textContent = ''
+    try {
+      const verdict = adjudication.decision.verdict
+      const notes = ['独立纠偏建议（必须对照原始需求复核，不能降低验收）：', 'ROOT_CAUSE: ' + verdict.rootCause,
+        'KEEP:', ...verdict.keep, 'REMOVE:', ...verdict.remove, 'CHANGE:', ...verdict.change,
+        'NEXT_ACTION:', ...verdict.nextAction, 'ACCEPTANCE_CRITERIA:', ...verdict.acceptanceCriteria].join('\\n')
+      if (notes.length > 3900) throw new Error('纠偏建议超出规划输入限制，请先提炼关键意见；不会截断执行建议。')
+      let body = { requirement: current.requirement.text, planId: current.id, expectedVersion: current.version, feedback: notes }
+      if (current.status === 'frozen') {
+        const change = await post('/api/planning/change-requests', { planId: current.id, version: current.version,
+          reason: '按独立纠偏建议重新规划', requestedChange: notes })
+        body.changeRequestId = change.id
+      }
+      render(await post('/api/planning/generate', body))
+      adjudication = null; document.getElementById('apply-adjudication').hidden = true
+      await loadRecent()
+    } catch (failure) { error.textContent = failure.message || '纠偏方案生成失败' }
+    finally { busy = false }
+  })
   document.getElementById('revise').addEventListener('click', () => { if (!feedback.value.trim()) { error.textContent = '请先写下修改意见。'; return }; run(true) })
   document.getElementById('answer-revise').addEventListener('click', async () => {
     if (!current || busy) return

@@ -16,3 +16,7 @@ artifacts/
 .codegraph/
 
 .mcp.json
+
+
+# Nx local computation cache
+.nx/

@@ -3,7 +3,7 @@ import type { CompiledRuntimePlan } from './runtime-plan.js'
 import type { DeliveryStore } from './service.js'
 import type { CapabilityEvidence } from './capability-layer.js'
 import { CAPABILITY_REGISTRY, type ProviderAvailability } from './capability-layer.js'
-import { inspectDeliveryTarget } from './runtime-plan.js'
+import { inspectDeliveryTarget, workSessionDefinitionFor } from './runtime-plan.js'
 import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer, type BlueprintReviewer, type BlueprintRepairer } from './verification-blueprint-planner.js'
 import { taskCompletionGate, type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
 import { checkpointOwnedImplementation } from '../work-session/owned-checkpoint.js'
@@ -119,6 +119,14 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
       contributionProofs.delete(task.identity.taskId)
     },
     async dispatch(input) {
+      const expected = workSessionDefinitionFor(plan, input.task.identity.sessionId).tasks.find((task) => task.id === input.task.identity.taskId)
+      if (!expected || input.task.goal !== expected.goal ||
+        JSON.stringify(input.task.constraints) !== JSON.stringify(expected.constraints) ||
+        JSON.stringify(input.task.acceptanceCriteria) !== JSON.stringify(expected.acceptanceCriteria) ||
+        JSON.stringify(input.task.permissions.allowedPaths) !== JSON.stringify(expected.allowedPaths) ||
+        !(expected.forbiddenPaths ?? []).every((path) => input.task.permissions.forbiddenPaths.includes(path))) {
+        return { status: 'BLOCKED', blockers: ['GOVERNANCE_DRIFT: runtime task differs from its frozen execution contract.'] }
+      }
       const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === input.task.identity.taskId &&
         item.blocking && item.ownership === 'OWNER')
       if (bindings.length === 0 && contributor(input.task.identity.taskId)) {

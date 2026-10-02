@@ -750,3 +750,75 @@ test('snapshot canonical hash, tampering controls, immutability and change reque
 async function restartedChange(store: PlanningStore, planId: string, changeId: string) {
   return new PlanningStore(store.directory).getChange(planId, changeId)
 }
+
+
+test('auditor receipt cannot be replayed after the reviewed plan content changes', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-auditor-binding-'))
+  const store = new PlanningStore(join(directory, 'plans'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)), provider: 'codex' }),
+    store, new PlanningEventStore(join(directory, 'events.jsonl')), async ({ plan }) => {
+      plan.analysis.productGoal = 'Auditor attempted to change the plan'
+      return { review: { verdict: 'PASS', issues: [] }, provider: 'deepseek', model: 'fixture' }
+    })
+  const { plan } = await service.generate(text)
+  assert.equal(plan.status, 'ready_for_approval')
+  assert.notEqual(plan.analysis.productGoal, 'Auditor attempted to change the plan')
+  assert.equal(plan.semanticReviewBinding?.reviewer, 'deepseek')
+  plan.tasks[0]!.objective += ' silently changed after review'
+  await store.save(plan)
+  assert.equal((await store.get(plan.id))?.status, 'planning_failed')
+  await assert.rejects(service.approve(plan.id, plan.version), PlanningInputError)
+})
+
+test('planner provider cannot approve its own plan even when it returns PASS', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-auditor-self-approve-'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)), provider: 'codex' }),
+    new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')),
+    async () => ({ review: { verdict: 'PASS', issues: [] }, provider: 'codex', model: 'different-model' }))
+  const { plan } = await service.generate(text)
+  assert.equal(plan.status, 'planning_failed')
+  assert.equal(plan.semanticReviewBinding, undefined)
+  await assert.rejects(service.approve(plan.id, plan.version), PlanningInputError)
+})
+
+test('manual adjudication HTTP is token protected, exact-version bound and cannot start execution', async () => {
+  const text = await readFile(requirementPath, 'utf8')
+  const directory = await mkdtemp(join(tmpdir(), 'nw-governance-http-'))
+  const service = new PlanningService(async () => ({ text: JSON.stringify(requirement001Draft(text)) }),
+    new PlanningStore(join(directory, 'plans')), new PlanningEventStore(join(directory, 'events.jsonl')), passReview)
+  const { plan } = await service.generate(text)
+  const { EscalationService } = await import('../packages/development-guardian/escalation/index.js')
+  let modelCalls = 0
+  const escalation = new EscalationService(join(directory, 'escalations'), async (prompt) => {
+    modelCalls++
+    const packet = JSON.parse(prompt.split('\n').at(-1)!) as { plan: { requirement: { text: string } } }
+    assert.equal(packet.plan.requirement.text, text)
+    return { provider: 'fixture-route', model: 'fixture-model', text: JSON.stringify({ verdict: 'KEEP',
+      rootCause: 'Original requirement is preserved.', keep: ['Frozen acceptance'], remove: [], change: [],
+      nextAction: ['Independent re-review before further execution.'], acceptanceCriteria: [] }) }
+  })
+  const launchpad = await createNovaWingLaunchpad({ configDirectory: join(directory, 'configs'),
+    dependencies: { planningService: service, escalationService: escalation,
+      createWorkSession: async () => { throw new Error('Adjudication cannot start executor') } } })
+  try {
+    const address = await launchpad.start()
+    const post = (body: unknown, authorized = true) => fetch(`${address.url}/api/governance/escalate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: address.url,
+        ...(authorized ? { 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() } : {}) }, body: JSON.stringify(body),
+    })
+    const body = { planId: plan.id, version: plan.version, reason: 'Review this plan independently.' }
+    assert.equal((await post(body, false)).status, 403)
+    assert.equal((await post({ ...body, version: plan.version + 1 })).status, 409)
+    assert.equal(modelCalls, 0)
+    const response = await post(body)
+    assert.equal(response.status, 200)
+    const record = await response.json() as { id: string; decision: { advisory: boolean } }
+    assert.equal(record.decision.advisory, true); assert.equal(modelCalls, 1)
+    assert.equal((await service.get(plan.id))?.status, 'ready_for_approval')
+    const restored = await fetch(`${address.url}/api/governance/escalations/${record.id}`, {
+      headers: { Origin: address.url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() } })
+    assert.equal(restored.status, 200)
+  } finally { await launchpad.close() }
+})

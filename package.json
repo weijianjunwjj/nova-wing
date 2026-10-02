@@ -71,20 +71,24 @@
     "guardian:notification-channel:smoke": "npm run build && node scripts/novawing-notification-channel-smoke.mjs",
     "guardian:quota-inject": "npm run build && node scripts/guardian-controlled-quota-injection.mjs",
     "analytics:backfill": "npm run build && node scripts/analytics-backfill.mjs",
-    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform && npm run check:desktop",
+    "check": "npm run typecheck && npm run test && npm run check:unused && npm run check:migration && npm run check:exports && npm run check:boundaries && npm run check:platform && npm run check:desktop && npm run check:governance",
     "check:platform": "node scripts/check-platform-boundaries.mjs",
     "desktop:package:dir": "npm run build && node scripts/platform/windows-package.mjs",
     "desktop:package:mac": "npm run build && node scripts/platform/macos-package.mjs",
     "desktop:package:mac:dist": "npm run build && node scripts/platform/macos-package.mjs --dist",
     "desktop:package:smoke": "node scripts/desktop-package-smoke.mjs",
     "desktop:build:win": "node scripts/platform/windows-package.mjs --installer",
-    "third-party:notices": "node scripts/third-party-notices.mjs"
+    "third-party:notices": "node scripts/third-party-notices.mjs",
+    "nx:graph": "nx graph",
+    "check:affected": "nx affected -t check",
+    "check:governance": "node scripts/check-governance-boundaries.mjs"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
     "@types/nodemailer": "^8.0.1",
     "electron": "44.4.3",
     "electron-builder": "26.15.3",
+    "nx": "23.2.1",
     "typescript": "5.9.3"
   },
   "dependencies": {
@@ -95,5 +99,8 @@
     "electron-updater": "6.8.9",
     "nodemailer": "^9.0.5",
     "zod": "^4.4.3"
+  },
+  "nx": {
+    "includedScripts": []
   }
 }

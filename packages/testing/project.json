@@ -1,0 +1,12 @@
+{
+  "name": "testing",
+  "root": "packages/testing",
+  "sourceRoot": "packages/testing",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": [
+    "core",
+    "sqlite"
+  ]
+}

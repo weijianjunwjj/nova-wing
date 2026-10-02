@@ -1,0 +1,9 @@
+{
+  "name": "host-snapshot",
+  "root": "packages/host-snapshot",
+  "sourceRoot": "packages/host-snapshot",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": []
+}
