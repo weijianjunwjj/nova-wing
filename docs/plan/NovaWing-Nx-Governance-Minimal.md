@@ -14,7 +14,7 @@ TaskController 和 owned checkpoint，不迁移现有源码目录，不引入服
 | 手动纠偏 | Customer Mode 的“请求独立纠偏”调用一次显式配置的 Claude 模型；无工具、MCP、自动重试、自动升级或自动恢复。请求先落盘，结果绑定证据包哈希，可重启读取。 |
 | 采用建议 | 用户点击“按建议生成新版方案”后走既有 change request / generate / DeepSeek 复审 / 人工批准流程；旧 frozen snapshot 保留。建议本身没有审批或执行权限。 |
 
-已冻结历史版本沿用既有冻结协议。未冻结旧草稿缺少新的审查收据，须重新生成并审查。
+已冻结历史版本沿用既有冻结协议。未冻结失败方案可通过独立复审入口审查同一版本；需要确定性校验、原规划 provider 记录和精确内容哈希，不重新生成方案。缺少规划来源记录的旧草稿仍阻断。
 纠偏 verdict 为 KEEP、REVISE 或 NEEDS_EVIDENCE；不是产品验收 PASS。
 
 ## 配置
@@ -57,3 +57,21 @@ runtime plan、仓库身份/分支/baseline，前后复核 HEAD/status/diff。�
 这是最小第一版：未实现跨进程全局纠偏锁、金额预算账本或自动补齐产品证据。
 本轮无真实付费模型调用；Windows/macOS 本机运行与真实 DeepSeek/Claude 路由待验收。
 自动化验证范围及结果见本次 PR。
+
+
+## 原最小交付闭环的补充修正（2026-10-03）
+
+- `POST /api/planning/review` 使用现有 Launchpad token / origin 校验，接收
+  `planId`、`version`、`contentHash`。公开 `planningReviewContentHash(plan)` 计算待审业务内容标识；
+  对失败 verdict 作规范化投影用于哈希，不改变持久化内容或授予审批。
+  服务只接受未冻结的失败方案，复用生成时的独立审查和收据逻辑，并在返回后重读版本/内容。
+  失败、版本过期、内容变化或自审不签发有效收据。通过后仍须单独批准/冻结。
+- 显式本地模块、函数参数/返回值和测试文件契约归入 assertion-scoped command 验证。
+  显式 HTTP/API、UI、平台约束保留，不能靠新增业务 API 适配纯函数验收。
+- 默认 VERIFY 将同一 owner/commit 的完整待绑定集合一次交给现有 Claude 路由。
+  每项结果须显式返回 assertionId、evidenceHash、verdict、issues；缺项、重复、未知 ID、
+  非 PASS、错配哈希或审查期间证据变化拒绝整个集合，不保存部分通过。
+  每个 ApprovedVerificationBlueprint 仍有独立候选哈希、断言绑定和实际执行证据。
+  批量路径不自动修订或回退为逐项模型调用；显式注入的旧单项 reviewer 接口保留。
+
+验证与预算边界见 [PR #3 最小交付修正报告](../audit/NovaWing-PR3-Minimal-Delivery-Fixes.md)。

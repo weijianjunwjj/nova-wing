@@ -1057,6 +1057,17 @@ export class NovaWingLaunchpad {
       await this.servePlanningGenerate(request, response)
       return
     }
+    if (method === 'POST' && path === '/api/planning/review') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) || typeof body.contentHash !== 'string') {
+        this.respondJson(response, 400, { error: 'Exact planId, version and contentHash required.' }); return
+      }
+      try { this.respondJson(response, 200, await this.planningService.review(body.planId, body.version as number, body.contentHash)) }
+      catch (error) { this.respondJson(response, error instanceof PlanningInputError ? 409 : 503,
+        { error: error instanceof PlanningInputError ? error.message : 'Independent planning review unavailable.' }) }
+      return
+    }
     if (method === 'POST' && path === '/api/planning/approve') {
       await this.servePlanningApprove(request, response)
       return
@@ -1234,7 +1245,7 @@ export class NovaWingLaunchpad {
 
     const knownPaths = new Set([
       '/', '/advanced', '/customer', '/customer/app.js', '/customer/styles.css',
-      '/api/planning/plans', '/api/planning/generate', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
+      '/api/planning/plans', '/api/planning/generate', '/api/planning/review', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
       '/api/delivery/prepare', '/api/delivery/start',
       '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
       '/api/session/repair', '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',

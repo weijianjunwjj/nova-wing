@@ -4,11 +4,12 @@ import type { DeliveryStore } from './service.js'
 import type { CapabilityEvidence } from './capability-layer.js'
 import { CAPABILITY_REGISTRY, type ProviderAvailability } from './capability-layer.js'
 import { inspectDeliveryTarget, workSessionDefinitionFor } from './runtime-plan.js'
-import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer, type BlueprintReviewer, type BlueprintRepairer } from './verification-blueprint-planner.js'
+import { bindObligationAtCommit, type BlueprintReviewer, type BlueprintRepairer } from './verification-blueprint-planner.js'
 import { taskCompletionGate, type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
 import { checkpointOwnedImplementation } from '../work-session/owned-checkpoint.js'
 import { completionGate, assessRisk, reviewSatisfied } from '../work-session/risk-evidence.js'
 import { verificationPlanFingerprintValid } from '../work-session/verification-planner.js'
+import { bindObligationsAtCommit, createClaudeBlueprintBatchReviewer, type BlueprintBatchReviewer } from './verification-blueprint-batch.js'
 import { randomUUID } from 'node:crypto'
 import { inspectAtCommit } from './repo-capability-inspector.js'
 
@@ -20,7 +21,7 @@ export function pendingEvidenceKey(assertionId: string, obligationId: string): s
 export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store: DeliveryStore,
   defaultDispatcher: V2ActionDispatcher,
   providerAvailability?: (providerId: string) => ProviderAvailability,
-  blueprintReview?: { reviewer: BlueprintReviewer; repairer?: BlueprintRepairer }): V2ActionDispatcher {
+  blueprintReview?: { reviewer?: BlueprintReviewer; batchReviewer?: BlueprintBatchReviewer; repairer?: BlueprintRepairer }): V2ActionDispatcher {
   const completionProofs = new Map<string, { transitions: VerificationBindingTransition[];
     evidence: AssertionCompletionEvidence[] }>()
   const contributionProofs = new Set<string>()
@@ -196,6 +197,24 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           return commandResult
         results.push(...commandResult.verificationResults)
       }
+      const reviewed = new Map<string, Awaited<ReturnType<typeof bindObligationAtCommit>>>()
+      if (!blueprintReview?.reviewer || blueprintReview.batchReviewer) {
+        try {
+          const unbound = []
+          for (const binding of provisioned) if (!await store.getBindingTransition(plan, binding.assertionId, binding.runtimeTaskId)) unbound.push(binding)
+          if (unbound.length) {
+            const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+            const approved = await bindObligationsAtCommit(unbound.map(binding => {
+              const criterion = plan.acceptanceCriteria.find(item => item.id === binding.criterionId)!
+              return { obligation: binding.stagedVerification.obligation!,
+                assertion: criterion.assertions.find(item => item.id === binding.assertionId)!, criterion,
+                target: plan.targetBinding, commit: current.baselineCommit }
+            }), blueprintReview?.batchReviewer ?? createClaudeBlueprintBatchReviewer({ cwd: process.cwd() }))
+            for (const blueprint of approved) reviewed.set(blueprint.assertionId, blueprint)
+          }
+        } catch (error) { return { status: 'BLOCKED', blockers: [
+          `Blueprint batch provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }
+      }
       for (const binding of provisioned) {
         const obligation = binding.stagedVerification.obligation!
         let transition = await store.getBindingTransition(plan, binding.assertionId, binding.runtimeTaskId)
@@ -204,11 +223,10 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
             const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
             const criterion = plan.acceptanceCriteria.find((item) => item.id === binding.criterionId)!
             const assertion = criterion.assertions.find((item) => item.id === binding.assertionId)!
-            const blueprint = await bindObligationAtCommit({ obligation, assertion, criterion,
+            const blueprint = reviewed.get(binding.assertionId) ?? await bindObligationAtCommit({ obligation, assertion, criterion,
               target: plan.targetBinding, commit: current.baselineCommit,
-              reviewer: blueprintReview?.reviewer ?? createClaudeBlueprintReviewer({ cwd: process.cwd() }),
-              ...(blueprintReview ? (blueprintReview.repairer ? { repairer: blueprintReview.repairer } : {})
-                : { repairer: createClaudeBlueprintRepairer({ cwd: process.cwd() }) }) })
+              reviewer: blueprintReview!.reviewer!,
+              ...(blueprintReview?.repairer ? { repairer: blueprintReview.repairer } : {}) })
             transition = await store.bindProvisionedVerifier(plan, binding.assertionId, binding.runtimeTaskId, blueprint)
           } catch (error) { return { status: 'BLOCKED', blockers: [
             `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }

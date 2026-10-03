@@ -109,7 +109,7 @@ export { canonicalSerialize, canonicalPlanContent, planContentHash, createPlanSn
 export type { PlanSnapshot, CanonicalPlanContent } from './planning/freeze.js'
 export { validateDevelopmentPlan, validateCustomerQuestion } from './planning/validator.js'
 export type { PlanIssue, PlanValidation } from './planning/validator.js'
-export { PlanningService, PlanningStore, PlanningInputError } from './planning/service.js'
+export { PlanningService, PlanningStore, PlanningInputError, planningReviewContentHash } from './planning/service.js'
 export { PlanningEventStore } from './planning/telemetry.js'
 export type { NovaWingEvent, ModelInvocation, PlanningEventType } from './planning/telemetry.js'
 export { bindDeliveryTarget, inspectDeliveryTarget, compileRuntimePlan, admitRuntimePlan,
