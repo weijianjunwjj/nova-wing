@@ -131,6 +131,8 @@ export interface DevelopmentPlan extends PlanDraft {
   dependencies: Array<{ fromTaskId: string; toTaskId: string }>
   coverage: RequirementCoverage[]
   semanticReview: SemanticReview | null
+  /** Host-issued receipt, bound to exact reviewed content; never supplied by the planner. */
+  semanticReviewBinding?: { planId: string; planVersion: number; contentHash: string; reviewer: string; model: string }
   customerAnswers?: CustomerAnswer[]
   approval?: PlanApproval | null
   supersedesSnapshotId?: string | null

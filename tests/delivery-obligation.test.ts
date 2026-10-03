@@ -31,7 +31,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior?: string; outcome?: string;
   evidence?: string; tasks?: Array<{ id: string; dependencyIds: string[]; acceptanceCriterionIds?: string[];
     objective?: string; outputs?: string[] }>;
-  separateTaskAssertions?: boolean; secondExternal?: boolean } = {}) {
+  separateTaskAssertions?: boolean; secondExternal?: boolean; assertionCount?: number } = {}) {
   const requirement = '顾客创建订单后必须能重新读取同一订单的持久化业务状态，并获得可复核的结果。'
   const behavior = options.behavior ?? '创建订单并保存。'
   const outcome = options.outcome ?? '订单状态持久化且同一订单可重新读取。'
@@ -51,8 +51,8 @@ function snapshot(options: { level?: 'integration' | 'delivery' | 'ui'; behavior
       acceptanceCriterionIds: item.acceptanceCriterionIds ?? [options.separateTaskAssertions && index === 1 ? 'C2' : 'C1'], complexity: 'small' as const })),
     acceptancePlan: { strategy: '按冻结断言独立验证。', criteria: [{ id: 'C1', requirementIds: ['R1'],
       description: behavior, level: options.level ?? 'integration', expectedEvidence: evidence, blocking: true,
-      assertions: [{ id: 'A1', requirementId: 'R1', observableBehavior: behavior,
-        expectedOutcome: outcome, expectedEvidence: evidence, blocking: true }] },
+      assertions: Array.from({ length: options.assertionCount ?? 1 }, (_, index) => ({ id: `A${index + 1}`, requirementId: 'R1', observableBehavior: behavior,
+        expectedOutcome: outcome, expectedEvidence: evidence, blocking: true })) },
       ...(options.separateTaskAssertions ? [{ id: 'C2', requirementIds: ['R1'],
         description: options.secondExternal ? '顾客在外部页面查看订单。' : '本地订单状态可验证。',
         level: options.secondExternal ? 'ui' as const : 'integration' as const,
@@ -1442,4 +1442,71 @@ test('owned checkpoint survives subsequent reviewer unavailability without claim
   assert.equal(result.taskStateV2!.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
   assert.equal(await git(f.repo, 'rev-list', '--count', `${f.target.baselineCommit}..HEAD`), '1')
   assert.notEqual(result.taskStateV2!.completion.review?.passed, true)
+})
+
+
+test('delivery executor cannot alter frozen goal or acceptance before dispatch', async () => {
+  const f = await fixture()
+  const plan = await f.compile()
+  const definition = workSessionDefinitionFor(plan, 'fixture-session')
+  const task = createTaskStateV2(definition, definition.tasks[0]!)
+  let calls = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(plan, new DeliveryStore(join(f.root, 'governance-delivery')),
+    { inspectRepository: async () => { throw new Error('not used') }, dispatch: async () => { calls++; return { status: 'SUCCESS' } } })
+  const agent = { id: 'fixture', available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true } }
+  for (const altered of [ { ...task, goal: 'a different product' }, { ...task, acceptanceCriteria: ['test passes'] },
+    { ...task, constraints: [] }, { ...task, permissions: { ...task.permissions, allowedPaths: ['../'] } },
+    { ...task, permissions: { ...task.permissions, forbiddenPaths: ['src/**'] } } ]) {
+    const result = await dispatcher.dispatch({ action: 'EXECUTE', agent, task: altered })
+    assert.equal(result.status, 'BLOCKED')
+    assert.match(result.blockers?.[0] ?? '', /GOVERNANCE_DRIFT/u)
+  }
+  assert.equal(calls, 0)
+})
+
+
+test('production VERIFY batches all unbound assertions once and refuses partial results before persistence', async () => {
+  const { blueprintReviewEvidenceHash } = await import('../packages/development-guardian/delivery/verification-blueprint-batch.js')
+  const options = { assertionCount: 2 }
+  const f = await fixture(options, async repo => {
+    await mkdir(join(repo, 'tests'))
+    for (const assertion of snapshot(options).content.acceptancePlan.criteria[0]!.assertions) {
+      await writeFile(join(repo, `tests/${assertion.id}.test.mjs`),
+        `import test from 'node:test'; import assert from 'node:assert/strict';\n` +
+        `const assertionId = '${assertion.id}'; const assertionContractHash = '${assertionContractHash(assertion)}';\n` +
+        `test('same order persists after separate read', () => { const rows = new Map(); rows.set('order', {status:'saved'});` +
+        ` const reread = rows.get('order'); assert.equal(reread.status,'saved'); rows.delete('order'); assert.equal(rows.size,0) });\n`)
+    }
+  })
+  const plan = await f.compile(), definition = workSessionDefinitionFor(plan, 'batch-verify-fixture')
+  const task = createTaskStateV2(definition, definition.tasks[0]!)
+  const entries = parseGitStatus(await git(f.repo, 'status', '--porcelain', '-z', '--untracked-files=all'))
+  const reality = { repositoryIdentity: await realpath(f.repo), branch: await git(f.repo, 'branch', '--show-current'),
+    headSha: await git(f.repo, 'rev-parse', 'HEAD'), changedFiles: [],
+    worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(f.repo, entries, { strict: true }))
+      .update(await git(f.repo, 'diff', '--cached', '--binary')).digest('hex') }
+  task.gitState = reality
+  const agent = { id: 'fixture', available: true, quotaExhausted: false, degraded: false, capabilities: { verification: true } }
+  for (const missing of [true, false]) {
+    const store = new DeliveryStore(join(f.root, `batch-${missing}`)); await store.savePlan(plan)
+    let calls = 0
+    const dispatcher = createDeliveryRuntimeDispatcher(plan, store, {
+      inspectRepository: async () => reality, dispatch: async () => { throw new Error('No executor or unscoped verification') },
+    }, undefined, { batchReviewer: async packets => {
+      calls++; assert.equal(packets.length, 2)
+      return { results: packets.slice(0, missing ? 1 : 2).map(packet => ({ assertionId: packet.assertion.id,
+        evidenceHash: blueprintReviewEvidenceHash(packet), verdict: 'PASS', issues: [] })) }
+    } })
+    const result = await dispatcher.dispatch({ action: 'VERIFY', agent, task })
+    assert.equal(calls, 1, result.blockers?.join('; '))
+    assert.equal(result.status, missing ? 'BLOCKED' : 'SUCCESS', result.blockers?.join('; '))
+    for (const binding of plan.acceptanceBindings) {
+      const transition = await store.getBindingTransition(plan, binding.assertionId, binding.runtimeTaskId)
+      assert.equal(transition !== undefined, !missing)
+    }
+    if (!missing) {
+      assert.equal(result.verificationResults?.length, 2)
+      assert.ok(result.verificationResults?.every(item => item.status === 'passed'))
+    }
+  }
 })

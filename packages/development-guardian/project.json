@@ -1,0 +1,13 @@
+{
+  "name": "guardian",
+  "root": "packages/development-guardian",
+  "sourceRoot": "packages/development-guardian",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": [
+    "core",
+    "governance",
+    "escalation"
+  ]
+}

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { canonicalSerialize, verifyPlanSnapshot, type PlanSnapshot } from '../planning/freeze.js'
 import type { AcceptanceCriterion, RequirementClause } from '../planning/model.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
+import { effectiveWorkspacePermissions } from '../workspace-scope.js'
 import { assessVerificationCommand, scopedNodeTestPath } from '../verification-command-policy.js'
 import { planVerification } from '../work-session/verification-planner.js'
 import { CAPABILITY_REGISTRY, CAPABILITY_SCHEMA_VERSION, capabilityCoverage, capabilityPolicyFingerprint, conservativeCapabilityResolver,
@@ -497,7 +498,7 @@ export function workSessionDefinitionFor(plan: CompiledRuntimePlan, sessionId: s
           ['EXTERNAL_DEFERRED', 'HUMAN_DEFERRED'].includes(binding.stagedVerification.readiness))
           .map((binding) => `Completion-only verification gate ${binding.assertionId}: ${binding.stagedVerification.readiness}; ${binding.stagedVerification.policy}`),
         ...plan.customerDecisions.map((decision) => `Customer decision ${decision.questionId}: ${decision.selectedOptionText}`)],
-      allowedPaths: ['.'], forbiddenPaths: [], risk: 'HIGH',
+      ...effectiveWorkspacePermissions({ allowedPaths: ['.'], forbiddenPaths: [] }), risk: 'HIGH',
       acceptanceCriteria: criteriaForTask(task),
       acceptanceEvidenceBindings: [...plan.acceptanceBindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking && binding.ownership === 'OWNER')
         .map((binding) => ({ criterion: criterionFor(binding),

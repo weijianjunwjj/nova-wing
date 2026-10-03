@@ -5,6 +5,15 @@ import type { GuardianTask } from './model.js'
 /** Launchpad's existing protected paths, shared with exact recovery-policy validation. */
 export const DEFAULT_WORKSPACE_FORBIDDEN_PATHS = ['.env', '**/.env', '**/*secret*', '**/*credential*'] as const
 
+/** Generate the effective host policy. Never normalize incoming runtime state
+ * with this helper: exact validation must detect removed default protections. */
+export function effectiveWorkspacePermissions(scope: Pick<GuardianTask, 'allowedPaths' | 'forbiddenPaths'>): {
+  allowedPaths: string[]; forbiddenPaths: string[]
+} {
+  return { allowedPaths: [...(scope.allowedPaths ?? [])],
+    forbiddenPaths: [...new Set([...DEFAULT_WORKSPACE_FORBIDDEN_PATHS, ...(scope.forbiddenPaths ?? [])])] }
+}
+
 /**
  * Executor boundary: every scope rule inside the workspace is workspace-relative;
  * `.` means the whole repository. Legacy canonical absolute configuration is

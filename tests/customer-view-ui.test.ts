@@ -43,7 +43,15 @@ test('Customer Mode keeps the frozen result near approval while generation and r
   const frozen = { ...ready, status: 'frozen', frozenAt: '2026-09-29T15:05:05.689Z',
     approval: { contentHash: 'a'.repeat(64) } }
   const response = (value: unknown) => ({ ok: true, json: async () => value })
+  let adjudicationVerdict = 'REVISE'
   const fetch = async (url: string) => {
+    if (url === '/api/governance/escalate') {
+      if (adjudicationVerdict === 'FAILED') return { ok: false, json: async () => ({ error: '纠偏失败' }) }
+      return response({ planId: ready.id, version: ready.version, decision: { verdict: {
+        verdict: adjudicationVerdict, rootCause: '保留原始业务目标', keep: ['保留持久化'], remove: ['删除无关范围'],
+        change: ['调整任务步骤'], nextAction: ['重新独立审查'], acceptanceCriteria: ['同一实体重读'],
+      } } })
+    }
     if (url === '/api/planning/plans') return response([{
       id: ready.id, version: ready.version, status: ready.status, productGoal: ready.analysis.productGoal,
     }])
@@ -61,9 +69,22 @@ test('Customer Mode keeps the frozen result near approval while generation and r
 
   await get('generate').listeners.get('click')!()
   assert.equal(scrolls.at(-1)?.id, 'plan')
+  await get('escalate').listeners.get('click')!()
+  assert.equal(get('apply-adjudication').hidden, false)
+  for (const detail of ['保留持久化', '删除无关范围', '调整任务步骤', '重新独立审查', '同一实体重读']) {
+    assert.ok(get('adjudication-result').textContent.includes(detail), detail)
+  }
   const recentButton = get('recent-list').children[0]!.children[0]!
   await recentButton.listeners.get('click')!()
   assert.equal(scrolls.at(-1)?.id, 'plan')
+  assert.equal(get('apply-adjudication').hidden, true)
+  assert.equal(get('adjudication-result').textContent, '')
+  adjudicationVerdict = 'FAILED'
+  await get('escalate').listeners.get('click')!()
+  assert.equal(get('apply-adjudication').hidden, true)
+  adjudicationVerdict = 'NEEDS_EVIDENCE'
+  await get('escalate').listeners.get('click')!()
+  assert.equal(get('apply-adjudication').hidden, true)
   const planScrollsBeforeApproval = scrolls.filter((item) => item.id === 'plan').length
 
   await get('approve').listeners.get('click')!()

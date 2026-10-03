@@ -1,0 +1,9 @@
+{
+  "name": "core",
+  "root": "packages/core",
+  "sourceRoot": "packages/core",
+  "tags": [
+    "layer:domain"
+  ],
+  "implicitDependencies": []
+}

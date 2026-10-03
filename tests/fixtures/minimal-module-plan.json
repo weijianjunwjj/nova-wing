@@ -1,0 +1,619 @@
+{
+  "requirement": "交付单个 JavaScript ES module sum.mjs，导出 add(a,b)。仅当两个参数都是 [-100,100] 范围内的 number 类型整数时，返回精确的数学和；任一参数不符合该条件必须抛出 RangeError。\n验收命令预先固定为 node --test tests/acceptance.test.mjs：遍历全部 40401 个合法整数对并逐项比较数学和；分别在两个参数位置传入 1.5、NaN、Infinity、-Infinity、101、-101、字符串 \"1\"、null、undefined、true、false、对象、数组、1n 和 Symbol，全部 30 次抛出 RangeError。预期退出码 0，2 个测试通过、0 失败。原始验收文件的逻辑不得改动。任务是这个纯计算函数，不需要其他业务决定。",
+  "draft": {
+    "clauses": [
+      {
+        "id": "R1",
+        "statement": "交付单个名为 sum.mjs 的 JavaScript ES module，并导出 add(a,b)。",
+        "type": "delivery",
+        "priority": "must",
+        "source": {
+          "excerpt": "交付单个 JavaScript ES module sum.mjs，导出 add(a,b)。",
+          "location": "原始需求第1句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R2",
+        "statement": "当两个参数均为 [-100,100] 内的 number 类型整数时，add(a,b) 返回精确的数学和。",
+        "type": "functional",
+        "priority": "must",
+        "source": {
+          "excerpt": "仅当两个参数都是 [-100,100] 范围内的 number 类型整数时，返回精确的数学和；",
+          "location": "原始需求第2句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R3",
+        "statement": "任一参数不满足有效整数条件时，add(a,b) 抛出 RangeError。",
+        "type": "functional",
+        "priority": "must",
+        "source": {
+          "excerpt": "任一参数不符合该条件必须抛出 RangeError。",
+          "location": "原始需求第2句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R4",
+        "statement": "使用固定命令 node --test tests/acceptance.test.mjs 验收，遍历全部 40401 个合法整数对并逐项比较数学和。",
+        "type": "quality",
+        "priority": "must",
+        "source": {
+          "excerpt": "验收命令预先固定为 node --test tests/acceptance.test.mjs：遍历全部 40401 个合法整数对并逐项比较数学和；",
+          "location": "原始需求第3句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R5",
+        "statement": "在两个参数位置分别传入列出的15种无效值，全部30次调用均抛出 RangeError。",
+        "type": "quality",
+        "priority": "must",
+        "source": {
+          "excerpt": "分别在两个参数位置传入 1.5、NaN、Infinity、-Infinity、101、-101、字符串 \"1\"、null、undefined、true、false、对象、数组、1n 和 Symbol，全部 30 次抛出 RangeError。",
+          "location": "原始需求第3句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R6",
+        "statement": "固定验收命令的预期结果为退出码0、2个测试通过、0个失败。",
+        "type": "quality",
+        "priority": "must",
+        "source": {
+          "excerpt": "预期退出码 0，2 个测试通过、0 失败。",
+          "location": "原始需求第4句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      },
+      {
+        "id": "R7",
+        "statement": "保持原始验收文件的逻辑不变。",
+        "type": "constraint",
+        "priority": "must",
+        "source": {
+          "excerpt": "原始验收文件的逻辑不得改动。",
+          "location": "原始需求第5句",
+          "origin": "customer_requirement"
+        },
+        "ambiguity": {
+          "ambiguous": false,
+          "note": ""
+        }
+      }
+    ],
+    "analysis": {
+      "productGoal": "交付通过固定验收的纯计算函数 add(a,b)。",
+      "summary": "单个 ES module 对指定范围内的整数求和，并对任一无效参数抛出 RangeError；按原始验收文件验证。",
+      "userRoles": [
+        {
+          "id": "U1",
+          "name": "模块调用方",
+          "goals": [
+            "取得合法整数参数的精确数学和",
+            "在任一参数无效时收到 RangeError"
+          ]
+        },
+        {
+          "id": "U2",
+          "name": "交付验收方",
+          "goals": [
+            "使用固定命令和未改动逻辑的原始验收文件确认交付结果"
+          ]
+        }
+      ],
+      "businessFlows": [
+        {
+          "id": "F1",
+          "title": "合法参数求和",
+          "steps": [
+            "从 sum.mjs 导入 add(a,b)",
+            "传入两个 [-100,100] 内的 number 类型整数",
+            "取得精确数学和"
+          ],
+          "requirementIds": [
+            "R1",
+            "R2"
+          ]
+        },
+        {
+          "id": "F2",
+          "title": "无效参数处理",
+          "steps": [
+            "在任一参数位置传入无效值",
+            "调用 add(a,b)",
+            "观察 RangeError"
+          ],
+          "requirementIds": [
+            "R3",
+            "R5"
+          ]
+        }
+      ]
+    },
+    "productScope": {
+      "inScope": [
+        "单个 sum.mjs ES module",
+        "导出的 add(a,b) 纯计算函数",
+        "指定的有效输入、无效输入及固定验收"
+      ],
+      "outOfScope": [
+        "其他业务决定"
+      ]
+    },
+    "architecture": {
+      "summary": "sum.mjs 直接导出 add(a,b)，先验证两个参数，再计算并返回数学和。",
+      "components": [
+        "sum.mjs"
+      ],
+      "decisions": [
+        "使用 JavaScript ES module 导出形式",
+        "对每个参数检查 number 类型、整数性和闭区间范围",
+        "有效输入的和位于安全整数范围内，可直接精确计算"
+      ]
+    },
+    "tasks": [
+      {
+        "id": "T1",
+        "title": "实现 sum.mjs",
+        "objective": "交付指定模块、导出及输入处理和求和行为。",
+        "requirementIds": [
+          "R1",
+          "R2",
+          "R3",
+          "R5"
+        ],
+        "outputs": [
+          "sum.mjs"
+        ],
+        "dependencyIds": [],
+        "acceptanceCriterionIds": [
+          "A1",
+          "A2",
+          "A3"
+        ],
+        "complexity": "small"
+      },
+      {
+        "id": "T2",
+        "title": "执行固定验收",
+        "objective": "使用逻辑未改动的原始验收文件确认全部合法整数对、30次无效输入和指定测试结果。",
+        "requirementIds": [
+          "R1",
+          "R2",
+          "R3",
+          "R4",
+          "R5",
+          "R6",
+          "R7"
+        ],
+        "outputs": [
+          "固定验收命令的结果记录",
+          "原始验收文件逻辑未改动的核对记录"
+        ],
+        "dependencyIds": [
+          "T1"
+        ],
+        "acceptanceCriterionIds": [
+          "A1",
+          "A2",
+          "A3",
+          "A4"
+        ],
+        "complexity": "small"
+      }
+    ],
+    "acceptancePlan": {
+      "strategy": "交付后使用原始验收文件运行固定命令；核对模块导出、逐项结果、各无效输入的异常、测试汇总及验收文件逻辑。",
+      "criteria": [
+        {
+          "id": "A1",
+          "requirementIds": [
+            "R1"
+          ],
+          "description": "交付模块及导出可供调用方使用。",
+          "level": "integration",
+          "expectedEvidence": "交付文件清单及从 sum.mjs 导入 add(a,b) 的实际调用结果。",
+          "blocking": true,
+          "assertions": [
+            {
+              "id": "AS1",
+              "requirementId": "R1",
+              "observableBehavior": "检查交付的计算模块文件。",
+              "expectedOutcome": "交付单个名为 sum.mjs 的 JavaScript ES module。",
+              "expectedEvidence": "交付文件清单和 sum.mjs 内容。",
+              "blocking": true
+            },
+            {
+              "id": "AS2",
+              "requirementId": "R1",
+              "observableBehavior": "从 sum.mjs 导入并调用 add(a,b)。",
+              "expectedOutcome": "add(a,b) 可作为模块导出使用。",
+              "expectedEvidence": "实际导入及调用的结果记录。",
+              "blocking": true
+            }
+          ]
+        },
+        {
+          "id": "A2",
+          "requirementIds": [
+            "R2",
+            "R4"
+          ],
+          "description": "全部合法整数对均得到精确数学和。",
+          "level": "integration",
+          "expectedEvidence": "原始验收测试对40401个整数对逐项比较实际返回值与独立计算的 a+b。",
+          "blocking": true,
+          "assertions": [
+            {
+              "id": "AS3",
+              "requirementId": "R2",
+              "observableBehavior": "对 [-100,100] 内每个 number 类型整数 a 与 b 调用 add(a,b)。",
+              "expectedOutcome": "每次均返回与独立计算的数学和 a+b 相等的值。",
+              "expectedEvidence": "覆盖全部40401个整数对的逐项实际值与预期值比较结果。",
+              "blocking": true
+            },
+            {
+              "id": "AS4",
+              "requirementId": "R4",
+              "observableBehavior": "固定验收测试遍历合法整数对。",
+              "expectedOutcome": "全部40401个不同的合法整数对均被逐项比较。",
+              "expectedEvidence": "原始验收文件中的遍历范围、比较逻辑及该测试的运行结果。",
+              "blocking": true
+            }
+          ]
+        },
+        {
+          "id": "A3",
+          "requirementIds": [
+            "R3",
+            "R5"
+          ],
+          "description": "列出的每种无效值在两个参数位置均抛出 RangeError。",
+          "level": "integration",
+          "expectedEvidence": "原始验收测试中30次独立调用各自的异常类型断言结果。",
+          "blocking": true,
+          "assertions": [
+            {
+              "id": "AS5",
+              "requirementId": "R3",
+              "observableBehavior": "任一参数不满足 number 类型、整数性或范围条件时调用 add(a,b)。",
+              "expectedOutcome": "调用抛出 RangeError。",
+              "expectedEvidence": "覆盖所列无效值及两个参数位置的异常类型断言结果。",
+              "blocking": true
+            },
+            {
+              "id": "AS6",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 1.5。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS7",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 1.5。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS8",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 NaN。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS9",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 NaN。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS10",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 Infinity。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS11",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 Infinity。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS12",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 -Infinity。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS13",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 -Infinity。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS14",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 101。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS15",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 101。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS16",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 -101。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS17",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 -101。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS18",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入字符串 \"1\"。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS19",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入字符串 \"1\"。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS20",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 null。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS21",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 null。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS22",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 undefined。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS23",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 undefined。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS24",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 true。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS25",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 true。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS26",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 false。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS27",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 false。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS28",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入对象。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS29",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入对象。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS30",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入数组。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS31",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入数组。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS32",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 1n。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS33",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 1n。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS34",
+              "requirementId": "R5",
+              "observableBehavior": "第一个参数传入 Symbol。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            },
+            {
+              "id": "AS35",
+              "requirementId": "R5",
+              "observableBehavior": "第二个参数传入 Symbol。",
+              "expectedOutcome": "抛出 RangeError。",
+              "expectedEvidence": "该次调用的异常类型断言。",
+              "blocking": true
+            }
+          ]
+        },
+        {
+          "id": "A4",
+          "requirementIds": [
+            "R4",
+            "R6",
+            "R7"
+          ],
+          "description": "固定验收命令以指定结果完成，原始验收逻辑保持不变。",
+          "level": "delivery",
+          "expectedEvidence": "执行记录、测试汇总和原始验收文件逻辑对比记录。",
+          "blocking": true,
+          "assertions": [
+            {
+              "id": "AS36",
+              "requirementId": "R4",
+              "observableBehavior": "执行交付验收。",
+              "expectedOutcome": "使用的命令恰为 node --test tests/acceptance.test.mjs。",
+              "expectedEvidence": "记录了完整命令的验收执行结果。",
+              "blocking": true
+            },
+            {
+              "id": "AS37",
+              "requirementId": "R6",
+              "observableBehavior": "固定验收命令结束。",
+              "expectedOutcome": "退出码为0。",
+              "expectedEvidence": "该次验收执行的退出码记录。",
+              "blocking": true
+            },
+            {
+              "id": "AS38",
+              "requirementId": "R6",
+              "observableBehavior": "查看固定验收命令的测试汇总。",
+              "expectedOutcome": "2个测试通过。",
+              "expectedEvidence": "该次验收的测试汇总记录。",
+              "blocking": true
+            },
+            {
+              "id": "AS39",
+              "requirementId": "R6",
+              "observableBehavior": "查看固定验收命令的测试汇总。",
+              "expectedOutcome": "0个测试失败。",
+              "expectedEvidence": "该次验收的测试汇总记录。",
+              "blocking": true
+            },
+            {
+              "id": "AS40",
+              "requirementId": "R7",
+              "observableBehavior": "将验收使用的 tests/acceptance.test.mjs 与原始文件比较。",
+              "expectedOutcome": "原始验收文件的逻辑未改动。",
+              "expectedEvidence": "原始文件与验收所用文件的逻辑对比记录。",
+              "blocking": true
+            }
+          ]
+        }
+      ]
+    },
+    "risks": [
+      {
+        "id": "K1",
+        "description": "参数的隐式类型转换可能让字符串、布尔值或其他无效值被接受，或让 Symbol 产生错误的异常类型。",
+        "mitigation": "先检查参数类型及整数范围，再执行加法；以30次指定调用逐项验收。"
+      }
+    ],
+    "assumptions": [],
+    "customerQuestions": []
+  }
+}

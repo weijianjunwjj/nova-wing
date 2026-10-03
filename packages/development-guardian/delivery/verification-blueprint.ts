@@ -61,6 +61,7 @@ export interface BlueprintReview {
   verdict: 'PASS' | 'REVISION_REQUIRED'
   reviewer: string
   issues: BlueprintReviewIssue[]
+  binding?: { assertionId: string; candidateHash: string; evidenceHash: string }
 }
 export interface ApprovedVerificationBlueprint extends VerificationBlueprint {
   id: string
@@ -303,14 +304,20 @@ export function approveVerificationBlueprint(candidate: VerificationBlueprint, r
   if (review.verdict !== 'PASS' || review.issues.length || !review.reviewer.trim())
     throw new Error('Independent blueprint review did not pass.')
   const hash = blueprintHash(normalized)
+  if (review.reviewer === 'claude-blueprint-batch-reviewer-v1' && !review.binding) throw new Error('Blueprint batch review binding required.')
+  if (review.binding && (review.binding.assertionId !== normalized.assertionId || review.binding.candidateHash !== hash ||
+    !/^[a-f0-9]{64}$/u.test(review.binding.evidenceHash))) throw new Error('Blueprint review binding mismatch.')
   return { ...normalized, id: hash, blueprintHash: hash,
-    review: { verdict: 'PASS', reviewer: review.reviewer, issues: [] }, trust: 'REVIEWED_PLANNER_RESULT' }
+    review: { verdict: 'PASS', reviewer: review.reviewer, issues: [], ...(review.binding ? { binding: { ...review.binding } } : {}) }, trust: 'REVIEWED_PLANNER_RESULT' }
 }
 
 export function verifyApprovedBlueprint(blueprint: ApprovedVerificationBlueprint, input: Parameters<typeof validateVerificationBlueprint>[1]): void {
   const { id, blueprintHash: hash, review, trust, ...candidate } = blueprint
   if (!validateVerificationBlueprint(candidate, input).pass) throw new Error('Approved verification blueprint is invalid or stale.')
   if (trust !== 'REVIEWED_PLANNER_RESULT' || review.verdict !== 'PASS' || review.issues.length ||
-    !review.reviewer || id !== blueprintHash(candidate) || hash !== id)
+    !review.reviewer || id !== blueprintHash(candidate) || hash !== id ||
+    (review.reviewer === 'claude-blueprint-batch-reviewer-v1' && review.binding === undefined) ||
+    (review.binding !== undefined && (review.binding.assertionId !== candidate.assertionId ||
+      review.binding.candidateHash !== id || !/^[a-f0-9]{64}$/u.test(review.binding.evidenceHash))))
     throw new Error('Approved verification blueprint is invalid or stale.')
 }

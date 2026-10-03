@@ -160,6 +160,14 @@ export function classifyCapability(input: { assertion: AcceptanceAssertion; crit
       return { family: 'desktop_ui', ruleId: 'desktop-surface-v1', reason: 'Assertion names a desktop user interface.' }
     return { family: 'browser_ui', ruleId: 'browser-surface-v1', reason: 'UI criterion requires observable browser interaction.' }
   }
+  // A local module/test contract is executable evidence, not an inferred HTTP endpoint.
+  const localContract = `${observed} ${criterion.description} ${criterion.expectedEvidence} ${input.requirement.statement}`
+  if ((criterion.level === 'integration' || criterion.level === 'delivery') &&
+    !/(?:https?:\/\/|\bHTTP\b|\b(?:GET|POST|PUT|DELETE)\s+\/|接口|端点)/iu.test(localContract) &&
+    (/(?:\b(?:RangeError|TypeError|ES\s+module|node:test)\b|node\s+--test|\.test\.[cm]?[jt]s\b|(?:导出|导入).{0,40}模块|(?:原始|固定)验收文件)/iu.test(localContract) ||
+      (/\b[A-Za-z_$][\w$]*\([^()\n]{0,100}\)/u.test(localContract) && /(?:参数|整数|返回|function|returns?)/iu.test(localContract))))
+    return { family: 'command', ruleId: 'local-module-test-v1',
+      reason: 'Explicit local module or test contract requires an assertion-scoped repository test; no HTTP endpoint is inferred.' }
   if ((criterion.level === 'api' || criterion.level === 'integration') && claimRequirements(assertion).requiresMutation)
     return { family: 'command', ruleId: 'mutation-repository-test-v2', reason: 'Mutation requires an assertion-scoped repository test with action and reread.' }
   if (criterion.level === 'api')

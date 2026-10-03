@@ -61,7 +61,8 @@ function assertionTestCandidate(facts: RepoCapabilityFacts, assertion: Acceptanc
     setup: [step('setup', 'prepare isolated assertion fixture')],
     action: obligation.requirements.requiresMutation ? [step('action', assertion.observableBehavior.slice(0, 260), true)] : [],
     observation: [step('observation', 'observe result of the assertion action')],
-    predicate: [step('predicate', 'equals frozen expected outcome', false, assertion.expectedOutcome)],
+    predicate: [step('predicate', 'equals frozen expected outcome for the exact stimulus and evidence', false,
+      `${assertion.expectedOutcome} | Stimulus: ${assertion.observableBehavior} | Evidence: ${assertion.expectedEvidence}`)],
     reread: obligation.requirements.requiresReread ? [step('reread', 'read the same entity again from persisted state')] : [],
     cleanup: obligation.requirements.requiresCleanup || obligation.requirements.requiresMutation
       ? [step('cleanup', 'stop owned processes and remove isolated fixture')] : [],
@@ -104,6 +105,44 @@ function relevantFacts(facts: RepoCapabilityFacts, candidate: VerificationBluepr
   return false
 }
 
+async function prepareCandidate(input: { obligation: VerificationObligation; assertion: AcceptanceAssertion;
+  criterion: AcceptanceCriterion; target: DeliveryTargetBinding; commit: string },
+  facts: RepoCapabilityFacts, candidate: VerificationBlueprint): Promise<{ packet: BlueprintReviewInput; issues: BlueprintValidationIssue[] }> {
+  const manifest = generateScopeManifest(facts)
+  const paths = candidate.plannedVerifier?.family === 'command'
+    ? [candidate.plannedVerifier.command.slice('node --test '.length)] :
+    candidate.plannedVerifier?.family === 'scope_review' && candidate.plannedVerifier.command
+      ? [candidate.plannedVerifier.command.slice('node --test '.length)] :
+    candidate.plannedVerifier?.family === 'process' ? [candidate.plannedVerifier.relativeEntry] : []
+  const material = await readRepositoryReviewMaterial(input.target, facts, paths)
+  candidate = { ...candidate, obligationId: input.obligation.obligationId,
+    implementationCommit: input.commit,
+    artifactHashes: { ...Object.fromEntries(candidate.requiredArtifacts.map((path) => [path, facts.artifactHashes[path] ?? ''])),
+      ...(input.obligation.strategy === 'delivery_scope_review' ? { NOVAWING_SCOPE_MANIFEST: manifest.sha256 } : {}) } }
+  const validation = validateVerificationBlueprint(candidate, { assertion: input.assertion, criterion: input.criterion,
+    runtimeTaskId: input.obligation.canonicalOwnerTaskId, target: input.target, obligation: input.obligation,
+    implementationCommit: input.commit,
+    artifactSources: Object.fromEntries(material.map((item) => [item.path, item.source])),
+    scopeManifestHash: manifest.sha256 })
+  const issues = validation.pass && !relevantFacts(facts, candidate)
+    ? [{ code: 'TARGET_CAPABILITY_ABSENT', message: 'Inspected implementation has no matching verifier artifact.' }] : validation.issues
+  return { issues, packet: { assertion: input.assertion, criterion: input.criterion, obligation: input.obligation,
+    candidate, facts, reviewMaterial: material,
+    ...(input.obligation.strategy === 'delivery_scope_review' ? { scopeManifest: manifest } : {}) } }
+}
+
+/** Deterministic preparation shared by single and batch reviews. No model call or approval. */
+export async function prepareObligationAtCommit(input: { obligation: VerificationObligation; assertion: AcceptanceAssertion;
+  criterion: AcceptanceCriterion; target: DeliveryTargetBinding; commit: string }, facts?: RepoCapabilityFacts): Promise<BlueprintReviewInput> {
+  facts ??= await inspectAtCommit(input.target, input.commit)
+  const candidate = repositoryContractCandidate(facts, input.assertion, input.obligation.canonicalOwnerTaskId, input.target) ??
+    assertionTestCandidate(facts, input.assertion, input.obligation, input.target)
+  if (!candidate) throw new Error('BLUEPRINT_CANDIDATE_MISSING')
+  const prepared = await prepareCandidate(input, facts, candidate)
+  if (prepared.issues.length) throw new Error(`BLUEPRINT_BINDING_BLOCKED:${prepared.issues.map(issue => issue.code).join(',')}`)
+  return prepared.packet
+}
+
 /** Completion-time binding: no repository contract or exact verifier is required at Start. */
 export async function bindObligationAtCommit(input: { obligation: VerificationObligation; assertion: AcceptanceAssertion;
   criterion: AcceptanceCriterion; target: DeliveryTargetBinding; commit: string;
@@ -111,32 +150,14 @@ export async function bindObligationAtCommit(input: { obligation: VerificationOb
   const maxRepairs = input.maxRepairs ?? 2
   if (!Number.isInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > 3) throw new Error('Invalid bounded repair limit.')
   const facts = await inspectAtCommit(input.target, input.commit)
-  const manifest = generateScopeManifest(facts)
   let candidate = repositoryContractCandidate(facts, input.assertion, input.obligation.canonicalOwnerTaskId, input.target) ??
     assertionTestCandidate(facts, input.assertion, input.obligation, input.target)
   if (!candidate) throw new Error('BLUEPRINT_CANDIDATE_MISSING')
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
-    const paths = candidate.plannedVerifier?.family === 'command'
-      ? [candidate.plannedVerifier.command.slice('node --test '.length)] :
-      candidate.plannedVerifier?.family === 'scope_review' && candidate.plannedVerifier.command
-        ? [candidate.plannedVerifier.command.slice('node --test '.length)] :
-      candidate.plannedVerifier?.family === 'process' ? [candidate.plannedVerifier.relativeEntry] : []
-    const material = await readRepositoryReviewMaterial(input.target, facts, paths)
-    candidate = { ...candidate, obligationId: input.obligation.obligationId,
-      implementationCommit: input.commit,
-      artifactHashes: { ...Object.fromEntries(candidate.requiredArtifacts.map((path) => [path, facts.artifactHashes[path] ?? ''])),
-        ...(input.obligation.strategy === 'delivery_scope_review' ? { NOVAWING_SCOPE_MANIFEST: manifest.sha256 } : {}) } }
-    const validation = validateVerificationBlueprint(candidate, { assertion: input.assertion, criterion: input.criterion,
-      runtimeTaskId: input.obligation.canonicalOwnerTaskId, target: input.target, obligation: input.obligation,
-      implementationCommit: input.commit,
-      artifactSources: Object.fromEntries(material.map((item) => [item.path, item.source])),
-      scopeManifestHash: manifest.sha256 })
-    const issues = validation.pass && !relevantFacts(facts, candidate)
-      ? [{ code: 'TARGET_CAPABILITY_ABSENT', message: 'Inspected implementation has no matching verifier artifact.' }] : validation.issues
+    const { packet, issues } = await prepareCandidate(input, facts, candidate)
+    candidate = packet.candidate
     if (!issues.length) {
-      const review = await input.reviewer({ assertion: input.assertion, criterion: input.criterion,
-        obligation: input.obligation, candidate, facts, reviewMaterial: material,
-        ...(input.obligation.strategy === 'delivery_scope_review' ? { scopeManifest: manifest } : {}) })
+      const review = await input.reviewer(structuredClone(packet))
       if (review.verdict === 'PASS' && !review.issues.length) return approveVerificationBlueprint(candidate, review)
       issues.push(...review.issues)
     }
@@ -182,7 +203,7 @@ export function createClaudeBlueprintRepairer(options: { cwd: string; timeoutMs?
   }
 }
 
-async function runClaudeJson(prompt: string, options: { cwd: string; timeoutMs?: number }): Promise<unknown> {
+export async function runClaudeJson(prompt: string, options: { cwd: string; timeoutMs?: number }): Promise<unknown> {
   if (!await hasClaudeRoute(options.cwd)) throw new Error('Independent Claude blueprint reviewer is unavailable.')
   const env = await resolveClaudeProviderEnvironment(options.cwd)
   const timeoutMs = Math.min(Math.max(options.timeoutMs ?? 60_000, 1_000), 120_000)

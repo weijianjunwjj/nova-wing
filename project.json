@@ -1,0 +1,39 @@
+{
+  "name": "nova-wing",
+  "root": ".",
+  "tags": [
+    "layer:host"
+  ],
+  "implicitDependencies": [
+    "guardian",
+    "core",
+    "sqlite",
+    "host-snapshot",
+    "testing"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "workspace"
+      ],
+      "outputs": [
+        "{workspaceRoot}/dist"
+      ],
+      "options": {
+        "command": "npm run build"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "workspace"
+      ],
+      "options": {
+        "command": "npm run typecheck"
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE_FORBIDDEN_PATHS } from '../../workspace-scope.js'
+import { effectiveWorkspacePermissions } from '../../workspace-scope.js'
 import { createDeliveryTaskRetryValidator } from '../../delivery/task-retry-binding.js'
 import { VENV_PYTEST_COMMANDS } from '../../platform/executables.js'
 import { platformPaths } from '../../platform/paths.js'
@@ -82,7 +82,9 @@ import {
 import { createDesktopRepairNotifier, type RepairNotifier } from './repair-notifier.js'
 import { defaultTaskRunAnalyticsPath, TaskRunAnalyticsStore } from '../task-run-analytics.js'
 import { createCodexPlanningProvider } from '../../planning/provider.js'
-import { createCodexPlanningSemanticReviewer } from '../../planning/semantic-reviewer.js'
+import { createDeepSeekPlanningSemanticReviewer } from '../../planning/semantic-reviewer.js'
+import { createAdvisoryRunner } from '../../advisory-model.js'
+import { EscalationService, collectAdjudicationEvidence } from '../../escalation/index.js'
 import { PlanningInputError, PlanningService, PlanningStore } from '../../planning/service.js'
 import { PlanningEventStore } from '../../planning/telemetry.js'
 import { validateDevelopmentPlan } from '../../planning/validator.js'
@@ -149,7 +151,6 @@ const DEFAULT_GUARDIAN_POLICY = {
     'Do not modify files outside allowedPaths.',
     'Do not push changes.',
   ],
-  forbiddenPaths: DEFAULT_WORKSPACE_FORBIDDEN_PATHS,
 } as const
 
 export interface LaunchpadConfigSummary {
@@ -188,6 +189,7 @@ export interface NovaWingLaunchpadAddress {
 interface ManagedWorkSessionApp {
   controller: {
     start(): { started: boolean }
+    requestPause?(): { accepted: boolean; reason?: string }
     getSnapshot?(): { runtime: { displayState?: WorkSessionDisplayState } }
     /** Optional redacted update-safety projection. Absence fails the safety read closed. */
     getUpdateSafetyView?(): WorkSessionUpdateSafetyView
@@ -287,6 +289,7 @@ export interface NovaWingLaunchpadDependencies {
   analyticsPath?: string
   /** Isolated planning service; its approval never creates a Work Session. */
   planningService?: PlanningService
+  escalationService?: EscalationService
   deliveryService?: DeliveryService
   /** Trusted host integration only; Customer Mode never supplies verification wiring. */
   deliveryResolver?: VerificationCapabilityResolver
@@ -621,6 +624,7 @@ export class NovaWingLaunchpad {
   private readonly repairNotifier: RepairNotifier
   private readonly analyticsPath: string
   private readonly planningService: PlanningService
+  private readonly escalationService: EscalationService
   private readonly deliveryStore: DeliveryStore
   private readonly deliveryService: DeliveryService
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
@@ -700,8 +704,10 @@ export class NovaWingLaunchpad {
       createCodexPlanningProvider(),
       new PlanningStore(join(platformPaths().data, 'planning', 'plans')),
       new PlanningEventStore(join(platformPaths().data, 'planning', 'events.jsonl')),
-      createCodexPlanningSemanticReviewer(),
+      createDeepSeekPlanningSemanticReviewer(),
     )
+    this.escalationService = dependencies.escalationService ?? new EscalationService(
+      join(dependencies.deliveryDataRoot ?? join(platformPaths().data, 'delivery'), 'escalations'), createAdvisoryRunner('ADJUDICATOR'))
     this.deliveryStore = new DeliveryStore(dependencies.deliveryDataRoot ?? join(platformPaths().data, 'delivery'))
     this.deliveryService = dependencies.deliveryService ?? new DeliveryService(
       this.deliveryStore,
@@ -1051,8 +1057,64 @@ export class NovaWingLaunchpad {
       await this.servePlanningGenerate(request, response)
       return
     }
+    if (method === 'POST' && path === '/api/planning/review') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) || typeof body.contentHash !== 'string') {
+        this.respondJson(response, 400, { error: 'Exact planId, version and contentHash required.' }); return
+      }
+      try { this.respondJson(response, 200, await this.planningService.review(body.planId, body.version as number, body.contentHash)) }
+      catch (error) { this.respondJson(response, error instanceof PlanningInputError ? 409 : 503,
+        { error: error instanceof PlanningInputError ? error.message : 'Independent planning review unavailable.' }) }
+      return
+    }
     if (method === 'POST' && path === '/api/planning/approve') {
       await this.servePlanningApprove(request, response)
+      return
+    }
+    if (method === 'POST' && path === '/api/governance/escalate') {
+      const body = await this.planningBody(request, response)
+      if (body === undefined) return
+      if (typeof body.planId !== 'string' || !Number.isSafeInteger(body.version) ||
+        typeof body.reason !== 'string' || (body.runtimePlanId !== undefined && typeof body.runtimePlanId !== 'string')) {
+        this.respondJson(response, 400, { error: 'Exact plan version and adjudication reason required.' }); return
+      }
+      try {
+        const plan = await this.planningService.get(body.planId)
+        if (!plan || plan.version !== body.version) { this.respondJson(response, 409, { error: 'Plan version changed.' }); return }
+        let evidence: unknown = { missing: ['Planning-only packet; no implementation or test evidence supplied.'] }
+        if (typeof body.runtimePlanId === 'string') {
+          const runtimePlan = await this.deliveryStore.getPlan(body.runtimePlanId)
+          const snapshot = await this.planningService.getSnapshot(plan.id, plan.version)
+          if (!runtimePlan || !snapshot || runtimePlan.sourceSnapshotId !== snapshot.id || runtimePlan.sourcePlanHash !== snapshot.planHash.value) {
+            this.respondJson(response, 409, { error: 'Runtime plan does not match this exact frozen plan.' }); return
+          }
+          const active = [...this.liveApps.entries()].filter(([id, entry]) =>
+            this.configs.get(id)?.config.session.targetRepo === runtimePlan.targetBinding.canonicalPath && entry.app.hasActiveSession())
+          if (active.length) {
+            for (const [, entry] of active) entry.app.controller.requestPause?.()
+            this.respondJson(response, 409, { error: '已请求在执行边界暂停。暂停完成后再次点击纠偏，避免基于变化中的代码裁决。' }); return
+          }
+          evidence = await collectAdjudicationEvidence(runtimePlan)
+        }
+        const record = await this.escalationService.escalate({ schemaVersion: 1, planId: plan.id,
+          planVersion: plan.version, reason: body.reason, plan: JSON.parse(JSON.stringify(plan)) as unknown, evidence })
+        this.respondJson(response, record.status === 'DECIDED' ? 200 : 503, {
+          id: record.id, planId: record.packet.planId, version: record.packet.planVersion,
+          packetHash: record.packetHash, status: record.status, decision: record.decision,
+          ...(record.status === 'FAILED' ? { error: '纠偏模型不可用或返回无效结果；裁决未生效。' } : {}),
+        })
+      } catch { this.respondJson(response, 409, { error: '纠偏证据无法绑定当前方案；执行权限未改变。' }) }
+      return
+    }
+    const escalationPath = /^\/api\/governance\/escalations\/([a-f0-9-]{36})$/u.exec(path)
+    if (method === 'GET' && escalationPath) {
+      if (!this.authorizeMutation(request, response)) return
+      try {
+        const record = await this.escalationService.get(escalationPath[1]!)
+        this.respondJson(response, 200, { id: record.id, planId: record.packet.planId, version: record.packet.planVersion,
+          packetHash: record.packetHash, status: record.status, decision: record.decision })
+      } catch { this.respondJson(response, 404, { error: 'Adjudication not found or integrity failed.' }) }
       return
     }
     if (method === 'POST' && path === '/api/delivery/prepare') {
@@ -1183,7 +1245,7 @@ export class NovaWingLaunchpad {
 
     const knownPaths = new Set([
       '/', '/advanced', '/customer', '/customer/app.js', '/customer/styles.css',
-      '/api/planning/plans', '/api/planning/generate', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
+      '/api/planning/plans', '/api/planning/generate', '/api/planning/review', '/api/planning/approve', '/api/planning/answers', '/api/planning/change-requests',
       '/api/delivery/prepare', '/api/delivery/start',
       '/app.js', '/styles.css', '/api/session/start', '/api/session/create',
       '/api/session/repair', '/api/session/delete', '/api/session/branch', '/api/session/brief', '/api/session/configs',
@@ -1648,8 +1710,7 @@ export class NovaWingLaunchpad {
       agents: composerAgentProfiles(definition.id, reviewerProvider),
       tasks: definition.tasks.map((task) => ({ id: task.id, goal: task.goal,
         guardian: { constraints: [...(task.constraints ?? [])], acceptanceCriteria: [...(task.acceptanceCriteria ?? [])],
-          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], allowedPaths: [...(task.allowedPaths ?? [])],
-          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths] },
+          doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo], ...effectiveWorkspacePermissions(task) },
         acceptanceEvidenceBindings: [...(task.acceptanceEvidenceBindings ?? [])],
         ...(task.contribution === undefined ? {} : { contribution: task.contribution }), risk: 'HIGH' })),
       gitCheckpoint: { autoCommit: true, autoPush: false }, runtimeConfig: { managed: true },
@@ -1925,8 +1986,7 @@ export class NovaWingLaunchpad {
           constraints: [...DEFAULT_GUARDIAN_POLICY.constraints, ...(input.guardian.constraints ?? [])],
           acceptanceCriteria: [...DEFAULT_GUARDIAN_POLICY.acceptanceCriteria, ...contract.acceptanceCriteria],
           doNotDo: [...DEFAULT_GUARDIAN_POLICY.doNotDo, ...(input.guardian.doNotDo ?? [])],
-          allowedPaths: input.guardian.allowedPaths,
-          forbiddenPaths: [...DEFAULT_GUARDIAN_POLICY.forbiddenPaths, ...(input.guardian.forbiddenPaths ?? [])],
+          ...effectiveWorkspacePermissions(input.guardian),
         },
         acceptanceEvidenceBindings: composerEvidenceBindings(
           contract.acceptanceCriteria,
@@ -2422,8 +2482,11 @@ export async function createNovaWingLaunchpad(options: {
       createCodexPlanningProvider(options.env === undefined ? {} : { env: options.env }),
       new PlanningStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'plans')),
       new PlanningEventStore(join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'planning', 'events.jsonl')),
-      createCodexPlanningSemanticReviewer(options.env === undefined ? {} : { env: options.env }),
+      createDeepSeekPlanningSemanticReviewer(options.env === undefined ? {} : { env: options.env }),
     ),
+    escalationService: dependencies?.escalationService ?? new EscalationService(
+      join(dependencies?.deliveryDataRoot ?? join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'delivery'), 'escalations'),
+      createAdvisoryRunner('ADJUDICATOR', options.env === undefined ? {} : { env: options.env })),
     ...(dependencies?.deliveryService === undefined ? {} : { deliveryService: dependencies.deliveryService }),
     deliveryDataRoot: join((options.env === undefined ? platformPaths() : platformPaths({ env: options.env })).data, 'delivery'),
     analyticsPath: dependencies?.analyticsPath ?? defaultTaskRunAnalyticsPath(options.env),

@@ -3,6 +3,7 @@ import type { VerificationFailureClassification, VerificationResult } from '../m
 import type { DecisionReasonCode } from './task-observability.js'
 import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale, unmappedAcceptanceCriteria } from './risk-evidence.js'
 import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
+import { hasGovernanceDrift } from '../governance/index.js'
 
 export type TaskAction = 'ANALYZE' | 'EXECUTE' | 'VERIFY' | 'REVIEW' | 'REQUEST_APPROVAL' | 'RECONCILE' | 'SUSPEND' | 'COMPLETE'
 export interface ControllerRuntimeState { reconciliationRequired?: boolean }
@@ -41,6 +42,9 @@ export function canonicalVerificationFailure(value: VerificationFailureClassific
 export class TaskController {
   /** The authoritative V2 next-action and completion gate. */
   decide(task: TaskStateV2, runtime: ControllerRuntimeState = {}): TaskActionDecision {
+    if (hasGovernanceDrift(task.completion.review?.blockingFindings ?? [])) return {
+      action: 'SUSPEND', reasonCode: 'BLOCKER_PRESENT', reason: 'GOVERNANCE_DRIFT: frozen goal or scope changed; independent adjudication and re-review required',
+    }
     if (runtime.reconciliationRequired) return { action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', reason: 'persisted task facts require repository reconciliation' }
     if (task.status === 'FAILED') return { action: 'SUSPEND', reasonCode: 'FAILED_TASK_RECOVERY', reason: 'failed task requires recovery' }
     if (task.blockers.length > 0) return { action: 'SUSPEND', reasonCode: 'BLOCKER_PRESENT', reason: 'unresolved blocker prevents completion' }

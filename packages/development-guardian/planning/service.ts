@@ -13,10 +13,19 @@ const MAX_FEEDBACK_CHARS = 4_000
 
 export class PlanningInputError extends Error {}
 
+/** Hash the reviewable business contract; the pending verdict is not part of its identity. */
+export function planningReviewContentHash(plan: DevelopmentPlan): string {
+  return planContentHash(canonicalPlanContent({ ...plan, semanticReview: { verdict: 'PASS', issues: [] } }))
+}
+
+
 function hasPassedApprovalGates(plan: DevelopmentPlan): boolean {
-  return plan.semanticReview?.verdict === 'PASS' && plan.semanticReview.issues.length === 0 &&
+  const binding = plan.semanticReviewBinding
+  return binding !== undefined && binding.planId === plan.id && binding.planVersion === plan.version &&
+    binding.reviewer.trim().length > 0 && binding.model.trim().length > 0 &&
+    plan.semanticReview?.verdict === 'PASS' && plan.semanticReview.issues.length === 0 &&
     Array.isArray(plan.customerQuestions) && !plan.customerQuestions.some((question) => question.blocking) &&
-    validateDevelopmentPlan(plan).pass
+    validateDevelopmentPlan(plan).pass && binding.contentHash === planContentHash(canonicalPlanContent(plan))
 }
 
 export class PlanningStore {
@@ -303,47 +312,19 @@ export class PlanningService {
           await emitRevisionCompleted(plan.version)
           return { plan, validation }
         }
-        await emit('planning.semantic_review.started', 'planning', { planVersion: plan.version })
-        const reviewStarted = Date.now()
-        try {
-          const result = await this.semanticReviewer({ requirement: [text, ...requirement.revisionNotes].join('\n\n'), plan })
-          const reviewed = semanticReviewSchema.parse(result.review)
-          if ((reviewed.verdict === 'PASS') !== (reviewed.issues.length === 0)) throw new Error('Contradictory planning review.')
-          plan.semanticReview = reviewed
-          await this.events.append({
-            planningSessionId: id,
-            type: result.review.verdict === 'PASS' ? 'planning.semantic_review.passed' : 'planning.semantic_review.failed',
-            actorRole: 'planning',
-            ...(result.provider === undefined ? {} : { provider: result.provider }),
-            ...(result.model === undefined ? {} : { model: result.model }),
-            durationMs: Date.now() - reviewStarted,
-            ...(result.inputTokens === undefined && result.outputTokens === undefined && result.cachedTokens === undefined ? {} : { usage: {
-              ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
-              ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
-              ...(result.cachedTokens === undefined ? {} : { cachedTokens: result.cachedTokens }),
-            } }),
-            ...(result.estimatedCost === undefined ? {} : { estimatedCost: result.estimatedCost }),
-            metadata: { planVersion: plan.version, issueCount: result.review.issues.length },
-          })
-        } catch {
-          plan.semanticReview = { verdict: 'REVISION_REQUIRED', issues: [{
-            code: 'REVIEW_UNAVAILABLE', path: 'semanticReview',
-            message: 'Planning semantic review was unavailable; approval is blocked.', sourceExcerpt: '',
-          }] }
-          await this.events.append({ planningSessionId: id, type: 'planning.semantic_review.failed', actorRole: 'planning',
-            durationMs: Date.now() - reviewStarted, metadata: { issueCount: 1 } })
+        if (!await this.reviewPlan(plan, response.provider)) {
           plan.status = 'planning_failed'
           await this.store.save(plan)
           if (change !== undefined) await this.store.markChangeRevisionStarted(change)
           await emitRevisionCompleted(plan.version)
           return { plan, validation }
         }
-        if (plan.semanticReview.verdict === 'REVISION_REQUIRED' && attempt < 2) {
+        if (plan.semanticReview?.verdict === 'REVISION_REQUIRED' && attempt < 2) {
           validationFeedback = plan.semanticReview.issues.slice(0, 30).map((issue) =>
             `${issue.code} at ${issue.path}: ${issue.message}${issue.sourceExcerpt ? ` [source: ${issue.sourceExcerpt}]` : ''}`).join('\n')
           continue
         }
-        plan.status = plan.semanticReview.verdict === 'PASS'
+        plan.status = plan.semanticReview?.verdict === 'PASS'
           ? plan.customerQuestions.some((question) => question.blocking) ? 'needs_customer_input' : 'ready_for_approval'
           : 'planning_failed'
         await this.store.save(plan)
@@ -357,6 +338,81 @@ export class PlanningService {
     } finally {
       this.activePlanIds.delete(id)
     }
+  }
+
+
+  private async reviewPlan(plan: DevelopmentPlan, plannerProvider?: string): Promise<boolean> {
+    delete plan.semanticReviewBinding
+    await this.events.append({ planningSessionId: plan.id, type: 'planning.semantic_review.started', actorRole: 'planning', metadata: { planVersion: plan.version } })
+    const reviewStarted = Date.now()
+    try {
+      const result = await this.semanticReviewer({ requirement: [plan.requirement.text, ...(plan.requirement.revisionNotes ?? [])].join('\n\n'), plan: structuredClone(plan) })
+      if (plannerProvider !== undefined && result.provider === plannerProvider) throw new Error('Planner cannot approve its own provider output.')
+      const reviewed = semanticReviewSchema.parse(result.review)
+      if ((reviewed.verdict === 'PASS') !== (reviewed.issues.length === 0)) throw new Error('Contradictory planning review.')
+      plan.semanticReview = reviewed
+      if (reviewed.verdict === 'PASS') plan.semanticReviewBinding = {
+        planId: plan.id, planVersion: plan.version, contentHash: planContentHash(canonicalPlanContent(plan)),
+        reviewer: result.provider ?? 'injected-independent-auditor', model: result.model ?? 'injected',
+      }
+      await this.events.append({
+        planningSessionId: plan.id,
+        type: result.review.verdict === 'PASS' ? 'planning.semantic_review.passed' : 'planning.semantic_review.failed',
+        actorRole: 'planning',
+        ...(result.provider === undefined ? {} : { provider: result.provider }),
+        ...(result.model === undefined ? {} : { model: result.model }),
+        durationMs: Date.now() - reviewStarted,
+        ...(result.inputTokens === undefined && result.outputTokens === undefined && result.cachedTokens === undefined ? {} : { usage: {
+          ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
+          ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
+          ...(result.cachedTokens === undefined ? {} : { cachedTokens: result.cachedTokens }),
+        } }),
+        ...(result.estimatedCost === undefined ? {} : { estimatedCost: result.estimatedCost }),
+        metadata: { planVersion: plan.version, issueCount: result.review.issues.length },
+      })
+    } catch {
+      delete plan.semanticReviewBinding
+      plan.semanticReview = { verdict: 'REVISION_REQUIRED', issues: [{
+        code: 'REVIEW_UNAVAILABLE', path: 'semanticReview',
+        message: 'Planning semantic review was unavailable; approval is blocked.', sourceExcerpt: '',
+      }] }
+      await this.events.append({ planningSessionId: plan.id, type: 'planning.semantic_review.failed', actorRole: 'planning',
+        durationMs: Date.now() - reviewStarted, metadata: { issueCount: 1 } })
+      return false
+    }
+    return true
+  }
+
+  /** Explicit same-version review; never calls the planner, approves, freezes or starts Runtime. */
+  async review(id: string, version: number, contentHash: string): Promise<{ plan: DevelopmentPlan; validation: PlanValidation }> {
+    if (!Number.isSafeInteger(version) || !/^[a-f0-9]{64}$/u.test(contentHash)) throw new PlanningInputError('Exact review version and content hash required.')
+    if (this.activePlanIds.has(id)) throw new PlanningInputError('Planning session is busy.')
+    this.activePlanIds.add(id)
+    try {
+      const plan = await this.store.get(id)
+      if (!plan || plan.version !== version || plan.status !== 'planning_failed' ||
+        planningReviewContentHash(plan) !== contentHash || await this.store.getSnapshot(id, version))
+        throw new PlanningInputError('Review target is stale or is not a failed unfrozen plan.')
+      const validation = validateDevelopmentPlan(plan)
+      if (!validation.pass) throw new PlanningInputError('Plan must pass deterministic validation before independent review.')
+      // Persisted, sanitized generation provenance preserves provider independence across restarts.
+      const events = (await readFile(this.events.path, 'utf8')).trim().split('\n').filter(Boolean)
+        .map((line) => JSON.parse(line) as NovaWingEvent)
+      const generation = events.findLast((event) => event.planningSessionId === id &&
+        event.type === 'development_plan.generated' && event.metadata.planVersion === version)
+      if (!generation?.provider) throw new PlanningInputError('Planner provider provenance is unavailable.')
+      await this.reviewPlan(plan, generation.provider)
+      const current = await this.store.get(id)
+      if (!current || current.version !== version || current.status !== 'planning_failed' ||
+        planningReviewContentHash(current) !== contentHash || await this.store.getSnapshot(id, version))
+        throw new PlanningInputError('Review target changed; result discarded.')
+      plan.status = plan.semanticReview?.verdict === 'PASS'
+        ? plan.customerQuestions.some((question) => question.blocking) ? 'needs_customer_input' : 'ready_for_approval'
+        : 'planning_failed'
+      plan.updatedAt = new Date().toISOString()
+      await this.store.save(plan)
+      return { plan, validation }
+    } finally { this.activePlanIds.delete(id) }
   }
 
   async answerQuestions(id: string, version: number, selections: Array<{ questionId: string; selectedOptionId: string; freeformAnswer?: string }>): Promise<CustomerAnswer[]> {

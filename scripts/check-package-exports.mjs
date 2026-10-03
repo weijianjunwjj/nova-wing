@@ -31,8 +31,10 @@ const expectedRuntimeExports = {
   'nova-wing/core': ['NovaWingError', 'createNovaWingFacade', 'isNovaWingError'],
   'nova-wing/development-guardian': [
     'AskBridgeBrain',
-    'PlanningEventStore', 'PlanningInputError', 'PlanningService', 'PlanningStore',
+    'PlanningEventStore', 'PlanningInputError', 'PlanningService', 'PlanningStore', 'planningReviewContentHash',
     'buildCoverage', 'createCodexPlanningProvider', 'createCodexPlanningSemanticReviewer', 'createDevelopmentPlan',
+    'createDeepSeekPlanningSemanticReviewer', 'GOVERNANCE_ROLES', 'GOVERNANCE_DRIFT', 'hasGovernanceDrift',
+    'EscalationService', 'adjudicationSchema',
     'planDraftSchema', 'requirementClauseSchema', 'semanticReviewSchema', 'validateCustomerQuestion', 'validateDevelopmentPlan',
     'canonicalSerialize', 'canonicalPlanContent', 'planContentHash', 'createPlanSnapshot', 'verifyPlanSnapshot',
     'bindDeliveryTarget', 'inspectDeliveryTarget', 'compileRuntimePlan', 'admitRuntimePlan',

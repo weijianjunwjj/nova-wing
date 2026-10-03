@@ -1,0 +1,28 @@
+{
+  "name": "checks",
+  "root": "tests",
+  "tags": [
+    "layer:verification"
+  ],
+  "implicitDependencies": [
+    "nova-wing",
+    "core",
+    "sqlite",
+    "host-snapshot",
+    "testing",
+    "guardian",
+    "governance",
+    "escalation",
+    "desktop"
+  ],
+  "targets": {
+    "check": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "npm run check",
+        "cwd": "."
+      }
+    }
+  }
+}
