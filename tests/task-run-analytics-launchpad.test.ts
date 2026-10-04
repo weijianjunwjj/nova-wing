@@ -1,3 +1,4 @@
+import { startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -26,13 +27,13 @@ test('Launchpad exposes stable task/session/recent/reasons Analytics APIs', asyn
   store.close()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, dependencies: { analyticsPath, readCodexAvailability: () => ({ state: 'available' }) } })
   try {
-    const address = await launchpad.start()
-    const recent = await fetch(`${address.url}/api/analytics/recent?limit=5`).then((response) => response.json()) as { aggregate: { taskCount: number; completedCount: number; zeroHumanCompletionCount: number; zeroHumanCompletionRate: number | null } }
-    const session = await fetch(`${address.url}/api/analytics/sessions/S-api`).then((response) => response.json()) as unknown[]
-    const taskRows = await fetch(`${address.url}/api/analytics/tasks/T-api`).then((response) => response.json()) as unknown[]
-    const reasons = await fetch(`${address.url}/api/analytics/reasons?limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
-    const actionable = await fetch(`${address.url}/api/analytics/reasons?class=actionable&limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
-    const invalid = await fetch(`${address.url}/api/analytics/reasons?class=everything`)
+    const address = await startOperator(launchpad)
+    const recent = await sessionFetch(`${address.url}/api/analytics/recent?limit=5`).then((response) => response.json()) as { aggregate: { taskCount: number; completedCount: number; zeroHumanCompletionCount: number; zeroHumanCompletionRate: number | null } }
+    const session = await sessionFetch(`${address.url}/api/analytics/sessions/S-api`).then((response) => response.json()) as unknown[]
+    const taskRows = await sessionFetch(`${address.url}/api/analytics/tasks/T-api`).then((response) => response.json()) as unknown[]
+    const reasons = await sessionFetch(`${address.url}/api/analytics/reasons?limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
+    const actionable = await sessionFetch(`${address.url}/api/analytics/reasons?class=actionable&limit=20`).then((response) => response.json()) as Array<{ reasonCode: string; count: number }>
+    const invalid = await sessionFetch(`${address.url}/api/analytics/reasons?class=everything`)
     assert.equal(recent.aggregate.taskCount, 1); assert.equal(session.length, 1); assert.equal(taskRows.length, 1)
     assert.equal(recent.aggregate.completedCount, 1); assert.equal(recent.aggregate.zeroHumanCompletionCount, 1); assert.equal(recent.aggregate.zeroHumanCompletionRate, 1)
     assert.deepEqual(reasons, [{ reasonCode: 'COMPLETION_CRITERIA_SATISFIED', count: 1 }, { reasonCode: 'PROVIDER_UNAVAILABLE', count: 1 }])

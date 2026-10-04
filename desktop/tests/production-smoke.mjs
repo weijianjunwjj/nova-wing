@@ -1,3 +1,4 @@
+import { sessionFetch as fetch, mintSession } from './operator-session.mjs'
 import assert from 'node:assert/strict'
 import { app } from 'electron'
 import { desktopReady, desktopInstance, shutdownDesktop } from '../main/index.mjs'
@@ -11,6 +12,7 @@ void desktopReady.then(async (desktop) => {
     assert.equal(desktopInstance.hostCreateCount, 1)
     assert.equal(desktop.window.isVisible(), true)
     assert.equal(desktop.tray.tray.isDestroyed(), false)
+    await mintSession(desktop.host.bootstrapUrl(desktop.host.launchpadUrl))
     const response = await fetch(desktop.host.launchpadUrl)
     assert.equal(response.status, 200)
     await response.text()

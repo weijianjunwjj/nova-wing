@@ -27,6 +27,7 @@ export const platformAdapters = {
   'packages/development-guardian/platform/windows-task-run-notifier.ts': 'Guarded optional Windows toast adapter.',
   'scripts/platform/npm-command.mjs': 'Node/npm CLI process entrypoint for tooling without shell shims.',
   'scripts/platform/desktop-smoke-environment.mjs': 'Isolated Electron smoke environment and owned child process cleanup for each host.',
+  'scripts/run-isolated-tests.mjs': 'Test-only process entrypoint: temporary HOME, OS data/config roots and Git identity before loading application code.',
   'scripts/guardian-repair-notification-smoke.mjs': 'Explicit Windows notification acceptance script, not an app prerequisite.',
   'scripts/novawing-notification-channel-smoke.mjs': 'Notification acceptance script with deliberate Windows fixtures.',
   'scripts/check-platform-boundaries.mjs': 'Static guard definitions (not runtime).',

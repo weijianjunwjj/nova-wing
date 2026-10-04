@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from '../../operator-session.js'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
@@ -62,9 +63,9 @@ function healthyReport(): DependencyHealthReport {
 async function postCreate(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/create`, {
+  return sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -112,7 +113,7 @@ export const s111: CertificationScenario = {
       },
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const response = await postCreate(launchpad, {
         requestId: `cert-s111-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}-00000000`,
         targetRepo: repo,

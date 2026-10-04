@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from '../../operator-session.js'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -35,9 +36,9 @@ function fakeApp(onCreate: (config: TrustedWorkSessionConfig) => void) {
 async function postCreate(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/create`, {
+  return sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -72,7 +73,7 @@ export const s17: CertificationScenario = {
       createWorkSession: fakeApp((config) => { created = config }),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const brief = analyzeTaskBrief(`Goal:\n为用户创建接口补充输入参数校验。\n\nAcceptance Criteria:\nAC1 Invalid email is rejected with HTTP 400 => npm test -- --runInBand <对应测试>\n\nAllowed Paths:\napps/api/**`)
       h.check(brief.fields.acceptanceCriteria?.[0] === 'AC1 Invalid email is rejected with HTTP 400', 'natural-language brief composes the criterion independently from its verifier')
       const response = await postCreate(launchpad, request(`cert-s17-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
@@ -104,7 +105,7 @@ export const s18: CertificationScenario = {
       createWorkSession: fakeApp(() => { createCalls++ }),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const response = await postCreate(launchpad, request(`cert-s18-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['AC1 Invalid email is rejected with HTTP 400 => npm test -- <对应测试>'],
       }))
@@ -147,9 +148,9 @@ export const s20: CertificationScenario = {
 async function postRepair(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/repair`, {
+  return sessionFetch(`${address.url}/api/session/repair`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -210,7 +211,7 @@ export const s21: CertificationScenario = {
       repairLlmAgent: rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       // A single POST /api/session/create — the operator never sees a red screen.
       const response = await postCreate(launchpad, request(`cert-s21-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['Tests pass'],
@@ -249,7 +250,7 @@ export const s22: CertificationScenario = {
       repairLlmAgent: rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const create = await postCreate(launchpad, request(`cert-s22-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['AC1 invalid input => npm test -- <对应测试>'],
       }))
@@ -296,7 +297,7 @@ export const s23: CertificationScenario = {
       repairLlmAgent: rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s23-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['Tests pass'],
       }))
@@ -332,7 +333,7 @@ export const s24: CertificationScenario = {
       repairLlmAgent: s24Rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s24-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['Tests pass'],
       }))
@@ -367,7 +368,7 @@ export const s25: CertificationScenario = {
       repairLlmAgent: s25Rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s25-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['custom proof'],
         acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
@@ -407,7 +408,7 @@ export const s26: CertificationScenario = {
       repairLlmAgent: rec.llmAgent(),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const ok = await postRepair(launchpad, request(`cert-s26a-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: ['Tests pass'],
       }))
@@ -449,7 +450,7 @@ export const s27: CertificationScenario = {
       repairProvider: { id: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s27-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: [LLM_ONLY_CRITERION],
       }))
@@ -487,7 +488,7 @@ export const s28: CertificationScenario = {
       }),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s28-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: [LLM_ONLY_CRITERION],
       }))
@@ -532,7 +533,7 @@ export const s29: CertificationScenario = {
       ]),
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s29-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: [LLM_ONLY_CRITERION, 'custom proof'],
         acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
@@ -569,7 +570,7 @@ export const s30: CertificationScenario = {
       repairProvider: { id: 'codex', model: 'gpt-5.6-terra', reasoningEffort: 'high' },
     } })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const repair = await postRepair(launchpad, request(`cert-s30-${ctx.dirs.runId.replace(/[^a-z0-9_-]/giu, '')}`, repo, {
         acceptanceCriteria: [LLM_ONLY_CRITERION],
       }))

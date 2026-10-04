@@ -1,0 +1,162 @@
+{
+  "head": "d88fb9a0881c7b3c119fc522fc01fabf2d02c18b",
+  "status": "SIMPLIFY_REPLAY",
+  "cases": {
+    "D": {
+      "matrix": [
+        {
+          "name": "name_only_change",
+          "status": "BLOCKED",
+          "blockers": [
+            "reviewer independence violated: agent different-reviewer-name shares the implementer runtime identity (self-review); agent different-reviewer-name uses provider audit-executor, which produced the implementation"
+          ],
+          "adapterCalls": 0
+        },
+        {
+          "name": "runtime_name_change_same_provider",
+          "status": "BLOCKED",
+          "blockers": [
+            "reviewer independence violated: agent different-reviewer-name uses provider audit-executor, which produced the implementation"
+          ],
+          "adapterCalls": 0
+        },
+        {
+          "name": "provider_change_same_runtime",
+          "status": "BLOCKED",
+          "blockers": [
+            "reviewer independence violated: agent different-reviewer-name shares the implementer runtime identity (self-review)"
+          ],
+          "adapterCalls": 0
+        },
+        {
+          "name": "review_role_absent",
+          "status": "BLOCKED",
+          "blockers": [
+            "reviewer independence violated: agent different-reviewer-name is not review-capable"
+          ],
+          "adapterCalls": 0
+        },
+        {
+          "name": "distinct_logical_provider_and_runtime_same_process",
+          "status": "SUCCESS",
+          "blockers": [],
+          "adapterCalls": 1,
+          "reviewer": {
+            "agent": "different-reviewer-name",
+            "provider": "audit-reviewer",
+            "runtimeIdentity": "different-runtime"
+          }
+        }
+      ],
+      "authority": "LOGICAL_ROLE",
+      "checked": [
+        "provider",
+        "runtimeIdentity",
+        "review capability",
+        "provider availability/health",
+        "repository unchanged"
+      ],
+      "notChecked": [
+        "account principal",
+        "OS identity",
+        "process id",
+        "signature"
+      ]
+    },
+    "A": {
+      "reviewDispatcher": {
+        "status": "BLOCKED",
+        "blockers": [
+          "Contributor review returned a customer assertion verdict."
+        ]
+      },
+      "reviewerCalls": 1,
+      "storeError": "Task completion has no exact local verification proof.",
+      "assessment": {
+        "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+        "status": "CUSTOMER_DELIVERY_BLOCKED",
+        "completedRuntimeTaskIds": [],
+        "blockedRuntimeTaskIds": [
+          "T1",
+          "T2"
+        ],
+        "blockingAssertionIds": [
+          "A1"
+        ]
+      },
+      "result": "CONTRIBUTOR_OWNER_ESCALATION_BLOCKED"
+    },
+    "B": {
+      "runtimeStringOnlyChange": {
+        "name": "runtime_name_change_same_provider",
+        "status": "BLOCKED",
+        "blockers": [
+          "reviewer independence violated: agent different-reviewer-name uses provider audit-executor, which produced the implementation"
+        ],
+        "adapterCalls": 0
+      },
+      "acceptanceStringSpoof": {
+        "callerRole": "executor in test fixture",
+        "submittedIdentity": "executor-pretending-independent-reviewer",
+        "error": "External acceptance requires a bound assertion, identified reviewer and concrete evidence.",
+        "assessment": {
+          "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+          "status": "CUSTOMER_DELIVERY_BLOCKED",
+          "completedRuntimeTaskIds": [
+            "T1"
+          ],
+          "blockedRuntimeTaskIds": [],
+          "blockingAssertionIds": [
+            "A1"
+          ]
+        },
+        "result": "BLOCKED_AFTER_REOPEN"
+      }
+    },
+    "C": {
+      "withoutToken": {
+        "status": 403,
+        "body": {
+          "error": "Operator session required."
+        }
+      },
+      "withToken": {
+        "status": 403,
+        "body": {
+          "error": "Operator session required."
+        }
+      },
+      "reopenedAssessment": {
+        "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+        "status": "CUSTOMER_DELIVERY_BLOCKED",
+        "completedRuntimeTaskIds": [
+          "T1"
+        ],
+        "blockedRuntimeTaskIds": [],
+        "blockingAssertionIds": [
+          "A1"
+        ]
+      },
+      "authenticatedPrincipal": "Host operator session; body identity rejected",
+      "submittedIdentity": "customer-owner-whose-identity-caller-does-not-own",
+      "withSessionSpoof": {
+        "status": 400,
+        "body": {
+          "error": "IDENTITY_FIELDS_NOT_ACCEPTED"
+        }
+      },
+      "result": "OTHER_IDENTITY_BLOCKED"
+    }
+  },
+  "limitations": [
+    "No real provider, account principal, OS sandbox or model invoked; reviewer matrix uses deliberately same-process adapter with production dispatcher and real isolated Git inspection.",
+    "Single synthetic assertion; seeded DEFERRED local completion isolates signer authority without running customer delivery."
+  ],
+  "result": "F2_PASS_BOUNDARY_ENFORCED",
+  "authority": {
+    "runtimeReview": "2 LOGICAL_ROLE",
+    "externalAcceptance": "LOCAL_OPERATOR_UI / LAUNCHPAD_SESSION",
+    "strongerLevels": "No account-principal / cryptographic / OS signer verification observed"
+  },
+  "targetFinalStatus": ""
+}

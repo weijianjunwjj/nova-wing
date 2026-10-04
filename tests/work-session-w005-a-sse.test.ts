@@ -1,3 +1,4 @@
+import { startOperator, sessionFetch } from './operator-session.js'
 /**
  * W005-A SSE — text/event-stream、connected/snapshot/activity/guardian、
  * 状态变化广播、subscriber cleanup、shutdown。
@@ -23,7 +24,7 @@ interface SseClient {
 }
 
 async function openSse(url: string): Promise<SseClient> {
-  const res = await fetch(url)
+  const res = await sessionFetch(url)
   if (!res.body) {
     throw new Error('SSE response has no body')
   }
@@ -61,7 +62,7 @@ async function readUntil(
 await test('W005-A SSE: text/event-stream with connected + snapshot', async () => {
   const s = await startServer()
   try {
-    const res = await fetch(`${s.address.url}/api/events`)
+    const res = await sessionFetch(`${s.address.url}/api/events`)
     assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/)
     const client: SseClient = { reader: res.body!.getReader(), buffer: '' }
     const text = await readUntil(client, (t) => t.includes('event: snapshot'))
@@ -122,7 +123,7 @@ await test('W005-A SSE: guardian progress maps to event: guardian', async () => 
     pollIntervalMs: 10,
   })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   try {
     const client = await openSse(`${address.url}/api/events`)
     await readUntil(client, (t) => t.includes('event: connected'))
@@ -153,9 +154,9 @@ await test('W005-A SSE: subscriber count returns to 0 after client disconnect', 
 await test('W005-A shutdown: close clears SSE clients, polling timer, and http listener', async () => {
   const s = await startServer()
   // 触发 polling timer
-  const res = await fetch(`${s.address.url}/api/session/start`, {
+  const res = await sessionFetch(`${s.address.url}/api/session/start`, {
     method: 'POST',
-    headers: { 'X-NovaWing-Control-Token': s.token, Origin: s.address.url },
+    headers: { 'Cookie': s.token, Origin: s.address.url },
   })
   assert.equal(res.status, 202)
 

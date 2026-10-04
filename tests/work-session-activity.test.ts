@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
@@ -340,10 +341,10 @@ function config(storageUrl: string): TrustedWorkSessionConfig {
   }
 }
 
-function post(launchpad: NovaWingLaunchpad, action: string, body: unknown): Promise<Response> {
+async function post(launchpad: NovaWingLaunchpad, action: string, body: unknown): Promise<Response> {
   const url = launchpad.getAddress()!.url
-  return fetch(`${url}/api/session/${action}`, { method: 'POST', body: JSON.stringify(body),
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: url } })
+  return sessionFetch(`${url}/api/session/${action}`, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: url } })
 }
 
 await test('Launchpad forwards observer through production into the existing controller', async () => {
@@ -365,7 +366,7 @@ await test('Launchpad forwards observer through production into the existing con
     },
   } })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     assert.equal(activity.events.length, 0)
     const response = await post(launchpad, 'start', { configId: launchpad.getConfigs()[0]!.configId })
     assert.equal(response.status, 202, await response.text())
@@ -407,7 +408,7 @@ await test('manual and automatic contract model repair own a lease only during r
       } })
       let request: Promise<Response> | undefined
       try {
-        await launchpad.start()
+        await startOperator(launchpad)
         assert.equal(activity.events.length, 0)
         request = post(launchpad, action, { requestId: `activity-${action}-repair-1`, targetRepo: repo,
           tasks: [{ id: 'T1', goal: 'Fix a focused helper.' }], autoCommit: false,

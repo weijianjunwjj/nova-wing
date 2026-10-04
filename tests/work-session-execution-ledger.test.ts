@@ -1080,7 +1080,7 @@ await test('Control UI exposes only safe persistent Ledger failure data', async 
     assert.match(serialized, /GIT_PUSH_FAILED/u)
     assert.match(serialized, /git push failed/u)
     assert.doesNotMatch(serialized, /SECRET_TOKEN|SECRET_KEY|SECRET_PASSWORD|SECRET_COOKIE|PROVIDER_SECRET/u)
-    assert.doesNotMatch(renderHtml({ controlToken: 'safe-token', serverOrigin: 'http://127.0.0.1' }), /SECRET_TOKEN|PROVIDER_SECRET/u)
+    assert.doesNotMatch(renderHtml({ serverOrigin: 'http://127.0.0.1' }), /SECRET_TOKEN|PROVIDER_SECRET/u)
     controller.close()
   })
 })

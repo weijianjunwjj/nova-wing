@@ -642,3 +642,21 @@ test('new window waits for first paint as well as a finished document', async ()
   await show
   assert.equal(window.visible, true)
 })
+
+test('bootstrap navigation redacts credentials from load failures and diagnostic URLs', async () => {
+  const { lifecycle, windows, diagnostics, host } = harness()
+  const bootstrap = `${host.launchpadUrl}bootstrap?code=fixture-private-code`
+  Object.assign(host, { bootstrapUrl: () => bootstrap })
+  await lifecycle.showWindow()
+  assert.equal(windows[0].loads[0], bootstrap)
+  const ready = diagnostics.findLast(({ event }) => event === 'window-show-ready')
+  assert.ok(Object.hasOwn(ready, 'windowId'), 'redaction preserves optional diagnostic fields')
+  assert.doesNotMatch(JSON.stringify(diagnostics), /fixture-private-code|[?]code=/u)
+  windows[0].load = async () => { throw new Error(`Failed loading ${bootstrap}`) }
+  await assert.rejects(loadOwnedURL(windows[0], host, host.launchpadUrl), error => {
+    assert.ok(error instanceof Error)
+    assert.equal(error.message, 'Desktop page load failed')
+    assert.doesNotMatch(error.stack, /fixture-private-code|[?]code=/u)
+    return true
+  })
+})

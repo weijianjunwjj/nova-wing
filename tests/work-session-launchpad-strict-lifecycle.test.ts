@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -139,10 +140,17 @@ function composer(requestId: string) {
   }
 }
 
-function post(launchpad: NovaWingLaunchpad, url: string, action: string, body: unknown) {
-  return fetch(`${url}/api/session/${action}`, {
+const sessionCookies = new WeakMap<NovaWingLaunchpad, string>()
+async function readyCookie(launchpad: NovaWingLaunchpad): Promise<string> {
+  let cookie = sessionCookies.get(launchpad)
+  if (!cookie) { cookie = await mintSession(launchpad); sessionCookies.set(launchpad, cookie) }
+  return cookie
+}
+
+async function post(launchpad: NovaWingLaunchpad, url: string, action: string, body: unknown) {
+  return sessionFetch(`${url}/api/session/${action}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() },
+    headers: { 'Content-Type': 'application/json', Origin: url, 'Cookie': await readyCookie(launchpad) },
     body: JSON.stringify(body),
   })
 }
@@ -197,7 +205,7 @@ test('strict Launchpad drains owned apps without waiting for HTTP preconnections
   const closeEntered = deferred()
   const apps = fakeApps({ closeGate, closeEntered })
   const launchpad = await create(directory, { createWorkSession: apps.create })
-  const address = await launchpad.start()
+  const address = await startOperator(launchpad)
   const response = await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
   assert.equal(response.status, 202)
   await response.text()
@@ -378,7 +386,7 @@ test('strict Launchpad drains an admitted repair agent, durable audit and notifi
   })
   let request: Promise<Response> | undefined
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     request = post(launchpad, address.url, 'repair', {
       ...composer('strict-gated-manual-repair'),
       guardian: {
@@ -420,9 +428,10 @@ for (const action of ['create', 'start', 'repair', 'delete'] as const) {
     let request: http.ClientRequest | undefined
     let responseOperation: Promise<number> | undefined
     try {
-      const address = await launchpad.start()
+      const address = await startOperator(launchpad)
       const configId = launchpad.getConfigs()[0]!.configId
       const body = JSON.stringify(action === 'start' || action === 'delete' ? { configId } : composer(`strict-admitted-${action}`))
+      const cookie = await readyCookie(launchpad)
       const admitted = deferred()
       inspect(launchpad).server.once('request', () => admitted.resolve())
       responseOperation = new Promise<number>((resolveResponse, rejectResponse) => {
@@ -430,7 +439,7 @@ for (const action of ['create', 'start', 'repair', 'delete'] as const) {
           method: 'POST', agent: false,
           headers: {
             'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-            Origin: address.url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(),
+            Origin: address.url, 'Cookie': cookie,
           },
         }, (response) => {
           response.resume()
@@ -480,7 +489,7 @@ test('strict Launchpad drains admitted scheduled recovery and stops further reco
   })
   let recovery: Promise<void> | undefined
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     recover = true
     recovery = inspect(launchpad).recoverScheduledSessions()
     await entered.promise
@@ -523,7 +532,7 @@ test('strict Launchpad preserves app startup and cleanup failures even when HTTP
   }) })
   let request: Promise<Response> | undefined
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     request = post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
     await entered.promise
     const closing = launchpad.close()
@@ -561,7 +570,7 @@ test('strict Launchpad attempts every cleanup and preserves HTTP and multiple ap
   const originalClose = server.close.bind(server)
   let listenerCloseCalls = 0
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     for (const config of launchpad.getConfigs()) {
       assert.equal((await post(launchpad, address.url, 'start', { configId: config.configId })).status, 202)
     }
@@ -598,7 +607,7 @@ test('default Launchpad close retains the explicit bounded timeout compatibility
   const keepAlive = http.createServer()
   await new Promise<void>((resolve) => keepAlive.listen(0, '127.0.0.1', resolve))
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })).status, 202)
     const closing = launchpad.close()
     await entered.promise
@@ -621,7 +630,7 @@ test('ordinary factory failures before shutdown do not poison a later successful
   const directory = await fixture()
   const launchpad = await create(directory, { createWorkSession: async () => { throw new Error('invalid session configuration') } })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
     assert.equal(response.status, 500)
     await response.text()
@@ -641,7 +650,7 @@ test('strict Launchpad publishes shared close before an owned cleanup synchronou
     close() { closes++; reentered = launchpad.close(); return Promise.resolve() },
   }) })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
     assert.equal(response.status, 202)
     await response.text()
@@ -659,7 +668,7 @@ test('failed cleanup of a partially initialized factory remains visible to stric
   const failure = new ProductionWorkSessionInitializationError(new Error('hydration failed'), [cleanup])
   const launchpad = await create(directory, { createWorkSession: async () => { throw failure } })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await post(launchpad, address.url, 'start', { configId: launchpad.getConfigs()[0]!.configId })
     assert.equal(response.status, 500)
     await response.text()

@@ -1,0 +1,428 @@
+{
+  "base": "a827f91d52b8242b811360140742b3927c36b848",
+  "branch": "codex/v0.5-simplify-boundary",
+  "productionNetLines": 179,
+  "correctionNonTestNetLines": 60,
+  "correctionFiles": [
+    "desktop/main/window-lifecycle.mjs",
+    "desktop/tests/window-lifecycle.test.mjs",
+    "package.json",
+    "scripts/check-platform-boundaries.mjs",
+    "tests/delivery-obligation.test.ts",
+    "tests/runtime-ui-view.test.ts",
+    "tests/v040-human-decision-control.test.ts",
+    "tests/work-session-launchpad-strict-lifecycle.test.ts",
+    "tests/work-session-launchpad.test.ts",
+    "tests/work-session-production-legacy-adoption.test.ts",
+    "tests/work-session-scheduled-recovery.test.ts",
+    "tests/work-session-strict-control-lifecycle.test.ts",
+    "scripts/run-isolated-tests.mjs",
+    "tests/test-isolation.canary.mjs"
+  ],
+  "files": {
+    "desktop/main/host.mjs": "366d11133a5e406fa3d707fe4bfdb45d2d4bb64ed3d0fe52d0cc2c237058c8ba",
+    "desktop/main/window-lifecycle.mjs": "9a6fd7628ee36d354b10cb49c726269cadea0cdb0227794e5bc02898bdc14b1e",
+    "desktop/tests/background-smoke.mjs": "38bc9e448c91eb469b0b6e0c32b6b1a321268daa5a744dcca779f46d2933521c",
+    "desktop/tests/isolated-fixture.test.mjs": "191a1fd5838f10fd0f656c81453d5c60282ee96a4b93f43aae765c203ff40236",
+    "desktop/tests/launchpad-smoke.mjs": "12524acce25f755ea74f95f01620443414a6480b8aa639fad8ac60db15b98dcd",
+    "desktop/tests/notification-smoke.mjs": "4a879789ca336015e13962b961d172aa9cc901d6d70b80b384c357200493a964",
+    "desktop/tests/production-smoke.mjs": "580612ee47184731344f8163312e872b4dc5f96d337fa3f89dfb235b0f736a1a",
+    "desktop/tests/updater-admission.test.mjs": "82bc15d0d039df1d399b002f33a5f28fcb782e64a20164c2a00a39392e396cf7",
+    "desktop/tests/window-lifecycle.test.mjs": "ea6bda84c1a23dbc99e0265bcf0c43b0d2f5541fc892b45d0bd866189e613a02",
+    "package.json": "a784c520a2dc0627e225f53d0183628e07306aa01ba1a8e0f713e60ec2d2b05b",
+    "packages/development-guardian/delivery/capability-layer.ts": "e691819899331f25b6ed69d888c92697b7bec415466297d57580c5f0c5c5fb73",
+    "packages/development-guardian/delivery/runtime-adapter.ts": "729f5f802ba2b6e8069513dba0cafd6ecaa0ffb0463bf878522f6fe26d22c520",
+    "packages/development-guardian/delivery/service.ts": "f32665f4685100d6a5688175fcd8a9851e29e27d692a7426d6db8a1fc212aee9",
+    "packages/development-guardian/delivery/staged-verification.ts": "c9ef1ab7a694242f41c3a2e5c3a7357abdc8734575b52f36a82aa41388876f06",
+    "packages/development-guardian/model.ts": "50e763e254dfcb9515105f1bd574c97758a596f5724080bce359654c68ca0c39",
+    "packages/development-guardian/planning/customer-view.ts": "f1a333aec7172bcc1c8416cf4a9ec2a71338f8daf952f8fecc48347ebbf9305a",
+    "packages/development-guardian/work-session/control-ui/server.ts": "dd998e74dd71664c824148eda8f0f08d472695a137b97d5dbee42915d83fa3bd",
+    "packages/development-guardian/work-session/control-ui/view.ts": "5d901ab290db2764c02e34c5a4952a8d887397677526933045d2a185a3c406d8",
+    "packages/development-guardian/work-session/launchpad/server.ts": "9ab39a63a2ab8c98137b5aaa4085482b4349cd33a24dec00df8313b68bdd9291",
+    "packages/development-guardian/work-session/launchpad/view.ts": "4cca79ffd231522cff9139ac2e482bd9588cacfa926b0bf23f6a277d5e3845bb",
+    "scripts/check-platform-boundaries.mjs": "fb357a30f1a4be597aa95ad3ab16c283efe33f0bdd69c2a4a13d3337cce1d339",
+    "scripts/guardian-launchpad.mjs": "c983a41d77eb96cccf613239f0faf803278740cabbb261712f2a7174471611e8",
+    "scripts/guardian-work-session-ui.mjs": "06516bd39a1d349daba93fa40218ecbd20f2beedb33438f2e0234da7eeeb111a",
+    "tests/certification/v0.2/scenarios-contract.ts": "3167161188ed183329f37a55c7746e6704746960b592820c913ec131a96ddce3",
+    "tests/certification/v0.2/scenarios-entry.ts": "113ed9919c50dd375e00e75747540ae4e0ef08454c4110348d1b341f334c0dc8",
+    "tests/certification/v0.2/scenarios-risk.ts": "c4c53de7c9ab4f130cc4a3fdb1271e3ff2185f72d1ab0ffacd9ff3c7a2a16f00",
+    "tests/certification/v0.2/scenarios-v026.ts": "93f4e681dd70ec43419db10ce4d874ef96e27294d2aacd2104bffe7bdc371919",
+    "tests/certification/v0.2/scenarios-v028.ts": "16816911844a75c86e87d832e640c4cca198f9600fe1803c3c72290c6a2981dd",
+    "tests/delivery-obligation.test.ts": "032b8d290b4fd5049dde98a036ea013ae647e26bcd5dff1b43ba1c7253ab0ccd",
+    "tests/delivery-runtime-plan.test.ts": "066f95320a9188f7bedf748606e29cd216a597873b734e367eb97ebbe192bdce",
+    "tests/launchpad-ai-repair.test.ts": "0c79007772d676db6d47db77638a74888266641d4b71f58064ab615ae486c5ed",
+    "tests/launchpad-auto-preflight-repair.test.ts": "6aedf06875d8d85efa3422b310f6927b73a96b92cc582f9232d60ddb29739766",
+    "tests/planning-provider-availability.test.ts": "e2467e4f8a5eeb0cae0cae15ddef5d9c8a5b91f62387371dfe39ba164b1b595c",
+    "tests/planning.test.ts": "941f42fe7220680a73f7ccdaad6ae6a4fae33655eef26ad7ea778315d1fc8408",
+    "tests/runtime-ui-view.test.ts": "d87d6e690cdac21b3b3381f01b084b7a95431da221823302a4f777919d04fede",
+    "tests/task-run-analytics-launchpad.test.ts": "be8f8842a864a0370f6ee43601549a0a29b550666d78e3c8d711b76080af6c0b",
+    "tests/v031-human-recovery-controls.test.ts": "4968aa6f798c956c5bf7a780d4e9152eaa56f6628c0f43a96d64095ec3e5a5be",
+    "tests/v040-human-decision-control.test.ts": "e1799fde91def057cf2c6c9cce990ea5fad052de4f5ae377027e8f52699aaba1",
+    "tests/v040-reviewer-wiring.test.ts": "5903e69da49852a58da7788d2c1b6c237bc369407368d0608f5cb02629323dbd",
+    "tests/work-session-activity.test.ts": "61aeb8c165ef985f879980beac6fdb5cec026908d43220fb84f1ab4c6af9475e",
+    "tests/work-session-execution-ledger.test.ts": "907b27caa0e7b5192b56b29fd096e51d21d6134bd91b260e73934603bc737a86",
+    "tests/work-session-launchpad-strict-lifecycle.test.ts": "0464b52f12a826131dab1d0f07a32d40a702d9962105341f42590468f6d2b103",
+    "tests/work-session-launchpad.test.ts": "9bcb9e498de5145f3da7407d0525033f8612723acffa28ba8416f587593e4268",
+    "tests/work-session-production-legacy-adoption.test.ts": "949af53fdd24c3f3981a57c89e5ab7e9fc6f32436d405f86a180c5b5ad4f4563",
+    "tests/work-session-scheduled-recovery.test.ts": "fb2cad3e3af22f91711e58ec8b39869fa31f633355b4cedeb7c41f52a226924b",
+    "tests/work-session-status-probe-fixture.ts": "edaf7d5008ecb05d69eff514a082d293719d4b6e82b4ad08e5f034b28999ca42",
+    "tests/work-session-strict-control-lifecycle.test.ts": "dfce2eb6ac56a1e1a25c0a4450f6bce108a66f992672b59ab9d75ed93c8c382b",
+    "tests/work-session-t021-recoverability.test.ts": "65c738ca58cb26d330d7f159f813646ba115031999e067b859010ab7677a6f5a",
+    "tests/work-session-task-retry.test.ts": "4476313dcb57b31c337e4c58d1e7189475dc7fe63f515d393e43039719a458c7",
+    "tests/work-session-update-safety.test.ts": "08c4ebeb825402a96ce205cdd10d303e04c178832d57291b225e199791c9ca3d",
+    "tests/work-session-w005-a-dom-safety.test.ts": "48509f8d293215b5702bfc7bff6fc49a0e006c1ce1e908ed092c221dce0f223f",
+    "tests/work-session-w005-a-guardian-progress.test.ts": "fbcbfe1bb9faf224232d78ccef01e3994127e18454e8f892b5205b6212f2d586",
+    "tests/work-session-w005-a-helpers.ts": "790596d731a0a55547ca9b934acd7e331d05cd6305b261e78742610bac884191",
+    "tests/work-session-w005-a-remote-closure.test.ts": "a920fc6dbc1f4114abbfb8a6e9e188f90767684d3f5124df59da676baaaf93c0",
+    "tests/work-session-w005-a-secret.test.ts": "93838694003b243b1f8b9b7e32c36ff12a953af244f41fdc935d14aa217d2fc0",
+    "tests/work-session-w005-a-server.test.ts": "09fc92916c07e691bbceab3b0c4313be7e9b5f0c80ccc75c69549b981c32f7a6",
+    "tests/work-session-w005-a-sse.test.ts": "a383c26a9be77509e5b7a4186b667a2bebec828e536c425cf7323faf71f0d7fd",
+    "tests/work-session-w005-b-control-http.test.ts": "4a6e2107247cc6758ac31d07dac06a096ba9536c6e34e1bb49cb40c95cffece3",
+    "tests/work-session-w005-b-durability-restart.test.ts": "ab95795e13c7281c9f1871fcf5017ec29cae977bae550b2646e6b56cfa51f74e",
+    "tests/work-session-w005-b-production-wiring.test.ts": "b64c40baf5ba1894686bd5152e611860ddea088532fa87fe692374c1941cc152",
+    "tests/work-session-w006-smtp.test.ts": "53febcd3a99a61c464fb390f16e4845abd2c20c0a447785543dbef084dc20913",
+    "desktop/tests/operator-session.mjs": "4ce5359131666384170de6d616b6fed2de19df539e1b3e5858785e72fe8e4ae8",
+    "packages/development-guardian/work-session/operator-session.ts": "73445cb6440f7436742dd27702e771150e0ef84e197d723160dfc13447a51880",
+    "scripts/run-isolated-tests.mjs": "1e2b2cd72fbc0dc29f74055f0dcdad25fcdc65789b615aa345e307851baaf6c8",
+    "tests/operator-session.test.ts": "9d83344358540d829826712917f62c94cbf8700bf30ef6aeba9b7914933f1512",
+    "tests/operator-session.ts": "7e2528fa7be3a8ae20ca946fdeecc9334117341b6d3ff2ca4f0b5d75b9e7ca1c",
+    "tests/test-isolation.canary.mjs": "7a3c053db61b8237c265cac90ae992015361df44c3325058079dfa460de5d3a0"
+  },
+  "lineDeltas": {
+    "desktop/main/host.mjs": {
+      "added": 9,
+      "removed": 0,
+      "net": 9
+    },
+    "desktop/main/window-lifecycle.mjs": {
+      "added": 15,
+      "removed": 4,
+      "net": 11
+    },
+    "desktop/tests/background-smoke.mjs": {
+      "added": 3,
+      "removed": 3,
+      "net": 0
+    },
+    "desktop/tests/isolated-fixture.test.mjs": {
+      "added": 2,
+      "removed": 1,
+      "net": 1
+    },
+    "desktop/tests/launchpad-smoke.mjs": {
+      "added": 8,
+      "removed": 7,
+      "net": 1
+    },
+    "desktop/tests/notification-smoke.mjs": {
+      "added": 3,
+      "removed": 3,
+      "net": 0
+    },
+    "desktop/tests/production-smoke.mjs": {
+      "added": 2,
+      "removed": 0,
+      "net": 2
+    },
+    "desktop/tests/updater-admission.test.mjs": {
+      "added": 2,
+      "removed": 1,
+      "net": 1
+    },
+    "desktop/tests/window-lifecycle.test.mjs": {
+      "added": 18,
+      "removed": 0,
+      "net": 18
+    },
+    "package.json": {
+      "added": 2,
+      "removed": 2,
+      "net": 0
+    },
+    "packages/development-guardian/delivery/capability-layer.ts": {
+      "added": 1,
+      "removed": 1,
+      "net": 0
+    },
+    "packages/development-guardian/delivery/runtime-adapter.ts": {
+      "added": 9,
+      "removed": 4,
+      "net": 5
+    },
+    "packages/development-guardian/delivery/service.ts": {
+      "added": 117,
+      "removed": 51,
+      "net": 66
+    },
+    "packages/development-guardian/delivery/staged-verification.ts": {
+      "added": 7,
+      "removed": 3,
+      "net": 4
+    },
+    "packages/development-guardian/model.ts": {
+      "added": 1,
+      "removed": 0,
+      "net": 1
+    },
+    "packages/development-guardian/planning/customer-view.ts": {
+      "added": 3,
+      "removed": 5,
+      "net": -2
+    },
+    "packages/development-guardian/work-session/control-ui/server.ts": {
+      "added": 14,
+      "removed": 25,
+      "net": -11
+    },
+    "packages/development-guardian/work-session/control-ui/view.ts": {
+      "added": 3,
+      "removed": 9,
+      "net": -6
+    },
+    "packages/development-guardian/work-session/launchpad/server.ts": {
+      "added": 16,
+      "removed": 16,
+      "net": 0
+    },
+    "packages/development-guardian/work-session/launchpad/view.ts": {
+      "added": 0,
+      "removed": 3,
+      "net": -3
+    },
+    "scripts/check-platform-boundaries.mjs": {
+      "added": 1,
+      "removed": 0,
+      "net": 1
+    },
+    "scripts/guardian-launchpad.mjs": {
+      "added": 4,
+      "removed": 3,
+      "net": 1
+    },
+    "scripts/guardian-work-session-ui.mjs": {
+      "added": 2,
+      "removed": 2,
+      "net": 0
+    },
+    "tests/certification/v0.2/scenarios-contract.ts": {
+      "added": 17,
+      "removed": 16,
+      "net": 1
+    },
+    "tests/certification/v0.2/scenarios-entry.ts": {
+      "added": 5,
+      "removed": 4,
+      "net": 1
+    },
+    "tests/certification/v0.2/scenarios-risk.ts": {
+      "added": 3,
+      "removed": 2,
+      "net": 1
+    },
+    "tests/certification/v0.2/scenarios-v026.ts": {
+      "added": 5,
+      "removed": 4,
+      "net": 1
+    },
+    "tests/certification/v0.2/scenarios-v028.ts": {
+      "added": 4,
+      "removed": 3,
+      "net": 1
+    },
+    "tests/delivery-obligation.test.ts": {
+      "added": 61,
+      "removed": 1,
+      "net": 60
+    },
+    "tests/delivery-runtime-plan.test.ts": {
+      "added": 129,
+      "removed": 11,
+      "net": 118
+    },
+    "tests/launchpad-ai-repair.test.ts": {
+      "added": 15,
+      "removed": 14,
+      "net": 1
+    },
+    "tests/launchpad-auto-preflight-repair.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/planning-provider-availability.test.ts": {
+      "added": 4,
+      "removed": 3,
+      "net": 1
+    },
+    "tests/planning.test.ts": {
+      "added": 14,
+      "removed": 13,
+      "net": 1
+    },
+    "tests/runtime-ui-view.test.ts": {
+      "added": 5,
+      "removed": 5,
+      "net": 0
+    },
+    "tests/task-run-analytics-launchpad.test.ts": {
+      "added": 8,
+      "removed": 7,
+      "net": 1
+    },
+    "tests/v031-human-recovery-controls.test.ts": {
+      "added": 1,
+      "removed": 1,
+      "net": 0
+    },
+    "tests/v040-human-decision-control.test.ts": {
+      "added": 8,
+      "removed": 7,
+      "net": 1
+    },
+    "tests/v040-reviewer-wiring.test.ts": {
+      "added": 4,
+      "removed": 3,
+      "net": 1
+    },
+    "tests/work-session-activity.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/work-session-execution-ledger.test.ts": {
+      "added": 1,
+      "removed": 1,
+      "net": 0
+    },
+    "tests/work-session-launchpad-strict-lifecycle.test.ts": {
+      "added": 23,
+      "removed": 14,
+      "net": 9
+    },
+    "tests/work-session-launchpad.test.ts": {
+      "added": 111,
+      "removed": 109,
+      "net": 2
+    },
+    "tests/work-session-production-legacy-adoption.test.ts": {
+      "added": 1,
+      "removed": 1,
+      "net": 0
+    },
+    "tests/work-session-scheduled-recovery.test.ts": {
+      "added": 7,
+      "removed": 5,
+      "net": 2
+    },
+    "tests/work-session-status-probe-fixture.ts": {
+      "added": 2,
+      "removed": 1,
+      "net": 1
+    },
+    "tests/work-session-strict-control-lifecycle.test.ts": {
+      "added": 19,
+      "removed": 15,
+      "net": 4
+    },
+    "tests/work-session-t021-recoverability.test.ts": {
+      "added": 2,
+      "removed": 1,
+      "net": 1
+    },
+    "tests/work-session-task-retry.test.ts": {
+      "added": 9,
+      "removed": 8,
+      "net": 1
+    },
+    "tests/work-session-update-safety.test.ts": {
+      "added": 12,
+      "removed": 11,
+      "net": 1
+    },
+    "tests/work-session-w005-a-dom-safety.test.ts": {
+      "added": 1,
+      "removed": 2,
+      "net": -1
+    },
+    "tests/work-session-w005-a-guardian-progress.test.ts": {
+      "added": 1,
+      "removed": 1,
+      "net": 0
+    },
+    "tests/work-session-w005-a-helpers.ts": {
+      "added": 5,
+      "removed": 4,
+      "net": 1
+    },
+    "tests/work-session-w005-a-remote-closure.test.ts": {
+      "added": 5,
+      "removed": 4,
+      "net": 1
+    },
+    "tests/work-session-w005-a-secret.test.ts": {
+      "added": 4,
+      "removed": 3,
+      "net": 1
+    },
+    "tests/work-session-w005-a-server.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/work-session-w005-a-sse.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/work-session-w005-b-control-http.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/work-session-w005-b-durability-restart.test.ts": {
+      "added": 5,
+      "removed": 4,
+      "net": 1
+    },
+    "tests/work-session-w005-b-production-wiring.test.ts": {
+      "added": 6,
+      "removed": 5,
+      "net": 1
+    },
+    "tests/work-session-w006-smtp.test.ts": {
+      "added": 7,
+      "removed": 6,
+      "net": 1
+    },
+    "desktop/tests/operator-session.mjs": {
+      "added": 15,
+      "removed": 0,
+      "net": 15
+    },
+    "packages/development-guardian/work-session/operator-session.ts": {
+      "added": 51,
+      "removed": 0,
+      "net": 51
+    },
+    "scripts/run-isolated-tests.mjs": {
+      "added": 52,
+      "removed": 0,
+      "net": 52
+    },
+    "tests/operator-session.test.ts": {
+      "added": 55,
+      "removed": 0,
+      "net": 55
+    },
+    "tests/operator-session.ts": {
+      "added": 48,
+      "removed": 0,
+      "net": 48
+    },
+    "tests/test-isolation.canary.mjs": {
+      "added": 39,
+      "removed": 0,
+      "net": 39
+    }
+  }
+}

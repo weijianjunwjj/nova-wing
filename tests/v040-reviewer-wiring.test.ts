@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 /**
  * v0.4.0: the Composer must declare real capability profiles so a HIGH-risk task
  * can obtain an independent reviewer. The reviewer is declared only when its real
@@ -61,10 +62,10 @@ async function composeSession(
       ...(reviewerProvider === undefined ? {} : { resolveReviewerProvider: reviewerProvider }),
     },
   })
-  const address = await launchpad.start()
-  const response = await fetch(`${address.url}/api/session/create`, {
+  const address = await startOperator(launchpad)
+  const response = await sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify({
       requestId: `reviewer-wiring-${Math.random().toString(16).slice(2)}`,
       targetRepo: process.cwd(),

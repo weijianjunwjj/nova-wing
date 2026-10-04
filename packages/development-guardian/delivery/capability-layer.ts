@@ -85,7 +85,7 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CapabilityFamily, CapabilityDe
   human: { family: 'human', version: '1', providerId: 'customer-human-acceptance', providerVersion: '1',
     trustLevel: 'HUMAN', supportedAssertionShape: 'One explicit customer acceptance decision',
     verificationContract: 'Identified human review with recorded decision and evidence',
-    requiredInputs: ['reviewerIdentity', 'assertionId'], targetRequirements: ['customer acceptance context'],
+    requiredInputs: ['operator session', 'assertionId', 'evidence'], targetRequirements: ['customer acceptance context'],
     environmentRequirements: ['explicit human approval policy'], evidenceType: 'human_decision', deterministic: false,
     availability: 'HUMAN_REQUIRED', reason: 'Customer Mode does not admit blocking human-only assertions to Start Delivery.' },
 }

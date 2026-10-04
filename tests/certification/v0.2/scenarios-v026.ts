@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from '../../operator-session.js'
 /**
  * NovaWing v0.2.6 certification scenarios.
  *
@@ -44,9 +45,9 @@ function fakeApp(onCreate: (config: TrustedWorkSessionConfig) => void) {
 async function postCreate(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/create`, {
+  return sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -110,7 +111,7 @@ async function withLaunchpad(
   const configs = join(ctx.dirs.root, 'configs')
   const launchpad = await createNovaWingLaunchpad({ configDirectory: configs, dependencies })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     await run(launchpad)
   } finally {
     await launchpad.close().catch(() => undefined)
@@ -380,7 +381,7 @@ export const s65: CertificationScenario = {
   async run(ctx) {
     const h = ctx.h
     const html = renderLaunchpadHtml({
-      configs: [], launchToken: 'cert-token', serverOrigin: 'http://127.0.0.1:1',
+      configs: [], serverOrigin: 'http://127.0.0.1:1',
       initialExecutorMode: 'codex',
     })
     h.check(html.includes('data-composer-progress'), 'the composer shows staged progress instead of an immediate error block')

@@ -1,5 +1,4 @@
-export function renderCustomerHtml(token: string): string {
-  const bootstrap = JSON.stringify({ token }).replaceAll('<', '\\u003c')
+export function renderCustomerHtml(): string {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NovaWing · Customer Mode</title><link rel="stylesheet" href="/customer/styles.css"></head>
@@ -17,12 +16,11 @@ export function renderCustomerHtml(token: string): string {
     </section>
     <section class="panel"><h3>要求修改</h3><p>写下需要改变的业务目标、范围或规则，然后重新生成下一版方案。</p><textarea id="feedback" rows="4" maxlength="4000" placeholder="例如：已开始制作的订单也允许取消，并且需要记录取消原因。"></textarea><div class="actions"><button id="revise" type="button" class="secondary">根据意见修改</button><button id="approve" type="button">批准方案</button></div></section>
   </section><footer>规划批准不会启动执行。</footer>
-</main><script id="customer-bootstrap" type="application/json">${bootstrap}</script><script src="/customer/app.js"></script></body></html>`
+</main><script src="/customer/app.js"></script></body></html>`
 }
 
 export const CUSTOMER_APP_JS = `(() => {
   'use strict'
-  const bootstrap = JSON.parse(document.getElementById('customer-bootstrap').textContent || '{}')
   const requirement = document.getElementById('requirement')
   const feedback = document.getElementById('feedback')
   const progress = document.getElementById('progress')
@@ -58,7 +56,7 @@ export const CUSTOMER_APP_JS = `(() => {
   const appendList = (parent, values) => { const list = node('ul'); for (const value of values) list.append(node('li', value)); parent.append(list) }
   const section = (title) => { const panel = node('section', undefined, 'panel'); panel.append(node('h3', title)); sections.append(panel); return panel }
   const post = async (path, body) => {
-    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': bootstrap.token }, body: JSON.stringify(body) })
+    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     const result = await response.json()
     if (!response.ok) throw new Error(result.error || '请求失败')
     return result

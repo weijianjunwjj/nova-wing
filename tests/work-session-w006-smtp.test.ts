@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -289,11 +290,11 @@ await test('W006 production config: enabled fails fast without SMTP env; disable
       },
       serverPort: 0,
     })
-    const address = await app.start()
-    const response = await fetch(`${address.url}/api/session/start`, {
+    const address = await startOperator(app)
+    const response = await sessionFetch(`${address.url}/api/session/start`, {
       method: 'POST',
       headers: {
-        'X-NovaWing-Control-Token': app.server.getTokenForTest(),
+        'Cookie': await mintSession(app.server),
         Origin: address.url,
         'Content-Type': 'application/json',
       },
@@ -329,7 +330,7 @@ await test('W006 production wiring: enabled SMTP notifier receives safe local UR
         return new FakeRuntime(input.definition)
       },
     })
-    const address = await app.start()
+    const address = await startOperator(app)
     assert.ok(runtimeConfig?.notifier)
     assert.equal(runtimeConfig?.localControlUrl?.(), address.url)
     await runtimeConfig?.notifier?.notifyHumanRequired(notification())
@@ -410,8 +411,8 @@ await test('W006 Web safety: notification event and SSE omit raw SMTP diagnostic
   })
 
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
-  const response = await fetch(`${address.url}/api/events`)
+  const address = await startOperator(server)
+  const response = await sessionFetch(`${address.url}/api/events`)
   const reader = response.body?.getReader()
   assert.ok(reader)
   const chunk = await reader.read()

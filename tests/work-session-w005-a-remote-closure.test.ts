@@ -1,3 +1,4 @@
+import { startOperator, sessionFetch } from './operator-session.js'
 /**
  * W005-A remote review closure:
  * - raw launch/runtime failure 不得进入 Web payload；
@@ -36,7 +37,7 @@ await test('W005-A remote closure: raw launch error never reaches Web surfaces',
     await s.controller.getStartPromise()
     await sleep(30)
 
-    const statusText = await (await fetch(`${s.address.url}/api/status`)).text()
+    const statusText = await (await sessionFetch(`${s.address.url}/api/status`)).text()
     const recentText = JSON.stringify(s.controller.getRecentEvents())
     const snapshotText = JSON.stringify(s.controller.getSnapshot())
 
@@ -69,7 +70,7 @@ await test('W005-A remote closure: durable failureReason never reaches Web surfa
     })
     await sleep(40)
 
-    const statusText = await (await fetch(`${s.address.url}/api/status`)).text()
+    const statusText = await (await sessionFetch(`${s.address.url}/api/status`)).text()
     const recentText = JSON.stringify(s.controller.getRecentEvents())
     const snapshotText = JSON.stringify(s.controller.getSnapshot())
 
@@ -107,9 +108,9 @@ await test('W005-A ACTIVE-1: RUNNING display elapsed includes current active seg
     clock: { now: () => now },
   })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   try {
-    const status = (await (await fetch(`${address.url}/api/status`)).json()) as {
+    const status = (await (await sessionFetch(`${address.url}/api/status`)).json()) as {
       runtime: { activeElapsedMs?: number }
     }
     assert.equal(status.runtime.activeElapsedMs, 13 * MIN)

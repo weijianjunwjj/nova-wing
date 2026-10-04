@@ -149,6 +149,7 @@ export interface VerificationFirstFailure {
 }
 
 export interface VerificationResult {
+  executionId?: string
   name: string
   stepId?: string
   command?: string

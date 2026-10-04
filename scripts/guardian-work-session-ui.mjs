@@ -20,12 +20,12 @@ try {
   const app = await createProductionWorkSessionUi(config, {
     env: await resolveProductionSmtpEnvironment(config),
   })
-  const address = await app.start()
+  await app.start()
 
   console.log('NovaWing Work Session 控制台')
   console.log(`项目：${app.definition.targetRepo}`)
   console.log(`分支：${app.definition.branch}`)
-  console.log(`地址：${address.url}`)
+  console.log(`地址：${app.server.mintBootstrapUrl()}`)
 
   let closing = false
   const close = async () => {

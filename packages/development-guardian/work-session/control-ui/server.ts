@@ -1,3 +1,4 @@
+import { mintOperatorBootstrap, consumeOperatorBootstrap, operatorSession } from '../operator-session.js'
 import { reviewerHealthRefreshRequestSchema } from '../reviewer-health-refresh.js'
 import { taskRetryRequestSchema } from '../task-retry.js'
 /**
@@ -7,13 +8,12 @@ import { taskRetryRequestSchema } from '../task-retry.js'
  *
  * 网络安全边界：
  * - 只 bind 127.0.0.1，禁止 0.0.0.0 / :: / LAN / 公网；
- * - mutation endpoint 验证 ephemeral control token + Origin；
+ * - mutation endpoint 验证 operator session + Origin；
  * - 不设置 Access-Control-Allow-Origin: *，不实现 CORS control API；
- * - token 只经首次 HTML bootstrap 注入，不进 DB / log / SSE / URL query / status。
+ * - 一次性 bootstrap URL 仅由 Host 交给 operator，session cookie 不进 HTML / DB / log / SSE。
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { WorkSessionControlController } from './controller.js'
 import type { ControlHumanDecisionInput, ControlResumeInput } from './controller.js'
 import { renderHtml, APP_JS, STYLES_CSS } from './view.js'
@@ -51,7 +51,6 @@ interface SseEnvelope {
 export class WorkSessionControlServer {
   private readonly controller: WorkSessionControlController
   private readonly port: number
-  private readonly token: string
   private readonly server: Server
   private readonly closePreconnections: () => void
   private readonly sseClients = new Set<ServerResponse>()
@@ -66,7 +65,6 @@ export class WorkSessionControlServer {
   constructor(options: WorkSessionControlServerOptions) {
     this.controller = options.controller
     this.port = options.port ?? DEFAULT_PORT
-    this.token = randomBytes(32).toString('hex')
     this.server = createServer((req, res) => {
       void this.handle(req, res)
     })
@@ -83,9 +81,9 @@ export class WorkSessionControlServer {
     return this.address !== undefined && this.server.listening
   }
 
-  /** 仅供测试读取，验证 token 不被 status/SSE 泄漏时用。 */
-  getTokenForTest(): string {
-    return this.token
+  /** Host-only bootstrap, never projected through HTTP APIs. */
+  mintBootstrapUrl(path = '/'): string {
+    return mintOperatorBootstrap(this.origin(), path)
   }
 
   start(): Promise<WorkSessionControlServerAddress> {
@@ -165,6 +163,9 @@ export class WorkSessionControlServer {
 
     const method = req.method ?? 'GET'
     const path = this.pathOf(req)
+    if (method === 'GET' && path === '/bootstrap') return consumeOperatorBootstrap(req, res, this.origin())
+    if (!['/app.js', '/styles.css'].includes(path) && !operatorSession(req))
+      return this.respondJson(res, 403, { error: 'Operator session required.' })
     if (method === 'POST') this.trackMutationHandler(res)
 
     res.setHeader('Cache-Control', 'no-store')
@@ -291,13 +292,12 @@ export class WorkSessionControlServer {
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'no-store',
-      // script-src 'self'：bootstrap token 走 application/json data 标签，非 inline script。
+      // Bootstrap metadata contains no credentials.
       'Content-Security-Policy':
         "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     })
     res.end(
       renderHtml({
-        controlToken: this.token,
         serverOrigin: this.origin(),
       }),
     )
@@ -470,16 +470,14 @@ export class WorkSessionControlServer {
   }
 
   private authorizeMutation(req: IncomingMessage, res: ServerResponse): boolean {
-    // 1. Origin 校验：同源、或 Chromium loopback 端口省略兼容；无 Origin 的非浏览器请求放行。
-    const origin = req.headers.origin
-    if (origin !== undefined && !this.originMatchesRequest(req)) {
+    // 1. Require same origin, including the existing Chromium loopback compatibility check.
+    if (!this.originMatchesRequest(req)) {
       this.respondJson(res, 403, { error: 'forbidden origin' })
       return false
     }
 
-    // 2. control token 校验（timing-safe）。
-    const token = req.headers['x-novawing-control-token']
-    if (typeof token !== 'string' || !this.tokenMatches(token)) {
+    // 2. Host-owned operator session.
+    if (!operatorSession(req)) {
       this.respondJson(res, 403, { error: 'forbidden' })
       return false
     }
@@ -605,15 +603,6 @@ export class WorkSessionControlServer {
 
   private nextSseId(): number {
     return ++this.sseId
-  }
-
-  private tokenMatches(provided: string): boolean {
-    const a = Buffer.from(provided)
-    const b = Buffer.from(this.token)
-    if (a.length !== b.length) {
-      return false
-    }
-    return timingSafeEqual(a, b)
   }
 
   private origin(): string {

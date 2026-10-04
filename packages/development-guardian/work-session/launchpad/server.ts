@@ -1,8 +1,9 @@
+import { mintOperatorBootstrap, consumeOperatorBootstrap, operatorSession } from '../operator-session.js'
 import { DEFAULT_WORKSPACE_FORBIDDEN_PATHS } from '../../workspace-scope.js'
 import { createDeliveryTaskRetryValidator } from '../../delivery/task-retry-binding.js'
 import { VENV_PYTEST_COMMANDS } from '../../platform/executables.js'
 import { platformPaths } from '../../platform/paths.js'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { access, mkdir, open, readdir, rename, stat, unlink } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { fileURLToPath } from 'node:url'
@@ -624,7 +625,6 @@ export class NovaWingLaunchpad {
   private readonly deliveryStore: DeliveryStore
   private readonly deliveryService: DeliveryService
   private readonly statuses = new Map<string, WorkSessionDisplayState>()
-  private readonly token = randomBytes(32).toString('hex')
   private readonly server: Server
   private readonly closePreconnections: () => void
   private readonly activeStarts = new Map<string, Promise<LaunchResult>>()
@@ -812,8 +812,8 @@ export class NovaWingLaunchpad {
     return this.address
   }
 
-  getTokenForTest(): string {
-    return this.token
+  mintBootstrapUrl(path = '/'): string {
+    return mintOperatorBootstrap(this.origin(), path)
   }
 
   start(): Promise<NovaWingLaunchpadAddress> {
@@ -994,6 +994,11 @@ export class NovaWingLaunchpad {
 
     const method = request.method ?? 'GET'
     const path = pathOf(request)
+    response.setHeader('Cache-Control', 'no-store')
+    if (method === 'GET' && path === '/bootstrap') return consumeOperatorBootstrap(request, response, this.origin())
+    if (!['/app.js', '/styles.css', '/customer/app.js', '/customer/styles.css'].includes(path) && !operatorSession(request)) {
+      this.respondJson(response, 403, { error: 'Operator session required.' }); return
+    }
     if (method === 'GET' && (path === '/' || path === '/advanced')) {
       this.serveHtml(response)
       return
@@ -1001,7 +1006,7 @@ export class NovaWingLaunchpad {
     if (method === 'GET' && path === '/customer') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
         'Content-Security-Policy': "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" })
-      response.end(renderCustomerHtml(this.token))
+      response.end(renderCustomerHtml())
       return
     }
     if (method === 'GET' && path === '/customer/app.js') {
@@ -1092,9 +1097,12 @@ export class NovaWingLaunchpad {
     if (method === 'POST' && path === '/api/delivery/acceptance') {
       const body = await this.planningBody(request, response)
       if (body === undefined) return
+      if (['reviewerIdentity', 'principalId', 'authorityLevel', 'role'].some(key => Object.hasOwn(body, key))) {
+        this.respondJson(response, 400, { error: 'IDENTITY_FIELDS_NOT_ACCEPTED' }); return
+      }
       if (typeof body.runtimePlanId !== 'string' || typeof body.runtimePlanHash !== 'string' ||
         typeof body.assertionId !== 'string' || (body.kind !== 'EXTERNAL' && body.kind !== 'HUMAN') ||
-        body.reviewerVerdict !== 'PASS' || typeof body.reviewerIdentity !== 'string' || !Array.isArray(body.evidence)) {
+        body.reviewerVerdict !== 'PASS' || (body.displayName !== undefined && (typeof body.displayName !== 'string' || body.displayName.length > 120)) || !Array.isArray(body.evidence)) {
         this.respondJson(response, 400, { error: 'Exact runtime plan, assertion, reviewer and evidence are required.' }); return
       }
       try {
@@ -1104,7 +1112,7 @@ export class NovaWingLaunchpad {
         }
         const record = await this.deliveryStore.recordExternalAcceptance(plan.id, {
           assertionId: body.assertionId, kind: body.kind, reviewerVerdict: 'PASS',
-          reviewerIdentity: body.reviewerIdentity,
+          acceptedBy: operatorSession(request)!, ...(typeof body.displayName === 'string' ? { displayName: body.displayName } : {}),
           evidence: body.evidence as Array<{ kind: string; content: string }>,
         })
         this.respondJson(response, 201, { record, customerAssessment: await this.deliveryStore.customerAssessment(plan.id) })
@@ -1233,7 +1241,6 @@ export class NovaWingLaunchpad {
     })
     response.end(renderLaunchpadHtml({
       configs: this.getConfigs(),
-      launchToken: this.token,
       serverOrigin: this.origin(),
       dependencyHealth: this.dependencyHealth,
       initialExecutorMode: this.initialExecutorMode,
@@ -1517,8 +1524,7 @@ export class NovaWingLaunchpad {
       this.respondJson(response, 403, { error: 'forbidden origin' })
       return false
     }
-    const provided = request.headers['x-novawing-launchpad-token']
-    if (typeof provided !== 'string' || !tokenMatches(this.token, provided)) {
+    if (!operatorSession(request)) {
       this.respondJson(response, 403, { error: 'forbidden' })
       return false
     }
@@ -2445,12 +2451,6 @@ function pathOf(request: IncomingMessage): string {
   return (request.url ?? '/').split('?', 1)[0] ?? '/'
 }
 
-function tokenMatches(expected: string, provided: string): boolean {
-  const expectedBuffer = Buffer.from(expected)
-  const providedBuffer = Buffer.from(provided)
-  return expectedBuffer.length === providedBuffer.length &&
-    timingSafeEqual(expectedBuffer, providedBuffer)
-}
 
 function parseStartBody(body: string):
   | { ok: true; configId: string }

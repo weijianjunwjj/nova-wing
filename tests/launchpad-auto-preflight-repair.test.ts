@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -98,9 +99,9 @@ function composerRequest(requestId: string, repo: string, guardian: Record<strin
 async function postJson(launchpad: Awaited<ReturnType<typeof createNovaWingLaunchpad>>, path: string, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}${path}`, {
+  return sessionFetch(`${address.url}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -133,7 +134,7 @@ test('an unattended create consults the model only when the deterministic agent 
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const response = await postJson(launchpad, '/api/session/create', composerRequest('auto-repair-llm-0001', repo, {
       acceptanceCriteria: [LLM_ONLY_CRITERION],
     }))
@@ -184,7 +185,7 @@ test('the automatic cascade stops at its bounded cycle count and reports AUTO_RE
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const response = await postJson(launchpad, '/api/session/create', composerRequest('auto-repair-exhausted-0002', repo, {
       acceptanceCriteria: [LLM_ONLY_CRITERION],
     }))
@@ -231,7 +232,7 @@ test('an unsafe semantic issue never enters the automatic cascade', async () => 
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const response = await postJson(launchpad, '/api/session/create', composerRequest('auto-repair-unsafe-0003', repo, {
       acceptanceCriteria: ['custom proof'],
       acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],

@@ -1,3 +1,4 @@
+import { sessionFetch as fetch, mintSession } from './operator-session.mjs'
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
@@ -14,7 +15,7 @@ test('isolated fixture uses real Launchpad, production UI and persisted Runtime 
     fixture = await createIsolatedLaunchpadFixture({ root, env: {}, holdTasks: true })
     launchpad = await createNovaWingLaunchpad({ configDirectory: fixture.configDirectory, env: fixture.env, dependencies: fixture.dependencies })
     const address = await launchpad.start()
-    const headers = { 'Content-Type': 'application/json', Origin: address.url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() }
+    const headers = { 'Content-Type': 'application/json', Origin: address.url, 'Cookie': await mintSession(launchpad) }
     const outside = await fetch(`${address.url}/api/session/create`, {
       method: 'POST', headers, body: JSON.stringify({ ...fixture.createRequest, requestId: 'desktop-blocked-fixture-0001', targetRepo: root }),
     })

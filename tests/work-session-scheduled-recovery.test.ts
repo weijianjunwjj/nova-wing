@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -22,13 +23,13 @@ test('Launchpad HTTP creation, scheduled list, restart reopening, overdue dispat
   const create = async () => {
     const app = await createScheduledFixture(directory, { now: () => now })
     instances.push(app)
-    await app.launchpad.start()
+    await startOperator(app.launchpad)
     return app
   }
   const first = await create()
   const url = first.launchpad.getAddress()!.url
-  const result = await fetch(`${url}/api/session/create`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: url, 'X-NovaWing-Launchpad-Token': first.launchpad.getTokenForTest() },
+  const result = await sessionFetch(`${url}/api/session/create`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: url, 'Cookie': await mintSession(first.launchpad) },
     body: JSON.stringify({
       requestId: 'schedule-recovery-http-0001', targetRepo: process.cwd(), tasks: [{ id: 'T1', goal: 'offline test' }],
       guardian: { allowedPaths: ['tests/**'] }, autoCommit: false,
@@ -38,9 +39,10 @@ test('Launchpad HTTP creation, scheduled list, restart reopening, overdue dispat
   assert.equal(result.status, 202)
   assert.equal(first.calls(), 0)
   assert.equal(first.launchpad.getConfigs()[0]?.status, 'SCHEDULED')
-  assert.match(await (await fetch(url)).text(), /DeepSeek 闲时 · Off-Peak/)
+  assert.match(await (await sessionFetch(url)).text(), /DeepSeek 闲时 · Off-Peak/)
   const { controlUrl } = await result.json() as { controlUrl: string }
-  const snapshot = await (await fetch(`${controlUrl}/api/status`)).json() as { runtime: { state: string; startedAt: null; scheduledStartAt: string } }
+  await mintSession(first.apps[0]!.server)
+  const snapshot = await (await sessionFetch(`${controlUrl}/api/status`)).json() as { runtime: { state: string; startedAt: null; scheduledStartAt: string } }
   assert.equal(snapshot.runtime.state, 'SCHEDULED')
   assert.equal(snapshot.runtime.startedAt, null)
   assert.equal(snapshot.runtime.scheduledStartAt, at)

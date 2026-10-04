@@ -80,7 +80,6 @@ function launchpadAvailability(report: DependencyHealthReport | undefined, id: '
 
 export function renderLaunchpadHtml(input: {
   configs: readonly LaunchpadConfigSummary[]
-  launchToken: string
   serverOrigin: string
   dependencyHealth?: DependencyHealthReport
   initialExecutorMode?: 'codex' | 'deepseek'
@@ -92,7 +91,6 @@ export function renderLaunchpadHtml(input: {
   const codexModelOptions = CODEX_MODEL_OPTIONS.map((option) =>
     `<option value="${escapeHtml(option.id)}"${option.id === CODING_EXECUTOR_DEFAULTS.codex.model ? ' selected' : ''}>${escapeHtml(option.label)}</option>`).join('')
   const bootstrap = JSON.stringify({
-    launchToken: input.launchToken,
     serverOrigin: input.serverOrigin,
     initialExecutorMode,
   }).replaceAll('<', '\\u003c')
@@ -235,7 +233,6 @@ export const LAUNCHPAD_APP_JS = `
 
   const mutationHeaders = () => ({
     'Content-Type': 'application/json',
-    'X-NovaWing-Launchpad-Token': bootstrap.launchToken,
   })
   const customerOpen = document.querySelector('[data-customer-open]')
   customerOpen?.addEventListener('click', () => {

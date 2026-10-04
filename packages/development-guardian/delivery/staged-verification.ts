@@ -258,6 +258,7 @@ export function verifyBindingTransition(value: VerificationBindingTransition,
 }
 
 export interface AssertionCompletionEvidence {
+  executionId?: string
   assertionId: string
   runtimeTaskId: string
   transitionId?: string
@@ -304,7 +305,7 @@ export function taskCompletionGate(bindings: readonly CompletionBinding[],
 }
 
 export interface ExternalAcceptanceRecord { assertionId: string; kind: 'EXTERNAL' | 'HUMAN';
-  evidenceIds: readonly string[]; reviewerVerdict: 'PASS'; reviewerIdentity: string; acceptedAt: string }
+  evidenceIds: readonly string[]; reviewerVerdict: 'PASS'; acceptedBy: { role: 'LOCAL_OPERATOR_UI'; channel: 'LAUNCHPAD_SESSION'; sessionRef: string; displayName?: string }; acceptedAt: string }
 
 export function customerDeliveryCompletionGate(tasks: readonly { id: string }[],
   bindings: readonly CompletionBinding[], transitions: readonly VerificationBindingTransition[],
@@ -315,8 +316,11 @@ export function customerDeliveryCompletionGate(tasks: readonly { id: string }[],
     .map((binding) => [binding.assertionId, binding])).values()]
   const accepted = (id: string, kind: ExternalAcceptanceRecord['kind']): boolean =>
     externalAccepted.some((item) => item.assertionId === id && item.kind === kind && item.reviewerVerdict === 'PASS' &&
-      item.reviewerIdentity.trim().length > 0 && item.evidenceIds.length > 0 && Number.isFinite(Date.parse(item.acceptedAt)))
-  return tasks.length > 0 && bindings.some((binding) => binding.blocking) && tasks.every((task) => {
+      item.acceptedBy?.role === 'LOCAL_OPERATOR_UI' && item.acceptedBy.channel === 'LAUNCHPAD_SESSION' && /^[a-f0-9]{64}$/u.test(item.acceptedBy.sessionRef) && item.evidenceIds.length > 0 && Number.isFinite(Date.parse(item.acceptedAt)))
+  const assertionIds = [...new Set(bindings.filter(binding => binding.blocking).map(binding => binding.assertionId))]
+  const canonicalOwners = assertionIds.length > 0 && assertionIds.every(id =>
+    bindings.filter(binding => binding.blocking && binding.assertionId === id && binding.ownership === 'OWNER').length === 1)
+  return tasks.length > 0 && canonicalOwners && tasks.every((task) => {
     if (!completedTaskIds.has(task.id)) return false
     const taskBindings = bindings.filter((binding) => binding.runtimeTaskId === task.id && binding.blocking)
     return taskBindings.some((binding) => binding.ownership === 'OWNER')

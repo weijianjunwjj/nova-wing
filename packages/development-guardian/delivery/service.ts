@@ -1,3 +1,4 @@
+import { isOperatorSession } from '../work-session/operator-session.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises'
@@ -5,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { lstat, realpath } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { scopedNodeTestPath } from '../verification-command-policy.js'
-import { type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
+import { canonicalSerialize, type PlanSnapshot, verifyPlanSnapshot } from '../planning/freeze.js'
 import type { WorkSessionDefinition } from '../work-session/model.js'
 import { loadTaskStateV2, type TaskStateV2 } from '../work-session/task-state-v2.js'
 import { TaskController } from '../work-session/task-controller.js'
@@ -88,16 +89,16 @@ export class DeliveryStore {
     return createHash('sha256').update(`novawing-obligation-commit-v2\0${obligationId}\0${commit}`).digest('hex')
   }
   private path(kind: 'binding' | 'plan' | 'session' | 'evidence' | 'transition' | 'blueprint' |
-    'local-completion' | 'local-completion-index' | 'external-acceptance' | 'external-evidence', id: string): string {
+    'local-completion' | 'local-completion-index' | 'external-acceptance' | 'external-evidence' | 'verification-attempt' | 'verification-attempt-latest', id: string): string {
     if (!/^[a-z0-9-]{36,120}$/u.test(id)) throw new Error('Invalid delivery artifact ID.')
     return join(this.directory, `${kind}-${id}.json`)
   }
-  private async writeOnce(path: string, value: unknown): Promise<void> {
+  async #writeOnce(path: string, value: unknown): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const file = await open(path, 'wx', 0o600)
     try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync() } finally { await file.close() }
   }
-  private async writeAtomic(path: string, value: unknown): Promise<void> {
+  async #writeAtomic(path: string, value: unknown): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const temporary = join(this.directory, `.${randomUUID()}.tmp`)
     try {
@@ -111,15 +112,18 @@ export class DeliveryStore {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
       throw error
     })
-    return raw === undefined ? undefined : JSON.parse(raw) as T
+    return raw === undefined ? undefined : this.parseRecord<T>(raw)
   }
-  async saveBinding(binding: DeliveryTargetBinding): Promise<void> { await this.writeOnce(this.path('binding', binding.id), binding) }
+  private parseRecord<T>(raw: string): T | undefined {
+    try { return JSON.parse(raw) as T } catch { return undefined }
+  }
+  async saveBinding(binding: DeliveryTargetBinding): Promise<void> { await this.#writeOnce(this.path('binding', binding.id), binding) }
   async getBinding(id: string): Promise<DeliveryTargetBinding | undefined> { return this.read(this.path('binding', id)) }
   async savePlan(plan: CompiledRuntimePlan): Promise<void> {
     verifyRuntimePlanIdentity(plan)
     const existing = await this.getPlan(plan.id)
     if (existing !== undefined) { verifyRuntimePlanIdentity(existing); return }
-    await this.writeOnce(this.path('plan', plan.id), plan)
+    await this.#writeOnce(this.path('plan', plan.id), plan)
   }
   async getPlan(id: string): Promise<CompiledRuntimePlan | undefined> {
     const plan = await this.read<CompiledRuntimePlan>(this.path('plan', id))
@@ -130,7 +134,7 @@ export class DeliveryStore {
     return createHash('sha256').update(`${plan.runtimePlanHash}\0${assertionId}`).digest('hex')
   }
   async recordExternalAcceptance(planId: string, input: { assertionId: string; kind: 'EXTERNAL' | 'HUMAN';
-    reviewerVerdict: 'PASS'; reviewerIdentity: string;
+    reviewerVerdict: 'PASS'; acceptedBy: ExternalAcceptanceRecord['acceptedBy']; displayName?: string;
     evidence: readonly { kind: string; content: string }[] }): Promise<ExternalAcceptanceRecord> {
     const plan = await this.getPlan(planId)
     if (!plan) throw new Error('Runtime plan does not exist.')
@@ -140,7 +144,8 @@ export class DeliveryStore {
       binding?.stagedVerification.readiness === 'EXTERNAL_DEFERRED' || binding?.stagedVerification.obligation?.externalResidual
         ? 'EXTERNAL' : undefined
     if (expectedKind === undefined || input.kind !== expectedKind || input.reviewerVerdict !== 'PASS' ||
-      typeof input.reviewerIdentity !== 'string' || !/^[A-Za-z0-9_.:@ -]{3,120}$/u.test(input.reviewerIdentity.trim()) ||
+      !input.acceptedBy || !isOperatorSession(input.acceptedBy) || input.acceptedBy.role !== 'LOCAL_OPERATOR_UI' || input.acceptedBy.channel !== 'LAUNCHPAD_SESSION' ||
+      !/^[a-f0-9]{64}$/u.test(input.acceptedBy.sessionRef) ||
       !Array.isArray(input.evidence) || input.evidence.length === 0 || input.evidence.length > 20 ||
       input.evidence.some((item) => !item || typeof item.kind !== 'string' || !/^[a-z][a-z0-9_]{2,40}$/u.test(item.kind) ||
         typeof item.content !== 'string' || item.content.trim().length < 20 || item.content.length > 64_000))
@@ -155,13 +160,13 @@ export class DeliveryStore {
       const id = createHash('sha256').update(JSON.stringify(artifact)).digest('hex')
       const path = this.path('external-evidence', id)
       const existing = await this.read<typeof artifact>(path)
-      if (existing === undefined) await this.writeOnce(path, artifact)
+      if (existing === undefined) await this.#writeOnce(path, artifact)
       else if (JSON.stringify(existing) !== JSON.stringify(artifact)) throw new Error('External evidence identity collision.')
       evidenceIds.push(id)
     }
     const record: ExternalAcceptanceRecord = { assertionId: input.assertionId, kind: input.kind,
       evidenceIds: [...new Set(evidenceIds)], reviewerVerdict: 'PASS',
-      reviewerIdentity: input.reviewerIdentity.trim(), acceptedAt: new Date().toISOString() }
+      acceptedBy: { ...input.acceptedBy, ...(input.displayName === undefined ? {} : { displayName: input.displayName }) }, acceptedAt: new Date().toISOString() }
     const envelope = { runtimePlanHash: plan.runtimePlanHash, targetCommit: current.baselineCommit, record }
     const recordHash = createHash('sha256').update(JSON.stringify(envelope)).digest('hex')
     const path = this.path('external-acceptance', this.externalAcceptanceKey(plan, input.assertionId))
@@ -174,7 +179,7 @@ export class DeliveryStore {
         throw new Error('External acceptance is immutable for this assertion and commit.')
       return existing.record
     }
-    await this.writeOnce(path, { ...envelope, recordHash })
+    await this.#writeOnce(path, { ...envelope, recordHash })
     return record
   }
   private async validExternalAcceptances(plan: CompiledRuntimePlan, commit: string): Promise<ExternalAcceptanceRecord[]> {
@@ -190,7 +195,8 @@ export class DeliveryStore {
         createHash('sha256').update(JSON.stringify({ runtimePlanHash: saved.runtimePlanHash,
           targetCommit: saved.targetCommit, record: saved.record })).digest('hex') !== saved.recordHash ||
         record?.assertionId !== assertionId || record.reviewerVerdict !== 'PASS' ||
-        !record.reviewerIdentity?.trim() || !Number.isFinite(Date.parse(record.acceptedAt)) ||
+        record.acceptedBy?.role !== 'LOCAL_OPERATOR_UI' || record.acceptedBy.channel !== 'LAUNCHPAD_SESSION' ||
+        !/^[a-f0-9]{64}$/u.test(record.acceptedBy.sessionRef) || !Number.isFinite(Date.parse(record.acceptedAt)) ||
         !Array.isArray(record.evidenceIds) || record.evidenceIds.length === 0 ||
         record.evidenceIds.some((id) => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) continue
       const binding = plan.acceptanceBindings.find((item) => item.assertionId === assertionId && item.ownership === 'OWNER')!
@@ -210,7 +216,7 @@ export class DeliveryStore {
     }
     return records
   }
-  async saveCapabilityEvidence(plan: CompiledRuntimePlan, item: CapabilityEvidence): Promise<void> {
+  async #saveCapabilityEvidence(plan: CompiledRuntimePlan, item: CapabilityEvidence): Promise<void> {
     verifyRuntimePlanIdentity(plan)
     verifyCapabilityEvidence(item)
     if (!plan.acceptanceBindings.some((binding) => binding.assertionId === item.assertionId &&
@@ -226,7 +232,7 @@ export class DeliveryStore {
         throw new Error('Persisted capability evidence identity collision.')
       return
     }
-    await this.writeOnce(path, { runtimePlanHash: plan.runtimePlanHash, evidence: item })
+    await this.#writeOnce(path, { runtimePlanHash: plan.runtimePlanHash, evidence: item })
   }
   async getCapabilityEvidence(plan: CompiledRuntimePlan, id: string): Promise<CapabilityEvidence | undefined> {
     verifyRuntimePlanIdentity(plan)
@@ -285,8 +291,8 @@ export class DeliveryStore {
     const previousBlueprint = await this.read<ApprovedVerificationBlueprint>(blueprintPath)
     if (previousBlueprint && previousBlueprint.blueprintHash !== blueprint.blueprintHash)
       throw new Error('Verification obligation already has a different approved blueprint.')
-    if (!previousBlueprint) await this.writeOnce(blueprintPath, blueprint)
-    try { await this.writeOnce(path, transition) }
+    if (!previousBlueprint) await this.#writeOnce(blueprintPath, blueprint)
+    try { await this.#writeOnce(path, transition) }
     catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
         const raced = await this.read<VerificationBindingTransition>(path)
@@ -314,34 +320,91 @@ export class DeliveryStore {
     return transition
   }
   async collectProvisionedEvidence(plan: CompiledRuntimePlan, assertionId: string,
-    runtimeTaskId: string): Promise<CapabilityEvidence> {
+    runtimeTaskId: string): Promise<CapabilityEvidence & { executionId: string }> {
     const transition = await this.getBindingTransition(plan, assertionId, runtimeTaskId)
     if (transition === undefined) throw new Error('Verifier has not been provisioned.')
-    const facts = await inspectAtCommit(plan.targetBinding, transition.implementationCommit)
-    const manifestHash = generateScopeManifest(facts).sha256
-    if (Object.entries(transition.artifactHashes).some(([path, hash]) =>
-      (path === 'NOVAWING_SCOPE_MANIFEST' ? manifestHash : facts.artifactHashes[path]) !== hash))
-      throw new Error('INVALIDATED_ARTIFACT_HASH')
-    const verifier = transition.verifier
-    let observed: CapabilityEvidence
-    switch (verifier.family) {
-      case 'http_api': observed = await collectHttpEvidence({ assertionId, port: verifier.port, route: verifier.route,
-        expectedStatus: verifier.expectedStatus, expectedJsonPointer: verifier.expectedJsonPointer,
-        expectedJsonValue: verifier.expectedJsonValue, timeoutMs: verifier.timeoutMs }); break
-      case 'filesystem': observed = await collectFilesystemEvidence({ target: plan.targetBinding, assertionId,
-        relativePath: verifier.relativePath, expectation: verifier.expectation,
-        ...(verifier.contains === undefined ? {} : { contains: verifier.contains }) }); break
-      case 'process': observed = await collectProcessEvidence({ target: plan.targetBinding, assertionId,
-        relativeEntry: verifier.relativeEntry, expectedExitCode: verifier.expectedExitCode,
-        timeoutMs: verifier.timeoutMs }); break
-      case 'command': observed = await collectCommandEvidence({ target: plan.targetBinding, assertionId,
-        command: verifier.command }); break
-      case 'scope_review': observed = await collectScopeReviewEvidence({ target: plan.targetBinding, assertionId,
-        manifestHash, trackedArtifactCount: Object.keys(facts.artifactHashes).length,
-        ...(verifier.command ? { command: verifier.command } : {}) }); break
+    const executionId = randomUUID(), startedAt = new Date().toISOString()
+    const latestPath = this.path('verification-attempt-latest',
+      this.obligationCommitKey(transition.obligationId, transition.implementationCommit))
+    // Starting a newer attempt immediately revokes older PASS, including while it is running.
+    await this.#writeAtomic(latestPath, executionId)
+    let observed: CapabilityEvidence | undefined, matched = false
+    try {
+      const before = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+      if (!before.clean || before.baselineCommit !== transition.implementationCommit)
+        throw new Error('ATTEMPT_COMMIT_DRIFT')
+      const facts = await inspectAtCommit(plan.targetBinding, transition.implementationCommit)
+      const manifestHash = generateScopeManifest(facts).sha256
+      if (Object.entries(transition.artifactHashes).some(([path, hash]) =>
+        (path === 'NOVAWING_SCOPE_MANIFEST' ? manifestHash : facts.artifactHashes[path]) !== hash))
+        throw new Error('INVALIDATED_ARTIFACT_HASH')
+      const verifier = transition.verifier
+      switch (verifier.family) {
+        case 'http_api': observed = await collectHttpEvidence({ assertionId, port: verifier.port, route: verifier.route,
+          expectedStatus: verifier.expectedStatus, expectedJsonPointer: verifier.expectedJsonPointer,
+          expectedJsonValue: verifier.expectedJsonValue, timeoutMs: verifier.timeoutMs }); break
+        case 'filesystem': observed = await collectFilesystemEvidence({ target: plan.targetBinding, assertionId,
+          relativePath: verifier.relativePath, expectation: verifier.expectation,
+          ...(verifier.contains === undefined ? {} : { contains: verifier.contains }) }); break
+        case 'process': observed = await collectProcessEvidence({ target: plan.targetBinding, assertionId,
+          relativeEntry: verifier.relativeEntry, expectedExitCode: verifier.expectedExitCode,
+          timeoutMs: verifier.timeoutMs }); break
+        case 'command': observed = await collectCommandEvidence({ target: plan.targetBinding, assertionId,
+          command: verifier.command }); break
+        case 'scope_review': observed = await collectScopeReviewEvidence({ target: plan.targetBinding, assertionId,
+          manifestHash, trackedArtifactCount: Object.keys(facts.artifactHashes).length,
+          ...(verifier.command ? { command: verifier.command } : {}) }); break
+      }
+      await this.#saveCapabilityEvidence(plan, observed)
+      const after = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
+      if (!after.clean || after.baselineCommit !== transition.implementationCommit)
+        throw new Error('ATTEMPT_COMMIT_DRIFT')
+      matched = observed.result === 'OBSERVED' && observed.facts.observedMatch === true
+      return { ...observed, executionId }
+    } finally {
+      const attempt = {
+        executionId, runtimePlanHash: plan.runtimePlanHash, assertionId, runtimeTaskId,
+        obligationId: transition.obligationId, transitionId: transition.id,
+        implementationCommit: transition.implementationCommit, blueprintHash: transition.blueprintHash,
+        verifierHash: createHash('sha256').update(canonicalSerialize(transition.verifier)).digest('hex'),
+        artifactHashes: transition.artifactHashes, evidenceId: observed?.id ?? null,
+        result: matched ? 'OBSERVED' : 'COLLECTION_FAILED', observedMatch: matched,
+        startedAt, finishedAt: new Date().toISOString(),
+      }
+      await this.#writeOnce(this.path('verification-attempt', executionId), { ...attempt,
+        recordHash: createHash('sha256').update(canonicalSerialize(attempt)).digest('hex') })
     }
-    await this.saveCapabilityEvidence(plan, observed)
-    return observed
+  }
+  async #attemptValid(plan: CompiledRuntimePlan, item: AssertionCompletionEvidence,
+    transition: VerificationBindingTransition | undefined): Promise<boolean> {
+    try {
+      if (!transition || !item.executionId || !/^[a-f0-9-]{36}$/u.test(item.executionId)) return false
+      const attempt = await this.read<Record<string, unknown>>(this.path('verification-attempt', item.executionId))
+      if (!attempt || attempt.result !== 'OBSERVED' || attempt.observedMatch !== true ||
+        !Number.isFinite(Date.parse(String(attempt.startedAt))) ||
+        Date.parse(String(attempt.finishedAt)) < Date.parse(String(attempt.startedAt)) ||
+        !Number.isFinite(Date.parse(String(attempt.finishedAt)))) return false
+      const { recordHash, ...content } = attempt
+      if (recordHash !== createHash('sha256').update(canonicalSerialize(content)).digest('hex')) return false
+      const expected = { executionId: item.executionId, runtimePlanHash: plan.runtimePlanHash,
+        assertionId: item.assertionId, runtimeTaskId: item.runtimeTaskId, obligationId: transition.obligationId,
+        transitionId: item.transitionId, implementationCommit: item.implementationCommit,
+        blueprintHash: item.blueprintHash, artifactHashes: item.artifactHashes, evidenceId: item.evidenceId,
+        verifierHash: createHash('sha256').update(canonicalSerialize(transition.verifier)).digest('hex') }
+      if (Object.entries(expected).some(([key, value]) => canonicalSerialize(attempt[key]) !== canonicalSerialize(value)) ||
+        transition.runtimePlanHash !== plan.runtimePlanHash || transition.assertionId !== item.assertionId ||
+        transition.runtimeTaskId !== item.runtimeTaskId || transition.id !== item.transitionId ||
+        transition.implementationCommit !== item.implementationCommit || transition.blueprintHash !== item.blueprintHash ||
+        canonicalSerialize(transition.artifactHashes) !== canonicalSerialize(item.artifactHashes)) return false
+      return await this.read<string>(this.path('verification-attempt-latest',
+        this.obligationCommitKey(transition.obligationId, transition.implementationCommit))) === item.executionId
+    } catch { return false }
+  }
+  async localAttemptsValid(plan: CompiledRuntimePlan, transitions: VerificationBindingTransition[],
+    evidence: AssertionCompletionEvidence[]): Promise<boolean> {
+    for (const item of evidence) if (item.reviewerVerdict !== 'DEFERRED' &&
+      !await this.#attemptValid(plan, item, transitions.find(t => t.id === item.transitionId))) return false
+    return true
   }
   private completionKey(plan: CompiledRuntimePlan, taskId: string, commit: string): string {
     return createHash('sha256').update(`${plan.runtimePlanHash}\0${taskId}\0${commit}`).digest('hex')
@@ -416,7 +479,7 @@ export class DeliveryStore {
     return true
   }
   async recordLocalTaskCompletion(plan: CompiledRuntimePlan, taskId: string,
-    transitions: VerificationBindingTransition[], evidence: AssertionCompletionEvidence[]): Promise<void> {
+    transitions: VerificationBindingTransition[], evidence: AssertionCompletionEvidence[]): Promise<'LOCALLY_VERIFIED' | 'BLOCKED'> {
     verifyRuntimePlanIdentity(plan)
     const bindings = plan.acceptanceBindings.filter((item) => item.runtimeTaskId === taskId && item.blocking && item.ownership === 'OWNER')
     if (taskCompletionGate(bindings, transitions, evidence) !== 'LOCALLY_VERIFIED')
@@ -433,6 +496,7 @@ export class DeliveryStore {
         throw new Error('INVALIDATED_ARTIFACT_HASH')
     }
     for (const item of evidence) if (item.reviewerVerdict !== 'DEFERRED') {
+      if (!await this.#attemptValid(plan, item, transitions.find(t => t.id === item.transitionId))) return 'BLOCKED'
       const observed = await this.getCapabilityEvidence(plan, item.evidenceId)
       if (!observed || observed.assertionId !== item.assertionId || observed.providerId !== item.providerId ||
         observed.result !== 'OBSERVED' || observed.facts.observedMatch !== true)
@@ -448,9 +512,10 @@ export class DeliveryStore {
         taskId: existing.taskId, commit: existing.commit, transitions: existing.transitions,
         evidence: existing.evidence }) !== JSON.stringify(record))
         throw new Error('Local completion identity collision.')
-    } else await this.writeOnce(path, record)
-    await this.writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, taskId)),
+    } else await this.#writeOnce(path, record)
+    await this.#writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, taskId)),
       { runtimePlanHash: plan.runtimePlanHash, taskId, commit: current.baselineCommit })
+    return 'LOCALLY_VERIFIED'
   }
   async recordContributorTaskCompletion(plan: CompiledRuntimePlan, input: TaskStateV2, commit: string): Promise<void> {
     verifyRuntimePlanIdentity(plan)
@@ -493,8 +558,8 @@ export class DeliveryStore {
       // valid immutable proof for the same commit is sufficient; never rewrite it.
       if (!await this.contributorCompletionValid(plan, existing, current.baselineCommit, true))
         throw new Error('Contributor completion identity collision.')
-    } else await this.writeOnce(path, record)
-    await this.writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, source.id)),
+    } else await this.#writeOnce(path, record)
+    await this.#writeAtomic(this.path('local-completion-index', this.completionIndexKey(plan, source.id)),
       { runtimePlanHash: plan.runtimePlanHash, taskId: source.id, commit })
   }
   async customerAssessment(planId: string): Promise<ReturnType<typeof assessCustomerDeliveryCompletion>> {
@@ -537,7 +602,7 @@ export class DeliveryStore {
       let valid = true
       for (const transition of record.transitions) {
         const obligation = owned.find((item) => item.assertionId === transition.assertionId)?.stagedVerification.obligation
-        if (!obligation) { valid = false; break }
+        if (!obligation || transition.implementationCommit !== record.commit) { valid = false; break }
         const key = this.obligationCommitKey(obligation.obligationId, transition.implementationCommit)
         const stored = await this.read<VerificationBindingTransition>(this.path('transition', key))
         const blueprint = await this.read<ApprovedVerificationBlueprint>(this.path('blueprint', key))
@@ -551,6 +616,7 @@ export class DeliveryStore {
       }
       if (!valid) continue
       for (const item of record.evidence) if (item.reviewerVerdict !== 'DEFERRED') {
+        if (!await this.#attemptValid(plan, item, record.transitions.find(t => t.id === item.transitionId))) { valid = false; break }
         const observed = await this.getCapabilityEvidence(plan, item.evidenceId).catch(() => undefined)
         if (!observed || observed.assertionId !== item.assertionId || observed.providerId !== item.providerId ||
           observed.result !== 'OBSERVED' || observed.facts.observedMatch !== true) { valid = false; break }
@@ -566,7 +632,7 @@ export class DeliveryStore {
       externalAccepted, contributorCompleted)
   }
   async claimSession(binding: WorkSessionPlanBinding): Promise<boolean> {
-    try { await this.writeOnce(this.path('session', binding.workSessionId), binding); return true }
+    try { await this.#writeOnce(this.path('session', binding.workSessionId), binding); return true }
     catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return false
       throw error
@@ -575,12 +641,12 @@ export class DeliveryStore {
   async finishSession(binding: WorkSessionPlanBinding): Promise<void> {
     const current = await this.getSession(binding.workSessionId)
     if (current?.status !== 'STARTING') throw new Error('Delivery start claim is no longer active.')
-    await this.writeAtomic(this.path('session', binding.workSessionId), { ...binding, status: 'STARTED' })
+    await this.#writeAtomic(this.path('session', binding.workSessionId), { ...binding, status: 'STARTED' })
   }
   async failSession(binding: WorkSessionPlanBinding, error: DeliveryStartupError): Promise<void> {
     const current = await this.getSession(binding.workSessionId)
     if (current?.status !== 'STARTING') return
-    await this.writeAtomic(this.path('session', binding.workSessionId), { ...current, status: error.status,
+    await this.#writeAtomic(this.path('session', binding.workSessionId), { ...current, status: error.status,
       failure: { stage: error.stage, code: error.code, at: new Date().toISOString() } })
   }
   async getSession(id: string): Promise<WorkSessionPlanBinding | undefined> { return this.read(this.path('session', id)) }

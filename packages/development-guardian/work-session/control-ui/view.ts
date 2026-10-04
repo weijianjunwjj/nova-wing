@@ -14,11 +14,10 @@
  */
 
 export interface ViewBootstrap {
-  controlToken: string
   serverOrigin: string
 }
 
-/** 渲染 index.html。bootstrap 只注入 controlToken 与 serverOrigin。 */
+/** 渲染 index.html。bootstrap 只注入 serverOrigin。 */
 export function renderHtml(bootstrap: ViewBootstrap): string {
   // 防御：JSON 内容不得包含 "</script>" 截断标签（token/origin 均受控，仍转义 <）。
   const bootstrapJson = JSON.stringify(bootstrap).replace(/</g, '\\u003c')
@@ -171,10 +170,8 @@ export const APP_JS = `
 'use strict'
 
 var bootstrapEl = document.getElementById('novawing-bootstrap')
-var controlToken = ''
 try {
   var bootstrap = JSON.parse(bootstrapEl ? (bootstrapEl.textContent || '{}') : '{}')
-  controlToken = bootstrap.controlToken || ''
 } catch (e) {
   // bootstrap 缺失时 mutation fetch 将因缺少 token 而被服务端拒绝
 }
@@ -817,7 +814,7 @@ async function start() {
   try {
     var res = await fetch('/api/session/start', {
       method: 'POST',
-      headers: { 'X-NovaWing-Control-Token': controlToken }
+      credentials: 'same-origin'
     })
     var note = el('start-note')
     if (res.status === 202) {
@@ -839,7 +836,7 @@ async function requestControl(path) {
   try {
     return await fetch(path, {
       method: 'POST',
-      headers: { 'X-NovaWing-Control-Token': controlToken }
+      credentials: 'same-origin'
     })
   } finally {
     refresh()
@@ -859,7 +856,6 @@ async function resumeSession(payload) {
     var res = await fetch('/api/session/resume', {
       method: 'POST',
       headers: {
-        'X-NovaWing-Control-Token': controlToken,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
@@ -894,7 +890,6 @@ async function submitHumanDecision(decision) {
     var res = await fetch('/api/session/human-decision', {
       method: 'POST',
       headers: {
-        'X-NovaWing-Control-Token': controlToken,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ taskId: pending.taskId, generation: pending.generation, decision: decision })
@@ -926,7 +921,6 @@ async function resumeRecoverableSession(payload) {
     await fetch('/api/session/resume-recoverable', {
       method: 'POST',
       headers: {
-        'X-NovaWing-Control-Token': controlToken,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload || {})

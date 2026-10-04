@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -217,7 +218,7 @@ await test('W005-B B3: trusted config maps to definition and per-task Guardian p
     assert.ok(gitCalls.every((call) => call.cwd === process.cwd()))
     assert.ok(gitCalls.every((call) => call.args[0] !== '-lc'))
 
-    const address = await app.start()
+    const address = await startOperator(app)
     assert.equal(address.host, '127.0.0.1')
     await app.close()
   } finally {
@@ -285,12 +286,12 @@ await test('W005-B B3: browser start body cannot override trusted repo, branch, 
       createExecutor: () => new NeverExecutingExecutor(),
       createRuntime: (input) => new FakeRuntime(input.definition),
     })
-    const address = await app.start()
-    const token = app.server.getTokenForTest()
-    const response = await fetch(`${address.url}/api/session/start`, {
+    const address = await startOperator(app)
+    const token = await mintSession(app.server)
+    const response = await sessionFetch(`${address.url}/api/session/start`, {
       method: 'POST',
       headers: {
-        'X-NovaWing-Control-Token': token,
+        'Cookie': token,
         Origin: address.url,
         'Content-Type': 'application/json',
       },

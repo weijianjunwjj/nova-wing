@@ -243,7 +243,7 @@ await test('ADOPT-CLI-E: browser and CLI expose no adoption overrides', async ()
   try {
     const response = await fetch(`${server.address.url}/api/session/adopt`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: server.address.url, Cookie: server.token },
       body: JSON.stringify({
         repoPath: 'D:/evil',
         taskId: 'EVIL',

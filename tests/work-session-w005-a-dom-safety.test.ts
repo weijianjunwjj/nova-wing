@@ -98,7 +98,6 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
 
   // bootstrap 只经 application/json 标签注入一次
   document.getElementById('novawing-bootstrap')!.textContent = JSON.stringify({
-    controlToken: CONTROL_TOKEN,
     serverOrigin: 'http://127.0.0.1:4317',
   })
 
@@ -229,7 +228,7 @@ await test('W005-A DOM safety: malicious text rendered as inert text, no executa
   })
   assert.equal(elements.get('decision-title')?.textContent, '需要验证授权')
   assert.equal(elements.get('approve-verification-btn')?.hidden, false)
-  assert.ok(renderHtml({ controlToken: 'tok', serverOrigin: 'http://127.0.0.1:1' }).includes('批准此验证并继续'))
+  assert.ok(renderHtml({ serverOrigin: 'http://127.0.0.1:1' }).includes('批准此验证并继续'))
   assert.equal(elements.get('decision-input')?.hidden, true)
   assert.equal(elements.get('resume-decision-btn')?.hidden, true)
 

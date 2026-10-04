@@ -1,3 +1,4 @@
+import { startOperator } from './operator-session.js'
 import assert from 'node:assert/strict'
 import type { Server } from 'node:http'
 import { join } from 'node:path'
@@ -36,7 +37,7 @@ const launchpad = await createNovaWingLaunchpad({ configDirectory: directory, sh
 } })
 try {
   if (scheduled) {
-    await launchpad.start()
+    await startOperator(launchpad)
     assert.equal(closes, 2, 'hydration and scheduled recovery each use a read-only owner')
   } else {
     await assert.rejects(launchpad.start(), (error) => {

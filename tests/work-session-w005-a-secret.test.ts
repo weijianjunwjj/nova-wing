@@ -1,3 +1,4 @@
+import { startOperator, sessionFetch } from './operator-session.js'
 /**
  * W005-A Secret Regression — Guardian raw detail / credential 不得进入浏览器。
  *
@@ -19,7 +20,7 @@ interface SseClient {
 }
 
 async function openSse(url: string): Promise<SseClient> {
-  const res = await fetch(url)
+  const res = await sessionFetch(url)
   if (!res.body) {
     throw new Error('SSE response has no body')
   }
@@ -65,7 +66,7 @@ await test('W005-A secret: guardian raw detail never reaches browser surfaces', 
     pollIntervalMs: 10,
   })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   try {
     emitProgress?.({
       phase: 'REVIEWING',
@@ -76,7 +77,7 @@ await test('W005-A secret: guardian raw detail never reaches browser surfaces', 
     })
 
     // 1. /api/status snapshot 不含 secret
-    const statusBody = await (await fetch(`${address.url}/api/status`)).text()
+    const statusBody = await (await sessionFetch(`${address.url}/api/status`)).text()
     assert.ok(!statusBody.includes('SUPER_SECRET_TOKEN'))
     assert.ok(!statusBody.includes('Bearer'))
 

@@ -15,10 +15,11 @@ try {
     env: process.env,
     enableProductionPreflight: true,
   })
-  const address = await launchpad.start()
-  const browser = await openLaunchpadInDefaultBrowser(address.url)
+  await launchpad.start()
+  const bootstrapUrl = launchpad.mintBootstrapUrl()
+  const browser = await openLaunchpadInDefaultBrowser(bootstrapUrl)
 
-  console.log(`NovaWing Launchpad: ${address.url}`)
+  console.log(`NovaWing Launchpad: ${bootstrapUrl}`)
   if (!browser.opened) console.log('Open the URL above in your browser.')
 
   let closing = false

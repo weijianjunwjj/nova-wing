@@ -73,7 +73,7 @@ test('v031: diagnosis HTTP uses existing token/Origin gates, task generation and
       humanRequired: { category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'test failed' }, taskStatesV2: { T1: taskState } })
     const post = async (body: unknown, authorized = true, origin = app.address.url) => {
       const response = await fetch(`${app.address.url}/api/session/resume`, { method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: origin, ...(authorized ? { 'X-NovaWing-Control-Token': app.token } : {}) },
+        headers: { 'Content-Type': 'application/json', Origin: origin, ...(authorized ? { 'Cookie': app.token } : {}) },
         body: JSON.stringify(body) })
       await response.text()
       return response.status

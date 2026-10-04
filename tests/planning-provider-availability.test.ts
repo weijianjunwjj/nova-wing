@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, readFile } from 'node:fs/promises'
@@ -104,10 +105,10 @@ test('Planning API distinguishes generator, semantic reviewer and other failures
     createWorkSession: async () => { runtimeCalls++; throw new Error('Runtime boundary crossed') },
   } })
   try {
-    const address = await launchpad.start()
-    const post = () => fetch(`${address.url}/api/planning/generate`, { method: 'POST',
+    const address = await startOperator(launchpad)
+    const post = async () => sessionFetch(`${address.url}/api/planning/generate`, { method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: address.url,
-        'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() },
+        'Cookie': await mintSession(launchpad) },
       body: JSON.stringify({ requirement }) })
     const unavailable = await post()
     assert.equal(unavailable.status, 503)

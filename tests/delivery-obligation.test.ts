@@ -1,3 +1,4 @@
+import { testOperator } from './operator-session.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -945,7 +946,7 @@ test('durable contributor T1 then T2 advances the Runtime DAG only after each pr
     assert.equal((await f.store.customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
   } finally { await final.close() }
   const accepted = await f.store.recordExternalAcceptance(f.plan.id, {
-    assertionId: 'A1', kind: 'EXTERNAL', reviewerVerdict: 'PASS', reviewerIdentity: 'independent-browser-fixture',
+    assertionId: 'A1', kind: 'EXTERNAL', reviewerVerdict: 'PASS', acceptedBy: testOperator(),
     evidence: [{ kind: 'browser_trace', content: 'Opened the delivered app in a browser and observed the persisted order after restart.' }],
   })
   assert.equal(accepted.evidenceIds.length, 1)
@@ -1442,4 +1443,63 @@ test('owned checkpoint survives subsequent reviewer unavailability without claim
   assert.equal(result.taskStateV2!.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
   assert.equal(await git(f.repo, 'rev-list', '--count', `${f.target.baselineCommit}..HEAD`), '1')
   assert.notEqual(result.taskStateV2!.completion.review?.passed, true)
+})
+
+
+test('SIMPLIFY acceptance requires server session, rejects all body identity fields and preserves legitimate acceptance on reopen', async () => {
+  const f = await checkpointIntegrationFixture()
+  const { NovaWingLaunchpad } = await import('../packages/development-guardian/work-session/launchpad/server.js')
+  const { mintSession } = await import('./operator-session.js')
+  const server = new NovaWingLaunchpad([], join(f.root, 'configs'), { deliveryDataRoot: f.store.directory,
+    planningService: {} as import('../packages/development-guardian/planning/service.js').PlanningService })
+  const { url } = await server.start()
+  const body = { runtimePlanId: f.plan.id, runtimePlanHash: f.plan.runtimePlanHash, assertionId: 'A1',
+    kind: 'EXTERNAL', reviewerVerdict: 'PASS', displayName: 'Local fixture operator',
+    evidence: [{ kind: 'browser_observation', content: 'Fixture operator observed the exact asserted browser behavior.' }] }
+  const before = await f.store.customerAssessment(f.plan.id)
+  const post = (value: unknown, headers: Record<string, string> = {}) => fetch(`${url}/api/delivery/acceptance`, {
+    method: 'POST', headers: { Origin: url, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(value) })
+  try {
+    for (const headers of [{}, { 'X-NovaWing-Launchpad-Token': 'old-token' }])
+      assert.equal((await post(body, headers)).status, 403)
+    assert.deepEqual(await f.store.customerAssessment(f.plan.id), before)
+    const cookie = await mintSession(server)
+    for (const field of ['reviewerIdentity', 'principalId', 'authorityLevel', 'role']) {
+      const response = await post({ ...body, [field]: 'forged' }, { Cookie: cookie })
+      assert.equal(response.status, 400)
+      assert.equal((await response.json() as { error: string }).error, 'IDENTITY_FIELDS_NOT_ACCEPTED')
+    }
+    assert.equal((await readdir(f.store.directory)).some(x => x.startsWith('external-acceptance-')), false)
+    await assert.rejects(f.store.recordExternalAcceptance(f.plan.id, { assertionId: 'A1', kind: 'EXTERNAL',
+      reviewerVerdict: 'PASS', acceptedBy: { role: 'LOCAL_OPERATOR_UI', channel: 'LAUNCHPAD_SESSION', sessionRef: 'a'.repeat(64) }, evidence: body.evidence }))
+    const response = await post(body, { Cookie: cookie })
+    assert.equal(response.status, 201)
+    const accepted = await response.json() as { record: { acceptedBy: { role: string; channel: string; sessionRef: string; displayName: string } } }
+    assert.equal(accepted.record.acceptedBy.role, 'LOCAL_OPERATOR_UI')
+    assert.equal(accepted.record.acceptedBy.channel, 'LAUNCHPAD_SESSION')
+    assert.equal(accepted.record.acceptedBy.displayName, body.displayName)
+    assert.equal(accepted.record.acceptedBy.sessionRef, createHash('sha256').update(cookie.split('=')[1]!).digest('hex'))
+    const reopened = new DeliveryStore(f.store.directory)
+    assert.deepEqual(await reopened.customerAssessment(f.plan.id), await f.store.customerAssessment(f.plan.id))
+    const saved = JSON.parse(await readFile(join(f.store.directory, (await readdir(f.store.directory)).find(x => x.startsWith('external-acceptance-'))!), 'utf8'))
+    assert.deepEqual(saved.record, accepted.record)
+  } finally { await server.close() }
+})
+
+test('SIMPLIFY preserves ancestry validation for DEFERRED preparation', async () => {
+  const f = await fixture({ level: 'ui', behavior: '顾客在页面查看订单。', outcome: '页面呈现订单。', evidence: '浏览器截图。' })
+  const plan = await f.compile(), store = new DeliveryStore(join(f.root, 'delivery'))
+  await store.savePlan(plan)
+  const evidence = deferredEvidence(plan.acceptanceBindings[0]!)
+  await store.recordLocalTaskCompletion(plan, 'T1', [], [evidence])
+  assert.deepEqual((await store.customerAssessment(plan.id)).completedRuntimeTaskIds, ['T1'])
+  const commit = 'a'.repeat(40)
+  const key = createHash('sha256').update(`${plan.runtimePlanHash}\0T1\0${commit}`).digest('hex')
+  const index = createHash('sha256').update(`${plan.runtimePlanHash}\0T1`).digest('hex')
+  await writeFile(join(store.directory, `local-completion-${key}.json`), JSON.stringify({
+    kind: 'LOCALLY_VERIFIED', runtimePlanHash: plan.runtimePlanHash, taskId: 'T1', commit, transitions: [], evidence: [evidence] }))
+  await writeFile(join(store.directory, `local-completion-index-${index}.json`), JSON.stringify({
+    runtimePlanHash: plan.runtimePlanHash, taskId: 'T1', commit }))
+  assert.deepEqual((await store.customerAssessment(plan.id)).completedRuntimeTaskIds, [])
+  assert.equal((await store.customerAssessment(plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
 })

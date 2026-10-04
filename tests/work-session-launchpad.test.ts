@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -80,8 +81,8 @@ test('Composer schedule API normalizes UTC, accepts old requests, and rejects in
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     for (const [index, schedule] of [undefined, null, '2000-01-01T00:00:00Z', '2099-08-31T18:00:00+08:00'].entries()) {
       const response = await postCreate(launchpad, composerRequest(`scheduled-request-valid-${index}`, {
         ...(schedule === undefined ? {} : { scheduled_start_at: schedule }),
@@ -124,8 +125,8 @@ test('Composer executor defaults Codex, persists explicit modes, and confines Of
     gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
   } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     for (const [index, mode] of [undefined, 'auto', 'codex', 'deepseek'].entries()) {
       const result = await postCreate(launchpad, composerRequest(`executor-mode-valid-${index}`, {
         ...(mode === undefined ? {} : { executorMode: mode }),
@@ -160,8 +161,8 @@ test('Launchpad quota default uses DeepSeek only for an explicit active exhausti
       readCodexAvailability,
     } })
     try {
-      const address = await launchpad.start()
-      const html = await (await fetch(address.url)).text()
+      const address = await startOperator(launchpad)
+      const html = await (await sessionFetch(address.url)).text()
       assert.match(html, new RegExp(`<option value="${expected}" selected>`), name)
       assert.match(html, /name="codexModel"/u, name)
       assert.match(html, /name="codexReasoningEffort"/u, name)
@@ -181,8 +182,8 @@ test('Composer persists selected Codex model and reasoning, validates combinatio
     readCodexAvailability: () => ({ state: 'available' }),
   } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const codex = await postCreate(launchpad, composerRequest('codex-model-reasoning-0001', {
       executorMode: 'codex', codexModel: 'gpt-5.6-luna', codexReasoningEffort: 'max',
     }), auth)
@@ -396,8 +397,8 @@ test('Task Brief endpoint is authenticated, validates its envelope, and never st
     createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}),
   } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     assert.equal((await postBrief(launchpad, { brief: 'Task ID: T040\n立即执行' }, auth)).status, 200)
     const longBrief = `目标：只保留这个核心目标。\n\n${'背景说明。'.repeat(2_000)}\nSoft Limit: 10\nHard Limit: 20\nAuto Push: OFF`
     const longResponse = await postBrief(launchpad, { brief: longBrief }, auth)
@@ -496,13 +497,13 @@ async function postStart(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/start`, {
+  return sessionFetch(`${address.url}/api/session/start`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(headers.token === undefined
         ? {}
-        : { 'X-NovaWing-Launchpad-Token': headers.token }),
+        : { 'Cookie': headers.token }),
       ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
     },
     body: JSON.stringify(body),
@@ -516,11 +517,11 @@ async function postCreate(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/create`, {
+  return sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.token === undefined ? {} : { 'Cookie': headers.token }),
       ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
     },
     body: JSON.stringify(body),
@@ -534,11 +535,11 @@ async function postDelete(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/delete`, {
+  return sessionFetch(`${address.url}/api/session/delete`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.token === undefined ? {} : { 'Cookie': headers.token }),
       ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
     },
     body: JSON.stringify(body),
@@ -552,11 +553,11 @@ async function postBranch(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/branch`, {
+  return sessionFetch(`${address.url}/api/session/branch`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-NovaWing-Launchpad-Token': headers.token,
+      'Cookie': headers.token,
       Origin: headers.origin,
     },
     body: JSON.stringify({ targetRepo }),
@@ -570,11 +571,11 @@ async function postBrief(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/brief`, {
+  return sessionFetch(`${address.url}/api/session/brief`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(headers.token === undefined ? {} : { 'X-NovaWing-Launchpad-Token': headers.token }),
+      ...(headers.token === undefined ? {} : { 'Cookie': headers.token }),
       ...(headers.origin === undefined ? {} : { Origin: headers.origin }),
     },
     body: JSON.stringify(body),
@@ -605,8 +606,8 @@ await test('natural-language acceptance text must never leak into executable ver
     gitProcessRunner: async () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }),
   } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const expectedCommands = new Map([
       ['git diff --check 通过。', 'git diff --check'],
       ['npm run typecheck 必须通过', 'npm run typecheck'],
@@ -701,8 +702,8 @@ await test('Composer Quick Fill starts semantic and mixed Task Briefs while only
     repairAgent: unexpectedRepairAgent, repairLlmAgent: unexpectedRepairAgent,
   } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const semanticCriteria = [
       '代码实际完成。',
       '不存在 unresolved blocker。',
@@ -828,11 +829,11 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     }),
   } })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal(address.host, '127.0.0.1')
     assert.ok(address.port > 0)
     assert.match(address.url, /^http:\/\/127\.0\.0\.1:\d+$/u)
-    const html = await (await fetch(address.url)).text()
+    const html = await (await sessionFetch(address.url)).text()
     assert.match(html, /NovaWing Launchpad/u)
     assert.match(html, /AgentRun Persistence/u)
     assert.match(html, /SYSTEM UNKNOWN/u)
@@ -852,7 +853,7 @@ await test('Launchpad binds only 127.0.0.1 on a dynamic port and renders safe co
     assert.doesNotMatch(advanced, /allowedPaths/u)
     assert.match(html, /name="allowedPaths"[^>]*required/u)
     assert.doesNotMatch(html, /expectedUrl|SMTP_|credential/u)
-    const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    const appJs = await (await sessionFetch(`${address.url}/app.js`)).text()
     assert.match(appJs, /goldenPathEnabled:\s*true/u)
     assert.match(appJs, /确定删除这个 Work Session 吗？此操作只删除 NovaWing Launchpad 配置，不会删除项目代码。/u)
     assert.match(appJs, /Work Session 正在运行，请先结束后再删除。/u)
@@ -889,8 +890,8 @@ await test('Launchpad renders DEGRADED and blocks before creating a Work Session
     },
   })
   try {
-    const address = await launchpad.start()
-    const html = await (await fetch(address.url)).text()
+    const address = await startOperator(launchpad)
+    const html = await (await sessionFetch(address.url)).text()
     assert.match(html, /SYSTEM DEGRADED/u)
     assert.match(html, /NovaWing Core: DEGRADED/u)
     assert.match(html, /BRAIN: UNAVAILABLE/u)
@@ -898,7 +899,7 @@ await test('Launchpad renders DEGRADED and blocks before creating a Work Session
     const configId = launchpad.getConfigs()[0]?.configId
     assert.ok(configId)
     const response = await postStart(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 503)
     assert.deepEqual(await response.json(), {
@@ -932,8 +933,8 @@ await test('Launchpad reports ready availability at cold start without a model c
     },
   })
   try {
-    const address = await launchpad.start()
-    const html = await (await fetch(address.url)).text()
+    const address = await startOperator(launchpad)
+    const html = await (await sessionFetch(address.url)).text()
     assert.match(html, /SYSTEM READY/u)
     assert.match(html, /NovaWing Core: READY/u)
     assert.match(html, /BRAIN: READY/u)
@@ -960,8 +961,8 @@ await test('Composer creates a fresh validated session from structured input and
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const mismatch = await postCreate(launchpad, composerRequest('composer-create-branch-mismatch', {
       branch: 'feat/other',
     }), auth)
@@ -1027,9 +1028,9 @@ await test('Composer creates a fresh validated session from structured input and
     try {
       const restored = reopened.getConfigs().find((config) => config.taskId === 'T011')
       assert.ok(restored)
-      const reopenedAddress = await reopened.start()
+      const reopenedAddress = await startOperator(reopened)
       const reopenResponse = await postStart(reopened, { configId: restored.configId }, {
-        token: reopened.getTokenForTest(), origin: reopenedAddress.url,
+        token: await mintSession(reopened), origin: reopenedAddress.url,
       })
       assert.equal(reopenResponse.status, 202)
       assert.deepEqual(reopenedState.receivedConfigIds, [sessionId])
@@ -1069,9 +1070,9 @@ await test('Composer includes completion email notification when enabled', async
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postCreate(launchpad, composerRequest('composer-create-request-email', { emailEnabled: true }), {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 202)
     assert.deepEqual(state.receivedConfigs[0]!.notification, {
@@ -1094,7 +1095,7 @@ await test('Composer creates ordered batch tasks with a shared Guardian policy a
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postCreate(launchpad, composerRequest('composer-create-request-batch', {
       tasks: [
         { id: 'T014', goal: 'Implement check_inventory Tool.' },
@@ -1102,7 +1103,7 @@ await test('Composer creates ordered batch tasks with a shared Guardian policy a
         { id: 'T016', goal: 'Add deterministic coverage.' },
         { id: 'T017', goal: 'Document the result.' },
       ],
-    }), { token: launchpad.getTokenForTest(), origin: address.url })
+    }), { token: await mintSession(launchpad), origin: address.url })
     assert.equal(response.status, 202)
     const config = state.receivedConfigs[0]!
     assert.deepEqual(config.tasks.map((task) => ({ id: task.id, goal: task.goal })), [
@@ -1137,8 +1138,8 @@ await test('Composer discovers one origin push URL read-only and carries its con
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const discovery = await postBranch(launchpad, process.cwd(), auth)
     assert.deepEqual(await discovery.json(), {
       branch: 'feat/composer',
@@ -1189,9 +1190,9 @@ await test('Composer remote discovery never exposes credential-bearing or ambigu
         },
       })
       try {
-        const address = await launchpad.start()
+        const address = await startOperator(launchpad)
         const response = await postBranch(launchpad, process.cwd(), {
-          token: launchpad.getTokenForTest(), origin: address.url,
+          token: await mintSession(launchpad), origin: address.url,
         })
         const body = await response.text()
         assert.equal(response.status, 200)
@@ -1217,8 +1218,8 @@ await test('Composer reuses a completed requestId only for the same canonical pa
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const orderedTasks = [
       { id: 'T011', goal: 'Implement a focused persistent model with deterministic tests.' },
       { id: 'T012', goal: 'Implement the follow-up validation.' },
@@ -1263,9 +1264,9 @@ await test('Composer caps a long project basename in generated session ids', asy
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postCreate(launchpad, composerRequest('composer-create-request-0009', { targetRepo }), {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 202)
     assert.match(state.receivedConfigIds[0]!, /^a{48}-\d{12}-[a-f0-9]{6}$/u)
@@ -1304,9 +1305,9 @@ await test('Launchpad close waits for a pending Composer create before closing i
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const pendingRequest = postCreate(launchpad, composerRequest('composer-create-request-0010'), {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     await createStarted
     let closeFinished = false
@@ -1343,9 +1344,9 @@ await test('Launchpad close bounds a Composer create that never resolves', async
   const keepAliveServer = http.createServer()
   await new Promise<void>((resolve) => keepAliveServer.listen(0, '127.0.0.1', resolve))
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const pendingCreate = postCreate(launchpad, composerRequest('composer-create-request-0011'), {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     }).catch(() => undefined)
     await createStarted
     const startedAt = Date.now()
@@ -1375,8 +1376,8 @@ await test('Composer fails closed for invalid paths, non-git repositories, inval
     dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const invalidPath = await postCreate(launchpad, composerRequest('composer-create-request-0005', { targetRepo: 'relative/path' }), auth)
     assert.deepEqual(await invalidPath.json(), { error: 'INVALID_PROJECT_PATH', message: '项目目录必须是存在的绝对路径。' })
     const notGit = await postCreate(launchpad, composerRequest('composer-create-request-0006', { targetRepo: nonGit }), auth)
@@ -1446,10 +1447,10 @@ await test('Launchpad rejects a foreign Host before serving bootstrap HTML', asy
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const result = await requestWithHost(address.port, 'evil.example')
     assert.equal(result.status, 403)
-    assert.doesNotMatch(result.body, new RegExp(launchpad.getTokenForTest(), 'u'))
+    assert.doesNotMatch(result.body, new RegExp(await mintSession(launchpad), 'u'))
   } finally {
     await launchpad.close()
     await rm(directory, { recursive: true, force: true })
@@ -1464,15 +1465,15 @@ await test('Launchpad mutation requires both same Origin and the ephemeral token
     dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     assert.equal((await postStart(launchpad, { configId }, { origin: address.url })).status, 403)
     assert.equal((await postStart(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(),
+      token: await mintSession(launchpad),
       origin: 'http://evil.example',
     })).status, 403)
     assert.equal((await postStart(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(),
+      token: await mintSession(launchpad),
     })).status, 403)
     assert.equal(state.createCalls, 0)
   } finally {
@@ -1489,8 +1490,8 @@ await test('Browser can submit only a discovered configId, never an arbitrary co
     dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     assert.equal((await postStart(launchpad, { path: 'C:/whatever.json' }, auth)).status, 400)
     assert.equal((await postStart(launchpad, {
       configId: launchpad.getConfigs()[0]!.configId,
@@ -1511,8 +1512,8 @@ await test('Launchpad accepts only legacy or safe generated config IDs before tr
     { createWorkSession: fakeWorkSessionFactory(state), resolveEnvironment: async () => ({}) })
   const deliveryId = `delivery-${'a'.repeat(64)}-000000000000-abcdef`
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const legacyId = launchpad.getConfigs()[0]!.configId
     assert.match(legacyId, /^[a-f0-9]{32}$/u)
     assert.equal((await postStart(launchpad, { configId: legacyId }, auth)).status, 202)
@@ -1544,8 +1545,8 @@ await test('A discovered suspended delivery card opens control without resuming 
     targetBindingId: 'b'.repeat(64) })
   store.getPlan = async () => ({ runtimePlanHash: 'a'.repeat(64), targetBinding: { id: 'b'.repeat(64) } })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     assert.equal(launchpad.getConfigs()[0]?.status, 'SUSPENDED')
     const opened = await postStart(launchpad, { configId: deliveryId }, auth)
     assert.equal(opened.status, 202)
@@ -1562,16 +1563,16 @@ await test('Deleting a trusted config removes its file, Map entry, and rediscove
   const configPath = join(directory, 'fly-weave.json')
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     const response = await postDelete(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { deleted: true })
     await assert.rejects(access(configPath), { code: 'ENOENT' })
     assert.deepEqual(launchpad.getConfigs(), [])
-    const currentHtml = await (await fetch(address.url)).text()
+    const currentHtml = await (await sessionFetch(address.url)).text()
     assert.doesNotMatch(currentHtml, /data-config-card=/u)
     assert.match(currentHtml, /没有发现可启动的 Work Session/u)
   } finally {
@@ -1581,8 +1582,8 @@ await test('Deleting a trusted config removes its file, Map entry, and rediscove
   const reopened = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
     assert.deepEqual(reopened.getConfigs(), [])
-    const reopenedAddress = await reopened.start()
-    const reopenedHtml = await (await fetch(reopenedAddress.url)).text()
+    const reopenedAddress = await startOperator(reopened)
+    const reopenedHtml = await (await sessionFetch(reopenedAddress.url)).text()
     assert.doesNotMatch(reopenedHtml, /data-config-card=/u)
   } finally {
     await reopened.close()
@@ -1596,17 +1597,17 @@ await test('Deleting one trusted config preserves every other config file and ca
   await writeFile(keptPath, JSON.stringify(trustedConfig({ sessionId: 'keep-session', goal: 'Keep this card' })), 'utf8')
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const deleted = launchpad.getConfigs().find((config) => config.goal === 'AgentRun Persistence')
     assert.ok(deleted)
     const response = await postDelete(launchpad, { configId: deleted.configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 200)
     assert.deepEqual(launchpad.getConfigs().map((config) => config.goal), ['Keep this card'])
     await access(keptPath)
     await assert.rejects(access(join(directory, 'fly-weave.json')), { code: 'ENOENT' })
-    const html = await (await fetch(address.url)).text()
+    const html = await (await sessionFetch(address.url)).text()
     assert.match(html, /Keep this card/u)
     assert.doesNotMatch(html, /AgentRun Persistence/u)
     assert.equal((await readdir(directory)).filter((name) => name.endsWith('.json')).length, 1)
@@ -1620,9 +1621,9 @@ await test('Deleting an unknown configId fails safely without deleting any file'
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postDelete(launchpad, { configId: '0'.repeat(32) }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 404)
     assert.deepEqual(await response.json(), { error: 'UNKNOWN_CONFIG' })
@@ -1640,8 +1641,8 @@ await test('Delete API rejects every client-supplied path field and cannot redir
   await writeFile(otherPath, JSON.stringify(trustedConfig({ sessionId: 'other-session', goal: 'Other config' })), 'utf8')
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const configId = launchpad.getConfigs().find((config) => config.goal === 'AgentRun Persistence')!.configId
     const response = await postDelete(launchpad, {
       configId,
@@ -1663,11 +1664,11 @@ await test('Delete API requires both same Origin and the ephemeral token', async
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     assert.equal((await postDelete(launchpad, { configId }, { origin: address.url })).status, 403)
     assert.equal((await postDelete(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(), origin: 'http://evil.example',
+      token: await mintSession(launchpad), origin: 'http://evil.example',
     })).status, 403)
     await access(join(directory, 'fly-weave.json'))
     assert.equal(launchpad.getConfigs().length, 1)
@@ -1705,8 +1706,8 @@ await test('Delete API refuses pending starts and running apps without closing t
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const configId = launchpad.getConfigs()[0]!.configId
     const pendingStart = postStart(launchpad, { configId }, auth)
     await createStarted
@@ -1738,8 +1739,8 @@ await test('Delete API permits a config after its control app has closed', async
     dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const configId = launchpad.getConfigs()[0]!.configId
     assert.equal((await postStart(launchpad, { configId }, auth)).status, 202)
     await state.createdApps[0]!.close()
@@ -1767,8 +1768,8 @@ await test('Delete API retires a settled repository-drift zombie control app', a
     },
   })
   try {
-    const address = await launchpad.start()
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const address = await startOperator(launchpad)
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const configId = launchpad.getConfigs()[0]!.configId
     assert.equal((await postStart(launchpad, { configId }, auth)).status, 202)
 
@@ -1797,9 +1798,9 @@ await test('Delete trusts a discovered direct-child config without launch-time s
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postDelete(launchpad, { configId: launchpad.getConfigs()[0]!.configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { deleted: true })
@@ -1819,9 +1820,9 @@ await test('Delete rejects an injected non-child configPath with a stable safe e
   discovered[0]!.configPath = outsidePath
   const launchpad = new NovaWingLaunchpad(discovered, directory)
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postDelete(launchpad, { configId: launchpad.getConfigs()[0]!.configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 500)
     const text = await response.text()
@@ -1840,11 +1841,11 @@ await test('Delete API treats an already-missing config file as success and remo
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     await rm(join(directory, 'fly-weave.json'))
     const response = await postDelete(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(), origin: address.url,
+      token: await mintSession(launchpad), origin: address.url,
     })
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { deleted: true })
@@ -1859,9 +1860,9 @@ await test('Browser delete confirmation removes only the successful card and rev
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
-    const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    const appJs = await (await sessionFetch(`${address.url}/app.js`)).text()
     const errorElement = { textContent: '' }
     let cardRemoved = false
     const card = {
@@ -1891,7 +1892,7 @@ await test('Browser delete confirmation removes only the successful card and rev
     const document = {
       getElementById(id: string) {
         return id === 'novawing-bootstrap'
-          ? { textContent: JSON.stringify({ launchToken: launchpad.getTokenForTest(), serverOrigin: address.url }) }
+          ? { textContent: JSON.stringify({ serverOrigin: address.url }) }
           : undefined
       },
       querySelectorAll(selector: string) {
@@ -1904,11 +1905,12 @@ await test('Browser delete confirmation removes only the successful card and rev
         return undefined
       },
     }
+    const cookie = await mintSession(launchpad)
     const browserFetch = async (path: string, init: RequestInit): Promise<Response> => {
       submittedBody = JSON.parse(String(init.body)) as unknown
-      return fetch(`${address.url}${path}`, {
+      return sessionFetch(`${address.url}${path}`, {
         ...init,
-        headers: { ...(init.headers as Record<string, string>), Origin: address.url },
+        headers: { ...(init.headers as Record<string, string>), Origin: address.url, Cookie: cookie },
       })
     }
     vm.runInNewContext(appJs, {
@@ -1957,10 +1959,10 @@ await test('Launchpad revalidates the config, passes serverPort=0, and returns t
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     const response = await postStart(launchpad, { configId }, {
-      token: launchpad.getTokenForTest(),
+      token: await mintSession(launchpad),
       origin: address.url,
     })
     assert.equal(response.status, 202)
@@ -1989,9 +1991,9 @@ await test('Duplicate clicks reuse one Work Session app and one control URL', as
     dependencies: { createWorkSession: fakeWorkSessionFactory(state) },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const first = await postStart(launchpad, { configId }, auth)
     const second = await postStart(launchpad, { configId }, auth)
     assert.equal(first.status, 202)
@@ -2020,9 +2022,9 @@ await test('A durable restored session opens its control surface without startin
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postStart(launchpad, { configId: launchpad.getConfigs()[0]!.configId }, {
-      token: launchpad.getTokenForTest(),
+      token: await mintSession(launchpad),
       origin: address.url,
     })
     assert.equal(response.status, 202)
@@ -2051,9 +2053,9 @@ await test('Launch failure returns only a safe product error and permits a later
     },
   })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
-    const auth = { token: launchpad.getTokenForTest(), origin: address.url }
+    const auth = { token: await mintSession(launchpad), origin: address.url }
     const first = await postStart(launchpad, { configId }, auth)
     const second = await postStart(launchpad, { configId }, auth)
     assert.equal(first.status, 500)
@@ -2183,7 +2185,7 @@ await test('Repository exposes the launchpad npm script and relocatable hidden V
     'npm run build && node scripts/guardian-launchpad.mjs',
   )
   const launchpadScript = await readFile(join(process.cwd(), 'scripts/guardian-launchpad.mjs'), 'utf8')
-  assert.match(launchpadScript, /openLaunchpadInDefaultBrowser\(address\.url\)/u)
+  assert.match(launchpadScript, /openLaunchpadInDefaultBrowser\(bootstrapUrl\)/u)
   assert.doesNotMatch(launchpadScript, /openLaunchpadInAppMode/u)
   const vbs = await readFile(join(process.cwd(), 'NovaWing.vbs'), 'utf8')
   assert.match(vbs, /WScript\.ScriptFullName/u)
@@ -2259,12 +2261,12 @@ test('new Launchpad HTTP creation persists Golden default and production complet
     }),
   } })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const response = await postCreate(launchpad, composerRequest('launchpad-production-v2-default', {
       targetRepo: root, tasks: [{ id: 'D01', goal: 'Fix a focused source helper' }],
       guardian: { allowedPaths: ['src/**'], acceptanceCriteria: ['source helper behavior passes its focused test'] },
       directPathEnabled: true, goldenPathEnabled: true, autoCommit: false,
-    }), { token: launchpad.getTokenForTest(), origin: address.url })
+    }), { token: await mintSession(launchpad), origin: address.url })
     assert.equal(response.status, 202, await response.text())
     const discovered = await discoverTrustedWorkSessionConfigs(directory)
     assert.equal(discovered.length, 1)
@@ -2303,8 +2305,8 @@ test('DOGFOOD-001 Quick Fill preserves unrecognized policy fields and requires p
   const directory = await createConfigDirectory()
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
-    const script = await (await fetch(`${address.url}/app.js`)).text()
+    const address = await startOperator(launchpad)
+    const script = await (await sessionFetch(`${address.url}/app.js`)).text()
     const start = script.indexOf('const applyBriefAnalysis =')
     const end = script.indexOf("briefFill.addEventListener", start)
     assert.ok(start >= 0 && end > start)

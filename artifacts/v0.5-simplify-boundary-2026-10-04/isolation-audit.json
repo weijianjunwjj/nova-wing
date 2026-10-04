@@ -1,0 +1,94 @@
+{
+  "scope": "Only artifact log files scanned; real data directory never opened or inspected in this correction round.",
+  "command": "rg -n -F <actual-account-home + protected NovaWing suffix> artifacts/*.log",
+  "logsScanned": 22,
+  "grepExitCode": 1,
+  "realPathHitCount": 0,
+  "hits": [],
+  "temporaryRoots": {
+    "build.log": [],
+    "correction-auth-regression.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-0o1aTr",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-0o1aTr/tmp/novawing-isolated-tests-VN295T"
+    ],
+    "correction-focused.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-q9EHaE",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-q9EHaE/tmp/novawing-isolated-tests-TjeFBj"
+    ],
+    "desktop-check-correction-baseline.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-mnXJFy",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-mnXJFy/tmp/novawing-isolated-tests-8HrpwN"
+    ],
+    "desktop-check-diagnostic-regressions.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-XsLgY2",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-XsLgY2/tmp/novawing-isolated-tests-Eobg50"
+    ],
+    "desktop-check.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-cKCMYQ",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-cKCMYQ/tmp/novawing-isolated-tests-rfEpU1"
+    ],
+    "f2-f3-original-replay.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-rLDrcD"
+    ],
+    "f2-f3-replay-initial.log": [],
+    "f2-f3-replay.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-rLDrcD"
+    ],
+    "focused-v2.log": [],
+    "focused-v3.log": [],
+    "focused.log": [],
+    "full-check-correction-baseline.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-VVkEw2",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-VVkEw2/tmp/novawing-isolated-tests-GhmfpT"
+    ],
+    "full-check-desktop-test-types.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-KdFfJx",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-KdFfJx/tmp/novawing-isolated-tests-2Ek2M3"
+    ],
+    "full-check-platform-registration.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-4IzD23",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-4IzD23/tmp/novawing-isolated-tests-lP4qRa"
+    ],
+    "full-check.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-km9Q1o",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-km9Q1o/tmp/novawing-isolated-tests-hLjW7v",
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-km9Q1o/tmp/novawing-isolated-tests-h21oCO"
+    ],
+    "isolation-canary.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-rbLETh"
+    ],
+    "platform-check.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-sP2MZK"
+    ],
+    "typecheck-current.log": [],
+    "typecheck-initial.log": [],
+    "typecheck-second.log": [],
+    "unused-check.log": [
+      "/private/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-isolated-tests-trxNB6"
+    ]
+  },
+  "canaryPassMarkersByLog": {
+    "build.log": 0,
+    "correction-auth-regression.log": 2,
+    "correction-focused.log": 2,
+    "desktop-check-correction-baseline.log": 2,
+    "desktop-check-diagnostic-regressions.log": 2,
+    "desktop-check.log": 2,
+    "f2-f3-original-replay.log": 1,
+    "f2-f3-replay-initial.log": 0,
+    "f2-f3-replay.log": 1,
+    "focused-v2.log": 0,
+    "focused-v3.log": 0,
+    "focused.log": 0,
+    "full-check-correction-baseline.log": 2,
+    "full-check-desktop-test-types.log": 2,
+    "full-check-platform-registration.log": 2,
+    "full-check.log": 3,
+    "isolation-canary.log": 1,
+    "platform-check.log": 1,
+    "typecheck-current.log": 0,
+    "typecheck-initial.log": 0,
+    "typecheck-second.log": 0,
+    "unused-check.log": 1
+  }
+}

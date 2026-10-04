@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 /**
  * v0.4.0 Phase 4: HUMAN_REQUIRED BUSINESS_DECISION closure.
  *
@@ -43,9 +44,9 @@ async function serve(state: WorkSessionDurableState) {
   const runtime = new RecordingRuntime(makeDefinition())
   const controller = new WorkSessionControlController({ createRuntime: () => runtime, pollIntervalMs: 10 })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   runtime.state = state
-  return { runtime, controller, server, address, token: server.getTokenForTest() }
+  return { runtime, controller, server, address, token: await mintSession(server) }
 }
 
 const businessServer = (overrides: Partial<WorkSessionDurableState> = {}) => serve(makeState({
@@ -61,12 +62,12 @@ async function post(
   address: { url: string }, token: string, path: string, body: unknown,
   options: { origin?: string; authorized?: boolean } = {},
 ): Promise<number> {
-  const response = await fetch(`${address.url}${path}`, {
+  const response = await sessionFetch(`${address.url}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(options.origin === undefined ? {} : { Origin: options.origin }),
-      ...(options.authorized === false ? {} : { 'X-NovaWing-Control-Token': token }),
+      Origin: options.origin ?? address.url,
+      ...(options.authorized === false ? {} : { 'Cookie': token }),
     },
     body: JSON.stringify(body),
   })
@@ -293,13 +294,13 @@ class Element {
 
 function uiHarness() {
   const elements = new Map<string, Element>()
-  const html = renderHtml({ controlToken: 'private-test-token', serverOrigin: 'http://127.0.0.1:4321' })
+  const html = renderHtml({ serverOrigin: 'http://127.0.0.1:4321' })
   for (const match of html.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/gu)) {
     const element = new Element()
     element.hidden = /\bhidden\b/u.test(match[0])
     elements.set(match[1]!, element)
   }
-  elements.get('novawing-bootstrap')!.textContent = JSON.stringify({ controlToken: 'private-test-token' })
+  elements.get('novawing-bootstrap')!.textContent = JSON.stringify({ })
   const requests: Array<{ path: string; init?: Record<string, unknown> }> = []
   const context = vm.createContext({
     document: { getElementById: (id: string) => elements.get(id) ?? null, createElement: () => new Element() },

@@ -1,3 +1,4 @@
+import { startOperator } from './operator-session.js'
 /**
  * T021 Work Session 中断检测与安全恢复 — 确定性测试
  *
@@ -387,7 +388,7 @@ await test('T021 Launchpad 读取持久化状态并派生与控制器一致的�
 
     const launchpad = await createNovaWingLaunchpad({ configDirectory })
     try {
-      await launchpad.start()
+      await startOperator(launchpad)
       const configs = launchpad.getConfigs()
       assert.equal(configs.length, 1)
       assert.equal(configs[0]!.status, 'RECOVERABLE', 'Launchpad 与控制台必须一致')

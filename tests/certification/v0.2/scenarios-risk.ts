@@ -1,3 +1,4 @@
+import { startOperator, sessionFetch } from '../../operator-session.js'
 /**
  * NovaWing v0.2 certification — configuration, DSL and risk scenarios.
  * S04 missing binding · S05 verifier DSL robustness · S06 verifier approval boundary ·
@@ -287,8 +288,8 @@ export const s15: CertificationScenario = {
     const directory = await mkdtemp(join(tmpdir(), 'cert-s15-'))
     const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
     try {
-      const address = await launchpad.start()
-      const script = await (await fetch(`${address.url}/app.js`)).text()
+      const address = await startOperator(launchpad)
+      const script = await (await sessionFetch(`${address.url}/app.js`)).text()
       const start = script.indexOf('const applyBriefAnalysis =')
       const end = script.indexOf('briefFill.addEventListener', start)
       h.check(start >= 0 && end > start, 'launchpad serves the Quick Fill apply function')

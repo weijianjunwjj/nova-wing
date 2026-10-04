@@ -1,0 +1,106 @@
+{
+  "result": "F3_AB_PASS_NO_HOST_ATTEMPT_OR_COMMIT_REPLAY",
+  "sameUidBoundary": "KNOWN_RESIDUAL",
+  "sourceHead": "a827f91d52b8242b811360140742b3927c36b848",
+  "node": "v24.21.0",
+  "attackerBoundary": "Local actor able to write the delivery evidence store / invoke internal persistence API, same OS user. This does not prove a remote unauthenticated injection or sandbox escape.",
+  "syntheticScope": "Single filesystem assertion; synthetic temporary Git repository, unchanged package.json at two fixture commits; no customer repository access or models.",
+  "cases": {
+    "A": {
+      "runtimePlanHash": "4173dba9ca3541710bb5f0432fa3ec5bacb8cfb5747fbf0c985b35d85539c1d0",
+      "commit": "71e700bb60a8255a1d6c5727d51e54c35d0d004c",
+      "blueprintHash": "780a72b5ea558a1043c7418f0c091cbc77e25bc75776675e1fbf857407493bf4",
+      "artifactHashes": {
+        "package.json": "8b20359d932827b7195e6f750435b6fc2eeef15aa843e32688e69146a9270d0d"
+      },
+      "evidenceId": "a29c4651138734891a9c5b82425acdead2c321fc51d65c402ebeac92ee7bbeee",
+      "integrity": "PASS",
+      "writerError": "f.store.saveCapabilityEvidence is not a function",
+      "localCompletion": "BLOCKED",
+      "reopenedAssessment": {
+        "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+        "status": "CUSTOMER_DELIVERY_BLOCKED",
+        "completedRuntimeTaskIds": [],
+        "blockedRuntimeTaskIds": [
+          "T1"
+        ],
+        "blockingAssertionIds": [
+          "A1"
+        ]
+      },
+      "actualPredicate": false,
+      "collectorExecutions": 0,
+      "verifierExecutions": 0,
+      "reviewerExecutions": 0
+    },
+    "C": {
+      "runtimePlanHash": "bb62eb9f273d3a98b971b168f14444295d8f167538c927258e3c7df6625b9ed1",
+      "commit": "71e700bb60a8255a1d6c5727d51e54c35d0d004c",
+      "blueprintHash": "780a72b5ea558a1043c7418f0c091cbc77e25bc75776675e1fbf857407493bf4",
+      "artifactHashes": {
+        "package.json": "8b20359d932827b7195e6f750435b6fc2eeef15aa843e32688e69146a9270d0d"
+      },
+      "evidenceId": "a29c4651138734891a9c5b82425acdead2c321fc51d65c402ebeac92ee7bbeee",
+      "integrity": "PASS",
+      "writerError": "f.store.saveCapabilityEvidence is not a function",
+      "localCompletion": "BLOCKED",
+      "reopenedAssessment": {
+        "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+        "status": "CUSTOMER_DELIVERY_BLOCKED",
+        "completedRuntimeTaskIds": [],
+        "blockedRuntimeTaskIds": [
+          "T1"
+        ],
+        "blockingAssertionIds": [
+          "A1"
+        ]
+      },
+      "actualPredicate": false,
+      "collectorExecutions": 0,
+      "verifierExecutions": 0,
+      "reviewerExecutions": 0,
+      "residual": "KNOWN_RESIDUAL: this original probe writes evidence only; same-UID full ledger fabrication is not prevented",
+      "writer": "Separate local executor-simulation process",
+      "writerUid": 501,
+      "storeOwnerUid": 501
+    },
+    "B": {
+      "runtimePlanHash": "f38d2c9a89bfc3152f815f92fe07b92b50d2d7390808c5fdb5f6e0606483fb2d",
+      "commit": "ba1b76197166564168ff9ae239d5ed8a96520409",
+      "blueprintHash": "8a5154511ee18c75815a191c1716d25c1db7a108a8d0335f5ba6b383ff303fb5",
+      "artifactHashes": {
+        "package.json": "8b20359d932827b7195e6f750435b6fc2eeef15aa843e32688e69146a9270d0d"
+      },
+      "evidenceId": "ffe99c7e8e06af6859b8e0f7eba17b958c3366214c7a2384cdc2c0fe7b91f561",
+      "integrity": "PASS",
+      "executionId": "4dedb97f-d1ea-4224-9088-e98b3f40618a",
+      "writerError": "f.store.saveCapabilityEvidence is not a function",
+      "localCompletion": "BLOCKED",
+      "reopenedAssessment": {
+        "gate": "CUSTOMER_DELIVERY_COMPLETION_GATE",
+        "status": "CUSTOMER_DELIVERY_BLOCKED",
+        "completedRuntimeTaskIds": [],
+        "blockedRuntimeTaskIds": [
+          "T1"
+        ],
+        "blockingAssertionIds": [
+          "A1"
+        ]
+      },
+      "originalCommit": "71e700bb60a8255a1d6c5727d51e54c35d0d004c",
+      "originalEvidenceId": "a29c4651138734891a9c5b82425acdead2c321fc51d65c402ebeac92ee7bbeee",
+      "oldCollectorExecutions": 1,
+      "newCollectorExecutions": 0,
+      "newVerifierExecutions": 0,
+      "changedMetadata": [
+        "targetCommit",
+        "runtimePlanHash",
+        "sha256",
+        "bytes",
+        "evidenceId"
+      ],
+      "declaredArtifactUnchangedBetweenCommits": true,
+      "limitation": "Replay blocked at a new commit; this artifact stayed unchanged. A/C separately demonstrate blocked submission of a false predicate."
+    }
+  }
+}

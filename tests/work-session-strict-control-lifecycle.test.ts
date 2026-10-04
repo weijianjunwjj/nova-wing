@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { once } from 'node:events'
@@ -94,7 +95,7 @@ await test('controller and server publish shared close before synchronous ETA cl
           throw failure
         } } })
       const server = new WorkSessionControlServer({ controller, port: 0 })
-      if (owner === 'server') await server.start()
+      if (owner === 'server') await startOperator(server)
       const closing = owner === 'controller' ? controller.close() : server.close()
       assert.equal(nested, closing, 'a synchronous destructor must observe the published close operation')
       await assert.rejects(closing, (error) => leaves(error).includes(failure))
@@ -217,8 +218,9 @@ await test('real SSE remains independent of strict drain and closes before the H
   runtime.deferStart()
   const controller = new WorkSessionControlController({ createRuntime: () => runtime, shutdownMode: 'strict' })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
-  const response = await fetch(`${address.url}/api/events`)
+  const address = await startOperator(server)
+  const cookie = await mintSession(server)
+  const response = await sessionFetch(`${address.url}/api/events`)
   const reader = response.body!.getReader()
   await reader.read()
   assert.equal(controller.getSubscriberCount(), 1)
@@ -230,12 +232,12 @@ await test('real SSE remains independent of strict drain and closes before the H
   try {
     for (const route of ['start', 'pause', 'stop-after-task', 'resume', 'resume-recoverable', 'approve-verification',
       'reject-verification', 'runtime-repair', 'recover-checkpoint']) {
-      const rejected = await fetch(`${address.url}/api/session/${route}`, { method: 'POST', body: '{}',
-        headers: { 'X-NovaWing-Control-Token': server.getTokenForTest(), 'Content-Type': 'application/json' } })
+      const rejected = await sessionFetch(`${address.url}/api/session/${route}`, { method: 'POST', body: '{}',
+        headers: { 'Cookie': cookie, Origin: address.url, 'Content-Type': 'application/json' } })
       assert.equal(rejected.status, 503, route)
       assert.match(await rejected.text(), /closing/u)
     }
-    assert.equal((await fetch(`${address.url}/api/events`)).status, 503)
+    assert.equal((await sessionFetch(`${address.url}/api/events`)).status, 503)
     assert.equal(settled(), false)
     runtime.startDeferred!.resolve(makeState({ state: 'COMPLETED' }))
     await Promise.all([closing, streamEnded])
@@ -254,9 +256,9 @@ await test('strict Control drains admitted work and SSE without waiting for HTTP
   runtime.deferStart()
   const controller = new WorkSessionControlController({ createRuntime: () => runtime, shutdownMode: 'strict' })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   const http = (server as unknown as { server: Server }).server
-  const response = await fetch(`${address.url}/api/events`)
+  const response = await sessionFetch(`${address.url}/api/events`)
   const reader = response.body!.getReader()
   await reader.read()
   const connected = once(http, 'connection')
@@ -301,13 +303,14 @@ await test('an incomplete HTTP body is drained but cannot gain mutation admissio
   const runtime = new FakeRuntime(makeDefinition())
   const controller = new WorkSessionControlController({ createRuntime: () => runtime, shutdownMode: 'strict' })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
+  const cookie = await mintSession(server)
   const received = deferred()
   const http = (server as unknown as { server: Server }).server
   http.once('request', () => received.resolve())
   const result = deferred<{ status: number; body: string }>()
   const client = request(`${address.url}/api/session/start`, { method: 'POST', headers: {
-    'X-NovaWing-Control-Token': server.getTokenForTest(), 'Content-Length': '2',
+    'Cookie': cookie, Origin: address.url, 'Content-Length': '2',
   } }, (response) => {
     let body = ''
     response.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
@@ -332,14 +335,15 @@ await test('new partial-body mutation during shutdown gets 503 and cannot keep t
   runtime.deferStart()
   const controller = new WorkSessionControlController({ createRuntime: () => runtime, shutdownMode: 'strict' })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
+  const cookie = await mintSession(server)
   controller.start()
   const closing = server.close()
   const settled = watch(closing)
   const disconnected = deferred()
   const result = deferred<{ status: number; connection: string | undefined; body: string }>()
   const client = request(`${address.url}/api/session/start`, { method: 'POST', headers: {
-    'X-NovaWing-Control-Token': server.getTokenForTest(), 'Content-Length': '2',
+    'Cookie': cookie, Origin: address.url, 'Content-Length': '2',
   } }, (response) => {
     let body = ''
     response.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
@@ -389,8 +393,8 @@ await test('controller cleanup failure still closes a real SSE stream and HTTP l
   const controller = new WorkSessionControlController({ createRuntime: () => new FakeRuntime(makeDefinition()), shutdownMode: 'strict',
     taskEta: { project: () => undefined, close: () => { throw failure } } })
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
-  const response = await fetch(`${address.url}/api/events`)
+  const address = await startOperator(server)
+  const response = await sessionFetch(`${address.url}/api/events`)
   const reader = response.body!.getReader()
   await reader.read()
   const streamEnded = (async () => { while (!(await reader.read()).done) { /* consume until EOF */ } })()
@@ -470,7 +474,7 @@ await test('Production publishes shared close before synchronous server cleanup 
     return originalClose()
   }
   try {
-    await app.start()
+    await startOperator(app)
     const closing = app.close()
     assert.equal(nested, closing)
     await closing

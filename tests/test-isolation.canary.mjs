@@ -1,0 +1,39 @@
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { homedir, userInfo } from 'node:os'
+import { isAbsolute, join, relative, sep } from 'node:path'
+import test from 'node:test'
+import { platformPaths } from '../dist/packages/development-guardian/platform/paths.js'
+
+const inside = (root, path) => path === root || (isAbsolute(path) && !relative(root, path).startsWith('..') && !isAbsolute(relative(root, path)))
+test('isolation canary: all default state roots and env:{} stay under temporary HOME', () => {
+  const root = process.env.NOVAWING_TEST_ROOT
+  assert.ok(root && isAbsolute(root), 'ISOLATION_ROOT_MISSING')
+  // userInfo reads the OS account record; construct comparisons only, never inspect these paths.
+  const actualHome = userInfo().homedir
+  const forbidden = [join(actualHome, 'Library', 'Application Support', 'NovaWing'),
+    join(actualHome, 'AppData', 'Local', 'NovaWing'), join(actualHome, '.local', 'share', 'NovaWing')]
+  assert.notEqual(homedir(), actualHome, 'HOME_NOT_ISOLATED')
+  for (const key of ['HOME', 'USERPROFILE', 'NOVAWING_DATA_DIR', 'NOVAWING_CONFIG_DIR', 'XDG_DATA_HOME',
+    'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'APPDATA', 'GIT_CONFIG_GLOBAL']) {
+    assert.ok(inside(root, process.env[key] ?? ''), `UNSAFE_TEST_ENV:${key}`)
+  }
+  for (const options of [undefined, { env: {} }]) {
+    const paths = platformPaths(options)
+    for (const [key, path] of Object.entries(paths)) {
+      assert.ok(inside(root, path), `DEFAULT_PATH_ESCAPES_ISOLATION:${key}`)
+      assert.equal(forbidden.some(prefix => path === prefix || path.startsWith(prefix + sep)), false, `REAL_PROFILE_PATH:${key}`)
+    }
+  }
+  console.log(`CANARY_TEMP_ROOT=${root}`)
+  console.log('CANARY_REAL_PROFILE_REFERENCES=0')
+})
+test('isolation canary: git identity comes only from the temporary global config', () => {
+  const config = process.env.GIT_CONFIG_GLOBAL
+  assert.ok(config && inside(process.env.NOVAWING_TEST_ROOT, config), 'GIT_CONFIG_NOT_ISOLATED')
+  assert.match(readFileSync(config, 'utf8'), /fixture@example\.invalid/u)
+  const value = execFileSync('git', ['config', '--global', '--get', 'user.email'], { encoding: 'utf8' }).trim()
+  assert.equal(value, 'fixture@example.invalid')
+  assert.equal(process.env.GIT_CONFIG_NOSYSTEM, '1')
+})

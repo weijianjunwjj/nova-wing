@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 /**
  * W005-A 测试共享 helper
  * 提供 deterministic fake runtime、definition/state 构造、server 启动封装。
@@ -204,13 +205,13 @@ export async function startServer(
     pollIntervalMs: overrides.pollIntervalMs ?? 10,
   })
   const server = new WorkSessionControlServer({ controller, port: overrides.port ?? 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   return {
     server,
     controller,
     runtime,
     address,
-    token: server.getTokenForTest(),
+    token: await mintSession(server),
   }
 }
 
@@ -226,7 +227,7 @@ export async function postStart(
   } = {},
 ): Promise<{ status: number; body: string }> {
   const headers: Record<string, string> = {}
-  if (options.token !== undefined) headers['X-NovaWing-Control-Token'] = options.token
+  if (options.token !== undefined) headers['Cookie'] = options.token
   if (options.origin !== undefined) headers['Origin'] = options.origin
   if (options.referer !== undefined) headers.Referer = options.referer
   if (options.secFetchSite !== undefined) headers['Sec-Fetch-Site'] = options.secFetchSite
@@ -234,7 +235,7 @@ export async function postStart(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 5000)
   try {
-    const res = await fetch(`${s.address.url}/api/session/start`, {
+    const res = await sessionFetch(`${s.address.url}/api/session/start`, {
       method: 'POST',
       headers,
       signal: controller.signal,

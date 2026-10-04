@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -236,17 +237,17 @@ test('Customer Mode HTTP flow generates, revises and approves without starting a
     },
   })
   try {
-    const address = await launchpad.start()
-    const home = await (await fetch(address.url)).text()
+    const address = await startOperator(launchpad)
+    const home = await (await sessionFetch(address.url)).text()
     assert.ok(home.includes('你想做什么？'))
-    const customer = await (await fetch(`${address.url}/customer`)).text()
+    const customer = await (await sessionFetch(`${address.url}/customer`)).text()
     assert.ok(customer.includes('生成开发方案'))
-    assert.ok((await (await fetch(`${address.url}/advanced`)).text()).includes('新建 Work Session'))
-    const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${address.url}${path}`, {
+    assert.ok((await (await sessionFetch(`${address.url}/advanced`)).text()).includes('新建 Work Session'))
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) => sessionFetch(`${address.url}${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Origin: address.url, ...headers }, body: JSON.stringify(body),
     })
     assert.equal((await post('/api/planning/generate', { requirement: text })).status, 403)
-    const tokenHeader = { 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() }
+    const tokenHeader = { 'Cookie': await mintSession(launchpad) }
     const created = await post('/api/planning/generate', { requirement: text }, tokenHeader)
     assert.equal(created.status, 200)
     const first = await created.json() as { plan: { id: string; version: number; status: string }; validation: { pass: boolean } }
@@ -262,7 +263,7 @@ test('Customer Mode HTTP flow generates, revises and approves without starting a
     assert.equal(approved.status, 200)
     assert.equal(((await approved.json()) as { status: string }).status, 'frozen')
     assert.equal((await post('/api/planning/generate', { requirement: text, planId: first.plan.id, feedback: '再改一次' }, tokenHeader)).status, 400)
-    assert.equal(((await (await fetch(`${address.url}/api/planning/plans`)).json()) as unknown[]).length, 1)
+    assert.equal(((await (await sessionFetch(`${address.url}/api/planning/plans`)).json()) as unknown[]).length, 1)
     assert.equal(modelCalls, 2)
     assert.equal(runtimeCalls, 0)
   } finally { await launchpad.close() }
@@ -583,15 +584,15 @@ test('Phase 2 fixture-only answers revise through both gates, freeze, and surviv
   } })
   let planId = ''
   try {
-    const address = await launchpad.start()
-    const customerHtml = await (await fetch(`${address.url}/customer`)).text()
-    const customerJs = await (await fetch(`${address.url}/customer/app.js`)).text()
+    const address = await startOperator(launchpad)
+    const customerHtml = await (await sessionFetch(`${address.url}/customer`)).text()
+    const customerJs = await (await sessionFetch(`${address.url}/customer/app.js`)).text()
     assert.ok(customerHtml.includes('提交回答并重新生成方案'))
     assert.ok(customerJs.includes('/api/planning/answers'))
     assert.ok(customerJs.includes('自定义业务规则'))
     const headers = { 'Content-Type': 'application/json', Origin: address.url,
-      'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() }
-    const post = async (path: string, body: unknown) => fetch(`${address.url}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+      'Cookie': await mintSession(launchpad) }
+    const post = async (path: string, body: unknown) => sessionFetch(`${address.url}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
     const first = await (await post('/api/planning/generate', { requirement: text })).json() as { plan: { id: string; version: number; status: string } }
     planId = first.plan.id
     assert.equal(first.plan.status, 'needs_customer_input')
@@ -616,7 +617,7 @@ test('Phase 2 fixture-only answers revise through both gates, freeze, and surviv
     assert.equal(approved.status, 'frozen')
     assert.equal((await post('/api/planning/approve', { planId, version: 2 })).status, 200)
     assert.equal((await post('/api/planning/generate', { requirement: text, planId, expectedVersion: 2, feedback: '静默改旧计划' })).status, 400)
-    const snapshot = await (await fetch(`${address.url}/api/planning/plans/${planId}/snapshots/2`)).json() as PlanSnapshot
+    const snapshot = await (await sessionFetch(`${address.url}/api/planning/plans/${planId}/snapshots/2`)).json() as PlanSnapshot
     assert.equal(verifyPlanSnapshot(snapshot).planHash.value, approved.approval.contentHash)
     const alteredAnswer = structuredClone(snapshot)
     alteredAnswer.content.customerAnswers[0]!.selectedOptionText = '按创建日统计所有已创建订单'

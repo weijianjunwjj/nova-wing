@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from '../../operator-session.js'
 /**
  * S01 — Launchpad default V2 entry (real HTTP create).
  * S16 — explicit controlPlane=v1 keeps Guardian composition.
@@ -26,12 +27,12 @@ function healthyReport(): DependencyHealthReport {
   return { overall: 'READY', canStart: true, checkedAt: new Date().toISOString(), dependencies: [] }
 }
 
-async function postCreate(launchpad: { getAddress(): { url: string } | undefined; getTokenForTest(): string }, body: unknown): Promise<Response> {
+async function postCreate(launchpad: { getAddress(): { url: string } | undefined; mintBootstrapUrl(): string }, body: unknown): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}/api/session/create`, {
+  return sessionFetch(`${address.url}/api/session/create`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(), Origin: address.url },
+    headers: { 'Content-Type': 'application/json', 'Cookie': await mintSession(launchpad), Origin: address.url },
     body: JSON.stringify(body),
   })
 }
@@ -70,7 +71,7 @@ export const s01: CertificationScenario = {
       }),
     } })
     try {
-      const address = await launchpad.start()
+      const address = await startOperator(launchpad)
       h.check(address !== undefined, 'Launchpad started on an ephemeral address')
       const safeRunId = ctx.dirs.runId.replace(/[^a-zA-Z0-9_-]/gu, '') || 'run'
       const body = {

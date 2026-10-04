@@ -1,3 +1,4 @@
+import { sessionFetch as fetch, mintSession } from './operator-session.mjs'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer, get, request } from 'node:http'
@@ -143,6 +144,7 @@ async function runLaunchpadSmoke() {
     pass('launchpad_start', { url: host.launchpadUrl })
 
     currentCheck = 'launchpad_http'
+    await mintSession(host.bootstrapUrl(host.launchpadUrl))
     const launchpadResponse = await fetch(host.launchpadUrl)
     assert.equal(launchpadResponse.status, 200)
     assert.match(launchpadResponse.headers.get('content-security-policy') ?? '', /script-src 'self'/u)
@@ -177,13 +179,13 @@ async function runLaunchpadSmoke() {
       const response = await fetch('/api/session/configs')
       const configs = await response.json()
       const unauthorized = await fetch('/api/session/create', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+        method: 'POST', credentials: 'omit', headers: {'Content-Type': 'application/json'}, body: '{}'
       })
       return {status: response.status, configCount: configs.length, unauthorized: unauthorized.status}
     })()`)
     assert.deepEqual(launchpadApi, { status: 200, configCount: 0, unauthorized: 403 })
     pass('launchpad_api', launchpadApi)
-    const launchToken = await evaluate(window, `JSON.parse(document.getElementById('novawing-bootstrap').textContent).launchToken`)
+    const launchToken = await mintSession(host.bootstrapUrl(host.launchpadUrl))
 
     // Observe Chromium's actual fetch/EventSource traffic. No mock fetch, injected
     // EventSource replacement, alternate renderer, or direct runtime start is used.
@@ -370,8 +372,7 @@ async function runLaunchpadSmoke() {
       tasks: [{ id: 'DESKTOP-DRAIN-002', goal: 'Drain an accepted offline task during repeated quit' }] }
     const admitted = await evaluate(window, `(async () => {
       const response = await fetch('/api/session/create', { method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token':
-          JSON.parse(document.getElementById('novawing-bootstrap').textContent).launchToken},
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(${JSON.stringify(drainRequest)}) })
       return {status: response.status, body: await response.json()}
     })()`)
@@ -379,7 +380,7 @@ async function runLaunchpadSmoke() {
     await held.started
     const drainUrl = admitted.body.controlUrl
     await window.loadURL(drainUrl)
-    const controlToken = await evaluate(window, `JSON.parse(document.getElementById('novawing-bootstrap').textContent).controlToken`)
+    const controlToken = await mintSession(host.bootstrapUrl(host.launchpadUrl))
     strictSse = await openSse(drainUrl)
     let sseEnded = false
     void strictSse.ended.then(() => { sseEnded = true })
@@ -412,9 +413,9 @@ async function runLaunchpadSmoke() {
     currentCheck = 'strict_reject_new_operations'
     const rejectionEvidence = await Promise.all([
       ...['create', 'start', 'delete', 'repair'].map((action) => rejectedMutation(`${host.launchpadUrl}/api/session/${action}`,
-        { Origin: host.launchpadUrl, 'X-NovaWing-Launchpad-Token': launchToken }, drainRequest)),
+        { Origin: host.launchpadUrl, 'Cookie': launchToken }, drainRequest)),
       ...['start', 'resume', 'approve-verification', 'runtime-repair', 'recover-checkpoint'].map((action) =>
-        rejectedMutation(`${drainUrl}/api/session/${action}`, { Origin: drainUrl, 'X-NovaWing-Control-Token': controlToken })),
+        rejectedMutation(`${drainUrl}/api/session/${action}`, { Origin: drainUrl, 'Cookie': controlToken })),
     ])
     assert.equal(fixture.getEvidence().runtimeCreateCount, 2)
     assert.equal(fixture.getEvidence().taskRunCount, 2)

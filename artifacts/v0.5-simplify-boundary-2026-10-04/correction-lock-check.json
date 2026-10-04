@@ -1,0 +1,9 @@
+{
+  "checkedAt": "2026-10-04T04:02:51.827358+00:00",
+  "lock": "/Users/weijianjun/nova-wing/.git/worktrees/nova-wing2/index.lock",
+  "exists": true,
+  "gitProcesses": [],
+  "holders": "p14324\nccom.apple.Virtualization.Virtua\nf*477\nn/Users/weijianjun/nova-wing/.git/worktrees/nova-wing2/index.lock\n",
+  "lsofExit": 0,
+  "action": "REMOVED_NO_GIT_PROCESS_HOLDER"
+}

@@ -1,0 +1,78 @@
+{
+  "isolation-canary.log": {
+    "exitCode": 0,
+    "passGroups": [
+      2
+    ],
+    "failGroups": [
+      0
+    ]
+  },
+  "correction-focused.log": {
+    "exitCode": 0,
+    "passGroups": [
+      2,
+      2,
+      166
+    ],
+    "failGroups": [
+      0,
+      0,
+      0
+    ]
+  },
+  "correction-auth-regression.log": {
+    "exitCode": 0,
+    "passGroups": [
+      2,
+      2,
+      144
+    ],
+    "failGroups": [
+      0,
+      0,
+      0
+    ]
+  },
+  "full-check.log": {
+    "exitCode": 0,
+    "passGroups": [
+      2,
+      2,
+      1397,
+      2,
+      194
+    ],
+    "failGroups": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "desktop-check.log": {
+    "exitCode": 0,
+    "passGroups": [
+      2,
+      2,
+      194
+    ],
+    "failGroups": [
+      0,
+      0,
+      0
+    ]
+  },
+  "f2": {
+    "exitCode": 0,
+    "result": "F2_PASS_BOUNDARY_ENFORCED"
+  },
+  "f3": {
+    "exitCode": 0,
+    "result": "F3_AB_PASS_NO_HOST_ATTEMPT_OR_COMMIT_REPLAY"
+  },
+  "externalModelCalls": 0,
+  "paidApiCalls": 0,
+  "productAcceptance": "PENDING_OWNER_REVIEW"
+}

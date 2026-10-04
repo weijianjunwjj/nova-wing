@@ -1,3 +1,4 @@
+import { sessionFetch } from './operator-session.js'
 /**
  * W005-A Server Safety — bind / control token / Origin / duplicate / background start / sensitive data
  *
@@ -227,13 +228,13 @@ await test('W005-A sensitive data: token/secret never leak into status or events
       currentTaskCheckpoint: checkpoint,
     })
 
-    const statusText = await (await fetch(`${s.address.url}/api/status`)).text()
+    const statusText = await (await sessionFetch(`${s.address.url}/api/status`)).text()
     assert.ok(!statusText.includes(s.token), 'status must not leak control token')
     assert.ok(!statusText.includes('SECRET-CONVO-123'), 'status must not leak provider url')
     assert.ok(!statusText.includes('claude-secret-session-456'), 'status must not leak session id')
 
-    const html = await (await fetch(`${s.address.url}/`)).text()
-    assert.ok(html.includes(s.token), 'HTML bootstrap is the only place the token appears')
+    const html = await (await sessionFetch(`${s.address.url}/`)).text()
+    assert.ok(!html.includes(s.token), 'HTML contains no operator credential')
     assert.ok(!html.includes('SECRET-CONVO-123'), 'HTML must not carry provider payload')
     assert.ok(!html.includes('claude-secret-session-456'), 'HTML must not carry session id')
   } finally {
@@ -283,7 +284,7 @@ await test('W005-A CASE P: DNS rebinding Host rejected with 403 on every route',
     assert.equal(getStatus.status, 403)
 
     const post = await requestWithHost(s.address.port, '/api/session/start', 'POST', hostileHost, {
-      'X-NovaWing-Control-Token': s.token,
+      'Cookie': s.token,
       Origin: 'http://127.0.0.1',
       Referer: `${s.address.url}/`,
       'Sec-Fetch-Site': 'same-origin',
@@ -320,7 +321,7 @@ await test('W005-A background rejection: held promise, no unhandled, SESSION_FAI
       )
 
       // server 仍正常响应
-      const statusRes = await fetch(`${s.address.url}/api/status`)
+      const statusRes = await sessionFetch(`${s.address.url}/api/status`)
       assert.equal(statusRes.status, 200)
 
       // 没有产生 duplicate writer

@@ -1,16 +1,27 @@
 import { randomUUID } from 'node:crypto'
 
+function redactBootstrap(value) {
+  if (typeof value === 'string') return value.replace(/(\/bootstrap)\?[^\s"']*/gu, '$1')
+  if (Array.isArray(value)) return value.map(redactBootstrap)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactBootstrap(item)]))
+  return value
+}
+
 /** Main-side loads bypass will-navigate, so every Main load uses this check. */
 export function loadOwnedURL(window, host, url) {
   if (!host.isAllowedNavigation(url)) throw new Error(`Desktop navigation blocked: ${url}`)
-  return window.loadURL(url)
+  const destination = host.bootstrapUrl?.(url) ?? url
+  return window.loadURL(destination).catch(error => {
+    if (new URL(destination).pathname !== '/bootstrap') throw error
+    throw new Error('Desktop page load failed')
+  })
 }
 
 /**
  * BrowserWindow ownership only: hiding, recreation and recovery never own Host.
  * The factory seam makes races and security policy testable without Electron.
  * @param {{ launchpadUrl: string, isAllowedNavigation: (url: string) => boolean,
- *   resolveSessionUrl?: (sessionId: string) => string | undefined }} host
+ *   bootstrapUrl?: (url: string) => string, resolveSessionUrl?: (sessionId: string) => string | undefined }} host
  * @param {{ createWindow: (settings: import('electron').BrowserWindowConstructorOptions) => import('electron').BrowserWindow,
  *   isQuitRequested?: () => boolean, reportDiagnostic?: (diagnostic: object) => void,
  *   now?: () => number, maxRecoveryAttempts?: number, recoveryWindowMs?: number,
@@ -45,7 +56,7 @@ export function createWindowLifecycle(host, {
 
   function diagnostic(detail) {
     // An observer failure must not turn a renderer failure into a Main failure.
-    try { reportDiagnostic(detail) } catch {}
+    try { reportDiagnostic(redactBootstrap(detail)) } catch {}
   }
 
   function trace(event, window = current?.window, extra = {}) {
@@ -125,7 +136,7 @@ export function createWindowLifecycle(host, {
   }
 
   function remember(window, url) {
-    if (current?.window === window && !window.isDestroyed() && host.isAllowedNavigation(url)) lastTrustedUrl = url
+    if (current?.window === window && !window.isDestroyed() && host.isAllowedNavigation(url) && new URL(url).pathname !== '/bootstrap') lastTrustedUrl = url
   }
 
   function waitForPresentation(window, attempt) {

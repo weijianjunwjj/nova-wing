@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -68,12 +69,12 @@ async function startHydratedServer(runtime: WorkSessionRuntime): Promise<{
   })
   const hydrated = await controller.loadPersistedState()
   const server = new WorkSessionControlServer({ controller, port: 0 })
-  const address = await server.start()
+  const address = await startOperator(server)
   return {
     controller,
     server,
     address,
-    token: server.getTokenForTest(),
+    token: await mintSession(server),
     hydrated,
   }
 }
@@ -82,12 +83,12 @@ async function postResume(
   server: { address: { url: string }; token: string },
   input: Record<string, unknown>,
 ): Promise<number> {
-  const response = await fetch(`${server.address.url}/api/session/resume`, {
+  const response = await sessionFetch(`${server.address.url}/api/session/resume`, {
     method: 'POST',
     headers: {
       Origin: server.address.url,
       'Content-Type': 'application/json',
-      'X-NovaWing-Control-Token': server.token,
+      'Cookie': server.token,
     },
     body: JSON.stringify(input),
   })

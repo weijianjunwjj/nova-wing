@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -275,10 +276,10 @@ async function launchpadWith(directory: string, dependencies: NovaWingLaunchpadD
   })
 }
 
-function startSession(launchpad: NovaWingLaunchpad, url: string, configId: string) {
-  return fetch(`${url}/api/session/start`, {
+async function startSession(launchpad: NovaWingLaunchpad, url: string, configId: string) {
+  return sessionFetch(`${url}/api/session/start`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() },
+    headers: { 'Content-Type': 'application/json', Origin: url, 'Cookie': await mintSession(launchpad) },
     body: JSON.stringify({ configId }),
   })
 }
@@ -291,7 +292,7 @@ test('a Launchpad with no managed work is readable and unblocked', async () => {
   const directory = await fixture(1)
   const launchpad = await launchpadWith(directory, { createWorkSession: managedApps().create })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     assert.deepEqual(launchpad.getUpdateSafetyView(), {
       readable: true, reasonCode: null, activeOperations: 0, pendingHumanDecisions: 0, pendingCheckpoints: 0,
     })
@@ -324,7 +325,7 @@ test('an admitted create that has not finished, and a start with no window yet, 
   const apps = managedApps({ createGate, startGate, safety: IDLE_SAFETY })
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     const configId = launchpad.getConfigs()[0]!.configId
     const pendingStart = startSession(launchpad, address.url, configId)
     await apps.entered.create.promise
@@ -358,7 +359,7 @@ test('a live session still executing stays busy, and an empty navigation map cha
   const apps = managedApps({ safety: () => ({ readable: true, reasonCode: null, inFlightOperations: 1, pendingHumanDecision: false, pendingRecoveryCheckpoint: false }) })
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
     const busy = launchpad.getUpdateSafetyView()
     assert.equal(busy.activeOperations, 1)
@@ -379,7 +380,7 @@ test('an app whose close has not settled stays counted after the navigation map 
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   let closing: Promise<void> | undefined
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
 
     closing = launchpad.close()
@@ -406,7 +407,7 @@ test('a managed session waiting for a human is aggregated from its real controll
   const apps = managedApps({ safety: () => controller.getUpdateSafetyView() })
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
     const view = launchpad.getUpdateSafetyView()
     assert.equal(view.readable, true)
@@ -426,7 +427,7 @@ test('a managed session holding a recovery checkpoint is aggregated as a checkpo
   const apps = managedApps({ safety: () => controller.getUpdateSafetyView() })
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
     const view = launchpad.getUpdateSafetyView()
     assert.equal(view.pendingCheckpoints, 1)
@@ -452,7 +453,7 @@ test('a missing, malformed, throwing or unhydrated owner projection fails the wh
     const apps = managedApps(safety === undefined ? {} : { safety })
     const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
     try {
-      const address = await launchpad.start()
+      const address = await startOperator(launchpad)
       assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
       const view = launchpad.getUpdateSafetyView()
       assert.equal(view.readable, false, label)
@@ -474,7 +475,7 @@ test('the aggregated safety view exposes counts and no owner detail', async () =
   const apps = managedApps({ safety: () => controller.getUpdateSafetyView() })
   const launchpad = await launchpadWith(directory, { createWorkSession: apps.create })
   try {
-    const address = await launchpad.start()
+    const address = await startOperator(launchpad)
     assert.equal((await startSession(launchpad, address.url, launchpad.getConfigs()[0]!.configId)).status, 202)
     const view = launchpad.getUpdateSafetyView()
     assert.deepEqual(Object.keys(view).sort(),

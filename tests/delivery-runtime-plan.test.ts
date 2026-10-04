@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -344,7 +345,7 @@ test('completion transition rejects verifier substitution, missing artifact, and
   assert.equal(observed.facts.observedMatch, true)
   const baseEvidence = { assertionId: 'A1', runtimeTaskId: 'T1', transitionId: transition.id,
     providerId: observed.providerId, collector: observed.collector, verificationStep: 'node --test tests/cart.test.js',
-    expectedOutcome: plan.acceptanceBindings[0]!.expectedOutcome, evidenceId: observed.id,
+    expectedOutcome: plan.acceptanceBindings[0]!.expectedOutcome, evidenceId: observed.id, executionId: observed.executionId,
     implementationCommit: commit, blueprintHash: approved.blueprintHash, artifactHashes: transition.artifactHashes,
     executed: true, observedMatch: true, reviewerVerdict: 'PASS' as const,
     reviewerEvidenceIds: [observed.id] }
@@ -638,9 +639,8 @@ test('read-only collectors stay scoped and persist evidence against an exact pla
   assert.throws(() => verifyCapabilityEvidence({ ...file, facts: { ...file.facts, observedMatch: false } }))
   const store = new DeliveryStore(join(root, 'delivery'))
   await store.savePlan(plan)
-  await store.saveCapabilityEvidence(plan, file)
-  assert.deepEqual(await new DeliveryStore(join(root, 'delivery')).getCapabilityEvidence(plan, file.id), file)
-  await assert.rejects(store.saveCapabilityEvidence(plan, observedGit), /does not belong/)
+  assert.equal('saveCapabilityEvidence' in store, false)
+  assert.equal(await new DeliveryStore(join(root, 'delivery')).getCapabilityEvidence(plan, file.id), undefined)
 })
 
 test('loopback HTTP collector bounds target and response without treating status as assertion PASS', async () => {
@@ -885,12 +885,12 @@ test('Customer delivery API binds an exact snapshot and uses the production sess
     },
   })
   try {
-    const address = await launchpad.start()
-    const html = await (await fetch(`${address.url}/customer`)).text()
-    const token = JSON.parse(html.match(/<script id="customer-bootstrap" type="application\/json">([^<]+)<\/script>/u)?.[1] ?? '{}').token as string
-    assert.ok(token)
-    const post = async (path: string, body: unknown) => fetch(`${address.url}${path}`, { method: 'POST',
-      headers: { Origin: address.url, 'Content-Type': 'application/json', 'X-NovaWing-Launchpad-Token': token },
+    const address = await startOperator(launchpad)
+    const html = await (await sessionFetch(`${address.url}/customer`)).text()
+    assert.doesNotMatch(html, /launchToken|controlToken|"token"/u)
+    const token = await mintSession(launchpad)
+    const post = async (path: string, body: unknown) => sessionFetch(`${address.url}${path}`, { method: 'POST',
+      headers: { Origin: address.url, 'Content-Type': 'application/json', 'Cookie': token },
       body: JSON.stringify(body) })
     const preparedResponse = await post('/api/delivery/prepare', { planId: snapshot.sourcePlanId,
       version: snapshot.sourcePlanVersion, snapshotId: snapshot.id, repositoryRoot: repo })
@@ -912,7 +912,7 @@ test('Customer delivery API binds an exact snapshot and uses the production sess
     const repeated = await post('/api/delivery/start', exact)
     assert.equal(repeated.status, 202)
     assert.deepEqual(created, [binding.workSessionId])
-    const restored = await fetch(`${address.url}/api/delivery/plans/${prepared.runtimePlanId}?planId=${snapshot.sourcePlanId}&version=${snapshot.sourcePlanVersion}`)
+    const restored = await sessionFetch(`${address.url}/api/delivery/plans/${prepared.runtimePlanId}?planId=${snapshot.sourcePlanId}&version=${snapshot.sourcePlanVersion}`)
     assert.equal(restored.status, 200)
     const status = await restored.json() as { admission: { status: string };
       customerAssessment: { status: string; gate: string } }
@@ -975,4 +975,122 @@ test('suspended T1 review recovery does not restart EXECUTE, including ALLOW REE
     if (mode !== 'ordinary') assert.deepEqual(actions, ['REVIEW'], JSON.stringify({ mode, humanRequired: result.humanRequired }))
     assert.deepEqual(result.taskStateV2?.identity, { sessionId: definition.id, taskId: t1.id })
   }
+})
+
+async function attemptFixture() {
+  const { root, repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const obligation = plan.acceptanceBindings[0]!.stagedVerification.obligation!
+  const blueprint = blueprintFixture(snapshot, target)
+  const marker = `const assertionId = 'A1'; const assertionContractHash = '${blueprint.sourceAssertionHash}';\n`
+  await writeFile(join(repo, 'tests/cart.test.js'), marker + await readFile(join(repo, 'tests/cart.test.js'), 'utf8'))
+  await (await import('node:fs/promises')).mkdir(join(repo, 'verification'))
+  const { schemaVersion: _schema, assertionId, runtimeTaskId, sourceAssertionHash, targetConstraints: _target,
+    provenance: _provenance, ...content } = blueprint
+  await writeFile(join(repo, 'verification/blueprints.v1.json'), JSON.stringify({ schemaVersion: 1,
+    entries: [{ assertionId, runtimeTaskId, sourceAssertionHash, blueprint: content }] }))
+  await writeFile(join(repo, 'tests/cart.test.js'), await readFile(join(repo, 'tests/cart.test.js'), 'utf8') +
+    `const fs = require('node:fs'); if (fs.existsSync('../FAIL')) throw new Error('fixture failure'); if (fs.existsSync('../DIRTY')) fs.writeFileSync('unexpected.tmp', 'dirty');\n`)
+  await git(repo, 'add', '.')
+  await git(repo, 'commit', '-qm', 'Implement verifier')
+  const commit = await git(repo, 'rev-parse', 'HEAD')
+  const criterion = snapshot.content.acceptancePlan.criteria[0]!
+  const approved = await bindObligationAtCommit({ obligation, assertion: criterion.assertions[0]!, criterion,
+    target, commit, reviewer: async () => ({ verdict: 'PASS', reviewer: 'independent-fixture', issues: [] }) })
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.savePlan(plan)
+  const transition = await store.bindProvisionedVerifier(plan, 'A1', 'T1', approved)
+  const completion = (observed: Awaited<ReturnType<DeliveryStore['collectProvisionedEvidence']>>) => ({
+    assertionId: 'A1', runtimeTaskId: 'T1', transitionId: transition.id,
+    providerId: observed.providerId, collector: observed.collector, verificationStep: 'node --test tests/cart.test.js',
+    expectedOutcome: plan.acceptanceBindings[0]!.expectedOutcome, evidenceId: observed.id, executionId: observed.executionId,
+    implementationCommit: commit, blueprintHash: approved.blueprintHash, artifactHashes: transition.artifactHashes,
+    executed: true, observedMatch: true, reviewerVerdict: 'PASS' as const, reviewerEvidenceIds: [observed.id] })
+  return { root, repo, plan, store, transition, completion }
+}
+
+test('SIMPLIFY F3-A public API rejects self-consistent evidence without a Host attempt, including reopen', async () => {
+  const f = await attemptFixture()
+  const provider = CAPABILITY_REGISTRY.command
+  const payload = { assertionId: 'A1', family: 'command' as const, collector: provider.providerId, result: 'OBSERVED' as const,
+    providerId: provider.providerId, providerVersion: provider.providerVersion, facts: { observedMatch: true } }
+  const raw = { id: createHash('sha256').update(JSON.stringify(payload)).digest('hex'), assertionId: payload.assertionId,
+    family: payload.family, providerId: provider.providerId, providerVersion: provider.providerVersion,
+    collector: payload.collector, evidenceType: provider.evidenceType, result: payload.result, facts: payload.facts }
+  verifyCapabilityEvidence(raw)
+  assert.equal('saveCapabilityEvidence' in f.store, false)
+  const item = f.completion({ ...raw, executionId: '00000000-0000-4000-8000-000000000000' })
+  assert.equal(await f.store.recordLocalTaskCompletion(f.plan, 'T1', [f.transition], [item]), 'BLOCKED')
+  assert.equal((await new DeliveryStore(f.store.directory).customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+})
+
+test('SIMPLIFY Host attempt positive survives reopen; field tamper, missing, truncated and legacy attempts block', async () => {
+  const f = await attemptFixture()
+  const raw = await f.store.collectProvisionedEvidence(f.plan, 'A1', 'T1'), item = f.completion(raw)
+  assert.equal(await f.store.recordLocalTaskCompletion(f.plan, 'T1', [f.transition], [item]), 'LOCALLY_VERIFIED')
+  const assess = () => new DeliveryStore(f.store.directory).customerAssessment(f.plan.id)
+  const expected = await assess()
+  assert.equal(expected.status, 'CUSTOMER_DELIVERY_COMPLETED')
+  const path = join(f.store.directory, `verification-attempt-${raw.executionId}.json`)
+  const original = await readFile(path, 'utf8'), attempt = JSON.parse(original)
+  for (const field of Object.keys(attempt)) {
+    await writeFile(path, JSON.stringify({ ...attempt, [field]: 'tampered' }))
+    assert.equal((await assess()).status, 'CUSTOMER_DELIVERY_BLOCKED', field)
+  }
+  await writeFile(path, '{')
+  assert.equal((await assess()).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  const { unlink } = await import('node:fs/promises')
+  await unlink(path)
+  assert.equal((await assess()).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  await writeFile(path, original)
+  assert.deepEqual(await assess(), expected)
+  const { executionId: _id, ...legacy } = item
+  assert.equal(await f.store.recordLocalTaskCompletion(f.plan, 'T1', [f.transition], [legacy]), 'BLOCKED')
+})
+
+test('SIMPLIFY current attempt rejects verifier, blueprint, commit, plan drift and later real FAIL', async () => {
+  const f = await attemptFixture()
+  const raw = await f.store.collectProvisionedEvidence(f.plan, 'A1', 'T1'), item = f.completion(raw)
+  assert.equal(await f.store.recordLocalTaskCompletion(f.plan, 'T1', [f.transition], [item]), 'LOCALLY_VERIFIED')
+  for (const transition of [
+    { ...f.transition, verifier: { ...f.transition.verifier, providerVersion: 'changed' } },
+    { ...f.transition, blueprintHash: 'b'.repeat(64) },
+    { ...f.transition, implementationCommit: 'c'.repeat(40) },
+    { ...f.transition, runtimePlanHash: 'd'.repeat(64) },
+  ]) assert.equal(await f.store.localAttemptsValid(f.plan, [transition], [{ ...item,
+    blueprintHash: transition.blueprintHash, implementationCommit: transition.implementationCommit }]), false)
+  await writeFile(join(f.root, 'FAIL'), 'fail')
+  const failed = await f.store.collectProvisionedEvidence(f.plan, 'A1', 'T1')
+  assert.equal(failed.facts.observedMatch, false)
+  assert.notEqual(failed.executionId, raw.executionId)
+  assert.equal((await new DeliveryStore(f.store.directory).customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  assert.equal(await f.store.recordLocalTaskCompletion(f.plan, 'T1', [f.transition], [item]), 'BLOCKED')
+})
+
+test('SIMPLIFY F3-B real C1 attempt cannot be repackaged as C2; post-collector dirty worktree fails', async () => {
+  const f = await attemptFixture()
+  const raw = await f.store.collectProvisionedEvidence(f.plan, 'A1', 'T1'), item = f.completion(raw)
+  await git(f.repo, 'commit', '--allow-empty', '-qm', 'C2')
+  const c2 = await git(f.repo, 'rev-parse', 'HEAD')
+  assert.equal(await f.store.localAttemptsValid(f.plan, [{ ...f.transition, implementationCommit: c2 }],
+    [{ ...item, implementationCommit: c2 }]), false)
+  assert.equal((await new DeliveryStore(f.store.directory).customerAssessment(f.plan.id)).status, 'CUSTOMER_DELIVERY_BLOCKED')
+  const dirty = await attemptFixture()
+  await writeFile(join(dirty.root, 'DIRTY'), 'dirty')
+  await assert.rejects(dirty.store.collectProvisionedEvidence(dirty.plan, 'A1', 'T1'), /ATTEMPT_COMMIT_DRIFT/u)
+  const files = await (await import('node:fs/promises')).readdir(dirty.store.directory)
+  const ledger = JSON.parse(await readFile(join(dirty.store.directory, files.find(x => /^verification-attempt-[a-f0-9-]{36}\.json$/u.test(x))!), 'utf8'))
+  assert.equal(ledger.observedMatch, false)
+  assert.equal(ledger.result, 'COLLECTION_FAILED')
+})
+
+test('SIMPLIFY F2-A contributor data cannot impersonate a missing or duplicate canonical owner', () => {
+  const binding = { assertionId: 'A1', runtimeTaskId: 'T1', blocking: true, ownership: 'CONTRIBUTES' as const }
+  // No owner must short-circuit before any claimed contributor proof is consulted.
+  assert.equal(customerDeliveryCompletionGate([{ id: 'T1' }], [binding as never], [], [], new Set(['T1']), [], new Set(['T1'])), false)
+  assert.equal(customerDeliveryCompletionGate([{ id: 'T1' }], [
+    { ...binding, ownership: 'OWNER' } as never, { ...binding, ownership: 'OWNER' } as never,
+  ], [], [], new Set(['T1'])), false)
 })

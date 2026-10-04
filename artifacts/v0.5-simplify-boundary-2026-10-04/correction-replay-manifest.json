@@ -1,0 +1,16 @@
+{
+  "root": "/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-simplify-replay-xca80jty",
+  "source": "/Users/weijianjun/.codex/worktrees/v05-trusted-attestation/nova-wing/artifacts/v0.5-trusted-attestation-boundary-2026-10-04",
+  "files": {
+    "f2": {
+      "originalSha256": "9349206ccaf8cb488346e2217f59e936ca7e41fc0d44db9d3aa5aea500a948cc",
+      "replaySha256": "3598c8d6f26098ee5a1cdb097d871dc75c63b8871e93a51b5d9a020316a7a4e9",
+      "cwd": "/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-simplify-replay-xca80jty/f2"
+    },
+    "f3": {
+      "originalSha256": "3678ddb7dc3b76f2fb4c2f7cd4220c40d36800c6b21c761c0137ad013aceb740",
+      "replaySha256": "a1ce0d0cfc549f00ad740f0fa2fbc1bd5933f4b5ca588df5fee2d210be382293",
+      "cwd": "/var/folders/j3/zkcqwhw536v6nmm3sg10v7wm0000gn/T/novawing-simplify-replay-xca80jty/f3"
+    }
+  }
+}

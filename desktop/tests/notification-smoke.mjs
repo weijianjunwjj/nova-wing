@@ -1,3 +1,4 @@
+import { sessionFetch as fetch, mintSession } from './operator-session.mjs'
 import assert from 'node:assert/strict'
 import { EventEmitter, once } from 'node:events'
 import { join } from 'node:path'
@@ -76,11 +77,10 @@ async function run() {
     assert.ok(notifications, 'This real-host smoke requires Electron Notification.isSupported()')
     assert.equal(notifications.notificationChannel, 'DESKTOP')
     assert.deepEqual(notifications.notificationKinds, ['COMPLETED', 'FAILED', 'HUMAN_REQUIRED'])
-    const launchToken = await evaluate(desktop.window,
-      `JSON.parse(document.getElementById('novawing-bootstrap').textContent).launchToken`)
+    const launchToken = await mintSession(host.bootstrapUrl(host.launchpadUrl))
     const create = async (taskId, extra = {}) => {
       const response = await fetch(`${host.launchpadUrl}/api/session/create`, { method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: host.launchpadUrl, 'X-NovaWing-Launchpad-Token': launchToken },
+        headers: { 'Content-Type': 'application/json', Origin: host.launchpadUrl, 'Cookie': launchToken },
         body: JSON.stringify({ ...fixture.createRequest, requestId: `notification-${taskId}-request`,
           tasks: [{ id: taskId, goal: 'Exercise isolated notification Runtime ownership' }], ...extra }) })
       const body = await response.json()

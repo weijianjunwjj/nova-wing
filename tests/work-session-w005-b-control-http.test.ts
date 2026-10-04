@@ -1,3 +1,4 @@
+import { sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -9,10 +10,10 @@ async function postControl(
   options: { token?: string; origin?: string; body?: string; contentType?: string } = {},
 ): Promise<{ status: number; body: string }> {
   const headers: Record<string, string> = {}
-  if (options.token !== undefined) headers['X-NovaWing-Control-Token'] = options.token
+  if (options.token !== undefined) headers['Cookie'] = options.token
   if (options.origin !== undefined) headers.Origin = options.origin
   if (options.contentType !== undefined) headers['Content-Type'] = options.contentType
-  const response = await fetch(`${server.address.url}${path}`, {
+  const response = await sessionFetch(`${server.address.url}${path}`, {
     method: 'POST',
     headers,
     ...(options.body === undefined ? {} : { body: options.body }),
@@ -137,7 +138,7 @@ await test('W005-B RESUME-B/C/D: background resume is non-echoing and concurrenc
         reason: `provider repeated ${sensitiveDecision}`,
       },
     })
-    const status = await fetch(`${server.address.url}/api/status`).then((response) => response.text())
+    const status = await sessionFetch(`${server.address.url}/api/status`).then((response) => response.text())
     const observations = JSON.stringify(server.controller.getRecentEvents()) + status
     assert.doesNotMatch(observations, /Authorization: Bearer SECRET/)
     assert.deepEqual(
@@ -356,8 +357,8 @@ await test('W005-B resume schema rejects malformed, unknown, credential and over
 await test('W005-B decision UI uses textarea/value/textContent and has no credential input', async () => {
   const server = await startServer()
   try {
-    const html = await fetch(`${server.address.url}/`).then((response) => response.text())
-    const app = await fetch(`${server.address.url}/app.js`).then((response) => response.text())
+    const html = await sessionFetch(`${server.address.url}/`).then((response) => response.text())
+    const app = await sessionFetch(`${server.address.url}/app.js`).then((response) => response.text())
     assert.match(html, /<textarea id="decision-input"/)
     assert.doesNotMatch(html, /type="password"/i)
     assert.doesNotMatch(html, /credential-input|api-key|token-input/i)

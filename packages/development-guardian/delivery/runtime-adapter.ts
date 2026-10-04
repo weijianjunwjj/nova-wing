@@ -95,10 +95,12 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           ...(transition ? { transitionId: transition.id, implementationCommit: transition.implementationCommit,
             blueprintHash: transition.blueprintHash, artifactHashes: transition.artifactHashes } : {}),
           providerId: observed.providerId, collector: observed.collector,
-          verificationStep: result.stepId!, expectedOutcome: binding.expectedOutcome, evidenceId: observed.id,
+          ...(result.executionId ? { executionId: result.executionId } : {}), verificationStep: result.stepId!, expectedOutcome: binding.expectedOutcome, evidenceId: observed.id,
           executed: true, observedMatch: true, reviewerVerdict: verdict.verdict,
           reviewerEvidenceIds: verdict.capabilityEvidence.evidenceIds })
       }
+      if (!await store.localAttemptsValid(plan, transitions, evidence))
+        return { status: 'BLOCKED', reason: 'Current Host verification attempt is missing or invalid.' }
       const status = taskCompletionGate(bindings, transitions, evidence)
       if (status === 'LOCALLY_VERIFIED') completionProofs.set(task.identity.taskId, { transitions, evidence })
       return { status }
@@ -113,7 +115,10 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
       const current = await inspectDeliveryTarget(plan.targetBinding.canonicalPath)
       if (!current.clean || current.baselineCommit !== commitSha)
         throw new Error('Finalized Task implementation commit changed.')
-      if (proof) await store.recordLocalTaskCompletion(plan, task.identity.taskId, proof.transitions, proof.evidence)
+      if (proof) {
+        if (await store.recordLocalTaskCompletion(plan, task.identity.taskId, proof.transitions, proof.evidence) !== 'LOCALLY_VERIFIED')
+          throw new Error('Task current verification attempt is invalid.')
+      }
       else await store.recordContributorTaskCompletion(plan, task, commitSha)
       completionProofs.delete(task.identity.taskId)
       contributionProofs.delete(task.identity.taskId)
@@ -205,12 +210,12 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           } catch (error) { return { status: 'BLOCKED', blockers: [
             `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }
         }
-        let observed: CapabilityEvidence
+        let observed: CapabilityEvidence & { executionId: string }
         try { observed = await store.collectProvisionedEvidence(plan, binding.assertionId, binding.runtimeTaskId) }
         catch (error) { return { status: 'BLOCKED',
           blockers: [`${binding.assertionId} exact verifier failed: ${error instanceof Error ? error.message : String(error)}`] } }
         const key = pendingEvidenceKey(binding.assertionId, obligation.obligationId)
-        results.push({ name: key, stepId: key, rawOutputRef: observed.id,
+        results.push({ name: key, stepId: key, rawOutputRef: observed.id, executionId: observed.executionId,
           ...((transition.verifier.family === 'command' || transition.verifier.family === 'scope_review') &&
             transition.verifier.command ? { command: transition.verifier.command } : {}),
           status: observed.result === 'OBSERVED' && observed.facts.observedMatch === true

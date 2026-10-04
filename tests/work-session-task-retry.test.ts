@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import { probeDeepSeekReviewer, type ReviewerHealthProbeResult } from '../packages/development-guardian/work-session/reviewer-health-refresh.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -338,13 +339,13 @@ test('protected reconciliation API is explicit and receipt-bound resume executes
   const controller = new WorkSessionControlController({ createRuntime: () => f.runtime() })
   const server = new WorkSessionControlServer({ controller, port: 0 })
   try {
-    const address = await server.start()
-    const headers = { 'X-NovaWing-Control-Token': server.getTokenForTest(), Origin: address.url, 'Content-Type': 'application/json' }
-    const post = (path: string, body: unknown, customHeaders = headers) => fetch(address.url + path,
+    const address = await startOperator(server)
+    const headers = { 'Cookie': await mintSession(server), Origin: address.url, 'Content-Type': 'application/json' }
+    const post = (path: string, body: unknown, customHeaders = headers) => sessionFetch(address.url + path,
       { method: 'POST', headers: customHeaders, body: JSON.stringify(body) })
     const path = '/api/session/reconcile-task-retry'
     const before = await (await f.access()).read()
-    assert.equal((await post(path, f.request, { ...headers, 'X-NovaWing-Control-Token': '' })).status, 403)
+    assert.equal((await post(path, f.request, { ...headers, 'Cookie': '' })).status, 403)
     assert.equal((await post(path, f.request, { ...headers, Origin: 'http://evil.example' })).status, 403)
     assert.equal((await post(path, { ...f.request, reasonCode: 'MANUAL_OVERRIDE' })).status, 400)
     assert.equal((await post(path, { ...f.request, expectedGeneration: 999 })).status, 409)
@@ -354,7 +355,7 @@ test('protected reconciliation API is explicit and receipt-bound resume executes
     const receipt = await response.json() as { receiptId: string; taskId: string; generation: number; nextDecision: string }
     assert.equal(receipt.nextDecision, 'EXECUTE')
     assert.equal(f.executions(), 1)
-    const view = await (await fetch(address.url + '/api/status')).json() as { runtime: { taskRetryReceipt: unknown } }
+    const view = await (await sessionFetch(address.url + '/api/status')).json() as { runtime: { taskRetryReceipt: unknown } }
     assert.deepEqual(view.runtime.taskRetryReceipt, receipt)
     assert.equal((await post(path, f.request)).status, 409)
     assert.equal((await post('/api/session/resume', {})).status, 409)
@@ -538,10 +539,10 @@ test('refresh-only protected HTTP endpoint does not call resume', async () => {
   const server=new WorkSessionControlServer({controller,port:0})
   try {
     f.setHealthProbe(async()=>healthResult())
-    const address=await server.start(),url=address.url+'/api/session/refresh-reviewer-health'
+    const address=await startOperator(server),url=address.url+'/api/session/refresh-reviewer-health'
     const body=JSON.stringify(healthRequest(f.request))
-    assert.equal((await fetch(url,{method:'POST',body})).status,403)
-    const response=await fetch(url,{method:'POST',body,headers:{Origin:address.url,'Content-Type':'application/json','X-NovaWing-Control-Token':server.getTokenForTest()}})
+    assert.equal((await sessionFetch(url,{method:'POST',body})).status,403)
+    const response=await sessionFetch(url,{method:'POST',body,headers:{Origin:address.url,'Content-Type':'application/json','Cookie':await mintSession(server)}})
     assert.equal(response.status,200)
     assert.equal((await response.json() as ReviewerHealthProbeResult).status,'AVAILABLE')
     assert.equal(controller.getSnapshot().runtime.reviewerHealth?.status,'AVAILABLE')

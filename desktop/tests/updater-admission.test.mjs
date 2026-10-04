@@ -1,3 +1,4 @@
+import { sessionFetch as fetch, mintSession } from './operator-session.mjs'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -192,7 +193,7 @@ async function startSession(harness) {
   const address = launchpad.getAddress()
   return fetch(`${address.url}/api/session/start`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: address.url, 'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest() },
+    headers: { 'Content-Type': 'application/json', Origin: address.url, 'Cookie': await mintSession(launchpad) },
     body: JSON.stringify({ configId: launchpad.getConfigs()[0].configId }),
   })
 }

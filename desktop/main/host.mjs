@@ -151,6 +151,15 @@ export async function createDesktopHost({ configDirectory, env, dependencies, de
     // authorizes anything, and it is never cached by the Host.
     updateSafetySnapshot: (options = {}) => composeSafetySnapshot(launchpad, options),
     get launchpadUrl() { return launchpadUrl },
+    bootstrapUrl(url) {
+      if (closing || !registry.allows(url)) throw new Error('Unowned navigation origin')
+      const target = new URL(url)
+      const path = `${target.pathname}${target.search}${target.hash}`
+      if (target.origin === launchpadUrl) return launchpad.mintBootstrapUrl(path)
+      const control = [...controls.values()].find(item => item.url === target.origin)
+      if (!control?.owner.server) throw new Error('Control server unavailable')
+      return control.owner.server.mintBootstrapUrl(path)
+    },
     ownedOrigins: () => registry.origins(),
     isAllowedNavigation: (url) => !closing && registry.allows(url),
     resolveSessionUrl(sessionId) {

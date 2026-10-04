@@ -1,3 +1,4 @@
+import { mintSession, startOperator, sessionFetch } from './operator-session.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -120,11 +121,11 @@ async function postJson(
 ): Promise<Response> {
   const address = launchpad.getAddress()
   if (address === undefined) throw new Error('Launchpad is not listening')
-  return fetch(`${address.url}${path}`, {
+  return sessionFetch(`${address.url}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-NovaWing-Launchpad-Token': launchpad.getTokenForTest(),
+      'Cookie': await mintSession(launchpad),
       Origin: address.url,
     },
     body: JSON.stringify(body),
@@ -267,7 +268,7 @@ test('v0.2.6 create auto-repairs a missing evidence binding and launches in one 
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     // The operator clicks 创建并启动 exactly once; no second request is made.
     const create = await postJson(launchpad, '/api/session/create', composerRequest('ai-repair-missing-0001', repo, {
       acceptanceCriteria: ['Tests pass'],
@@ -320,7 +321,7 @@ test('the manual repair endpoint remains available as an operator fallback', asy
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-manual-0001', repo, {
       acceptanceCriteria: ['Tests pass'],
     }))
@@ -374,7 +375,7 @@ test('manual repair cannot guess an unsafe acceptance verifier when mixed with a
     const preflight = await preflightTaskContract({ targetRepo: repo, acceptanceCriteria, acceptanceEvidenceBindings: [] })
     assert.equal(preflight.ok, false)
     if (!preflight.ok) assert.deepEqual(preflight.issues.map((entry) => entry.issueCode), ['UNSAFE_VERIFIER_EXTRACTION', 'MISSING_EVIDENCE_BINDING'])
-    await launchpad.start()
+    await startOperator(launchpad)
     const response = await postJson(launchpad, '/api/session/repair', composerRequest('unsafe-verifier-manual-repair', repo, { acceptanceCriteria }))
     assert.equal(response.status, 400)
     const result = await response.json() as { error?: string; issues?: Array<{ issueCode: string }> }
@@ -423,7 +424,7 @@ test('failed repair preserves the original Task, records the attempt, and notifi
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const body = composerRequest('ai-repair-approval-0002', repo, {
       acceptanceCriteria: ['custom proof'],
       acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
@@ -484,7 +485,7 @@ test('the orchestrator rejects a malicious agent that rewrites semantics', async
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-malicious-0003', repo, {
       acceptanceCriteria: ['Tests pass'],
     }))
@@ -536,7 +537,7 @@ test('a criterion deterministic repair cannot judge is bound by the model and la
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-llm-0004', repo, {
       acceptanceCriteria: [criterion],
     }))
@@ -584,7 +585,7 @@ test('an unavailable repair provider preserves the original Task and reports PRO
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const criterion = 'AC1 label formatting matches every specified example'
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-llm-0005', repo, {
       acceptanceCriteria: [criterion],
@@ -629,7 +630,7 @@ test('a model proposal naming an unknown criterion is rejected', async () => {
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-llm-0006', repo, {
       acceptanceCriteria: ['AC1 label formatting matches every specified example'],
     }))
@@ -669,7 +670,7 @@ test('a verifier awaiting human approval cannot be replaced by the model', async
     },
   })
   try {
-    await launchpad.start()
+    await startOperator(launchpad)
     const repair = await postJson(launchpad, '/api/session/repair', composerRequest('ai-repair-llm-0007', repo, {
       acceptanceCriteria: [labelCriterion, 'custom proof'],
       acceptanceEvidenceBindings: [{ criterion: 'custom proof', requiredEvidence: ['node -e "process.exit(0)"'] }],
@@ -693,12 +694,12 @@ test('the Launchpad serves an AI repair affordance wired to the repair endpoint'
   const directory = await mkdtemp(join(tmpdir(), 'novawing-ai-repair-configs-'))
   const launchpad = await createNovaWingLaunchpad({ configDirectory: directory })
   try {
-    const address = await launchpad.start()
-    const html = await (await fetch(address.url)).text()
+    const address = await startOperator(launchpad)
+    const html = await (await sessionFetch(address.url)).text()
     assert.match(html, /data-composer-repair hidden>AI 修复并重试<\/button>/u)
     // v0.2.6: a repairable contract shows staged progress instead of an immediate red block.
     assert.match(html, /data-composer-progress/u)
-    const appJs = await (await fetch(`${address.url}/app.js`)).text()
+    const appJs = await (await sessionFetch(`${address.url}/app.js`)).text()
     assert.match(appJs, /fetch\('\/api\/session\/repair'/u)
     assert.match(appJs, /result\.repairable === true/u)
     assert.match(appJs, /repairButton\.hidden = false/u)
