@@ -48,7 +48,7 @@
     "certify:v0.2": "npm run build && npm run build:tests && node dist-tests/tests/certification/v0.2/run-certification.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && npm run build:tests && node scripts/run-isolated-tests.mjs --test-concurrency=1 \"dist-tests/tests/*.test.js\"",
-    "test:domain": "npm run build && npm run build:tests && node --test --test-concurrency=1 dist-tests/tests/domain.test.js",
+    "test:domain": "npm run build && npm run build:tests && node scripts/run-isolated-tests.mjs --test-concurrency=1 dist-tests/tests/domain.test.js",
     "check:unused": "tsc -p tsconfig.json --noEmit --noUnusedLocals --noUnusedParameters && tsc -p tsconfig.desktop.json",
     "check:migration": "npm run build && node scripts/verify-migration.mjs",
     "check:exports": "npm run build && node scripts/check-package-exports.mjs",

@@ -258,6 +258,9 @@ test('existing control buttons retain authenticated endpoint handlers', async ()
     assert.equal(request.path, path)
     assert.equal(request.init?.method, 'POST')
     assert.equal(request.init?.credentials ?? 'same-origin', 'same-origin')
+    for (const name of new Headers(request.init?.headers as HeadersInit | undefined).keys()) {
+      assert.doesNotMatch(name, /^(cookie|authorization)$|token/iu, 'request must not inject credential headers')
+    }
   }
   assert.equal(h.requests.at(-2)?.init?.body, JSON.stringify({ decision: 'Use the approved migration plan' }))
 })
@@ -304,6 +307,9 @@ test('engineering Human Required exposes scoped recovery and instructions with u
     decision: '只修改 src，不要修改 tests，重新检查 verifier stderr 后继续。', taskId: 'T1', generation: 4,
   })
   assert.equal(request.init!.credentials ?? 'same-origin', 'same-origin')
+  for (const name of new Headers(request.init?.headers as HeadersInit | undefined).keys()) {
+    assert.doesNotMatch(name, /^(cookie|authorization)$|token/iu, 'request must not inject credential headers')
+  }
   assert.equal(h.node('decision-input').value, '', 'accepted instructions are not left for accidental repeat submission')
 })
 
@@ -344,6 +350,9 @@ test('permission requests only expose dedicated approval and durable rejection c
   const request = h.requests.filter(entry => entry.init !== undefined).at(-1)!
   assert.equal(request.path, '/api/session/reject-verification')
   assert.equal(request.init!.credentials ?? 'same-origin', 'same-origin')
+  for (const name of new Headers(request.init?.headers as HeadersInit | undefined).keys()) {
+    assert.doesNotMatch(name, /^(cookie|authorization)$|token/iu, 'request must not inject credential headers')
+  }
   assert.match(h.node('resume-note').textContent, /已拒绝授权.*保持暂停/u)
   s.runtime.pendingVerificationApproval = { taskId: 'T1', command: 'npm test', generation: 3, status: 'REJECTED' }
   h.render(s)

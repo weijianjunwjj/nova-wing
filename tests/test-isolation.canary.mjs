@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import test from 'node:test'
+import { supportsIsolationNode } from '../scripts/run-isolated-tests.mjs'
 import { platformPaths } from '../dist/packages/development-guardian/platform/paths.js'
 
 const inside = (root, path) => path === root || (isAbsolute(path) && !relative(root, path).startsWith('..') && !isAbsolute(relative(root, path)))
@@ -36,4 +37,11 @@ test('isolation canary: git identity comes only from the temporary global config
   const value = execFileSync('git', ['config', '--global', '--get', 'user.email'], { encoding: 'utf8' }).trim()
   assert.equal(value, 'fixture@example.invalid')
   assert.equal(process.env.GIT_CONFIG_NOSYSTEM, '1')
+})
+
+test('isolation Node gate: rejects v20 and accepts v24', () => {
+  assert.equal(supportsIsolationNode('v20.20.2'), false)
+  assert.equal(supportsIsolationNode('v24.0.0'), true)
+  assert.equal(supportsIsolationNode('v24.21.0'), true)
+  assert.equal(supportsIsolationNode('invalid'), false)
 })
