@@ -109,9 +109,31 @@ snapshot 是 SQLite JSONB；直接 UTF-8 解码失败不能被误判为数据库
 `STARTED`、保存的 READY、实现 commit、全量测试 PASS 都不等于客户验收成功。
 本轮未找到能证明这两次客户交付成功的完整证据链。
 
+## v0.5 SIMPLIFY_BOUNDARY（2026-10-05 增补，Owner：Claude）
+
+本节晚于上文快照；上文 HEAD `ad26456` 等描述仍是 2026-10-02 的历史。
+
+- 分支 `codex/v0.5-simplify-boundary`，基于 `a827f91`：`43c471b`（主实现）→ `85c2fe2`（follow-up）。
+  2026-10-05 用户授权：快进合并到 main，本节所在的文档提交在其之上。远端状态以 `git log origin/main` 为准。
+- 内容：Host-owned current-attempt ledger（executionId / latest 指针 / recordHash）；每条 assertion
+  唯一 OWNER；验收身份由服务端从 operator session 派生（一次性 bootstrap → HttpOnly cookie），
+  body 自带身份返回 400；测试隔离 runner（临时 HOME / DATA / CONFIG、canary、Node ≥24 闸门）。
+  Ed25519 签名、authority registry 和 sandbox 已撤回，不再采用。
+- 结论：工程边界 ACCEPTED。依据是 Codex 在 macOS Node v24.21.0 下的日志：check 1397/0 + desktop 194/0；
+  `85c2fe2` 下重跑相同，test:domain 6/0；F2/F3 原 probe replay（含加强）均 BLOCK。
+  Claude 只读审阅了 diff 和日志，未在本机重跑。
+  证据：`artifacts/v0.5-simplify-boundary-2026-10-04/`（在该 worktree 内）。
+- 未验证：Electron 实机、人工验收 UI（仍只有 API）、真实客户交付。
+- KNOWN_RESIDUAL：F3-C，同 UID 进程可直接改写 ledger；operator cookie 跨 127.0.0.1 端口发送。
+- 事故：首轮有两次测试未隔离，触达真实数据默认路径。历史影响 UNKNOWN；
+  查验需用户单独授权，不得改写成"确认无影响"。
+- DEFERRED：delivery → work-session import 分层；certify:v0.2 补 fixture 后接入 runner；
+  benchmark:v1v2 / v028 和 reliability:v030 可接入 runner；planning-quality 保持人工专用。
+- 交接方式：从下一轮起按 [HANDOFF_PROTOCOL](HANDOFF_PROTOCOL.md)。
+
 ## 进行中、阻塞与下一步
 
-- 本轮进行中的工作只有 Project Context 文档交接；没有恢复客户任务。
+- 2026-10-02 时进行中的工作只有 Project Context 文档交接，没有恢复客户任务。v0.5 状态见上一节。
 - 两次已保存实验均停在首任务；原会话问题和新代码修复后的可恢复性必须分别证明。
 - 最新 HEAD 的全量 / targeted tests、真实 provider 可用性、外部 UI / 平台验收、真实成本效益待核实。
 - 下一轮优先只读：明确目标是正常新路径验收、Requirement 001 历史事件处理，还是

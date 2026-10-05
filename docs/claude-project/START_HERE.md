@@ -24,6 +24,8 @@ Playbook 沉淀层，ai-code-rules＝协作规则内核。这是规则声明；�
 4. [PRINCIPLES_AND_DECISIONS](PRINCIPLES_AND_DECISIONS.md) 与
    [FAILURES_AND_OPEN_QUESTIONS](FAILURES_AND_OPEN_QUESTIONS.md)。
 5. [WORKFLOW](WORKFLOW.md)：先形成范围、验收、权限、预算和停止条件，再给编码 Agent 指令。
+   与 Codex 交接按 [HANDOFF_PROTOCOL](HANDOFF_PROTOCOL.md)：每轮开头先核对 `HANDOFF.json`，再做判断；
+   指令一律使用 [CODEX_TASK_TEMPLATE](CODEX_TASK_TEMPLATE.md)。
 6. 只读本轮涉及的权威来源和测试；需要启动提示时使用 [启动提示](CLAUDE_START_PROMPT.md)。
 
 ## 各主题权威来源

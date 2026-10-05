@@ -16,6 +16,9 @@
 这里的 Claude 是协作角色，不假设等同于 NovaWing 内的 PlanningSemanticReviewer、
 Runtime Reviewer 或 Controller。人工交接审核也不替代运行时持久化 gate。
 
+交接一致性（`HANDOFF.json` 快照、事实归属、三层指令）见 [HANDOFF_PROTOCOL](HANDOFF_PROTOCOL.md)；
+给 Codex 的具体指令格式见 [CODEX_TASK_TEMPLATE](CODEX_TASK_TEMPLATE.md)。
+
 ## 每轮任务契约（可复制模板）
 
 ```text
