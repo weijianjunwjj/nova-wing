@@ -284,13 +284,22 @@ export class WorkSessionRuntime {
           (event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED') &&
           event.notificationKind === 'FAILED',
       )
-      // Ledger delivery facts repair states written by the old pre-delivery
-      // claim path. With no delivery fact, FAILED is still eligible on restart.
+      const durableNotified = parsed.data.failureNotified === true
+      const ledgerSawDelivery = failedDeliveries.length > 0
+      const ledgerSawSuccess = failedDeliveries.some(
+        (event) => event.eventType === 'NOTIFICATION_SENT',
+      )
+      /*
+       * Durable success is authoritative: a lost Ledger NOTIFICATION_SENT write must never
+       * downgrade it and trigger a duplicate FAILED email on restart. Conversely, a durable
+       * "attempted" claim with no Ledger delivery fact is only the old pre-delivery claim
+       * and stays eligible for one controlled restart delivery. Any Ledger delivery fact
+       * (sent or failed) proves the bounded delivery already ran.
+       */
       hydratedState = {
         ...parsed.data,
-        failureNotificationAttempted: failedDeliveries.length > 0 || undefined,
-        failureNotified:
-          failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT') || undefined,
+        failureNotificationAttempted: ledgerSawDelivery || durableNotified ? true : undefined,
+        failureNotified: durableNotified || ledgerSawSuccess ? true : undefined,
       }
     }
     this.latestState = hydratedState
