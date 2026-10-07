@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "host-snapshot",
+  "projectType": "library",
+  "sourceRoot": "packages/host-snapshot/src",
+  "tags": ["scope:novawing", "type:contract"],
+  "implicitDependencies": ["sqlite"]
+}

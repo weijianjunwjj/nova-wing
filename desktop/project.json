@@ -1,0 +1,8 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "desktop",
+  "projectType": "application",
+  "sourceRoot": "desktop/main",
+  "tags": ["scope:novawing", "type:host"],
+  "implicitDependencies": ["development-guardian"]
+}

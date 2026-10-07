@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "testing",
+  "projectType": "library",
+  "sourceRoot": "packages/testing/src",
+  "tags": ["scope:novawing", "type:test-support"],
+  "implicitDependencies": ["core"]
+}

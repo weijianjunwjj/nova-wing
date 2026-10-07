@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "core",
+  "projectType": "library",
+  "sourceRoot": "packages/core/src",
+  "tags": ["scope:novawing", "type:kernel"],
+  "implicitDependencies": []
+}

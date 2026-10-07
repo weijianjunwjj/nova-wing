@@ -12,6 +12,9 @@ artifacts/
 *.sqlite-wal
 *.sqlite-journal
 
+# Nx local cache and workspace data (N0 POC)
+.nx/
+
 # CodeGraph local index (personal dev tooling)
 .codegraph/
 

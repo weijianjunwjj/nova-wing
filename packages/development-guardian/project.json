@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "development-guardian",
+  "projectType": "library",
+  "sourceRoot": "packages/development-guardian",
+  "tags": ["scope:novawing", "type:cognitive-layer"],
+  "implicitDependencies": []
+}

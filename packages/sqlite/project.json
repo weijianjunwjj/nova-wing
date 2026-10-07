@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "sqlite",
+  "projectType": "library",
+  "sourceRoot": "packages/sqlite/src",
+  "tags": ["scope:novawing", "type:adapter"],
+  "implicitDependencies": ["core"]
+}
