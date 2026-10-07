@@ -12,13 +12,6 @@ export function pendingEvidenceKey(assertionId: string, obligationId: string): s
   return `NOVAWING_VERIFICATION_PENDING:${assertionId}:${obligationId}`
 }
 
-/** The host-owned checkpoint authority travels with this dispatch result, never inside persisted JSON. */
-function withImplementationCheckpoint<T extends object>(
-  result: T, authority: ImplementationCheckpointAuthority | undefined,
-): T {
-  return authority === undefined ? result : { ...result, implementationCheckpoint: authority }
-}
-
 /** The trusted V2 seam keeps development possible and completion fail closed until a verifier is bound. */
 export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store: DeliveryStore,
   defaultDispatcher: V2ActionDispatcher,
@@ -110,6 +103,12 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           CAPABILITY_REGISTRY[item.verificationCapability.family].availability) !== 'AVAILABLE')
       if (unavailable) return { status: 'BLOCKED', blockers: [
         `${unavailable.assertionId} verification provider unavailable during execution.`] }
+      // Ownership must be acknowledged and durably persisted before any verifier
+      // observes the new commit. Without the host-owned seam there is no legal
+      // way to adopt an implementation commit, so the action fails closed.
+      const checkpointSeam = input.implementationCheckpoint
+      if (checkpointSeam === undefined) return { status: 'BLOCKED', blockers: [
+        'IMPLEMENTATION_CHECKPOINT_BLOCKED: delivery VERIFY requires a host-owned checkpoint acknowledgement'] }
       let checkpointAuthority: ImplementationCheckpointAuthority | undefined
       try {
         checkpointAuthority = await createImplementationCheckpointAuthority({
@@ -117,6 +116,7 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           sessionId: input.task.identity.sessionId,
           taskId: input.task.identity.taskId,
           ...(input.task.attemptId === undefined ? {} : { attemptId: input.task.attemptId }),
+          dispatchId: checkpointSeam.dispatchId,
           action: 'VERIFY',
           allowedPaths: input.task.permissions.allowedPaths,
           forbiddenPaths: input.task.permissions.forbiddenPaths,
@@ -130,6 +130,11 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
         })
       } catch (error) { return { status: 'BLOCKED', blockers: [
         `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${error instanceof Error ? error.message : String(error)}`] } }
+      if (checkpointAuthority !== undefined) {
+        const acknowledgement = await checkpointSeam.acknowledge(checkpointAuthority)
+        if (!acknowledgement.accepted) return { status: 'BLOCKED', blockers: [
+          `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${acknowledgement.reason ?? 'implementation checkpoint ownership was not acknowledged'}`] }
+      }
       const results = [] as NonNullable<Awaited<ReturnType<V2ActionDispatcher['dispatch']>>['verificationResults']>[number][]
       if (bindings.some((item) => item.stagedVerification.readiness === 'BOUND_EXECUTABLE')) {
         const commandOnly = { ...input.task, completion: { ...input.task.completion,
@@ -137,7 +142,7 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
             value.startsWith('NOVAWING_VERIFICATION_PENDING:'))) } }
         const commandResult = await defaultDispatcher.dispatch({ ...input, task: commandOnly })
         if (commandResult.status !== 'SUCCESS' || !commandResult.verificationResults?.every((item) => item.status === 'passed'))
-          return withImplementationCheckpoint(commandResult, checkpointAuthority)
+          return commandResult
         results.push(...commandResult.verificationResults)
       }
       for (const binding of provisioned) {
@@ -153,13 +158,13 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
               reviewer: createClaudeBlueprintReviewer({ cwd: process.cwd() }),
               repairer: createClaudeBlueprintRepairer({ cwd: process.cwd() }) })
             transition = await store.bindProvisionedVerifier(plan, binding.assertionId, binding.runtimeTaskId, blueprint)
-          } catch (error) { return withImplementationCheckpoint({ status: 'BLOCKED' as const, blockers: [
-            `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] }, checkpointAuthority) }
+          } catch (error) { return { status: 'BLOCKED' as const, blockers: [
+            `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }
         }
         let observed: CapabilityEvidence
         try { observed = await store.collectProvisionedEvidence(plan, binding.assertionId, binding.runtimeTaskId) }
-        catch (error) { return withImplementationCheckpoint({ status: 'BLOCKED' as const,
-          blockers: [`${binding.assertionId} exact verifier failed: ${error instanceof Error ? error.message : String(error)}`] }, checkpointAuthority) }
+        catch (error) { return { status: 'BLOCKED' as const,
+          blockers: [`${binding.assertionId} exact verifier failed: ${error instanceof Error ? error.message : String(error)}`] } }
         const key = pendingEvidenceKey(binding.assertionId, obligation.obligationId)
         results.push({ name: key, stepId: key, rawOutputRef: observed.id,
           ...((transition.verifier.family === 'command' || transition.verifier.family === 'scope_review') &&
@@ -173,10 +178,10 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
         results.push({ name: key, stepId: key, status: 'skipped',
           details: 'Completion-only customer evidence remains open.' })
       }
-      if (results.length === 0) return withImplementationCheckpoint({ status: 'BLOCKED' as const,
-        blockers: ['No exact delivery verifier was executed.'] }, checkpointAuthority)
-      return withImplementationCheckpoint({ status: results.some((item) => item.status === 'failed') ? 'FAILED' as const : 'SUCCESS' as const,
-        verificationResults: results }, checkpointAuthority)
+      if (results.length === 0) return { status: 'BLOCKED' as const,
+        blockers: ['No exact delivery verifier was executed.'] }
+      return { status: results.some((item) => item.status === 'failed') ? 'FAILED' as const : 'SUCCESS' as const,
+        verificationResults: results }
     },
   }
 }

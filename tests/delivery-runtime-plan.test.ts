@@ -361,7 +361,8 @@ test('completion transition rejects verifier substitution, missing artifact, and
   const agent = { id: 'fixture', identity: { agent: 'fixture', provider: 'fixture', runtimeIdentity: 'fixture' },
     available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true,
       verification: true, review: true } }
-  const verified = await dispatcher.dispatch({ action: 'VERIFY', agent, task })
+  const verified = await dispatcher.dispatch({ action: 'VERIFY', agent, task,
+    implementationCheckpoint: { dispatchId: 'fixture-dispatch', acknowledge: async () => ({ accepted: true }) } })
   assert.equal(verified.verificationResults?.[0]?.status, 'passed')
   const verifiedTask = { ...task, verificationState: { ...task.verificationState,
     results: [...(verified.verificationResults ?? [])] } }
@@ -485,7 +486,8 @@ test('delivery V2 adapter lets implementation run without executing obligation m
   await writeFile(join(repo, 'feature.js'), 'export const implemented = true\n')
   const dirtyTask = { ...task, gitState: await trustedGitState(repo) }
   const beforeVerificationCommit = dirtyTask.gitState.headSha
-  const missing = await dispatcher.dispatch({ action: 'VERIFY', agent, task: dirtyTask })
+  const missing = await dispatcher.dispatch({ action: 'VERIFY', agent, task: dirtyTask,
+    implementationCheckpoint: { dispatchId: 'fixture-dispatch', acknowledge: async () => ({ accepted: true }) } })
   assert.equal(missing.status, 'BLOCKED')
   assert.match(missing.blockers?.[0] ?? '', /BLUEPRINT_CANDIDATE_MISSING/u)
   assert.notEqual(await git(repo, 'rev-parse', 'HEAD'), beforeVerificationCommit)

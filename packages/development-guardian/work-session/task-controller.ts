@@ -1,7 +1,6 @@
 import type { TaskStateV2 } from './task-state-v2.js'
 import type { VerificationFailureClassification, VerificationResult } from '../model.js'
 import type { DecisionReasonCode } from './task-observability.js'
-import type { ImplementationCheckpointAuthority } from './implementation-checkpoint.js'
 import { assessRisk, completionGate, approvalSatisfied, reviewSatisfied, evidenceIsStale, unmappedAcceptanceCriteria } from './risk-evidence.js'
 import { isRuntimeAcceptanceBinding } from './completion-criteria.js'
 
@@ -22,12 +21,6 @@ export interface TaskActionResult {
   /** Repository Inspector facts supplied by the runner, never by an agent report. */
   repositoryChanged?: boolean
   implementationEvidenceAdded?: boolean
-  /**
-   * Host-issued, process-local, one-time implementation checkpoint authority.
-   * Absent (or unverifiable) means the Controller must treat any new commit as
-   * repository drift.  Placeholder value is never authority.
-   */
-  implementationCheckpoint?: ImplementationCheckpointAuthority
 }
 
 export type CanonicalVerificationFailure = 'CODE_FAILURE' | 'ENVIRONMENT_FAILURE' | 'VERIFIER_CONFIGURATION_FAILURE' | 'UNRELATED_TEST_FAILURE' | 'EVIDENCE_MISSING' | 'UNKNOWN'

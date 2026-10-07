@@ -1,9 +1,11 @@
 /**
  * E0-H1 host-owned implementation checkpoint handoff.
  *
- * Proves the six required safety scenarios around the Delivery VERIFY
- * implementation commit: no false drift, tamper refusal, no forged authority,
- * one-time consumption, evidence invalidation, and no fabricated ownership.
+ * Proves the required safety scenarios around the Delivery VERIFY implementation
+ * commit: no false drift, tamper refusal, no forged authority, host-generated
+ * dispatchId binding, one-time acknowledgement, full evidence invalidation, and
+ * the ordering rule that no verifier runs before ownership is acknowledged and
+ * durably persisted.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,8 +25,7 @@ import { createTaskStateV2, loadTaskStateV2, type TaskStateV2 } from '../package
 import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { computeWorktreeFingerprint, parseGitStatus } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
 import { ImplementationCheckpointError, consumeImplementationCheckpoint,
-  createImplementationCheckpointAuthority, verifyImplementationCheckpointCommit,
-  type ImplementationCheckpointAuthority } from '../packages/development-guardian/work-session/implementation-checkpoint.js'
+  createImplementationCheckpointAuthority } from '../packages/development-guardian/work-session/implementation-checkpoint.js'
 
 const exec = promisify(execFile)
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -92,6 +93,18 @@ async function trustedGitState(repo: string) {
       { strict: true })).update(indexDiff).digest('hex') }
 }
 
+/** Bind one inspected implementation file as a host checkpoint for an exact dispatch. */
+async function issueCheckpoint(repo: string, dispatchId: string, filename = 'feature.js') {
+  await writeFile(join(repo, filename), 'export const implemented = true\n')
+  const before = await trustedGitState(repo)
+  const authority = await createImplementationCheckpointAuthority({
+    repoPath: repo, sessionId: 's', taskId: 'T1', dispatchId, action: 'VERIFY',
+    allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: before.repositoryIdentity,
+    expectedBranch: before.branch, baselineCommit: before.headSha, before })
+  assert.ok(authority, 'expected a host checkpoint authority for a dirty implementation')
+  return { before, authority, observed: await trustedGitState(repo) }
+}
+
 const AGENT_EXECUTOR = { id: 'executor', identity: { agent: 'executor', provider: 'executor-provider', runtimeIdentity: 'runtime-executor' },
   available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }
 const AGENT_REVIEWER = { id: 'reviewer', identity: { agent: 'reviewer', provider: 'reviewer-provider', runtimeIdentity: 'runtime-reviewer' },
@@ -109,6 +122,8 @@ async function deliveryHarness(execute: 'dirty' | 'commit' | 'none', verify: 'pa
   const definition = workSessionDefinitionFor(compiled, 'e0h1-session')
   const store = new DeliveryStore(join(f.root, 'delivery'))
   const actions: string[] = []
+  const observer: { persisted: TaskStateV2[]; verifierSawPersistedState: TaskStateV2 | undefined } =
+    { persisted: [], verifierSawPersistedState: undefined }
   const fallback: V2ActionDispatcher = {
     inspectRepository: () => trustedGitState(f.repo),
     dispatch: async ({ action }) => {
@@ -127,6 +142,9 @@ async function deliveryHarness(execute: 'dirty' | 'commit' | 'none', verify: 'pa
         return { status: 'SUCCESS' }
       }
       if (action === 'VERIFY') {
+        // The verifier records the durable state it can see. If the controller has
+        // not already accepted and persisted the checkpoint, this is the old HEAD.
+        observer.verifierSawPersistedState = observer.persisted.at(-1)
         if (verify === 'blocked') return { status: 'BLOCKED', blockers: ['exact delivery verifier unavailable in fixture'] }
         return { status: 'SUCCESS', verificationResults: [{ name: 'node --test tests/cart.test.js',
           stepId: 'node --test tests/cart.test.js', status: 'passed' }] }
@@ -137,14 +155,16 @@ async function deliveryHarness(execute: 'dirty' | 'commit' | 'none', verify: 'pa
   const dispatcher = createDeliveryRuntimeDispatcher(plan, store, fallback)
   const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
     agents: [AGENT_EXECUTOR, AGENT_REVIEWER], dispatcher })
-  return { ...f, plan, definition, runner, actions, store }
+  const context = (taskState: TaskStateV2) => ({ taskStateV2: taskState,
+    persistTaskStateV2: async (state: TaskStateV2) => { observer.persisted.push(state) } })
+  return { ...f, plan, definition, runner, actions, store, observer, context }
 }
 
 test('S1 EXECUTE → VERIFY implementation commit is accepted and the Controller continues to REVIEW', async () => {
   const h = await deliveryHarness('dirty', 'pass')
   const base = await trustedGitState(h.repo)
   const initial: TaskStateV2 = { ...createTaskStateV2(h.definition, h.definition.tasks[0]!), gitState: base }
-  const result = await h.runner.run(h.definition.tasks[0]!, undefined, undefined, { taskStateV2: initial })
+  const result = await h.runner.run(h.definition.tasks[0]!, undefined, undefined, h.context(initial))
   assert.ok(h.actions.includes('REVIEW'), JSON.stringify({ actions: h.actions, status: result.status, humanRequired: result.humanRequired }))
   assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
   const head = await git(h.repo, 'rev-parse', 'HEAD')
@@ -156,89 +176,83 @@ test('S1 EXECUTE → VERIFY implementation commit is accepted and the Controller
   assert.equal(await git(h.repo, 'status', '--porcelain'), '')
 })
 
-test('S2 checkpoint parent, branch, tree and scope tampering are refused', async () => {
+test('S2 tampering with the inspection, parent, branch, scope, symlink and hardlink is refused', async () => {
   const f = await fixture()
   const branch = await git(f.repo, 'branch', '--show-current')
   const identity = await realpath(f.repo)
   const baseline = await git(f.repo, 'rev-parse', 'HEAD')
-  const binding = { repoPath: f.repo, sessionId: 's', taskId: 'T1', action: 'VERIFY' as const,
+  const base = { repoPath: f.repo, sessionId: 's', taskId: 'T1', dispatchId: 'dispatch-tamper', action: 'VERIFY' as const,
     allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: identity, expectedBranch: branch,
     baselineCommit: baseline }
 
-  // parent: HEAD (C2) descends from the observed commit through an intermediate commit.
+  // A descendant commit the host did not create can never be retroactively blessed.
   await writeFile(join(f.repo, 'a.js'), 'export const a = 1\n')
   await git(f.repo, 'add', '.')
-  await git(f.repo, 'commit', '-qm', 'C1')
-  await writeFile(join(f.repo, 'b.js'), 'export const b = 1\n')
-  await git(f.repo, 'add', 'b.js')
-  await git(f.repo, 'commit', '-qm', 'C2')
-  const c2 = await git(f.repo, 'rev-parse', 'HEAD')
-  await assert.rejects(verifyImplementationCheckpointCommit({ ...binding, commitSha: c2,
-    before: { repositoryIdentity: identity, branch, headSha: baseline, changedFiles: ['a.js', 'b.js'],
-      worktreeFingerprint: 'a'.repeat(64) } }),
-  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_PARENT_MISMATCH')
+  await git(f.repo, 'commit', '-qm', 'external descendant commit')
+  const descendant = await git(f.repo, 'rev-parse', 'HEAD')
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base,
+    before: { repositoryIdentity: identity, branch, headSha: baseline, changedFiles: [],
+      worktreeFingerprint: 'a'.repeat(64) } }), /drifted/u)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), descendant, 'an unowned descendant commit is never adopted')
 
-  // branch: the observed branch is not the checked-out branch.
-  await assert.rejects(verifyImplementationCheckpointCommit({ ...binding, expectedBranch: 'codex/other-branch', commitSha: c2,
-    before: { repositoryIdentity: identity, branch, headSha: baseline, changedFiles: ['a.js', 'b.js'],
-      worktreeFingerprint: 'a'.repeat(64) } }),
-  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_BRANCH_CHANGED')
-
-  // tree/content: the commit does not carry exactly the inspected implementation files.
-  await writeFile(join(f.repo, 'extra.js'), 'export const extra = 1\n')
-  await git(f.repo, 'add', 'extra.js')
-  await git(f.repo, 'commit', '-qm', 'C3 with an extra file')
-  const c3 = await git(f.repo, 'rev-parse', 'HEAD')
-  await assert.rejects(verifyImplementationCheckpointCommit({ ...binding, commitSha: c3,
-    before: { repositoryIdentity: identity, branch, headSha: c2, changedFiles: ['a.js'],
-      worktreeFingerprint: 'a'.repeat(64) } }),
-  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_CONTENT_MISMATCH')
-
-  // scope: the committed file set is not inside the Task scope.
-  await assert.rejects(verifyImplementationCheckpointCommit({ ...binding, allowedPaths: ['src'], commitSha: c3,
-    before: { repositoryIdentity: identity, branch, headSha: c2, changedFiles: ['extra.js'],
-      worktreeFingerprint: 'a'.repeat(64) } }),
-  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_SCOPE_VIOLATION')
-})
-
-test('S2b symlink, hardlink and out-of-scope paths never enter a checkpoint commit', async () => {
-  const f = await fixture()
-  const base = await git(f.repo, 'rev-parse', 'HEAD')
-  const binding = { repoPath: f.repo, sessionId: 's', taskId: 'T1', action: 'VERIFY' as const,
-    allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: await realpath(f.repo),
-    expectedBranch: await git(f.repo, 'branch', '--show-current'), baselineCommit: base }
-
-  await symlink('README.md', join(f.repo, 'link.js'))
-  await assert.rejects(createImplementationCheckpointAuthority({ ...binding, before: await trustedGitState(f.repo) }),
-    (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_SYMLINK_REJECTED')
-  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), base, 'a refused checkpoint must not create a commit')
-
+  // An inspection that no longer matches the worktree is refused before any commit.
   const f2 = await fixture()
-  await link(join(f2.repo, 'README.md'), join(f2.repo, 'hard.js'))
-  await assert.rejects(createImplementationCheckpointAuthority({ ...binding, repoPath: f2.repo,
+  await writeFile(join(f2.repo, 'a.js'), 'export const a = 1\n')
+  await writeFile(join(f2.repo, 'b.js'), 'export const b = 1\n')
+  const dirty = await trustedGitState(f2.repo)
+  const f2Base = await git(f2.repo, 'rev-parse', 'HEAD')
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base, repoPath: f2.repo,
     expectedRepositoryIdentity: await realpath(f2.repo), expectedBranch: await git(f2.repo, 'branch', '--show-current'),
-    baselineCommit: await git(f2.repo, 'rev-parse', 'HEAD'), before: await trustedGitState(f2.repo) }),
-  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_HARDLINK_REJECTED')
+    baselineCommit: f2Base, before: { ...dirty, changedFiles: ['a.js'] } }), /changed after trusted repository inspection/u)
+  assert.equal(await git(f2.repo, 'rev-parse', 'HEAD'), f2Base)
 
+  // Branch drift is refused.
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base, repoPath: f2.repo,
+    expectedRepositoryIdentity: await realpath(f2.repo), expectedBranch: 'codex/other-branch',
+    baselineCommit: f2Base, before: { ...dirty, headSha: f2Base } }), /drifted/u)
+  assert.equal(await git(f2.repo, 'rev-parse', 'HEAD'), f2Base)
+
+  // Out-of-scope, symlink and hardlink paths never enter a checkpoint commit.
   const f3 = await fixture()
   const f3Base = await git(f3.repo, 'rev-parse', 'HEAD')
   await writeFile(join(f3.repo, 'outside.js'), 'export const outside = 1\n')
-  await assert.rejects(createImplementationCheckpointAuthority({ ...binding, repoPath: f3.repo, allowedPaths: ['src'],
+  const outside = await trustedGitState(f3.repo)
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base, repoPath: f3.repo, allowedPaths: ['src'],
     expectedRepositoryIdentity: await realpath(f3.repo), expectedBranch: await git(f3.repo, 'branch', '--show-current'),
-    baselineCommit: f3Base, before: await trustedGitState(f3.repo) }),
+    baselineCommit: f3Base, before: outside }),
   (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_SCOPE_VIOLATION')
-  assert.equal(await git(f3.repo, 'rev-parse', 'HEAD'), f3Base, 'an out-of-scope checkpoint must not create a commit')
+  assert.equal(await git(f3.repo, 'rev-parse', 'HEAD'), f3Base)
+
+  const f4 = await fixture()
+  const f4Base = await git(f4.repo, 'rev-parse', 'HEAD')
+  await symlink('README.md', join(f4.repo, 'link.js'))
+  const linked = await trustedGitState(f4.repo)
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base, repoPath: f4.repo,
+    expectedRepositoryIdentity: await realpath(f4.repo), expectedBranch: await git(f4.repo, 'branch', '--show-current'),
+    baselineCommit: f4Base, before: linked }),
+  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_SYMLINK_REJECTED')
+  assert.equal(await git(f4.repo, 'rev-parse', 'HEAD'), f4Base)
+
+  const f5 = await fixture()
+  const f5Base = await git(f5.repo, 'rev-parse', 'HEAD')
+  await link(join(f5.repo, 'README.md'), join(f5.repo, 'hard.js'))
+  const hard = await trustedGitState(f5.repo)
+  await assert.rejects(createImplementationCheckpointAuthority({ ...base, repoPath: f5.repo,
+    expectedRepositoryIdentity: await realpath(f5.repo), expectedBranch: await git(f5.repo, 'branch', '--show-current'),
+    baselineCommit: f5Base, before: hard }),
+  (error: unknown) => error instanceof ImplementationCheckpointError && error.checkpointReason === 'CHECKPOINT_HARDLINK_REJECTED')
+  assert.equal(await git(f5.repo, 'rev-parse', 'HEAD'), f5Base)
 })
 
-test('S3 a SHA, plain object, or persisted record never obtains checkpoint authority', async () => {
+test('S3 a SHA, plain object, persisted record, or dispatch-result injection never obtains authority', async () => {
   const h = await deliveryHarness('none', 'pass')
   const base = await trustedGitState(h.repo)
   const initial: TaskStateV2 = { ...createTaskStateV2(h.definition, h.definition.tasks[0]!), gitState: base }
   const forged: unknown[] = [
     { kind: 'NOVAWING_HOST_IMPLEMENTATION_CHECKPOINT' },
     { commitSha: 'f'.repeat(40) },
-    { sessionId: h.definition.id, taskId: 'T1', action: 'EXECUTE', commitSha: 'f'.repeat(40), parentSha: base.headSha,
-      treeHash: 'f'.repeat(40), changedFiles: [], before: base, after: base },
+    { sessionId: h.definition.id, taskId: 'T1', dispatchId: 'forged', action: 'EXECUTE', commitSha: 'f'.repeat(40),
+      parentSha: base.headSha, treeHash: 'f'.repeat(40), changedFiles: [], before: base, after: base },
   ]
   for (const authority of forged) {
     const recorded: string[] = []
@@ -246,77 +260,62 @@ test('S3 a SHA, plain object, or persisted record never obtains checkpoint autho
     const runner = new V2ControllerTaskRunner({ sessionId: h.definition.id, branch: h.definition.branch,
       agents: [AGENT_EXECUTOR], dispatcher: {
         inspectRepository: async () => (++calls === 1 ? base : { ...base, headSha: 'f'.repeat(40), worktreeFingerprint: 'f'.repeat(64) }),
+        // A dispatcher cannot push authority into the Controller through its result.
         dispatch: async () => { recorded.push('EXECUTE')
-          return { status: 'SUCCESS' as const, implementationCheckpoint: authority as ImplementationCheckpointAuthority } },
+          return { status: 'SUCCESS' as const, ...(authority === undefined ? {} : { implementationCheckpoint: authority }) } },
       } })
     const result = await runner.run(h.definition.tasks[0]!, undefined, undefined, { taskStateV2: initial })
     assert.equal(result.humanRequired?.category, 'REPO_DRIFT', JSON.stringify({ authority, humanRequired: result.humanRequired }))
-    assert.match(result.humanRequired?.reason ?? '', /not issued by this host process|no host-owned/u)
     assert.deepEqual(recorded, ['EXECUTE'])
   }
 
-  // A real authority survives the host process only as an inert record; clones and
-  // persisted JSON are not authority, and consumption is one-time.
+  // Persisted/cloned copies are not authority, and consumption is one-time.
   const f = await fixture()
-  await writeFile(join(f.repo, 'feature.js'), 'export const implemented = true\n')
-  const before = await trustedGitState(f.repo)
-  const branch = before.branch
-  const authority = await createImplementationCheckpointAuthority({ repoPath: f.repo, sessionId: 's', taskId: 'T1',
-    action: 'VERIFY', allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: before.repositoryIdentity,
-    expectedBranch: branch, baselineCommit: before.headSha, before })
-  assert.ok(authority)
-  const observed = await trustedGitState(f.repo)
-  const expected = { sessionId: 's', taskId: 'T1', action: 'VERIFY', before, observed }
-  const clone = JSON.parse(JSON.stringify(authority)) as ImplementationCheckpointAuthority
+  const { before, authority, observed } = await issueCheckpoint(f.repo, 'dispatch-s3')
+  const expected = { sessionId: 's', taskId: 'T1', dispatchId: 'dispatch-s3', action: 'VERIFY', before, observed }
+  const clone = JSON.parse(JSON.stringify(authority)) as unknown
   assert.equal(consumeImplementationCheckpoint(clone, expected).ok, false, 'a persisted copy is not authority')
-  assert.equal(consumeImplementationCheckpoint({ ...clone }, expected).ok, false, 'a plain object is not authority')
-  assert.equal(consumeImplementationCheckpoint(authority, expected).ok, true)
+  assert.equal(consumeImplementationCheckpoint({ ...(clone as object) }, expected).ok, false, 'a plain object is not authority')
   const persistedRecord = { commitSha: observed.headSha, parentSha: before.headSha, treeHash: 'a'.repeat(40),
-    action: 'VERIFY', changedFiles: before.changedFiles, beforeHeadSha: before.headSha, afterHeadSha: observed.headSha,
-    acceptedAt: new Date().toISOString() }
+    dispatchId: 'dispatch-s3', action: 'VERIFY', changedFiles: before.changedFiles,
+    beforeHeadSha: before.headSha, afterHeadSha: observed.headSha, acceptedAt: new Date().toISOString() }
   assert.equal(consumeImplementationCheckpoint(persistedRecord, expected).ok, false, 'a persisted audit record is not authority')
-})
-
-test('S4 a host checkpoint authority can be consumed only once', async () => {
-  const f = await fixture()
-  await writeFile(join(f.repo, 'feature.js'), 'export const implemented = true\n')
-  const before = await trustedGitState(f.repo)
-  const authority = await createImplementationCheckpointAuthority({ repoPath: f.repo, sessionId: 's', taskId: 'T1',
-    action: 'VERIFY', allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: before.repositoryIdentity,
-    expectedBranch: before.branch, baselineCommit: before.headSha, before })
-  assert.ok(authority)
-  const observed = await trustedGitState(f.repo)
-  assert.equal(observed.headSha === before.headSha, false)
-  const expected = { sessionId: 's', taskId: 'T1', action: 'VERIFY', before, observed }
   assert.equal(consumeImplementationCheckpoint(authority, expected).ok, true)
-  const second = consumeImplementationCheckpoint(authority, expected)
-  assert.equal(second.ok, false)
-  assert.match(second.ok === false ? second.reason : '', /not issued by this host process/u)
-
-  // A mismatched binding is refused, and the attempt still burns the authority.
-  const g = await fixture()
-  await writeFile(join(g.repo, 'feature.js'), 'export const implemented = true\n')
-  const beforeOther = await trustedGitState(g.repo)
-  const other = await createImplementationCheckpointAuthority({ repoPath: g.repo, sessionId: 's', taskId: 'T1',
-    action: 'VERIFY', allowedPaths: ['.'], forbiddenPaths: [], expectedRepositoryIdentity: beforeOther.repositoryIdentity,
-    expectedBranch: beforeOther.branch, baselineCommit: beforeOther.headSha, before: beforeOther })
-  assert.ok(other)
-  const observedOther = await trustedGitState(g.repo)
-  const expectedOther = { sessionId: 's', taskId: 'T1', action: 'VERIFY', before: beforeOther, observed: observedOther }
-  const mismatch = consumeImplementationCheckpoint(other, { ...expectedOther, taskId: 'OTHER' })
-  assert.equal(mismatch.ok, false)
-  assert.match(mismatch.ok === false ? mismatch.reason : '', /different session, task, attempt, or action/u)
-  assert.equal(consumeImplementationCheckpoint(other, expectedOther).ok, false, 'a refused binding still burns the authority')
 })
 
-test('S5 accepting a checkpoint invalidates old verification and completion evidence', async () => {
+test('S4 authority is bound to its host-generated dispatchId and can be consumed only once', async () => {
+  const f1 = await fixture()
+  const first = await issueCheckpoint(f1.repo, 'dispatch-A')
+  const expectedA = { sessionId: 's', taskId: 'T1', dispatchId: 'dispatch-A', action: 'VERIFY',
+    before: first.before, observed: first.observed }
+  const wrongDispatch = consumeImplementationCheckpoint(first.authority, { ...expectedA, dispatchId: 'dispatch-B' })
+  assert.equal(wrongDispatch.ok, false, 'a different dispatch cannot consume the authority')
+  assert.match(wrongDispatch.ok === false ? wrongDispatch.reason : '', /different dispatch/u)
+  assert.equal(consumeImplementationCheckpoint(first.authority, expectedA).ok, false,
+    'a refused dispatch still burns the authority')
+
+  const f2 = await fixture()
+  const second = await issueCheckpoint(f2.repo, 'dispatch-A')
+  const expectedSecond = { sessionId: 's', taskId: 'T1', dispatchId: 'dispatch-A', action: 'VERIFY',
+    before: second.before, observed: second.observed }
+  assert.equal(consumeImplementationCheckpoint(second.authority, expectedSecond).ok, true)
+  const replay = consumeImplementationCheckpoint(second.authority, expectedSecond)
+  assert.equal(replay.ok, false)
+  assert.match(replay.ok === false ? replay.reason : '', /not issued by this host process/u)
+})
+
+test('S5 accepting a checkpoint voids old verification results, evidence, review and approval', async () => {
   const h = await deliveryHarness('dirty', 'blocked')
   await writeFile(join(h.repo, 'feature.js'), 'export const implemented = true\n')
   const before = await trustedGitState(h.repo)
-  const seed: TaskStateV2 = { ...createTaskStateV2(h.definition, h.definition.tasks[0]!),
+  const base = createTaskStateV2(h.definition, h.definition.tasks[0]!)
+  const seed: TaskStateV2 = { ...base,
     status: 'PENDING', humanConstraints: { verifyOnly: true }, gitState: before,
     verificationState: { results: [{ name: 'stale verifier', stepId: 'stale verifier', status: 'passed' }] },
-    completion: { ...createTaskStateV2(h.definition, h.definition.tasks[0]!).completion,
+    completion: { ...base.completion,
+      evidence: [{ type: 'stale verifier', status: 'PASSED', source: 'deterministic',
+        repositoryIdentity: before.repositoryIdentity, branch: before.branch, headSha: before.headSha,
+        workspaceIdentity: before.worktreeFingerprint, timestamp: new Date().toISOString() }],
       review: { passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
         reviewer: { agent: 'reviewer', provider: 'reviewer-provider', runtimeIdentity: 'runtime-reviewer' },
         implementer: { agent: 'executor', provider: 'executor-provider', runtimeIdentity: 'runtime-executor' },
@@ -325,39 +324,111 @@ test('S5 accepting a checkpoint invalidates old verification and completion evid
       approval: { approved: true, repositoryIdentity: before.repositoryIdentity, branch: before.branch,
         workspaceIdentity: before.worktreeFingerprint, reviewedCommit: before.headSha, risk: 'HIGH', timestamp: new Date().toISOString() } } }
   const loaded = loadTaskStateV2(seed)
+  assert.equal(loaded.completion.evidence.length, 1)
   assert.ok(loaded.completion.review)
   assert.ok(loaded.completion.approval)
-  const result = await h.runner.run(h.definition.tasks[0]!, undefined, undefined, { taskStateV2: loaded })
+  const result = await h.runner.run(h.definition.tasks[0]!, undefined, undefined, h.context(loaded))
   const head = await git(h.repo, 'rev-parse', 'HEAD')
   assert.notEqual(head, before.headSha)
   assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
   const final = loadTaskStateV2(result.taskStateV2)
   assert.equal(final.gitState.headSha, head)
   assert.deepEqual(final.verificationState.results, [], 'old deterministic evidence is void after the checkpoint')
+  assert.deepEqual(final.completion.evidence, [], 'old completion evidence is void after the checkpoint')
   assert.equal(final.completion.review, undefined, 'a review bound to the previous HEAD cannot survive')
   assert.equal(final.completion.approval, undefined, 'an approval bound to the previous HEAD cannot survive')
   assert.equal(final.implementationCheckpoints?.[0]?.commitSha, head)
   assert.equal(final.implementationCheckpoints?.[0]?.beforeHeadSha, before.headSha)
 })
 
-test('S6 no-op and unowned descendant commits never fabricate an ownership transition', async () => {
-  // S6a: an already-satisfied task has no checkpoint to transfer.
-  const clean = await deliveryHarness('none', 'pass')
-  const base = await trustedGitState(clean.repo)
-  const initial: TaskStateV2 = { ...createTaskStateV2(clean.definition, clean.definition.tasks[0]!), gitState: base }
-  const result = await clean.runner.run(clean.definition.tasks[0]!, undefined, undefined, { taskStateV2: initial })
+test('S6 no verifier runs before ownership is acknowledged and the new state is persisted', async () => {
+  const h = await deliveryHarness('dirty', 'pass')
+  const base = await trustedGitState(h.repo)
+  const initial: TaskStateV2 = { ...createTaskStateV2(h.definition, h.definition.tasks[0]!), gitState: base }
+  const result = await h.runner.run(h.definition.tasks[0]!, undefined, undefined, h.context(initial))
+  const head = await git(h.repo, 'rev-parse', 'HEAD')
+  assert.notEqual(head, base.headSha)
+  const seen = h.observer.verifierSawPersistedState
+  assert.ok(seen, 'the verifier must have run')
+  assert.equal(seen.gitState.headSha, head, 'the durable state already named the new commit when the verifier ran')
+  assert.deepEqual(seen.verificationState.results, [], 'old verification results were already void when the verifier ran')
+  assert.deepEqual(seen.completion.evidence, [], 'old completion evidence was already void when the verifier ran')
+  assert.equal((seen.implementationCheckpoints ?? []).length, 1, 'ownership was durably recorded before verification')
   assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
-  assert.equal(result.taskStateV2?.gitState.headSha, base.headSha)
-  assert.equal((result.taskStateV2?.implementationCheckpoints ?? []).length, 0)
+})
 
-  // S6b: the Executor commits on its own; without a host-verified handoff the new
-  // descendant commit stays fail-closed drift and is never adopted.
-  const unowned = await deliveryHarness('commit', 'pass')
-  const before = await trustedGitState(unowned.repo)
-  const seed: TaskStateV2 = { ...createTaskStateV2(unowned.definition, unowned.definition.tasks[0]!), gitState: before }
-  const unownedResult = await unowned.runner.run(unowned.definition.tasks[0]!, undefined, undefined, { taskStateV2: seed })
-  assert.equal(unownedResult.humanRequired?.category, 'REPO_DRIFT')
-  assert.match(unownedResult.humanRequired?.reason ?? '', /no host-owned implementation checkpoint/u)
-  assert.notEqual(await git(unowned.repo, 'rev-parse', 'HEAD'), before.headSha)
-  assert.equal((unownedResult.taskStateV2?.implementationCheckpoints ?? []).length, 0)
+test('S7 a refused acknowledgement blocks the verifier instead of adopting the commit', async () => {
+  const h = await deliveryHarness('dirty', 'pass')
+  const before = await trustedGitState(h.repo)
+  await writeFile(join(h.repo, 'feature.js'), 'export const implemented = true\n')
+  const dirty = await trustedGitState(h.repo)
+  const task = { ...createTaskStateV2(h.definition, h.definition.tasks[0]!), gitState: dirty }
+  const agent = { id: 'fixture', identity: { agent: 'fixture', provider: 'fixture', runtimeIdentity: 'fixture' },
+    available: true, quotaExhausted: false, degraded: false,
+    capabilities: { coding: true, reasoning: true, verification: true, review: true } }
+  let verifierRuns = 0
+  const dispatcher = createDeliveryRuntimeDispatcher(h.plan, h.store, {
+    inspectRepository: () => trustedGitState(h.repo),
+    dispatch: async () => { verifierRuns += 1; return { status: 'SUCCESS' as const } },
+  })
+  const refused = await dispatcher.dispatch({ action: 'VERIFY', agent, task,
+    implementationCheckpoint: { dispatchId: 'dispatch-refused', acknowledge: async () => ({ accepted: false, reason: 'host refused ownership' }) } })
+  assert.equal(refused.status, 'BLOCKED')
+  assert.match(refused.blockers?.[0] ?? '', /IMPLEMENTATION_CHECKPOINT_BLOCKED: host refused ownership/u)
+  assert.equal(verifierRuns, 0, 'no verifier may run before ownership is acknowledged')
+  assert.notEqual(await git(h.repo, 'rev-parse', 'HEAD'), before.headSha, 'the host commit exists but is not authoritative')
+})
+
+test('S8 the Controller seam refuses an authority minted under a different dispatchId', async () => {
+  // An authority minted for some other dispatch, on a separate repository.
+  const other = await fixture()
+  const foreign = await issueCheckpoint(other.repo, 'some-other-dispatch')
+
+  const f = await fixture()
+  const target = await bindDeliveryTarget(f.snapshot, f.repo, 'trusted_test')
+  const compiled = await compileRuntimePlan(f.snapshot, target, { resolver: supported,
+    runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(compiled, 'e0h1-cross-dispatch')
+  await writeFile(join(f.repo, 'feature.js'), 'export const implemented = true\n')
+  const observed: { dispatchId: string | undefined; crossAccepted: boolean | undefined;
+    crossReason: string | undefined; ownAccepted: boolean | undefined } =
+    { dispatchId: undefined, crossAccepted: undefined, crossReason: undefined, ownAccepted: undefined }
+  const dispatcher: V2ActionDispatcher = {
+    inspectRepository: () => trustedGitState(f.repo),
+    dispatch: async ({ action, task, implementationCheckpoint }) => {
+      if (action !== 'VERIFY') return { status: 'SUCCESS' }
+      assert.ok(implementationCheckpoint, 'the Controller must hand the dispatch a host-owned seam')
+      observed.dispatchId = implementationCheckpoint.dispatchId
+      // A different dispatch's authority can never be consumed through this seam.
+      const cross = await implementationCheckpoint.acknowledge(foreign.authority)
+      observed.crossAccepted = cross.accepted
+      observed.crossReason = cross.reason
+      const own = await createImplementationCheckpointAuthority({
+        repoPath: f.repo, sessionId: definition.id, taskId: task.identity.taskId,
+        dispatchId: implementationCheckpoint.dispatchId, action: 'VERIFY',
+        allowedPaths: task.permissions.allowedPaths, forbiddenPaths: task.permissions.forbiddenPaths,
+        expectedRepositoryIdentity: task.gitState.repositoryIdentity!, expectedBranch: definition.branch,
+        baselineCommit: await git(f.repo, 'rev-parse', 'HEAD'),
+        before: { repositoryIdentity: task.gitState.repositoryIdentity!, branch: task.gitState.branch!,
+          headSha: task.gitState.headSha!, changedFiles: task.gitState.changedFiles,
+          worktreeFingerprint: task.gitState.worktreeFingerprint! } })
+      assert.ok(own)
+      observed.ownAccepted = (await implementationCheckpoint.acknowledge(own)).accepted
+      return { status: 'BLOCKED', blockers: ['stop the fixture run'] }
+    },
+  }
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+    agents: [AGENT_EXECUTOR], dispatcher })
+  const base = await trustedGitState(f.repo)
+  const initial: TaskStateV2 = { ...createTaskStateV2(definition, definition.tasks[0]!), gitState: base,
+    status: 'PENDING', humanConstraints: { verifyOnly: true } }
+  const persisted: TaskStateV2[] = []
+  const result = await runner.run(definition.tasks[0]!, undefined, undefined, { taskStateV2: initial,
+    persistTaskStateV2: async (state: TaskStateV2) => { persisted.push(state) } })
+  assert.ok(observed.dispatchId, 'a host-generated dispatchId was bound')
+  assert.equal(observed.crossAccepted, false, 'another dispatch cannot consume this authority')
+  assert.match(observed.crossReason ?? '', /different dispatch/u)
+  assert.equal(observed.ownAccepted, true, 'the owning dispatch consumes it normally')
+  assert.equal(result.taskStateV2?.gitState.headSha, await git(f.repo, 'rev-parse', 'HEAD'))
+  assert.deepEqual(loadTaskStateV2(result.taskStateV2).completion.evidence, [])
 })

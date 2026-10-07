@@ -6,13 +6,17 @@
  * holds the repository observation it dispatched against, so that new commit
  * must be handed back to the Controller as a *host-owned* fact:
  *
- * - only this module, after running every Git gate itself, can issue the
- *   one-time authority;
+ * - only this module can issue the one-time authority, and only for the commit
+ *   it created inside the same call.  There is no public path that mints
+ *   authority for an already-existing (e.g. Executor-made) descendant commit;
  * - the authority is a process-local object identity.  A model-returned SHA, a
- *   copied/persisted JSON record, a `structuredClone` or a mere descendant
+ *   copied/persisted JSON record, a `structuredClone` or a bare descendant
  *   commit can never obtain it;
- * - the Controller consumes it at most once and only when its own independent
- *   after-observation is exactly the verified, clean commit;
+ * - it is bound to the host-generated `dispatchId` of exactly one dispatch, so
+ *   a different VERIFY dispatch can never consume it;
+ * - the Controller acknowledges it at most once, before the verifier runs, and
+ *   only when its own independent after-observation is exactly the verified,
+ *   clean commit;
  * - a commit that happened while ownership was not confirmed (crash, ambiguity)
  *   is never auto-adopted, reset, or re-labelled.
  */
@@ -59,6 +63,8 @@ export interface ImplementationCheckpointFacts {
   sessionId: string
   taskId: string
   attemptId?: string
+  /** Host-generated identity of exactly the dispatch that created this commit. */
+  dispatchId: string
   action: ImplementationCheckpointAction
   commitSha: string
   parentSha: string
@@ -75,6 +81,16 @@ export interface ImplementationCheckpointFacts {
  */
 export interface ImplementationCheckpointAuthority {
   readonly kind: 'NOVAWING_HOST_IMPLEMENTATION_CHECKPOINT'
+}
+
+/**
+ * Host-owned acknowledgement seam.  The Controller hands this to exactly one
+ * dispatch; the dispatcher may mint the authority and hand it back here, and
+ * only an accepted acknowledgement may be followed by verifier/reviewer work.
+ */
+export interface ImplementationCheckpointAcknowledgement {
+  dispatchId: string
+  acknowledge(authority: ImplementationCheckpointAuthority): Promise<{ accepted: boolean; reason?: string }>
 }
 
 const issuedAuthorities = new Map<ImplementationCheckpointAuthority, ImplementationCheckpointFacts>()
@@ -205,6 +221,8 @@ export interface CreateImplementationCheckpointOptions {
   sessionId: string
   taskId: string
   attemptId?: string
+  /** Host-generated identity of exactly this dispatch. */
+  dispatchId: string
   action: ImplementationCheckpointAction
   allowedPaths: readonly string[]
   forbiddenPaths: readonly string[]
@@ -216,7 +234,7 @@ export interface CreateImplementationCheckpointOptions {
   commandRunner?: GitCheckpointCommandRunner
 }
 
-export interface VerifyImplementationCheckpointOptions extends CreateImplementationCheckpointOptions {
+interface VerifyImplementationCheckpointOptions extends CreateImplementationCheckpointOptions {
   commitSha: string
 }
 
@@ -225,13 +243,15 @@ function optionalRunner(commandRunner: GitCheckpointCommandRunner | undefined): 
 }
 
 /**
- * Read-only verification of one already-existing implementation commit.  Only
- * this path can mint the authority, and only after Git itself proves every
- * invariant: unchanged repository identity and branch, exact parent, clean
- * worktree, exact changed-file set, regular in-scope blobs whose content is
- * still identical to the worktree.
+ * Private verification of the commit *just created by this host call*.  It is
+ * deliberately not exported: there is no public path that can mint authority
+ * for an already-existing commit, so an Executor-made descendant can never be
+ * retroactively blessed.  Only after Git itself proves every invariant --
+ * unchanged repository identity and branch, exact parent, clean worktree,
+ * exact changed-file set, regular in-scope blobs whose content is still
+ * identical to the worktree -- may the one-time authority be issued.
  */
-export async function verifyImplementationCheckpointCommit(
+async function verifyImplementationCheckpointCommit(
   options: VerifyImplementationCheckpointOptions,
 ): Promise<ImplementationCheckpointAuthority> {
   const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
@@ -292,14 +312,17 @@ export async function verifyImplementationCheckpointCommit(
   return issueImplementationCheckpoint({
     sessionId: options.sessionId, taskId: options.taskId,
     ...(options.attemptId === undefined ? {} : { attemptId: options.attemptId }),
+    dispatchId: options.dispatchId,
     action: options.action, commitSha: options.commitSha, parentSha, treeHash, changedFiles, before, after,
   })
 }
 
 /**
- * Create (when the inspected worktree is dirty) and host-verify the single
- * implementation commit for this dispatch.  Returns `undefined` when the task
- * is already satisfied: a no-op must never fabricate an ownership transition.
+ * Create (only when the inspected worktree is dirty) and host-verify the single
+ * implementation commit for this exact dispatch.  Returns `undefined` when the
+ * task is already satisfied: a no-op must never fabricate an ownership
+ * transition, and a pre-existing (Executor-made) descendant commit is refused
+ * by the commit gate rather than retroactively adopted.
  */
 export async function createImplementationCheckpointAuthority(
   options: CreateImplementationCheckpointOptions,
@@ -325,13 +348,15 @@ export type ImplementationCheckpointConsumption =
   | { ok: false; reason: string }
 
 /**
- * One-time consumption by the Controller.  Any lookup burns the authority,
- * even a mismatched one, so a stale or replayed handoff can never be retried.
+ * One-time acknowledgement by the Controller.  Any lookup burns the authority,
+ * even a mismatched one, so a stale or replayed handoff can never be retried,
+ * and a different dispatch can never consume it.
  */
 export function consumeImplementationCheckpoint(authority: unknown, expected: {
   sessionId: string
   taskId: string
   attemptId?: string
+  dispatchId: string
   action: string
   before: RepositoryReality
   observed: RepositoryReality
@@ -344,6 +369,9 @@ export function consumeImplementationCheckpoint(authority: unknown, expected: {
     return { ok: false, reason: 'implementation checkpoint authority was not issued by this host process' }
   }
   issuedAuthorities.delete(authority as ImplementationCheckpointAuthority)
+  if (facts.dispatchId !== expected.dispatchId) {
+    return { ok: false, reason: 'implementation checkpoint belongs to a different dispatch' }
+  }
   if (facts.sessionId !== expected.sessionId || facts.taskId !== expected.taskId ||
     facts.attemptId !== expected.attemptId || facts.action !== expected.action) {
     return { ok: false, reason: 'implementation checkpoint belongs to a different session, task, attempt, or action' }
