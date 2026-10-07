@@ -176,16 +176,21 @@ export class ExecutionLedgerStore {
     try {
       this.#database.exec('ALTER TABLE execution_ledger_events RENAME TO execution_ledger_events_v1')
       this.#database.exec(executionLedgerTableSql('execution_ledger_events'))
+      // v1 phase duration_ms held cumulative elapsed, not an individual duration.
       this.#database.exec(`
         INSERT INTO execution_ledger_events (
           event_id, schema_version, session_id, dedupe_key, task_id, timestamp,
-          event_type, status, phase, iteration, duration_ms, active_elapsed_ms,
+          event_type, status, phase, iteration, cumulative_elapsed_ms, duration_ms, active_elapsed_ms,
           commit_sha, push_sha, completion_reason, failure_stage, failure_category,
           safe_message, notification_kind, notification_id
         )
         SELECT
           event_id, ${EXECUTION_LEDGER_SCHEMA_VERSION}, session_id, dedupe_key, task_id,
-          timestamp, event_type, status, phase, iteration, duration_ms,
+          timestamp, event_type, status, phase, iteration,
+          CASE WHEN event_type IN ('PHASE_STARTED', 'PHASE_COMPLETED', 'PHASE_FAILED')
+            THEN duration_ms ELSE NULL END,
+          CASE WHEN event_type IN ('PHASE_STARTED', 'PHASE_COMPLETED', 'PHASE_FAILED')
+            THEN NULL ELSE duration_ms END,
           active_elapsed_ms, commit_sha, push_sha, completion_reason, failure_stage,
           failure_category, safe_message, notification_kind, notification_id
         FROM execution_ledger_events_v1
