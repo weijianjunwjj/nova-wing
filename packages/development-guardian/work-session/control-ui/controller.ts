@@ -58,7 +58,7 @@ export class WorkSessionControlController {
   private readonly runtime: WorkSessionControlRuntime
   private readonly pollIntervalMs: number
   private readonly maxRecentEvents: number
-  private readonly clock?: { now(): number }
+  private readonly clock: { now(): number } | undefined
 
   private started = false
   private closed = false
