@@ -1,6 +1,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { GuardianTask } from './model.js'
+import { normalizePath } from './work-session/worktree-fingerprint.js'
 
 /** Launchpad's existing protected paths, shared with exact recovery-policy validation. */
 export const DEFAULT_WORKSPACE_FORBIDDEN_PATHS = ['.env', '**/.env', '**/*secret*', '**/*credential*'] as const
@@ -37,4 +38,52 @@ export function relativeTaskWorkspaceScope(canonicalRoot: string, task: Guardian
   return { ...task,
     ...(task.allowedPaths === undefined ? {} : { allowedPaths: task.allowedPaths.map(normalize) }),
     ...(task.forbiddenPaths === undefined ? {} : { forbiddenPaths: task.forbiddenPaths.map(normalize) }) }
+}
+
+/** `.` covers the whole workspace; a trailing `/**` covers a subtree. */
+function matchesPathRule(path: string, rule: string): boolean {
+  const normalizedPath = normalizeScopePath(path)
+  const normalizedRule = normalizeScopePath(rule)
+  if (normalizedRule === '.') return normalizedPath !== '..' && !normalizedPath.startsWith('../') && !normalizedPath.startsWith('/')
+  if (normalizedRule.endsWith('/**')) {
+    const prefix = normalizedRule.slice(0, -3)
+    return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`)
+  }
+  return normalizedPath === normalizedRule || normalizedPath.startsWith(`${normalizedRule}/`)
+}
+
+function normalizeScopePath(value: string): string {
+  return normalizePath(value).replace(/\/$/u, '')
+}
+
+/**
+ * Pure scope verdict for an already workspace-relative path set.  Callers that
+ * only have a canonical root use this; `scopeBlockers` adds the
+ * configured-rule normalization used by the executor boundary.
+ *
+ * Every path that reaches this point is a tracked, meaningful change, so it is
+ * checked individually and never blanket-ignored by directory name.
+ */
+export function scopeViolations(input: {
+  changedFiles: readonly string[]
+  allowedPaths?: readonly string[] | undefined
+  forbiddenPaths?: readonly string[] | undefined
+}): string[] {
+  const blockers: string[] = []
+  const { changedFiles, allowedPaths, forbiddenPaths } = input
+  if (allowedPaths !== undefined && allowedPaths.length > 0) {
+    for (const path of changedFiles) {
+      if (!allowedPaths.some((rule) => matchesPathRule(path, rule))) {
+        blockers.push(`changed file is outside allowed scope: ${path}`)
+      }
+    }
+  }
+  if (forbiddenPaths !== undefined) {
+    for (const path of changedFiles) {
+      if (forbiddenPaths.some((rule) => matchesPathRule(path, rule))) {
+        blockers.push(`changed file is inside forbidden scope: ${path}`)
+      }
+    }
+  }
+  return blockers
 }

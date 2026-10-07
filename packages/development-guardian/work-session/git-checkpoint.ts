@@ -28,6 +28,7 @@ import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
 import { normalizePath, parseGitStatus, computeWorktreeFingerprint } from './worktree-fingerprint.js'
 import { isRuntimeAcceptanceBinding, runtimeAcceptanceEvidence } from './completion-criteria.js'
+import { mintImplementationCheckpoint, type ImplementationCheckpointAuthority } from './implementation-checkpoint.js'
 
 export interface PushRemotePolicy {
   /** remote 名（如 origin） */
@@ -235,17 +236,42 @@ export async function readCurrentHeadSha(
   return head
 }
 
-/** Delivery-only checkpoint before exact verification; it commits precisely the inspected implementation files. */
-export async function checkpointImplementationForVerification(options: {
+/** The dispatch facts an implementation checkpoint is minted against. */
+export interface DeliveryImplementationCheckpointRequest {
   repoPath: string; expectedRepositoryIdentity: string; expectedBranch: string;
   baselineCommit: string; expectedHeadSha: string; expectedChangedFiles: readonly string[];
   expectedWorktreeFingerprint: string; taskId: string;
+  /** Host identity of the dispatch that owns this commit. */
+  sessionId: string
+  attemptId?: string
+  /** Only the VERIFY dispatch may own an implementation checkpoint. */
+  action: string
   commandRunner?: GitCheckpointCommandRunner
-}): Promise<string> {
+}
+
+export interface DeliveryImplementationCheckpointResult {
+  commitSha: string
+  /**
+   * Present only when this call actually created and verified a new commit.
+   * An already-satisfied inspection mints nothing: HEAD did not move, so there
+   * is no ownership transition to hand over and none may be invented.
+   */
+  checkpoint?: ImplementationCheckpointAuthority
+}
+
+/**
+ * Delivery-only checkpoint before exact verification; it commits precisely the
+ * inspected implementation files and mints the host-owned handoff that lets the
+ * Controller adopt the new revision instead of reading it as repository drift.
+ */
+export async function checkpointImplementationForVerification(
+  options: DeliveryImplementationCheckpointRequest,
+): Promise<DeliveryImplementationCheckpointResult> {
   const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
   if (PROTECTED_BRANCHES.has(options.expectedBranch) || !/^[a-f0-9]{40}$/u.test(options.baselineCommit) ||
     !/^[a-f0-9]{40}$/u.test(options.expectedHeadSha) || !/^[a-f0-9]{64}$/u.test(options.expectedWorktreeFingerprint) ||
-    !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(options.taskId) ||
+    !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(options.taskId) || options.action !== 'VERIFY' ||
+    options.sessionId.trim().length === 0 ||
     await realpath(options.repoPath) !== options.expectedRepositoryIdentity)
     throw new GitCheckpointError('delivery implementation checkpoint identity is invalid')
   if (await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
@@ -266,7 +292,7 @@ export async function checkpointImplementationForVerification(options: {
     throw new GitCheckpointError('delivery implementation has pre-staged changes')
   if (meaningful.length === 0) {
     if (entries.length) throw new GitCheckpointError('delivery implementation has untracked runtime artifacts')
-    return options.expectedHeadSha
+    return { commitSha: options.expectedHeadSha }
   }
   let stagingStarted = false
   try {
@@ -282,10 +308,28 @@ export async function checkpointImplementationForVerification(options: {
       (rollback ? `; ${rollback}` : '; restored index after failed delivery checkpoint'))
   }
   const commit = await runGitString(runGit, ['rev-parse', 'HEAD'])
-  if (!/^[a-f0-9]{40}$/u.test(commit) || await runGitString(runGit,
-    ['status', '--porcelain', '--untracked-files=all']) !== '')
+  const afterStatus = await runGitString(runGit, ['status', '--porcelain', '-z', '--untracked-files=all'])
+  const afterIndexDiff = await runGitString(runGit, ['diff', '--cached', '--binary'])
+  if (!/^[a-f0-9]{40}$/u.test(commit) || afterStatus !== '' || afterIndexDiff !== '')
     throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
-  return commit
+  // The host records the exact post-commit reality it just proved. The authority
+  // is minted here, in the component that created the commit, and nowhere else.
+  const checkpoint = mintImplementationCheckpoint({
+    sessionId: options.sessionId, taskId: options.taskId,
+    ...(options.attemptId === undefined ? {} : { attemptId: options.attemptId }),
+    action: options.action, baselineCommit: options.baselineCommit,
+    before: { repositoryIdentity: options.expectedRepositoryIdentity, branch: options.expectedBranch,
+      headSha: options.expectedHeadSha, changedFiles: [...options.expectedChangedFiles],
+      worktreeFingerprint: options.expectedWorktreeFingerprint },
+    after: { repositoryIdentity: options.expectedRepositoryIdentity, branch: options.expectedBranch,
+      headSha: commit, changedFiles: [],
+      worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(options.repoPath, [],
+        { strict: true })).update(afterIndexDiff).digest('hex') },
+    implementationCommit: commit, parentCommit: options.expectedHeadSha,
+    commitTreeSha: await runGitString(runGit, ['rev-parse', `${commit}^{tree}`]),
+    capturedAt: new Date().toISOString(),
+  }, runGit)
+  return { commitSha: commit, checkpoint }
 }
 
 /** Read-only handoff proof for the normal Task-boundary finalizer after delivery VERIFY. */

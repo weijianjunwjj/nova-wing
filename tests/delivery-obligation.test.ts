@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
@@ -23,6 +23,9 @@ import { assertionCapabilityEvidenceValid, unmappedAcceptanceCriteria } from '..
 import { checkpointImplementationForVerification, finalizeCompletedTask,
   verifyDeliveryImplementationCommit } from '../packages/development-guardian/work-session/git-checkpoint.js'
 import { computeWorktreeFingerprint, parseGitStatus } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
+import { adoptImplementationCheckpoint, consumeImplementationCheckpoint,
+  type ImplementationCheckpointAuthority, type RepositoryObservation } from '../packages/development-guardian/work-session/implementation-checkpoint.js'
+import { loadTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 
 const run = promisify(execFile)
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -380,11 +383,14 @@ test('20 delivery implementation is safely committed before VERIFY and normal fi
   const fingerprint = createHash('sha256').update(await computeWorktreeFingerprint(f.repo, entries,
     { strict: true })).update(indexDiff).digest('hex')
   const branch = await git(f.repo, 'branch', '--show-current')
-  const commit = await checkpointImplementationForVerification({ repoPath: f.repo,
+  const checkpointed = await checkpointImplementationForVerification({ repoPath: f.repo,
     expectedRepositoryIdentity: await realpath(f.repo), expectedBranch: branch,
     baselineCommit: f.target.baselineCommit, expectedHeadSha: f.target.baselineCommit,
-    expectedChangedFiles: ['feature.js'], expectedWorktreeFingerprint: fingerprint, taskId: 'T1' })
+    expectedChangedFiles: ['feature.js'], expectedWorktreeFingerprint: fingerprint, taskId: 'T1',
+    sessionId: 'fixture-session', action: 'VERIFY' })
+  const commit = checkpointed.commitSha
   assert.notEqual(commit, f.target.baselineCommit)
+  assert.equal(checkpointed.checkpoint?.facts.implementationCommit, commit)
   await verifyDeliveryImplementationCommit({ repoPath: f.repo, expectedBranch: branch,
     baselineCommit: f.target.baselineCommit, taskBaseCommit: f.target.baselineCommit,
     implementationCommit: commit })
@@ -469,4 +475,177 @@ test('21 mixed positive action and negative scope require executed test and revi
   assert.match(String(observed.facts.commandStdoutSha256), /^[a-f0-9]{64}$/u)
   assert.match(String(observed.facts.commandStderrSha256), /^[a-f0-9]{64}$/u)
   assert.equal(observed.facts.manifestHash, manifest.sha256)
+})
+
+/** Trusted repository observation, computed exactly as the production inspector does. */
+async function observation(repo: string): Promise<RepositoryObservation> {
+  const status = (await run('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: repo })).stdout
+  const entries = parseGitStatus(status)
+  const indexDiff = (await run('git', ['diff', '--cached', '--binary'], { cwd: repo })).stdout
+  return { repositoryIdentity: await realpath(repo), branch: await git(repo, 'branch', '--show-current'),
+    headSha: await git(repo, 'rev-parse', 'HEAD'), changedFiles: entries.map((item) => item.path),
+    worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(repo, entries,
+      { strict: true })).update(indexDiff).digest('hex') }
+}
+
+/** The host, and only the host, creates the commit and mints its authority. */
+async function mintedCheckpoint(f: Awaited<ReturnType<typeof fixture>>) {
+  const before = await observation(f.repo)
+  const minted = await checkpointImplementationForVerification({ repoPath: f.repo,
+    expectedRepositoryIdentity: before.repositoryIdentity, expectedBranch: before.branch,
+    baselineCommit: f.target.baselineCommit, expectedHeadSha: before.headSha,
+    expectedChangedFiles: before.changedFiles, expectedWorktreeFingerprint: before.worktreeFingerprint,
+    taskId: 'T1', sessionId: 'fixture-session', action: 'VERIFY' })
+  const authority = minted.checkpoint
+  assert.ok(authority, 'the host checkpoint must mint an authority')
+  return { before, authority, facts: authority.facts, commit: minted.commitSha }
+}
+
+function acceptance(minted: Awaited<ReturnType<typeof mintedCheckpoint>>,
+  overrides: Partial<Parameters<typeof consumeImplementationCheckpoint>[1]> = {}) {
+  return { sessionId: 'fixture-session', taskId: 'T1', action: 'VERIFY', before: minted.before,
+    observed: minted.facts.after, allowedPaths: ['.'], forbiddenPaths: [], ...overrides }
+}
+
+test('22 the committed revision must be the exact child of the observed HEAD on an unchanged branch and clean worktree', async () => {
+  {
+    const f = await fixture()
+    await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+    const minted = await mintedCheckpoint(f)
+    await git(f.repo, 'commit', '--allow-empty', '-qm', 'descendant moved HEAD after the checkpoint')
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted)),
+      /not the current HEAD/u)
+  }
+  {
+    const f = await fixture()
+    await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+    const minted = await mintedCheckpoint(f)
+    await git(f.repo, 'checkout', '-qb', 'moved-branch')
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted)),
+      /branch drifted/u)
+  }
+  {
+    const f = await fixture()
+    await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+    const minted = await mintedCheckpoint(f)
+    await writeFile(join(f.repo, 'feature.js'), 'export const verified = false\n')
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted)),
+      /did not leave a clean worktree/u)
+  }
+})
+
+test('23 checkpoint scope and repository containment are re-proved against live git', async () => {
+  {
+    const f = await fixture()
+    await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+    const minted = await mintedCheckpoint(f)
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority,
+      acceptance(minted, { allowedPaths: ['src/'] })), /outside the task scope/u)
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority,
+      acceptance(minted, { allowedPaths: ['.'], forbiddenPaths: ['feature.js'] })),
+      /outside the task scope/u)
+  }
+  {
+    const f = await fixture()
+    await symlink(f.root, join(f.repo, 'escape'))
+    const minted = await mintedCheckpoint(f)
+    assert.deepEqual(minted.facts.before.changedFiles, ['escape'])
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted)),
+      /escapes the repository/u)
+  }
+})
+
+test('24 a SHA, a plain object, or a persisted record cannot obtain checkpoint authority', async () => {
+  const f = await fixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+  const minted = await mintedCheckpoint(f)
+  const options = acceptance(minted)
+  const forged = { kind: 'NOVAWING_IMPLEMENTATION_CHECKPOINT_V1',
+    facts: minted.facts } as unknown as ImplementationCheckpointAuthority
+  await assert.rejects(consumeImplementationCheckpoint(forged, options), /was not issued by this runtime/u)
+  await assert.rejects(consumeImplementationCheckpoint(
+    JSON.parse(JSON.stringify(minted.authority)) as ImplementationCheckpointAuthority, options),
+  /was not issued by this runtime/u)
+  await assert.rejects(consumeImplementationCheckpoint(
+    minted.facts.implementationCommit as unknown as ImplementationCheckpointAuthority, options),
+  /was not issued by this runtime/u)
+  await assert.rejects(consumeImplementationCheckpoint(undefined, options), /was not issued by this runtime/u)
+  // A descendant commit is never adopted as an ancestor's checkpoint either.
+  await git(f.repo, 'commit', '--allow-empty', '-qm', 'descendant')
+  const descendant = await observation(f.repo)
+  assert.notEqual(descendant.headSha, minted.facts.implementationCommit)
+  await assert.rejects(consumeImplementationCheckpoint(minted.authority,
+    acceptance(minted, { observed: descendant })), /no longer matches the accepted implementation checkpoint/u)
+})
+
+test('25 checkpoint authority is consumed exactly once', async () => {
+  const f = await fixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+  const minted = await mintedCheckpoint(f)
+  const accepted = await consumeImplementationCheckpoint(minted.authority, acceptance(minted))
+  assert.equal(accepted.observation.headSha, minted.commit)
+  await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted)),
+    /already consumed/u)
+})
+
+test('26 a checkpoint only moves the state it was minted for', async () => {
+  const f = await fixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+  const minted = await mintedCheckpoint(f)
+  for (const [label, overrides] of [
+    ['session', { sessionId: 'another-session' }],
+    ['task', { taskId: 'T2' }],
+    ['attempt', { attemptId: 'a'.repeat(64) }],
+    ['action', { action: 'EXECUTE' }],
+  ] as const) {
+    await assert.rejects(consumeImplementationCheckpoint(minted.authority, acceptance(minted, overrides)),
+      /does not belong to this session, task, attempt and action/u, label)
+  }
+  await assert.rejects(consumeImplementationCheckpoint(minted.authority,
+    acceptance(minted, { before: { ...minted.before, headSha: minted.commit } })),
+  /was not created against the Controller observation/u)
+  assert.equal((await consumeImplementationCheckpoint(minted.authority, acceptance(minted))).facts.sessionId,
+    'fixture-session')
+})
+
+test('27 adopting a checkpoint voids evidence bound to the superseded revision and records the audit facts', async () => {
+  const f = await fixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+  const minted = await mintedCheckpoint(f)
+  const superseded = { ...createTaskStateV2({ id: 'fixture-session', branch: minted.before.branch },
+    { id: 'T1', goal: '实现并验证订单' }), gitState: minted.before,
+    verificationState: { results: [{ name: 'old', stepId: 'old', status: 'passed' as const }],
+      evidenceHeadSha: minted.before.headSha, evidenceWorktreeFingerprint: minted.before.worktreeFingerprint },
+    completion: { evidence: [{ type: 'old', status: 'PASSED' as const, source: 'deterministic',
+      headSha: minted.before.headSha, timestamp: new Date().toISOString() }], bindings: [] } }
+  const adopted = adoptImplementationCheckpoint(superseded, minted.facts)
+  assert.equal(adopted.gitState.headSha, minted.commit)
+  assert.equal(adopted.gitState.worktreeFingerprint, minted.facts.after.worktreeFingerprint)
+  assert.deepEqual(adopted.gitState.changedFiles, [])
+  assert.deepEqual(adopted.verificationState.results, [])
+  assert.equal(adopted.verificationState.evidenceHeadSha, minted.commit)
+  assert.equal(adopted.verificationState.evidenceWorktreeFingerprint, minted.facts.after.worktreeFingerprint)
+  assert.deepEqual(adopted.completion.evidence, [])
+  assert.equal(adopted.completion.review, undefined)
+  assert.equal(adopted.completion.approval, undefined)
+  // Audit facts survive durable reload; the capability itself does not.
+  const reloaded = loadTaskStateV2(JSON.parse(JSON.stringify(adopted)))
+  assert.equal(reloaded.implementationCheckpoints?.[0]?.implementationCommit, minted.commit)
+  assert.equal(reloaded.implementationCheckpoints?.[0]?.before.headSha, minted.before.headSha)
+  await assert.rejects(consumeImplementationCheckpoint(
+    reloaded.implementationCheckpoints?.[0] as unknown as ImplementationCheckpointAuthority,
+    acceptance(minted)), /was not issued by this runtime/u)
+})
+
+test('28 an already-satisfied implementation mints no ownership transition', async () => {
+  const f = await fixture()
+  const clean = await observation(f.repo)
+  const untouched = await checkpointImplementationForVerification({ repoPath: f.repo,
+    expectedRepositoryIdentity: clean.repositoryIdentity, expectedBranch: clean.branch,
+    baselineCommit: f.target.baselineCommit, expectedHeadSha: clean.headSha,
+    expectedChangedFiles: [], expectedWorktreeFingerprint: clean.worktreeFingerprint,
+    taskId: 'T1', sessionId: 'fixture-session', action: 'VERIFY' })
+  assert.equal(untouched.commitSha, clean.headSha)
+  assert.equal(untouched.checkpoint, undefined)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
 })

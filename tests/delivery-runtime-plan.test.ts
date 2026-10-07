@@ -30,6 +30,7 @@ import { NovaWingLaunchpad } from '../packages/development-guardian/work-session
 import type { PlanningService } from '../packages/development-guardian/planning/service.js'
 import { bindObligationAtCommit } from '../packages/development-guardian/delivery/verification-blueprint-planner.js'
 import { computeWorktreeFingerprint, parseGitStatus } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
+import { checkpointImplementationForVerification } from '../packages/development-guardian/work-session/git-checkpoint.js'
 import { approveVerificationBlueprint, assertionContractHash, validateVerificationBlueprint,
   type VerificationBlueprint } from '../packages/development-guardian/delivery/verification-blueprint.js'
 
@@ -918,4 +919,91 @@ test('suspended T1 review recovery does not restart EXECUTE, including ALLOW REE
     if (mode !== 'ordinary') assert.deepEqual(actions, ['REVIEW'], JSON.stringify({ mode, humanRequired: result.humanRequired }))
     assert.deepEqual(result.taskStateV2?.identity, { sessionId: definition.id, taskId: t1.id })
   }
+})
+
+test('delivery VERIFY implementation checkpoint becomes Controller authority instead of repository drift', async () => {
+  const { repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'checkpoint-handoff-session')
+  const t1 = definition.tasks[0]!
+  const implementer = { agent: 'executor', provider: 'codex', runtimeIdentity: 'checkpoint-executor' }
+  const reviewer = { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'checkpoint-reviewer' }
+  const actions: string[] = []
+  const dispatcher: V2ActionDispatcher = {
+    inspectRepository: () => trustedGitState(repo),
+    dispatch: async ({ action, task }) => {
+      actions.push(action)
+      if (action === 'EXECUTE') {
+        await writeFile(join(repo, 'feature.js'), 'export const implemented = true\n')
+        return { status: 'SUCCESS', changedFiles: ['feature.js'], repositoryChanged: true }
+      }
+      if (action === 'VERIFY') {
+        const before = await trustedGitState(repo)
+        const minted = await checkpointImplementationForVerification({ repoPath: repo,
+          expectedRepositoryIdentity: before.repositoryIdentity!, expectedBranch: before.branch!,
+          baselineCommit: plan.targetBaselineCommit, expectedHeadSha: before.headSha!,
+          expectedChangedFiles: before.changedFiles, expectedWorktreeFingerprint: before.worktreeFingerprint!,
+          taskId: task.identity.taskId, sessionId: task.identity.sessionId, action: 'VERIFY' })
+        return { status: 'SUCCESS', verificationResults: [{ name: 'cart-total', stepId: 'cart-total', status: 'passed' }],
+          ...(minted.checkpoint === undefined ? {} : { implementationCheckpoint: minted.checkpoint }) }
+      }
+      return { status: 'BLOCKED', blockers: ['independent review stopped the fixture loop'] }
+    } }
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+    agents: [implementer, reviewer].map(identity => ({ id: identity.agent, identity, available: true,
+      quotaExhausted: false, degraded: false, capabilities: { coding: identity.agent === 'executor',
+        reasoning: true, verification: true, review: identity.agent === 'reviewer' } })), dispatcher })
+  const initial = createTaskStateV2(definition, t1)
+  const result = await runner.run(t1, undefined, undefined, {
+    taskStateV2: { ...initial, gitState: await trustedGitState(repo) } })
+  // The committed revision is adopted, so REVIEW follows instead of a false drift.
+  assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'REVIEW'], JSON.stringify(result.humanRequired))
+  assert.notEqual(result.humanRequired?.reason, 'repository changed during action')
+  const state = result.taskStateV2!
+  assert.equal(state.currentAction, 'REVIEW')
+  assert.equal(state.gitState.headSha, await git(repo, 'rev-parse', 'HEAD'))
+  assert.notEqual(state.gitState.headSha, plan.targetBaselineCommit)
+  assert.deepEqual(state.gitState.changedFiles, [])
+  assert.equal(state.verificationState.evidenceHeadSha, state.gitState.headSha)
+  assert.deepEqual(state.verificationState.results,
+    [{ name: 'cart-total', stepId: 'cart-total', status: 'passed' }])
+  assert.equal(state.implementationCheckpoints?.length, 1)
+  assert.equal(state.implementationCheckpoints?.[0]?.implementationCommit, state.gitState.headSha)
+  assert.equal(await git(repo, 'status', '--porcelain'), '')
+})
+
+test('an unproven implementation commit still fails closed as repository drift', async () => {
+  const { repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'unproven-checkpoint-session')
+  const t1 = definition.tasks[0]!
+  const dispatcher: V2ActionDispatcher = {
+    inspectRepository: () => trustedGitState(repo),
+    dispatch: async ({ action }) => {
+      if (action === 'EXECUTE') {
+        await writeFile(join(repo, 'feature.js'), 'export const implemented = true\n')
+        return { status: 'SUCCESS', changedFiles: ['feature.js'], repositoryChanged: true }
+      }
+      if (action === 'VERIFY') {
+        // The commit happens, but no host authority is handed back.
+        await git(repo, 'add', 'feature.js')
+        await git(repo, 'commit', '-qm', 'unproven implementation commit')
+        return { status: 'SUCCESS', verificationResults: [{ name: 'cart-total', stepId: 'cart-total', status: 'passed' }] }
+      }
+      return { status: 'BLOCKED', blockers: ['unreachable'] }
+    } }
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+    agents: [{ id: 'executor', available: true, quotaExhausted: false, degraded: false,
+      capabilities: { coding: true, reasoning: true, verification: true, review: true } }], dispatcher })
+  const initial = createTaskStateV2(definition, t1)
+  const result = await runner.run(t1, undefined, undefined, {
+    taskStateV2: { ...initial, gitState: await trustedGitState(repo) } })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.equal(result.humanRequired?.reason, 'repository changed during action')
+  assert.equal(result.taskStateV2?.gitState.headSha, await git(repo, 'rev-parse', 'HEAD'))
 })

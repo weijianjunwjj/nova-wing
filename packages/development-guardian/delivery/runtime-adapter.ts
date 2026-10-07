@@ -7,6 +7,7 @@ import { inspectDeliveryTarget } from './runtime-plan.js'
 import { bindObligationAtCommit, createClaudeBlueprintReviewer, createClaudeBlueprintRepairer } from './verification-blueprint-planner.js'
 import { taskCompletionGate, type AssertionCompletionEvidence, type VerificationBindingTransition } from './staged-verification.js'
 import { checkpointImplementationForVerification } from '../work-session/git-checkpoint.js'
+import type { ImplementationCheckpointAuthority } from '../work-session/implementation-checkpoint.js'
 
 export function pendingEvidenceKey(assertionId: string, obligationId: string): string {
   return `NOVAWING_VERIFICATION_PENDING:${assertionId}:${obligationId}`
@@ -103,16 +104,25 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           CAPABILITY_REGISTRY[item.verificationCapability.family].availability) !== 'AVAILABLE')
       if (unavailable) return { status: 'BLOCKED', blockers: [
         `${unavailable.assertionId} verification provider unavailable during execution.`] }
+      let implementationCheckpoint: ImplementationCheckpointAuthority | undefined
       try {
-        await checkpointImplementationForVerification({ repoPath: plan.targetBinding.canonicalPath,
+        implementationCheckpoint = (await checkpointImplementationForVerification({ repoPath: plan.targetBinding.canonicalPath,
           expectedRepositoryIdentity: input.task.gitState.repositoryIdentity ?? '',
           expectedBranch: plan.targetBinding.branch ?? '', baselineCommit: plan.targetBaselineCommit,
           expectedHeadSha: input.task.gitState.headSha ?? '',
           expectedChangedFiles: input.task.gitState.changedFiles,
           expectedWorktreeFingerprint: input.task.gitState.worktreeFingerprint ?? '',
-          taskId: input.task.identity.taskId })
+          taskId: input.task.identity.taskId, sessionId: input.task.identity.sessionId,
+          ...(input.task.attemptId === undefined ? {} : { attemptId: input.task.attemptId }),
+          action: input.action })).checkpoint
       } catch (error) { return { status: 'BLOCKED', blockers: [
         `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${error instanceof Error ? error.message : String(error)}`] } }
+      // Once the host has committed the inspected implementation, the Controller
+      // must adopt that revision or stop. Every later exit carries the minted
+      // handoff so an unproven HEAD change can never be silently accepted.
+      const withCheckpoint = <T extends { status: 'SUCCESS' | 'FAILED' | 'BLOCKED' }>(result: T): T & {
+        implementationCheckpoint?: ImplementationCheckpointAuthority } =>
+        implementationCheckpoint === undefined ? result : { ...result, implementationCheckpoint }
       const results = [] as NonNullable<Awaited<ReturnType<V2ActionDispatcher['dispatch']>>['verificationResults']>[number][]
       if (bindings.some((item) => item.stagedVerification.readiness === 'BOUND_EXECUTABLE')) {
         const commandOnly = { ...input.task, completion: { ...input.task.completion,
@@ -120,7 +130,7 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
             value.startsWith('NOVAWING_VERIFICATION_PENDING:'))) } }
         const commandResult = await defaultDispatcher.dispatch({ ...input, task: commandOnly })
         if (commandResult.status !== 'SUCCESS' || !commandResult.verificationResults?.every((item) => item.status === 'passed'))
-          return commandResult
+          return withCheckpoint(commandResult)
         results.push(...commandResult.verificationResults)
       }
       for (const binding of provisioned) {
@@ -136,13 +146,12 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
               reviewer: createClaudeBlueprintReviewer({ cwd: process.cwd() }),
               repairer: createClaudeBlueprintRepairer({ cwd: process.cwd() }) })
             transition = await store.bindProvisionedVerifier(plan, binding.assertionId, binding.runtimeTaskId, blueprint)
-          } catch (error) { return { status: 'BLOCKED', blockers: [
-            `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] } }
-        }
+          } catch (error) { return withCheckpoint({ status: 'BLOCKED' as const, blockers: [
+            `${binding.assertionId} blueprint provisioning blocked: ${error instanceof Error ? error.message : String(error)}`] }) } }
         let observed: CapabilityEvidence
         try { observed = await store.collectProvisionedEvidence(plan, binding.assertionId, binding.runtimeTaskId) }
-        catch (error) { return { status: 'BLOCKED',
-          blockers: [`${binding.assertionId} exact verifier failed: ${error instanceof Error ? error.message : String(error)}`] } }
+        catch (error) { return withCheckpoint({ status: 'BLOCKED' as const,
+          blockers: [`${binding.assertionId} exact verifier failed: ${error instanceof Error ? error.message : String(error)}`] }) }
         const key = pendingEvidenceKey(binding.assertionId, obligation.obligationId)
         results.push({ name: key, stepId: key, rawOutputRef: observed.id,
           ...((transition.verifier.family === 'command' || transition.verifier.family === 'scope_review') &&
@@ -156,8 +165,8 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
         results.push({ name: key, stepId: key, status: 'skipped',
           details: 'Completion-only customer evidence remains open.' })
       }
-      if (results.length === 0) return { status: 'BLOCKED', blockers: ['No exact delivery verifier was executed.'] }
-      return { status: results.some((item) => item.status === 'failed') ? 'FAILED' : 'SUCCESS', verificationResults: results }
+      if (results.length === 0) return withCheckpoint({ status: 'BLOCKED' as const, blockers: ['No exact delivery verifier was executed.'] })
+      return withCheckpoint({ status: results.some((item) => item.status === 'failed') ? 'FAILED' as const : 'SUCCESS' as const, verificationResults: results })
     },
   }
 }

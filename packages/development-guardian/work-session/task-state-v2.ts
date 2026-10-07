@@ -5,6 +5,7 @@ import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvi
 import type { VerificationPlan } from './verification-planner.js'
 import { autonomousDiagnosisDecisionSchema, RECOVERY_ACTION_BUDGET, type AutonomousDiagnosisDecision } from './autonomous-diagnosis.js'
 import { runtimeAcceptanceEvidence } from './completion-criteria.js'
+import type { ImplementationCheckpointAudit } from './implementation-checkpoint.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
 
@@ -58,6 +59,12 @@ export interface TaskStateV2 {
   gitState: TaskGitStateV2
   verificationState: TaskVerificationStateV2
   verificationPlan?: VerificationPlan
+  /**
+   * Host-minted implementation checkpoint audit facts. They record that the
+   * runtime itself committed a verified revision; they are never the authority
+   * to adopt one, which stays a process-local, single-use capability.
+   */
+  implementationCheckpoints?: readonly ImplementationCheckpointAudit[]
   /** Completion facts are task-owned.  Legacy workflow snapshots only project them. */
   completion: {
     evidence: readonly EvidenceV2[]
@@ -159,6 +166,13 @@ const persistedTask = z.object({
   decisions: strings, assumptions: strings, openQuestions: strings, artifacts: strings,
   gitState: z.object({ repositoryIdentity: z.string().min(1).optional(), branch: z.string().min(1).optional(), headSha: z.string().min(1).optional(), changedFiles: strings, worktreeFingerprint: z.string().min(1).optional() }),
   verificationState: z.object({ results: z.array(verificationResult), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
+  implementationCheckpoints: z.array(z.object({
+    sessionId: z.string().min(1), taskId: z.string().min(1), attemptId: z.string().optional(), action: z.string().min(1),
+    baselineCommit: z.string().min(1), implementationCommit: z.string().min(1), parentCommit: z.string().min(1),
+    commitTreeSha: z.string().min(1), capturedAt: z.string(),
+    before: z.object({ repositoryIdentity: z.string().min(1), branch: z.string().min(1), headSha: z.string().min(1), changedFiles: strings, worktreeFingerprint: z.string().min(1) }),
+    after: z.object({ repositoryIdentity: z.string().min(1), branch: z.string().min(1), headSha: z.string().min(1), changedFiles: strings, worktreeFingerprint: z.string().min(1) }),
+  })).optional(),
   verificationPlan: verificationPlan.optional(),
   completion: z.object({
     bindings: z.array(z.object({ criterion: z.string(), requiredEvidence: strings, requiresApproval: z.boolean().optional(),

@@ -1,4 +1,4 @@
-import { relativeTaskWorkspaceScope } from './workspace-scope.js'
+import { relativeTaskWorkspaceScope, scopeViolations } from './workspace-scope.js'
 import { gitExecutable } from './platform/windows-git.js'
 import { commandEnvironment } from './platform/environment.js'
 import { missingVerifierExecutable, resolveDesktopToolchainEnvironment } from './platform/posix-toolchain.js'
@@ -508,17 +508,6 @@ function normalizePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '')
 }
 
-function matchesPathRule(path: string, rule: string): boolean {
-  const normalizedPath = normalizePath(path)
-  const normalizedRule = normalizePath(rule)
-  if (normalizedRule === '.') return normalizedPath !== '..' && !normalizedPath.startsWith('../') && !normalizedPath.startsWith('/')
-  if (normalizedRule.endsWith('/**')) {
-    const prefix = normalizedRule.slice(0, -3)
-    return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`)
-  }
-  return normalizedPath === normalizedRule || normalizedPath.startsWith(`${normalizedRule}/`)
-}
-
 /** 依赖/产物目录：允许能力（venv bootstrap 等）产生的执行产物不算 scope 修改 */
 const SCOPE_IGNORED_DIR_SEGMENTS = new Set(['node_modules', '.venv', 'dist'])
 
@@ -533,24 +522,7 @@ export function scopeBlockers(task: GuardianTask, changedFiles: readonly string[
     try { task = relativeTaskWorkspaceScope(workspaceRoot, task) }
     catch { return ['invalid workspace scope configuration'] }
   }
-  const blockers: string[] = []
-  if (task.allowedPaths !== undefined && task.allowedPaths.length > 0) {
-    for (const path of changedFiles) {
-      // 能进入 changedFiles 的 artifact path 已是 tracked meaningful change（parseChangedFiles
-      // 只过滤 untracked 产物），必须进入 allowed scope 检查，不得按目录名 blanket-ignore。
-      if (!task.allowedPaths.some((rule) => matchesPathRule(path, rule))) {
-        blockers.push(`changed file is outside allowed scope: ${path}`)
-      }
-    }
-  }
-  if (task.forbiddenPaths !== undefined) {
-    for (const path of changedFiles) {
-      if (task.forbiddenPaths.some((rule) => matchesPathRule(path, rule))) {
-        blockers.push(`changed file is inside forbidden scope: ${path}`)
-      }
-    }
-  }
-  return blockers
+  return scopeViolations({ changedFiles, allowedPaths: task.allowedPaths, forbiddenPaths: task.forbiddenPaths })
 }
 
 function commandFailureDetails(result: GuardianCommandResult): string {

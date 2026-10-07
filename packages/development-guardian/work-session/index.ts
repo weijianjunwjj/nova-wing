@@ -25,6 +25,10 @@ export { assessRisk, evidenceIsStale } from './risk-evidence.js'
 export type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvidence, RiskAssessment, RiskLevel } from './risk-evidence.js'
 export * from './legacy-recovery.js'
 export * from './git-checkpoint.js'
+// Checkpoint facts are public types; minting, consuming and adopting the
+// single-use authority stays internal to the host runtime.
+export type { ImplementationCheckpointAudit, ImplementationCheckpointAuthority,
+  RepositoryObservation } from './implementation-checkpoint.js'
 export * from './failure-classification.js'
 export * from './execution-ledger.js'
 export * from './dependency-health.js'

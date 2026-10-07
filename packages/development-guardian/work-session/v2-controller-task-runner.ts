@@ -13,6 +13,7 @@ import type { WorkSessionTaskResult, WorkSessionTaskRunContext, WorkSessionTaskR
 import type { GuardianPhase, GuardianProgressObserver } from '../progress.js'
 import { assessDirectPathEligibility, concreteRuntimeProvider, phaseForAction } from './direct-path.js'
 import { bindingsFromVerificationPlan, planVerification, validateVerificationPlanAfterExecution, verificationPlanFingerprintValid } from './verification-planner.js'
+import { adoptImplementationCheckpoint, consumeImplementationCheckpoint, type ImplementationCheckpointAuthority } from './implementation-checkpoint.js'
 import {
   deriveProviderSwitches,
   dispatchMessage,
@@ -71,7 +72,7 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure; implementationCheckpoint?: ImplementationCheckpointAuthority }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
   /** Delivery-only durable assertion gate, checked immediately before Task finalization. */
@@ -602,7 +603,34 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         }
       }
       const observed = await this.options.dispatcher.inspectRepository()
-      if (observed.repositoryIdentity !== state.gitState.repositoryIdentity || observed.branch !== state.gitState.branch || observed.headSha !== state.gitState.headSha ||
+      // VERIFY may legitimately move HEAD: the runtime commits the inspected
+      // implementation so the exact verifier runs against an immutable revision.
+      // That commit enters the Controller's authoritative state only through the
+      // host-minted, single-use checkpoint handoff; an unproven HEAD change stays
+      // REPO_DRIFT, and nothing here resets or adopts a descendant.
+      if (result.implementationCheckpoint !== undefined) {
+        try {
+          const consumed = await consumeImplementationCheckpoint(result.implementationCheckpoint, {
+            sessionId, taskId, action: decision.action,
+            ...(state.attemptId === undefined ? {} : { attemptId: state.attemptId }),
+            before: { repositoryIdentity: state.gitState.repositoryIdentity ?? '', branch: state.gitState.branch ?? '',
+              headSha: state.gitState.headSha ?? '', changedFiles: state.gitState.changedFiles,
+              worktreeFingerprint: state.gitState.worktreeFingerprint ?? '' },
+            observed,
+            allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths,
+          })
+          state = adoptImplementationCheckpoint(state, consumed.facts)
+          note({ type: 'RECONCILIATION_COMPLETED', action: 'VERIFY', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED',
+            ...repositoryFacts(state), metadata: { implementationCheckpoint: consumed.facts.implementationCommit,
+              parentCommit: consumed.facts.parentCommit, acceptedAt: consumed.facts.capturedAt } })
+        } catch (error) {
+          const reason = `implementation checkpoint rejected: ${error instanceof Error ? error.message : String(error)}`
+          note({ type: 'RECONCILIATION_REQUIRED', action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED',
+            ...repositoryFacts(state), metadata: { reasons: [reason], observedHeadSha: observed.headSha } })
+          await context?.persistTaskStateV2?.(state)
+          return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT', reason }, taskStateV2: state }
+        }
+      } else if (observed.repositoryIdentity !== state.gitState.repositoryIdentity || observed.branch !== state.gitState.branch || observed.headSha !== state.gitState.headSha ||
           (decision.action !== 'EXECUTE' && observed.worktreeFingerprint !== state.gitState.worktreeFingerprint)) {
         state = reconcileTaskState(state, observed).state
         note({ type: 'RECONCILIATION_REQUIRED', action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', ...repositoryFacts(state), metadata: { reasons: ['repository changed during action'] } })
