@@ -1,5 +1,21 @@
 # NovaWing v0.1 独立内核切片
 
+## Career Release：Agent Harness Evaluation & Reliability
+
+NovaWing 的 Career Release 不再以“把产品继续做大”为目标，而是把已有 Work Session / Controller / Verification / Evidence 能力整理成可复核的 AI 工程证据。评测使用真实 Git 历史任务做 fresh-baseline replay，隐藏历史修复只在交付后用于 Review；主指标是 **TTAR（Time to Accepted Result）**，而不是单次生成速度、token 数或公开 benchmark 分数。
+
+当前 pilot 冻结在 [`benchmark/career-eval-v1.json`](benchmark/career-eval-v1.json)。它覆盖 Low / Medium / High 三档真实任务，并记录 Harness、实际路由模型、effort、提交 SHA、首轮 Review、人工介入、可用的 wall-clock 与成本证据。
+
+工程结论目前只限定在这组小样本：
+
+- Low / Medium：DeepSeek-based Harness 能以很低的人为介入快速得到正确结果；Harness 对吞吐与等待时间影响明显。
+- High（跨 Delivery / Controller / Git authority / persistence / TOCTOU）：**Codex High 是 fresh H1 中唯一首轮 ACCEPT 的组合**。更快的 DeepSeek Harness High、Flash Max，以及 Claude Code + 同一 DeepSeek 路由都更早产生了代码，但遗漏了深层安全不变量。
+- 因此路由原则是 **accepted-result latency > first-result latency**：普通实现优先快速 Harness；高风险状态一致性与安全边界优先一次通过率和证据质量。
+- 这些结果是 Career Release 的工程 pilot，不是通用模型排行榜；样本量很小，后续只有当新实验会改变路由决策时才继续扩充。
+
+这也是本轮架构收缩的停止线：Nx 只承担项目边界、依赖图与 drift/cycle governance，不继续为了“完整 monorepo 化”拆分 `development-guardian`；新增工作必须直接提高可解释、可验证、可展示的求职证据价值。
+
+
 ## 可安装包与 Host Snapshot V3
 
 仓库根包为 `nova-wing@0.1.0`，正式私有发布包为
