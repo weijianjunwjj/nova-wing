@@ -30,6 +30,22 @@ export interface ControllerDecisionTraceV2 {
   realityKey: string
 }
 
+/**
+ * Audit of one host-verified implementation checkpoint.  This is a durable
+ * record of the accepted transition, never an authority to recreate one.
+ */
+export interface ImplementationCheckpointAudit {
+  commitSha: string
+  parentSha: string
+  treeHash: string
+  action: 'EXECUTE' | 'VERIFY'
+  changedFiles: readonly string[]
+  beforeHeadSha: string
+  afterHeadSha: string
+  attemptId?: string
+  acceptedAt: string
+}
+
 export interface TaskActionBudgetV2 {
   originalLimit: number
   originalConsumed: number
@@ -79,6 +95,8 @@ export interface TaskStateV2 {
   controllerConvergence?: {
     recentDecisions: readonly ControllerDecisionTraceV2[]
   }
+  /** Bounded audit of host-verified implementation checkpoints; never an authority. */
+  implementationCheckpoints?: readonly ImplementationCheckpointAudit[]
   /** Per-Task durable action accounting. At most one bounded recovery grant is legal. */
   actionBudget?: TaskActionBudgetV2
   /** Golden history survives escalation; recovery consumes the existing Controller budget. */
@@ -173,6 +191,12 @@ const persistedTask = z.object({
   currentAgent: z.string().optional(), implementer: actor.optional(), currentAction: z.string().optional(),
   risk: z.enum(['LOW', 'NORMAL', 'MEDIUM', 'HIGH', 'CRITICAL']), status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'COMPLETED', 'FAILED']), blockers: strings, updatedAt: z.string(),
   controllerConvergence: z.object({ recentDecisions: z.array(z.object({ decisionKey: z.string(), realityKey: z.string() })).max(12) }).optional(),
+  implementationCheckpoints: z.array(z.object({
+    commitSha: z.string().regex(/^[a-f0-9]{40}$/u), parentSha: z.string().regex(/^[a-f0-9]{40}$/u),
+    treeHash: z.string().regex(/^[a-f0-9]{40}$/u), action: z.enum(['EXECUTE', 'VERIFY']), changedFiles: strings,
+    beforeHeadSha: z.string().regex(/^[a-f0-9]{40}$/u), afterHeadSha: z.string().regex(/^[a-f0-9]{40}$/u),
+    attemptId: z.string().regex(/^[a-f0-9]{64}$/u).optional(), acceptedAt: z.string(),
+  })).max(20).optional(),
   actionBudget: z.object({
     originalLimit: z.number().int().positive(), originalConsumed: z.number().int().nonnegative(), originalExhausted: z.boolean(),
     recoveryLimit: z.number().int().positive(), recoveryGranted: z.boolean(), recoveryConsumed: z.number().int().nonnegative(), recoveryExhausted: z.boolean(),

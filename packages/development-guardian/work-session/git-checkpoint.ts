@@ -146,7 +146,8 @@ function isUntrackedRuntimeArtifact(status: string, path: string): boolean {
   )
 }
 
-function createDefaultCommandRunner(repoPath: string): GitCheckpointCommandRunner {
+/** Host-owned argv runner factory; exported so the checkpoint handoff never shells out. */
+export function createDefaultCommandRunner(repoPath: string): GitCheckpointCommandRunner {
   return (args: readonly string[]): Promise<GitCheckpointCommandResult> => {
     return new Promise<GitCheckpointCommandResult>((resolve) => {
       const child = spawn(gitExecutable(), [...args], {

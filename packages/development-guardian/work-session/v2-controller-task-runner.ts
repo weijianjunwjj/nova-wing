@@ -1,9 +1,10 @@
 import type { VerificationResult } from '../model.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
-import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
+import { createTaskStateV2, loadTaskStateV2, type ImplementationCheckpointAudit, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
 import { approvalContext, assessRisk, completionGate, type ApprovalEvidence, type ReviewEvidence } from './risk-evidence.js'
 import { reconcileTaskState, type RepositoryReality } from './reconciliation.js'
+import { consumeImplementationCheckpoint } from './implementation-checkpoint.js'
 import { VERIFICATION_APPROVAL_BLOCKER } from './verification-approval.js'
 import { scopeBlockers } from '../claude-code-executor.js'
 import { isIndependentReviewerCandidate } from './reviewer-runtime.js'
@@ -602,16 +603,55 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
         }
       }
       const observed = await this.options.dispatcher.inspectRepository()
-      if (observed.repositoryIdentity !== state.gitState.repositoryIdentity || observed.branch !== state.gitState.branch || observed.headSha !== state.gitState.headSha ||
-          (decision.action !== 'EXECUTE' && observed.worktreeFingerprint !== state.gitState.worktreeFingerprint)) {
+      const repositoryChanged = observed.headSha !== state.gitState.headSha || observed.worktreeFingerprint !== state.gitState.worktreeFingerprint ||
+        JSON.stringify(observed.changedFiles) !== JSON.stringify(state.gitState.changedFiles)
+      const dispatchedObservation: RepositoryReality = { repositoryIdentity: state.gitState.repositoryIdentity!, branch: state.gitState.branch!,
+        headSha: state.gitState.headSha!, changedFiles: state.gitState.changedFiles, worktreeFingerprint: state.gitState.worktreeFingerprint! }
+      const identityMoved = observed.repositoryIdentity !== state.gitState.repositoryIdentity ||
+        observed.branch !== state.gitState.branch || observed.headSha !== state.gitState.headSha
+      if (identityMoved) {
+        // A new commit becomes authoritative only when this host process created and
+        // verified it for exactly this session/task/attempt/action/dispatch observation.
+        // A SHA, copied JSON, persisted record, or bare descendant commit can never
+        // obtain that authority, so every unproven movement stays fail-closed drift.
+        const consumption = consumeImplementationCheckpoint(result.implementationCheckpoint, {
+          sessionId, taskId, action: decision.action,
+          ...(state.attemptId === undefined ? {} : { attemptId: state.attemptId }),
+          before: dispatchedObservation, observed,
+        })
+        if (!consumption.ok) {
+          state = reconcileTaskState(state, observed).state
+          note({ type: 'RECONCILIATION_REQUIRED', action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', ...repositoryFacts(state),
+            metadata: { reasons: ['repository changed during action'], checkpoint: consumption.reason } })
+          await context?.persistTaskStateV2?.(state)
+          return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT',
+            reason: `repository changed during action: ${consumption.reason}` }, taskStateV2: state }
+        }
+        const audit: ImplementationCheckpointAudit = {
+          commitSha: consumption.facts.commitSha, parentSha: consumption.facts.parentSha, treeHash: consumption.facts.treeHash,
+          action: consumption.facts.action, changedFiles: consumption.facts.changedFiles,
+          beforeHeadSha: consumption.facts.before.headSha, afterHeadSha: consumption.facts.after.headSha,
+          ...(consumption.facts.attemptId === undefined ? {} : { attemptId: consumption.facts.attemptId }),
+          acceptedAt: new Date().toISOString(),
+        }
+        // The accepted host checkpoint is the new authoritative repository state.
+        // Evidence and review verdicts produced against the previous HEAD are void.
+        state = { ...state,
+          gitState: { repositoryIdentity: observed.repositoryIdentity, branch: observed.branch, headSha: observed.headSha,
+            changedFiles: observed.changedFiles, worktreeFingerprint: observed.worktreeFingerprint },
+          verificationState: { results: [] },
+          completion: { ...state.completion, review: undefined, approval: undefined },
+          implementationCheckpoints: [...(state.implementationCheckpoints ?? []), audit].slice(-20) }
+        note({ type: 'CHECKPOINT_CREATED', action: decision.action, ...repositoryFacts(state),
+          metadata: { commitSha: audit.commitSha, parentSha: audit.parentSha, treeHash: audit.treeHash,
+            beforeHeadSha: audit.beforeHeadSha, changedFiles: audit.changedFiles, ownership: 'HOST_VERIFIED_IMPLEMENTATION_CHECKPOINT' } })
+      } else if (decision.action !== 'EXECUTE' && observed.worktreeFingerprint !== state.gitState.worktreeFingerprint) {
         state = reconcileTaskState(state, observed).state
         note({ type: 'RECONCILIATION_REQUIRED', action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', ...repositoryFacts(state), metadata: { reasons: ['repository changed during action'] } })
         await context?.persistTaskStateV2?.(state)
         return { status: 'HUMAN_REQUIRED', humanRequired: { category: 'REPO_DRIFT', reason: 'repository changed during action' }, taskStateV2: state }
       }
       const providerHistoryBefore = state.providerHistory
-      const repositoryChanged = observed.headSha !== state.gitState.headSha || observed.worktreeFingerprint !== state.gitState.worktreeFingerprint ||
-        JSON.stringify(observed.changedFiles) !== JSON.stringify(state.gitState.changedFiles)
       const implementationEvidenceAdded = result.implementationEvidenceAdded === true
       const observedState: TaskStateV2 = { ...state, gitState: { repositoryIdentity: observed.repositoryIdentity, branch: observed.branch, headSha: observed.headSha, changedFiles: observed.changedFiles, worktreeFingerprint: observed.worktreeFingerprint } }
       const actualImplementer = actualProvider === undefined || agent.identity === undefined ? agent.identity : { ...agent.identity, provider: actualProvider }
