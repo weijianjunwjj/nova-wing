@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -21,7 +21,7 @@ import { CAPABILITY_REGISTRY, classifyCapability, collectFilesystemEvidence, col
 import { ADMISSION_MODEL_VERSION, customerDeliveryCompletionGate, taskCompletionGate } from '../packages/development-guardian/delivery/staged-verification.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { validateTrustedWorkSessionConfig } from '../packages/development-guardian/work-session/production.js'
-import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { createTaskStateV2, type TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { assertionCapabilityEvidenceValid, type ReviewEvidence } from '../packages/development-guardian/work-session/risk-evidence.js'
 import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { createDeliveryRuntimeDispatcher } from '../packages/development-guardian/delivery/runtime-adapter.js'
@@ -918,4 +918,138 @@ test('suspended T1 review recovery does not restart EXECUTE, including ALLOW REE
     if (mode !== 'ordinary') assert.deepEqual(actions, ['REVIEW'], JSON.stringify({ mode, humanRequired: result.humanRequired }))
     assert.deepEqual(result.taskStateV2?.identity, { sessionId: definition.id, taskId: t1.id })
   }
+})
+
+// ============ E0-H1 Host-owned implementation checkpoint handoff ============
+
+async function checkpointDeliveryFixture(sessionId: string) {
+  const { root, repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { resolver: () => ({
+    capability: 'REQUIRES_EXTERNAL_ENVIRONMENT' as const, capabilityId: 'fixture-external-v1',
+    family: 'browser_ui' as const, reason: 'Completion-only browser observation.' }),
+    runtimePolicyVersion: 'fixture-policy-v1', runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, sessionId)
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.savePlan(plan)
+  return { root, repo, plan, definition, store, task: definition.tasks[0]! }
+}
+
+function checkpointAgents() {
+  return [
+    { id: 'executor', identity: { agent: 'executor', provider: 'codex', runtimeIdentity: 'checkpoint-executor' },
+      available: true, quotaExhausted: false, degraded: false,
+      capabilities: { coding: true, reasoning: true, verification: true } },
+    { id: 'reviewer', identity: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'checkpoint-reviewer' },
+      available: true, quotaExhausted: false, degraded: false, capabilities: { review: true, reasoning: true } },
+  ]
+}
+
+test('a delivery VERIFY implementation commit becomes Controller authority and continues to REVIEW', async () => {
+  const f = await checkpointDeliveryFixture('checkpoint-handoff-session')
+  const actions: string[] = []
+  const reviewedHeads: string[] = []
+  const inspectRepository = () => trustedGitState(f.repo)
+  const delivery = createDeliveryRuntimeDispatcher(f.plan, f.store, {
+    inspectRepository,
+    dispatch: async ({ action, task }) => {
+      if (action === 'EXECUTE') {
+        await mkdir(join(f.repo, 'server'), { recursive: true })
+        await writeFile(join(f.repo, 'server/domain.js'), 'export const orderDomain = { implemented: true }\n')
+        return { status: 'SUCCESS', changedFiles: ['server/domain.js'], repositoryChanged: true }
+      }
+      if (action === 'REVIEW') {
+        reviewedHeads.push(task.gitState.headSha ?? '')
+        return { status: 'BLOCKED', blockers: ['independent reviewer fixture stopped before a verdict'] }
+      }
+      return { status: 'BLOCKED', blockers: [`unexpected ${action}`] }
+    },
+  })
+  // The delivery VERIFY phase is owned by the adapter; record every action the
+  // Controller actually dispatched, not just the provider fallbacks.
+  const dispatcher: V2ActionDispatcher = { inspectRepository,
+    dispatch: async (input) => { actions.push(input.action); return delivery.dispatch(input) } }
+  let persisted: TaskStateV2 | undefined
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: checkpointAgents(), dispatcher })
+  const result = await runner.run(f.task, undefined, undefined, {
+    taskStateV2: createTaskStateV2(f.definition, f.task),
+    persistTaskStateV2: async (state) => { persisted = state } })
+  const implementationCommit = await git(f.repo, 'rev-parse', 'HEAD')
+  assert.notEqual(implementationCommit, f.plan.targetBaselineCommit)
+  // Repository moved by the Runtime's own checkpoint is not drift: REVIEW follows.
+  assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'REVIEW'])
+  assert.ok((persisted?.verificationState.results ?? []).some((item) =>
+    item.stepId === 'NOVAWING_DEFERRED:A1:EXTERNAL_DEFERRED'))
+  assert.equal(result.humanRequired?.category, 'DECISION_REQUIRED')
+  assert.equal(result.taskStateV2?.currentAction, 'REVIEW')
+  // The reviewer was dispatched against the new implementation commit.
+  assert.deepEqual(reviewedHeads, [implementationCommit])
+  const audit = persisted?.implementationCheckpointAudit ?? []
+  assert.equal(audit.length, 1)
+  assert.equal(audit[0]?.parentCommit, f.plan.targetBaselineCommit)
+  assert.equal(audit[0]?.commitSha, implementationCommit)
+  assert.deepEqual(audit[0]?.changedFiles, ['server/domain.js'])
+  assert.equal(persisted?.gitState.headSha, implementationCommit)
+  assert.deepEqual(persisted?.gitState.changedFiles, [])
+  assert.ok((persisted?.completion.evidence ?? []).every((item) => item.headSha === implementationCommit))
+  assert.equal(await git(f.repo, 'status', '--porcelain'), '')
+})
+
+test('an implementation commit whose Host checkpoint was never accepted remains repository drift', async () => {
+  const f = await checkpointDeliveryFixture('checkpoint-crash-session')
+  const inspectRepository = () => trustedGitState(f.repo)
+  const delivery = createDeliveryRuntimeDispatcher(f.plan, f.store, { inspectRepository,
+    dispatch: async ({ action }) => {
+      if (action === 'EXECUTE') {
+        await mkdir(join(f.repo, 'server'), { recursive: true })
+        await writeFile(join(f.repo, 'server/domain.js'), 'export const orderDomain = { implemented: true }\n')
+        return { status: 'SUCCESS', changedFiles: ['server/domain.js'], repositoryChanged: true }
+      }
+      return { status: 'BLOCKED', blockers: [`unexpected ${action}`] }
+    } })
+  // The commit happened, but the one-time in-memory authority was lost with the
+  // process: a descendant commit must never be adopted as a checkpoint.
+  const dispatcher: V2ActionDispatcher = { inspectRepository,
+    dispatch: async (input) => ({ ...await delivery.dispatch(input), implementationCheckpoint: undefined }) }
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: checkpointAgents(), dispatcher })
+  const result = await runner.run(f.task, undefined, undefined, {
+    taskStateV2: createTaskStateV2(f.definition, f.task) })
+  assert.equal(result.status, 'HUMAN_REQUIRED')
+  assert.equal(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.match(result.humanRequired?.reason ?? '', /not issued by this runtime/u)
+  const head = await git(f.repo, 'rev-parse', 'HEAD')
+  assert.notEqual(head, f.plan.targetBaselineCommit)
+  assert.equal(await git(f.repo, 'status', '--porcelain'), '')
+  assert.equal(result.taskStateV2?.implementationCheckpointAudit, undefined)
+  assert.ok(result.taskStateV2?.blockers.some((blocker) => blocker.includes('HEAD mismatch')))
+})
+
+test('a no-op delivery VERIFY creates no checkpoint authority and no repository drift', async () => {
+  const f = await checkpointDeliveryFixture('checkpoint-noop-session')
+  const actions: string[] = []
+  const inspectRepository = () => trustedGitState(f.repo)
+  const delivery = createDeliveryRuntimeDispatcher(f.plan, f.store, {
+    inspectRepository,
+    dispatch: async ({ action }) => {
+      if (action === 'EXECUTE') return { status: 'SUCCESS' }
+      return { status: 'BLOCKED', blockers: ['independent reviewer fixture stopped before a verdict'] }
+    } })
+  const dispatcher: V2ActionDispatcher = { inspectRepository,
+    dispatch: async (input) => { actions.push(input.action); return delivery.dispatch(input) } }
+  let persisted: TaskStateV2 | undefined
+  const runner = new V2ControllerTaskRunner({ sessionId: f.definition.id, branch: f.definition.branch,
+    agents: checkpointAgents(), dispatcher })
+  const result = await runner.run(f.task, undefined, undefined, {
+    taskStateV2: createTaskStateV2(f.definition, f.task),
+    persistTaskStateV2: async (state) => { persisted = state } })
+  assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'REVIEW'])
+  // VERIFY ran against a clean repository, so it created nothing to own.
+  assert.ok(result.taskStateV2?.verificationState.results.some((item) =>
+    item.stepId === 'NOVAWING_DEFERRED:A1:EXTERNAL_DEFERRED'))
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.plan.targetBaselineCommit)
+  assert.equal(await git(f.repo, 'status', '--porcelain'), '')
+  assert.equal(persisted?.implementationCheckpointAudit, undefined)
+  assert.equal(result.taskStateV2?.gitState.headSha, f.plan.targetBaselineCommit)
 })

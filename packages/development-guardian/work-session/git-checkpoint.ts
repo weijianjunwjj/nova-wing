@@ -22,7 +22,8 @@ import { gitExecutable } from '../platform/windows-git.js'
  */
 
 import { createHash } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises'
+import { join, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
@@ -235,6 +236,66 @@ export async function readCurrentHeadSha(
   return head
 }
 
+/**
+ * Path containment gate for the delivery implementation checkpoint. A commit may
+ * only contain paths that are literally inside the repository: no absolute or
+ * `..` coordinates, no symlink whose real target leaves the repository root, and
+ * no hardlinked file whose other links live outside the checkpoint.
+ */
+async function assertCheckpointPathsAreContained(
+  repoPath: string,
+  canonicalRepositoryIdentity: string,
+  paths: readonly string[],
+): Promise<void> {
+  for (const rawPath of paths) {
+    const path = normalizePath(rawPath)
+    if (path.length === 0 || path.startsWith('/') || /^[A-Za-z]:/u.test(path) ||
+      path.split('/').some((segment) => segment === '..' || segment.length === 0)) {
+      throw new GitCheckpointError(`delivery implementation path escapes the repository: ${rawPath}`)
+    }
+    let info
+    try {
+      info = await lstat(join(repoPath, path))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    if (info.isSymbolicLink()) {
+      const target = await realpath(join(repoPath, path)).catch(() => undefined)
+      if (target === undefined || (target !== canonicalRepositoryIdentity &&
+        !target.startsWith(`${canonicalRepositoryIdentity}${sep}`))) {
+        throw new GitCheckpointError(`delivery implementation symlink escapes the repository: ${rawPath}`)
+      }
+      continue
+    }
+    if (info.isFile() && info.nlink > 1) {
+      throw new GitCheckpointError(`delivery implementation file has links outside the checkpoint: ${rawPath}`)
+    }
+  }
+}
+
+/**
+ * Content digest over exactly the files the checkpoint would commit. It is read
+ * once before staging and once after staging: identical digests prove the index
+ * (and therefore the commit tree) holds the inspected content.
+ */
+async function inspectedContentDigest(repoPath: string, paths: readonly string[]): Promise<string> {
+  const hash = createHash('sha256')
+  for (const path of [...paths].map(normalizePath).sort()) {
+    hash.update(`${path}|`)
+    try {
+      const absolute = join(repoPath, path)
+      const info = await lstat(absolute)
+      hash.update(info.isSymbolicLink() ? await readlink(absolute) : await readFile(absolute))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      hash.update('[deleted]')
+    }
+    hash.update('\n')
+  }
+  return hash.digest('hex')
+}
+
 /** Delivery-only checkpoint before exact verification; it commits precisely the inspected implementation files. */
 export async function checkpointImplementationForVerification(options: {
   repoPath: string; expectedRepositoryIdentity: string; expectedBranch: string;
@@ -268,6 +329,8 @@ export async function checkpointImplementationForVerification(options: {
     if (entries.length) throw new GitCheckpointError('delivery implementation has untracked runtime artifacts')
     return options.expectedHeadSha
   }
+  await assertCheckpointPathsAreContained(options.repoPath, options.expectedRepositoryIdentity, meaningful)
+  const contentDigest = await inspectedContentDigest(options.repoPath, meaningful)
   let stagingStarted = false
   try {
     stagingStarted = true
@@ -275,6 +338,10 @@ export async function checkpointImplementationForVerification(options: {
     await runGitChecked(runGit, ['diff', '--cached', '--check'])
     if (!samePathSet(parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])), meaningful))
       throw new GitCheckpointError('delivery staged files differ from inspected implementation files')
+    // The index now holds the worktree content of `meaningful`; re-reading that
+    // content proves the commit tree cannot contain anything else.
+    if (await inspectedContentDigest(options.repoPath, meaningful) !== contentDigest)
+      throw new GitCheckpointError('delivery implementation content changed while staging')
     await runGitChecked(runGit, ['commit', '-m', `${options.taskId}: implementation for verification`])
   } catch (error) {
     const rollback = stagingStarted ? await restoreIndexAfterFailedCheckpoint(runGit, options.expectedHeadSha) : undefined
@@ -286,6 +353,67 @@ export async function checkpointImplementationForVerification(options: {
     ['status', '--porcelain', '--untracked-files=all']) !== '')
     throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
   return commit
+}
+
+/**
+ * Host-owned read-back proof of a delivery implementation commit the Runtime
+ * itself just created. Every fact is re-read from the real repository; nothing
+ * is inferred from a SHA, a descendant relation, or a persisted record.
+ *
+ * It proves: repository identity, branch and exact parent are unchanged; the
+ * commit tree holds exactly the inspected implementation files; and the worktree
+ * is clean, so HEAD content equals the verified worktree content.
+ */
+export interface ImplementationCommitProof {
+  repositoryIdentity: string
+  branch: string
+  commitSha: string
+  parentCommit: string
+  treeSha: string
+  changedFiles: readonly string[]
+  /** Canonical clean-worktree fingerprint of the exact post-commit repository state. */
+  worktreeFingerprint: string
+}
+
+export async function inspectImplementationCommit(options: {
+  repoPath: string; expectedRepositoryIdentity: string; expectedBranch: string;
+  parentCommit: string; commitSha: string; expectedChangedFiles: readonly string[];
+  commandRunner?: GitCheckpointCommandRunner
+}): Promise<ImplementationCommitProof> {
+  const runGit = options.commandRunner ?? createDefaultCommandRunner(options.repoPath)
+  if (!/^[a-f0-9]{40}$/u.test(options.parentCommit) || !/^[a-f0-9]{40}$/u.test(options.commitSha) ||
+    options.parentCommit === options.commitSha || PROTECTED_BRANCHES.has(options.expectedBranch) ||
+    await realpath(options.repoPath) !== options.expectedRepositoryIdentity ||
+    await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
+    await runGitString(runGit, ['rev-parse', 'HEAD']) !== options.commitSha ||
+    await runGitString(runGit, ['rev-parse', 'HEAD^']) !== options.parentCommit)
+    throw new GitCheckpointError('delivery implementation commit identity, branch, or parent changed')
+  const treeSha = await runGitString(runGit, ['rev-parse', 'HEAD^{tree}'])
+  if (!/^[a-f0-9]{40}$/u.test(treeSha))
+    throw new GitCheckpointError('delivery implementation commit tree is invalid')
+  const status = await runGitString(runGit, ['status', '--porcelain', '-z', '--untracked-files=all'])
+  const indexDiff = await runGit(['diff', '--cached', '--binary'])
+  if (indexDiff.exitCode !== 0)
+    throw new GitCheckpointError('cannot inspect delivery implementation commit index')
+  const entries = parseGitStatus(status)
+  if (entries.length !== 0)
+    throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
+  const committedFiles = (await runGitString(runGit,
+    ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', options.commitSha]))
+    .split('\0').filter((value) => value.length > 0)
+  if (!samePathSet(committedFiles, options.expectedChangedFiles))
+    throw new GitCheckpointError('delivery implementation commit tree does not match the inspected implementation files')
+  return {
+    repositoryIdentity: options.expectedRepositoryIdentity,
+    branch: options.expectedBranch,
+    commitSha: options.commitSha,
+    parentCommit: options.parentCommit,
+    treeSha,
+    changedFiles: [...new Set(committedFiles.map(normalizePath))].sort(),
+    worktreeFingerprint: createHash('sha256')
+      .update(await computeWorktreeFingerprint(options.repoPath, entries, { strict: true }))
+      .update(indexDiff.stdout).digest('hex'),
+  }
 }
 
 /** Read-only handoff proof for the normal Task-boundary finalizer after delivery VERIFY. */

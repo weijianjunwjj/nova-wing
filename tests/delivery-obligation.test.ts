@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, writeFile, symlink, link, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDevelopmentPlan, type PlanDraft } from '../packages/development-guardian/planning/model.js'
@@ -18,10 +18,12 @@ import { inspectAtCommit, generateScopeManifest } from '../packages/development-
 import { DeliveryStore } from '../packages/development-guardian/delivery/service.js'
 import { createDeliveryRuntimeDispatcher } from '../packages/development-guardian/delivery/runtime-adapter.js'
 import { bindObligationAtCommit } from '../packages/development-guardian/delivery/verification-blueprint-planner.js'
-import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { createTaskStateV2, loadTaskStateV2, type TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { assertionCapabilityEvidenceValid, unmappedAcceptanceCriteria } from '../packages/development-guardian/work-session/risk-evidence.js'
-import { checkpointImplementationForVerification, finalizeCompletedTask,
-  verifyDeliveryImplementationCommit } from '../packages/development-guardian/work-session/git-checkpoint.js'
+import { checkpointImplementationForVerification, finalizeCompletedTask, inspectImplementationCommit,
+  verifyDeliveryImplementationCommit, type GitCheckpointCommandRunner } from '../packages/development-guardian/work-session/git-checkpoint.js'
+import { applyImplementationCheckpoint, commitImplementationCheckpoint,
+  consumeImplementationCheckpoint } from '../packages/development-guardian/work-session/implementation-checkpoint.js'
 import { computeWorktreeFingerprint, parseGitStatus } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
 
 const run = promisify(execFile)
@@ -469,4 +471,214 @@ test('21 mixed positive action and negative scope require executed test and revi
   assert.match(String(observed.facts.commandStdoutSha256), /^[a-f0-9]{64}$/u)
   assert.match(String(observed.facts.commandStderrSha256), /^[a-f0-9]{64}$/u)
   assert.equal(observed.facts.manifestHash, manifest.sha256)
+})
+
+// ============ E0-H1 Host-owned implementation checkpoint handoff ============
+
+const CHECKPOINT_SESSION = 'checkpoint-session'
+const CHECKPOINT_TASK = 'T1'
+
+async function repositoryObservation(repo: string) {
+  const status = (await run('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: repo })).stdout
+  const entries = parseGitStatus(status)
+  const indexDiff = (await run('git', ['diff', '--cached', '--binary'], { cwd: repo })).stdout
+  return { repositoryIdentity: await realpath(repo), branch: await git(repo, 'branch', '--show-current'),
+    headSha: await git(repo, 'rev-parse', 'HEAD'), changedFiles: entries.map((item) => item.path),
+    worktreeFingerprint: createHash('sha256').update(await computeWorktreeFingerprint(repo, entries,
+      { strict: true })).update(indexDiff).digest('hex') }
+}
+
+/** Issue one real Host implementation checkpoint per call on an always-clean base. */
+async function checkpointFixture() {
+  const f = await fixture()
+  let index = 0
+  const issue = async (mutate: (options: Record<string, unknown>) => void = () => undefined) => {
+    index += 1
+    const file = `feature-${index}.js`
+    await writeFile(join(f.repo, file), `export const feature${index} = true\n`)
+    const before = await repositoryObservation(f.repo)
+    const options: Record<string, unknown> = { repoPath: f.repo, repositoryIdentity: before.repositoryIdentity,
+      branch: before.branch, baselineCommit: f.target.baselineCommit, sessionId: CHECKPOINT_SESSION,
+      taskId: CHECKPOINT_TASK, before, expectedChangedFiles: [file], allowedPaths: ['.'], forbiddenPaths: [] }
+    mutate(options)
+    const issued = await commitImplementationCheckpoint(
+      options as unknown as Parameters<typeof commitImplementationCheckpoint>[0])
+    assert.equal(issued.disposition, 'COMMITTED')
+    const after = await repositoryObservation(f.repo)
+    assert.equal(after.headSha, issued.commitSha)
+    return { issued, before, after, file }
+  }
+  return { ...f, issue }
+}
+
+test('22 Host checkpoint authority is bound to the dispatch and consumed exactly once', async () => {
+  const f = await checkpointFixture()
+  const { issued, before, after } = await f.issue()
+  const context = { sessionId: CHECKPOINT_SESSION, taskId: CHECKPOINT_TASK, action: 'VERIFY', before, after }
+  const accepted = consumeImplementationCheckpoint({ handoff: issued.handoff, ...context })
+  assert.equal(accepted.accepted, true)
+  // One-time authority: the very same handoff can never authorize a second state change.
+  const replay = consumeImplementationCheckpoint({ handoff: issued.handoff, ...context })
+  assert.equal(replay.accepted, false)
+  assert.match(replay.accepted === false ? replay.reason : '', /not issued by this runtime/u)
+
+  const wrongAction = await f.issue()
+  assert.equal(consumeImplementationCheckpoint({ handoff: wrongAction.issued.handoff,
+    ...context, before: wrongAction.before, after: wrongAction.after, action: 'EXECUTE' }).accepted, false)
+  const wrongTask = await f.issue()
+  assert.equal(consumeImplementationCheckpoint({ handoff: wrongTask.issued.handoff,
+    ...context, before: wrongTask.before, after: wrongTask.after, taskId: 'T2' }).accepted, false)
+  const wrongAttempt = await f.issue()
+  assert.equal(consumeImplementationCheckpoint({ handoff: wrongAttempt.issued.handoff,
+    ...context, before: wrongAttempt.before, after: wrongAttempt.after, attemptId: 'a'.repeat(64) }).accepted, false)
+  const wrongBefore = await f.issue()
+  assert.equal(consumeImplementationCheckpoint({ handoff: wrongBefore.issued.handoff,
+    ...context, before: { ...wrongBefore.before, headSha: f.target.baselineCommit }, after: wrongBefore.after }).accepted, false)
+  const wrongAfter = await f.issue()
+  assert.equal(consumeImplementationCheckpoint({ handoff: wrongAfter.issued.handoff,
+    ...context, before: wrongAfter.before, after: { ...wrongAfter.after, headSha: wrongAfter.before.headSha } }).accepted, false)
+})
+
+test('23 a SHA, a plain object, or a persisted record can never obtain checkpoint authority', async () => {
+  const f = await checkpointFixture()
+  const { issued, before, after } = await f.issue()
+  const context = { sessionId: CHECKPOINT_SESSION, taskId: CHECKPOINT_TASK, action: 'VERIFY', before, after }
+  const auditRecord = { action: 'VERIFY', sessionId: CHECKPOINT_SESSION, taskId: CHECKPOINT_TASK,
+    repositoryIdentity: after.repositoryIdentity, branch: after.branch, baselineCommit: f.target.baselineCommit,
+    parentCommit: before.headSha, commitSha: after.headSha, treeSha: 'b'.repeat(40),
+    changedFiles: [], acceptedAt: new Date().toISOString() }
+  const forgeries: unknown[] = [issued.commitSha, before.headSha, null, undefined, 'VERIFY',
+    { commitSha: issued.commitSha, parentCommit: before.headSha },
+    { ...issued.handoff }, structuredClone(issued.handoff),
+    JSON.parse(JSON.stringify(issued.handoff)) as unknown, auditRecord, [issued.handoff]]
+  for (const handoff of forgeries) {
+    const consumed = consumeImplementationCheckpoint({ handoff, ...context })
+    assert.equal(consumed.accepted, false, `forgery must never be accepted: ${JSON.stringify(handoff)}`)
+    assert.match(consumed.accepted === false ? consumed.reason : '', /not issued by this runtime/u)
+  }
+  // Forgeries never touch the real authority.
+  assert.equal(consumeImplementationCheckpoint({ handoff: issued.handoff, ...context }).accepted, true)
+})
+
+test('24 tampered parent, branch, or commit tree cannot become an implementation checkpoint', async () => {
+  const f = await fixture()
+  await writeFile(join(f.repo, 'feature.js'), 'export const verified = true\n')
+  await git(f.repo, 'add', '.')
+  await git(f.repo, 'commit', '-qm', 'feature')
+  const head = await git(f.repo, 'rev-parse', 'HEAD')
+  const parent = await git(f.repo, 'rev-parse', 'HEAD^')
+  const identity = await realpath(f.repo)
+  const branch = await git(f.repo, 'branch', '--show-current')
+  const diffTree = `diff-tree --no-commit-id --name-only -r -z ${head}`
+  const scripted = (overrides: Record<string, string>): GitCheckpointCommandRunner => async (args) => {
+    const table: Record<string, string> = { 'branch --show-current': branch, 'rev-parse HEAD': head,
+      'rev-parse HEAD^': parent, 'rev-parse HEAD^{tree}': 'b'.repeat(40),
+      'status --porcelain -z --untracked-files=all': '', 'diff --cached --binary': '',
+      [diffTree]: 'feature.js\0', ...overrides }
+    const stdout = table[args.join(' ')]
+    return stdout === undefined
+      ? { exitCode: 128, stdout: '', stderr: `unexpected git command: ${args.join(' ')}` }
+      : { exitCode: 0, stdout, stderr: '' }
+  }
+  const proof = (commandRunner?: GitCheckpointCommandRunner) => inspectImplementationCommit({ repoPath: f.repo,
+    expectedRepositoryIdentity: identity, expectedBranch: branch, parentCommit: parent, commitSha: head,
+    expectedChangedFiles: ['feature.js'], ...(commandRunner === undefined ? {} : { commandRunner }) })
+  assert.equal((await proof(scripted({}))).treeSha, 'b'.repeat(40))
+  await assert.rejects(proof(scripted({ 'rev-parse HEAD^': 'c'.repeat(40) })), /parent changed/u)
+  await assert.rejects(proof(scripted({ [diffTree]: 'feature.js\0smuggled.js\0' })), /tree does not match/u)
+  await assert.rejects(proof(scripted({ 'branch --show-current': 'main' })), /branch|protected/u)
+  await assert.rejects(proof(scripted({ 'status --porcelain -z --untracked-files=all': '?? extra.js\0' })),
+    /clean repository/u)
+  // A real branch switch after the commit is not a checkpoint either.
+  await git(f.repo, 'checkout', '-qb', 'codex/other-branch')
+  await assert.rejects(proof(), /branch/u)
+})
+
+test('25 out-of-scope, symlinked-out, and hardlinked changes cannot enter an implementation checkpoint', async () => {
+  const f = await checkpointFixture()
+  await writeFile(join(f.repo, 'scoped.js'), 'export const scoped = true\n')
+  const before = await repositoryObservation(f.repo)
+  const attempt = (allowedPaths: string[], forbiddenPaths: string[] = []) =>
+    commitImplementationCheckpoint({ repoPath: f.repo, repositoryIdentity: before.repositoryIdentity,
+      branch: before.branch, baselineCommit: f.target.baselineCommit, sessionId: CHECKPOINT_SESSION,
+      taskId: CHECKPOINT_TASK, before, expectedChangedFiles: ['scoped.js'], allowedPaths, forbiddenPaths })
+  await assert.rejects(attempt(['src']), /outside allowed scope/u)
+  await assert.rejects(attempt(['.'], ['scoped.js']), /inside forbidden scope/u)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), before.headSha)
+  assert.match(await git(f.repo, 'status', '--porcelain', '--untracked-files=all'), /scoped\.js/u)
+
+  await writeFile(join(f.root, 'outside.txt'), 'outside the repository\n')
+  await symlink(join(f.root, 'outside.txt'), join(f.repo, 'escape.js'))
+  const escaping = await repositoryObservation(f.repo)
+  await assert.rejects(commitImplementationCheckpoint({ repoPath: f.repo, repositoryIdentity: escaping.repositoryIdentity,
+    branch: escaping.branch, baselineCommit: f.target.baselineCommit, sessionId: CHECKPOINT_SESSION,
+    taskId: CHECKPOINT_TASK, before: escaping, expectedChangedFiles: escaping.changedFiles,
+    allowedPaths: ['.'], forbiddenPaths: [] }), /symlink escapes the repository/u)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), before.headSha)
+
+  await rm(join(f.repo, 'escape.js'))
+  await link(join(f.root, 'outside.txt'), join(f.repo, 'linked.js'))
+  const linked = await repositoryObservation(f.repo)
+  await assert.rejects(commitImplementationCheckpoint({ repoPath: f.repo, repositoryIdentity: linked.repositoryIdentity,
+    branch: linked.branch, baselineCommit: f.target.baselineCommit, sessionId: CHECKPOINT_SESSION,
+    taskId: CHECKPOINT_TASK, before: linked, expectedChangedFiles: linked.changedFiles,
+    allowedPaths: ['.'], forbiddenPaths: [] }), /links outside the checkpoint/u)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), before.headSha)
+})
+
+test('26 accepted checkpoint persists the new observation, keeps audit facts, and invalidates old evidence', async () => {
+  const f = await checkpointFixture()
+  const { issued, before, after, file } = await f.issue()
+  const stale = { type: 'old-verifier', status: 'PASSED' as const, source: 'deterministic',
+    repositoryIdentity: before.repositoryIdentity, branch: before.branch, headSha: before.headSha,
+    workspaceIdentity: before.worktreeFingerprint, timestamp: new Date().toISOString() }
+  const state: TaskStateV2 = { ...createTaskStateV2({ id: CHECKPOINT_SESSION, branch: before.branch },
+    { id: CHECKPOINT_TASK, goal: '实现并验证订单' }),
+    gitState: before,
+    verificationState: { results: [{ name: 'old-verifier', stepId: 'old-verifier', status: 'passed' }],
+      evidenceHeadSha: before.headSha, evidenceWorktreeFingerprint: before.worktreeFingerprint },
+    completion: { bindings: [], evidence: [stale],
+      review: { passed: true, findings: [], severity: 'HIGH', blockingFindings: [],
+        reviewer: { agent: 'reviewer', provider: 'deepseek', runtimeIdentity: 'reviewer-runtime' },
+        implementer: { agent: 'executor', provider: 'codex', runtimeIdentity: 'executor-runtime' },
+        reviewedCommit: before.headSha, reviewedWorkspace: before.worktreeFingerprint, reviewedFiles: [],
+        timestamp: new Date().toISOString() },
+      approval: { approved: true, workspaceIdentity: before.worktreeFingerprint, reviewedCommit: before.headSha,
+        risk: 'HIGH', timestamp: new Date().toISOString() } } }
+  const consumed = consumeImplementationCheckpoint({ handoff: issued.handoff, sessionId: CHECKPOINT_SESSION,
+    taskId: CHECKPOINT_TASK, action: 'VERIFY', before, after })
+  assert.equal(consumed.accepted, true)
+  const next = applyImplementationCheckpoint(state, consumed.accepted ? consumed.record : assert.fail('not accepted'))
+  assert.deepEqual(next.gitState, { repositoryIdentity: after.repositoryIdentity, branch: after.branch,
+    headSha: after.headSha, changedFiles: [], worktreeFingerprint: after.worktreeFingerprint })
+  assert.deepEqual(next.verificationState, { results: [] })
+  assert.deepEqual(next.completion.evidence, [])
+  assert.equal(next.completion.review, undefined)
+  assert.equal(next.completion.approval, undefined)
+  assert.equal(next.implementationCheckpointAudit?.length, 1)
+  const audit = next.implementationCheckpointAudit![0]!
+  assert.equal(audit.parentCommit, before.headSha)
+  assert.equal(audit.commitSha, after.headSha)
+  assert.equal(audit.commitSha, next.gitState.headSha)
+  assert.equal(audit.treeSha.length, 40)
+  assert.deepEqual(audit.changedFiles, [file])
+  // Persisted audit facts survive restart but can never be replayed as authority.
+  const reloaded = loadTaskStateV2(JSON.parse(JSON.stringify(next)) as unknown)
+  assert.equal(reloaded.implementationCheckpointAudit?.[0]?.commitSha, after.headSha)
+  assert.equal(consumeImplementationCheckpoint({ handoff: reloaded.implementationCheckpointAudit,
+    sessionId: CHECKPOINT_SESSION, taskId: CHECKPOINT_TASK, action: 'VERIFY', before, after }).accepted, false)
+})
+
+test('27 a no-op implementation issue creates no checkpoint authority', async () => {
+  const f = await fixture()
+  const before = await repositoryObservation(f.repo)
+  const issued = await commitImplementationCheckpoint({ repoPath: f.repo,
+    repositoryIdentity: before.repositoryIdentity, branch: before.branch, baselineCommit: f.target.baselineCommit,
+    sessionId: CHECKPOINT_SESSION, taskId: CHECKPOINT_TASK, before, expectedChangedFiles: [],
+    allowedPaths: ['.'], forbiddenPaths: [] })
+  assert.equal(issued.disposition, 'ALREADY_SATISFIED')
+  assert.equal(issued.commitSha, before.headSha)
+  assert.equal(Object.hasOwn(issued, 'handoff'), false)
+  assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), f.target.baselineCommit)
+  assert.equal(await git(f.repo, 'status', '--porcelain'), '')
 })

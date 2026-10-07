@@ -30,6 +30,26 @@ export interface ControllerDecisionTraceV2 {
   realityKey: string
 }
 
+/**
+ * Durable audit history of accepted Host implementation checkpoints. These facts
+ * are evidence for humans and analytics only: checkpoint authority is one-time,
+ * in-memory and is never reconstructed from this persisted record.
+ */
+export interface ImplementationCheckpointAuditFact {
+  action: 'VERIFY'
+  sessionId: string
+  taskId: string
+  attemptId?: string
+  repositoryIdentity: string
+  branch: string
+  baselineCommit: string
+  parentCommit: string
+  commitSha: string
+  treeSha: string
+  changedFiles: readonly string[]
+  acceptedAt: string
+}
+
 export interface TaskActionBudgetV2 {
   originalLimit: number
   originalConsumed: number
@@ -79,6 +99,8 @@ export interface TaskStateV2 {
   controllerConvergence?: {
     recentDecisions: readonly ControllerDecisionTraceV2[]
   }
+  /** Bounded audit history of accepted Host implementation checkpoints (never authority). */
+  implementationCheckpointAudit?: readonly ImplementationCheckpointAuditFact[]
   /** Per-Task durable action accounting. At most one bounded recovery grant is legal. */
   actionBudget?: TaskActionBudgetV2
   /** Golden history survives escalation; recovery consumes the existing Controller budget. */
@@ -173,6 +195,11 @@ const persistedTask = z.object({
   currentAgent: z.string().optional(), implementer: actor.optional(), currentAction: z.string().optional(),
   risk: z.enum(['LOW', 'NORMAL', 'MEDIUM', 'HIGH', 'CRITICAL']), status: z.enum(['PENDING', 'ACTIVE', 'SUSPENDED', 'COMPLETED', 'FAILED']), blockers: strings, updatedAt: z.string(),
   controllerConvergence: z.object({ recentDecisions: z.array(z.object({ decisionKey: z.string(), realityKey: z.string() })).max(12) }).optional(),
+  implementationCheckpointAudit: z.array(z.object({
+    action: z.literal('VERIFY'), sessionId: z.string().min(1), taskId: z.string().min(1), attemptId: z.string().min(1).optional(),
+    repositoryIdentity: z.string().min(1), branch: z.string().min(1), baselineCommit: z.string(), parentCommit: z.string(),
+    commitSha: z.string(), treeSha: z.string(), changedFiles: strings, acceptedAt: z.string(),
+  })).max(8).optional(),
   actionBudget: z.object({
     originalLimit: z.number().int().positive(), originalConsumed: z.number().int().nonnegative(), originalExhausted: z.boolean(),
     recoveryLimit: z.number().int().positive(), recoveryGranted: z.boolean(), recoveryConsumed: z.number().int().nonnegative(), recoveryExhausted: z.boolean(),
