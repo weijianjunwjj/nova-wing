@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -24,6 +25,7 @@ import {
   type WorkSessionTaskResult,
 } from 'nova-wing/development-guardian'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
+import { executionLedgerPathFromStorageUrl } from '../packages/development-guardian/work-session/execution-ledger.js'
 import { createWorkSessionFailedNotification } from '../packages/development-guardian/work-session/notifier.js'
 import { renderFailedNotificationText } from '../packages/development-guardian/work-session/smtp-notifier.js'
 import { renderHtml } from '../packages/development-guardian/work-session/control-ui/view.js'
@@ -478,6 +480,241 @@ await test('restart delivers a persisted FAILED state that crashed before its fi
     assert.ok(restarted.readExecutionLedger().some((event) =>
       event.eventType === 'NOTIFICATION_SENT' && event.notificationKind === 'FAILED'))
     await restarted.close()
+  })
+})
+
+const alwaysFailingTaskRunner = {
+  async run(): Promise<WorkSessionTaskResult> {
+    return {
+      status: 'FAILED' as const,
+      error: 'spawn EACCES',
+      failureStage: 'EXECUTOR' as const,
+      failureCategory: 'PROVIDER_ERROR' as const,
+    }
+  },
+}
+
+function deleteFailedDeliveryEvents(storageUrl: string): void {
+  const database = new DatabaseSync(executionLedgerPathFromStorageUrl(storageUrl))
+  try {
+    database.exec(
+      "DELETE FROM execution_ledger_events WHERE notification_kind = 'FAILED' " +
+      "AND event_type IN ('NOTIFICATION_SENT', 'NOTIFICATION_FAILED')",
+    )
+  } finally {
+    database.close()
+  }
+}
+
+function createLegacyV1Ledger(storageUrl: string): void {
+  const database = new DatabaseSync(executionLedgerPathFromStorageUrl(storageUrl))
+  try {
+    // v1 shape: no cumulative_elapsed_ms and no verification/recovery columns;
+    // phase events carried their cumulative elapsed in duration_ms.
+    database.exec(`
+      CREATE TABLE execution_ledger_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schema_version INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        dedupe_key TEXT NOT NULL,
+        task_id TEXT,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT,
+        phase TEXT,
+        iteration INTEGER,
+        duration_ms INTEGER,
+        active_elapsed_ms REAL,
+        commit_sha TEXT,
+        push_sha TEXT,
+        completion_reason TEXT,
+        failure_stage TEXT,
+        failure_category TEXT,
+        safe_message TEXT,
+        notification_kind TEXT,
+        notification_id TEXT,
+        UNIQUE(session_id, dedupe_key)
+      ) STRICT
+    `)
+    database.exec(`
+      INSERT INTO execution_ledger_events (
+        event_id, schema_version, session_id, dedupe_key, task_id, timestamp,
+        event_type, status, phase, iteration, duration_ms, active_elapsed_ms,
+        commit_sha, push_sha, completion_reason, failure_stage, failure_category,
+        safe_message, notification_kind, notification_id
+      ) VALUES
+        (1, 1, 'legacy', 'session-started', NULL, '2026-01-01T00:00:00.000Z',
+         'SESSION_STARTED', 'RUNNING', NULL, NULL, NULL, 0,
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+        (2, 1, 'legacy', 'phase:executing:0:active', 'T1', '2026-01-01T00:00:01.000Z',
+         'PHASE_STARTED', 'active', 'EXECUTING', 0, 3000, 3000,
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+        (3, 1, 'legacy', 'phase:executing:0:completed', 'T1', '2026-01-01T00:00:02.000Z',
+         'PHASE_COMPLETED', 'completed', 'EXECUTING', 0, 12000, 12000,
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+        (4, 1, 'legacy', 'session-failed', 'T1', '2026-01-01T00:00:03.000Z',
+         'SESSION_FAILED', 'FAILED', NULL, NULL, NULL, 12000,
+         NULL, NULL, NULL, 'EXECUTOR', 'PROVIDER_ERROR', 'spawn EACCES', NULL, NULL)
+    `)
+  } finally {
+    database.close()
+  }
+}
+
+await test('v1 Ledger migration keeps phase cumulative elapsed semantics and stays restart stable', async () => {
+  await withTemp('ledger-v1-migration-', async ({ storageUrl }) => {
+    createLegacyV1Ledger(storageUrl)
+
+    const store = new ExecutionLedgerStore(storageUrl)
+    const migrated = store.read('legacy')
+    store.close()
+
+    assert.deepEqual(migrated.map((event) => event.eventType), [
+      'SESSION_STARTED', 'PHASE_STARTED', 'PHASE_COMPLETED', 'SESSION_FAILED',
+    ])
+    assert.ok(migrated.every((event) => event.schemaVersion === 2), 'migrated events adopt the current schema version')
+
+    const phaseStarted = migrated.find((event) => event.eventType === 'PHASE_STARTED')
+    assert.equal(phaseStarted?.eventType, 'PHASE_STARTED')
+    if (phaseStarted?.eventType === 'PHASE_STARTED') {
+      // v1 duration_ms was cumulative elapsed, so it must migrate to
+      // cumulativeElapsedMs, never become a single-shot durationMs.
+      assert.equal(phaseStarted.cumulativeElapsedMs, 3000)
+      assert.equal(phaseStarted.durationMs, undefined)
+      assert.equal(phaseStarted.verificationCommand, undefined)
+      assert.equal(phaseStarted.verificationStatus, undefined)
+      assert.equal(phaseStarted.recoveryReason, undefined)
+      assert.equal(phaseStarted.recoveryBounded, undefined)
+    }
+    const phaseCompleted = migrated.find((event) => event.eventType === 'PHASE_COMPLETED')
+    assert.equal(phaseCompleted?.eventType, 'PHASE_COMPLETED')
+    if (phaseCompleted?.eventType === 'PHASE_COMPLETED') {
+      assert.equal(phaseCompleted.cumulativeElapsedMs, 12000)
+      assert.equal(phaseCompleted.durationMs, undefined)
+      assert.equal(phaseCompleted.verificationCommand, undefined)
+      assert.equal(phaseCompleted.verificationStatus, undefined)
+      assert.equal(phaseCompleted.recoveryReason, undefined)
+      assert.equal(phaseCompleted.recoveryBounded, undefined)
+    }
+    const sessionFailed = migrated.find((event) => event.eventType === 'SESSION_FAILED')
+    assert.equal(sessionFailed?.eventType, 'SESSION_FAILED')
+    if (sessionFailed?.eventType === 'SESSION_FAILED') {
+      assert.equal(sessionFailed.failureStage, 'EXECUTOR')
+      assert.equal(sessionFailed.failureCategory, 'PROVIDER_ERROR')
+    }
+    assert.equal(
+      (sessionFailed as { cumulativeElapsedMs?: number } | undefined)?.cumulativeElapsedMs,
+      undefined,
+      'non-phase v1 events must not fabricate cumulative elapsed',
+    )
+    assert.equal(
+      (sessionFailed as { durationMs?: number } | undefined)?.durationMs,
+      undefined,
+    )
+
+    // Close and reopen: migration must not run twice or drift the reading.
+    const reopened = readExecutionLedger(storageUrl, 'legacy')
+    assert.deepEqual(reopened, migrated)
+    assert.deepEqual(reopened.map((event) => event.eventId), [1, 2, 3, 4])
+  })
+})
+
+await test('restart keeps a durable FAILED success even when its Ledger success fact is lost', async () => {
+  await withTemp('ledger-durable-success-', async ({ storageUrl }) => {
+    const sessionId = 'ledger-durable-success'
+    const notifier = new FailedNotifier()
+    const runtime = new WorkSessionRuntime({
+      definition: definition(sessionId), storageUrl, notifier,
+      notificationRetryDelayMs: 0, taskRunner: alwaysFailingTaskRunner,
+    })
+    await assert.rejects(runtime.start(), /spawn EACCES/u)
+    await runtime.getNotificationPromise()
+    assert.equal(notifier.attempts, 1)
+    assert.equal(runtime.getDurableState()?.failureNotified, true)
+    await runtime.close()
+
+    // Simulate a lost Ledger success write: durable state still records success.
+    deleteFailedDeliveryEvents(storageUrl)
+    assert.ok(!readExecutionLedger(storageUrl, sessionId).some((event) =>
+      event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED'))
+
+    const restartedNotifier = new FailedNotifier()
+    const restarted = new WorkSessionRuntime({
+      definition: definition(sessionId), storageUrl, notifier: restartedNotifier,
+      notificationRetryDelayMs: 0,
+      taskRunner: { async run() { throw new Error('persisted FAILED must not execute task') } },
+    })
+    const hydrated = await restarted.loadPersistedState()
+    assert.equal(hydrated?.state, 'FAILED')
+    assert.equal(hydrated?.failureNotified, true)
+    await restarted.getNotificationPromise()
+    assert.equal(restartedNotifier.attempts, 0, 'a durable success must not be downgraded by a missing Ledger event')
+    await restarted.close()
+  })
+})
+
+await test('restart permits one controlled retry for attempt-only state with no Ledger delivery fact', async () => {
+  await withTemp('ledger-attempted-only-', async ({ storageUrl }) => {
+    const sessionId = 'ledger-attempted-only'
+    const failingNotifier = new FailedNotifier()
+    failingNotifier.failuresRemaining = 2
+    const runtime = new WorkSessionRuntime({
+      definition: definition(sessionId), storageUrl, notifier: failingNotifier,
+      notificationRetryDelayMs: 0, taskRunner: alwaysFailingTaskRunner,
+    })
+    await assert.rejects(runtime.start(), /spawn EACCES/u)
+    await runtime.getNotificationPromise()
+    assert.equal(failingNotifier.attempts, 2)
+    assert.equal(runtime.getDurableState()?.failureNotificationAttempted, true)
+    assert.notEqual(runtime.getDurableState()?.failureNotified, true)
+    await runtime.close()
+
+    deleteFailedDeliveryEvents(storageUrl)
+    assert.ok(!readExecutionLedger(storageUrl, sessionId).some((event) =>
+      event.eventType === 'NOTIFICATION_SENT' || event.eventType === 'NOTIFICATION_FAILED'))
+
+    const retryNotifier = new FailedNotifier()
+    const restarted = new WorkSessionRuntime({
+      definition: definition(sessionId), storageUrl, notifier: retryNotifier,
+      notificationRetryDelayMs: 0,
+      taskRunner: { async run() { throw new Error('persisted FAILED must not execute task') } },
+    })
+    await restarted.loadPersistedState()
+    await restarted.getNotificationPromise()
+    assert.equal(retryNotifier.attempts, 1, 'attempt-only state without a Ledger fact stays retry-eligible')
+    assert.equal(restarted.getDurableState()?.failureNotified, true)
+    await restarted.close()
+  })
+})
+
+await test('restart stays bounded when the Ledger records a FAILED delivery failure', async () => {
+  await withTemp('ledger-delivery-failure-', async ({ storageUrl }) => {
+    const sessionId = 'ledger-delivery-failure'
+    const failingNotifier = new FailedNotifier()
+    failingNotifier.failuresRemaining = 2
+    const runtime = new WorkSessionRuntime({
+      definition: definition(sessionId), storageUrl, notifier: failingNotifier,
+      notificationRetryDelayMs: 0, taskRunner: alwaysFailingTaskRunner,
+    })
+    await assert.rejects(runtime.start(), /spawn EACCES/u)
+    await runtime.getNotificationPromise()
+    assert.equal(failingNotifier.attempts, 2)
+    assert.ok(runtime.readExecutionLedger().some((event) =>
+      event.eventType === 'NOTIFICATION_FAILED' && event.notificationKind === 'FAILED'))
+    await runtime.close()
+
+    for (let restart = 0; restart < 2; restart++) {
+      const notifier = new FailedNotifier()
+      const restarted = new WorkSessionRuntime({
+        definition: definition(sessionId), storageUrl, notifier,
+        notificationRetryDelayMs: 0,
+        taskRunner: { async run() { throw new Error('persisted FAILED must not execute task') } },
+      })
+      await restarted.loadPersistedState()
+      await restarted.getNotificationPromise()
+      assert.equal(notifier.attempts, 0, `restart ${restart + 1} must not resend an unbounded number of times`)
+      await restarted.close()
+    }
   })
 })
 

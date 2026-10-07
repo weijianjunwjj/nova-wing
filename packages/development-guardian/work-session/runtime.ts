@@ -286,11 +286,16 @@ export class WorkSessionRuntime {
       )
       // Ledger delivery facts repair states written by the old pre-delivery
       // claim path. With no delivery fact, FAILED is still eligible on restart.
+      // A durable success fact is authoritative: a lost Ledger success event
+      // must never downgrade it back into a resend.
+      const ledgerNotified = failedDeliveries.some(
+        (event) => event.eventType === 'NOTIFICATION_SENT',
+      )
       hydratedState = {
         ...parsed.data,
         failureNotificationAttempted: failedDeliveries.length > 0 || undefined,
         failureNotified:
-          failedDeliveries.some((event) => event.eventType === 'NOTIFICATION_SENT') || undefined,
+          parsed.data.failureNotified === true || ledgerNotified || undefined,
       }
     }
     this.latestState = hydratedState
