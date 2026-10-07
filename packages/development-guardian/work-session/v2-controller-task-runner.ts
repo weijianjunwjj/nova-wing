@@ -1,4 +1,5 @@
 import type { VerificationResult } from '../model.js'
+import { implementationCheckpointHandoff } from './implementation-checkpoint.js'
 import { canonicalVerificationFailure, TaskController, type TaskAction, type TaskActionResult } from './task-controller.js'
 import { verifierEvidenceFromBindings } from './completion-criteria.js'
 import { createTaskStateV2, loadTaskStateV2, type TaskActorIdentity, type TaskStateV2 } from './task-state-v2.js'
@@ -71,7 +72,8 @@ export interface V2StructuredHandoff {
 }
 
 export interface V2ActionDispatcher {
-  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[] }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
+  dispatch(input: { action: TaskAction; agent: AgentCapabilityProfile; task: TaskStateV2; handoff?: V2StructuredHandoff; approvedVerificationCommand?: string; retry?: NoOpExecutionRetry; recoveryInstructions?: readonly string[];
+    checkpointImplementation?: (baselineCommit: string) => Promise<TaskStateV2> }): Promise<TaskActionResult & { review?: ReviewEvidence; approval?: ApprovalEvidence; providerHistory?: readonly string[]; providerHealth?: readonly ProviderHealthObservation[]; providerFailure?: ReviewerProviderFailure }>
   /** Production V2 has no agent-reported-repository fallback. */
   inspectRepository(): Promise<RepositoryReality>
   /** Delivery-only durable assertion gate, checked immediately before Task finalization. */
@@ -586,8 +588,15 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
       const selected = structuredClone(agent)
       const handoff = previousAgent === undefined || previousAgent === agent.id ? undefined
         : createStructuredHandoff(dispatchedState, decision.action, `provider switch from ${previousAgent} to ${agent.id}`)
-      const result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState, ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
-        recoveryInstructions: [...(context?.recoveryInstructions ?? []), ...(state.autonomousRecovery?.diagnosis?.instructions ? [state.autonomousRecovery.diagnosis.instructions] : [])] })
+      const checkpoint = implementationCheckpointHandoff({ getState: () => state, setState: (accepted) => { state = accepted },
+        ...(context?.persistTaskStateV2 === undefined ? {} : { persist: context.persistTaskStateV2 }) })
+      let result: Awaited<ReturnType<V2ActionDispatcher['dispatch']>>
+      try {
+        result = await this.options.dispatcher.dispatch({ action: decision.action, agent: structuredClone(selected), task: dispatchedState,
+          ...(decision.action === 'VERIFY' ? { checkpointImplementation: checkpoint.checkpoint } : {}),
+          ...(handoff === undefined ? {} : { handoff }), ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
+          recoveryInstructions: [...(context?.recoveryInstructions ?? []), ...(state.autonomousRecovery?.diagnosis?.instructions ? [state.autonomousRecovery.diagnosis.instructions] : [])] })
+      } finally { checkpoint.close() }
       const actualProvider = result.providerHistory?.at(-1) ?? projectedProvider
       approvedVerificationCommand = undefined
       // Real runtime/router observations from this dispatch become Provider Health facts.

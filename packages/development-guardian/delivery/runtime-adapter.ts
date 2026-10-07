@@ -103,14 +103,22 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
           CAPABILITY_REGISTRY[item.verificationCapability.family].availability) !== 'AVAILABLE')
       if (unavailable) return { status: 'BLOCKED', blockers: [
         `${unavailable.assertionId} verification provider unavailable during execution.`] }
+      completionProofs.delete(input.task.identity.taskId)
       try {
-        await checkpointImplementationForVerification({ repoPath: plan.targetBinding.canonicalPath,
+        if (input.checkpointImplementation) {
+          input = { ...input, task: await input.checkpointImplementation(plan.targetBaselineCommit) }
+        } else {
+          // Standalone read-only verification may prove an already clean HEAD.
+          // Creating a commit requires the live Host handoff, never a returned SHA.
+          if (input.task.gitState.changedFiles.length) throw new Error('Host implementation checkpoint handoff is required')
+          await checkpointImplementationForVerification({ repoPath: plan.targetBinding.canonicalPath,
           expectedRepositoryIdentity: input.task.gitState.repositoryIdentity ?? '',
           expectedBranch: plan.targetBinding.branch ?? '', baselineCommit: plan.targetBaselineCommit,
           expectedHeadSha: input.task.gitState.headSha ?? '',
           expectedChangedFiles: input.task.gitState.changedFiles,
           expectedWorktreeFingerprint: input.task.gitState.worktreeFingerprint ?? '',
           taskId: input.task.identity.taskId })
+        }
       } catch (error) { return { status: 'BLOCKED', blockers: [
         `IMPLEMENTATION_CHECKPOINT_BLOCKED: ${error instanceof Error ? error.message : String(error)}`] } }
       const results = [] as NonNullable<Awaited<ReturnType<V2ActionDispatcher['dispatch']>>['verificationResults']>[number][]
@@ -118,7 +126,8 @@ export function createDeliveryRuntimeDispatcher(plan: CompiledRuntimePlan, store
         const commandOnly = { ...input.task, completion: { ...input.task.completion,
           bindings: input.task.completion.bindings.filter((item) => !item.requiredEvidence.some((value) =>
             value.startsWith('NOVAWING_VERIFICATION_PENDING:'))) } }
-        const commandResult = await defaultDispatcher.dispatch({ ...input, task: commandOnly })
+        const { checkpointImplementation: _checkpoint, ...verificationInput } = input
+        const commandResult = await defaultDispatcher.dispatch({ ...verificationInput, task: commandOnly })
         if (commandResult.status !== 'SUCCESS' || !commandResult.verificationResults?.every((item) => item.status === 'passed'))
           return commandResult
         results.push(...commandResult.verificationResults)

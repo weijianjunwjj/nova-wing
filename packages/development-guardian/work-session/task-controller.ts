@@ -100,7 +100,9 @@ export class TaskController {
       artifacts: result.changedFiles === undefined ? task.artifacts : [...new Set([...task.artifacts, ...result.changedFiles])],
       // Repository Inspector, not a provider report, owns git reality.
       gitState: task.gitState,
-      verificationState: { ...task.verificationState, results: verificationResults },
+      verificationState: { ...task.verificationState, results: verificationResults,
+        ...(verified === undefined ? {} : { evidenceHeadSha: task.gitState.headSha,
+          evidenceWorktreeFingerprint: task.gitState.worktreeFingerprint }) },
       completion: verified === undefined
         ? (action === 'EXECUTE' && result.status === 'SUCCESS' && implementationProgress
             // A revision invalidates the previous review; it was a verdict on code
@@ -120,7 +122,7 @@ export class TaskController {
       status: result.status === 'BLOCKED' ? 'SUSPENDED' : 'ACTIVE',
       // A repair invalidates failed evidence; the next Controller decision is VERIFY.
       ...(action === 'EXECUTE' && result.status === 'SUCCESS' && implementationProgress
-        ? { verificationState: { ...task.verificationState, results: verificationResults.filter((item) => item.status !== 'failed') } }
+        ? { verificationState: { results: verificationResults.filter((item) => item.status !== 'failed') } }
         : {}),
       updatedAt: new Date().toISOString(),
     }

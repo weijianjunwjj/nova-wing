@@ -22,7 +22,8 @@ import { gitExecutable } from '../platform/windows-git.js'
  */
 
 import { createHash } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { WorkSessionTask } from './model.js'
 import type { TaskCompletionEvidence } from './task-runner.js'
@@ -255,13 +256,16 @@ export async function checkpointImplementationForVerification(options: {
   const status = await runGitString(runGit, ['status', '--porcelain', '-z', '--untracked-files=all'])
   const entries = parseGitStatus(status)
   const indexDiff = await runGitString(runGit, ['diff', '--cached', '--binary'])
-  const fingerprint = createHash('sha256').update(await computeWorktreeFingerprint(options.repoPath, entries,
-    { strict: true })).update(indexDiff).digest('hex')
+  const inspectedContentFingerprint = await computeWorktreeFingerprint(options.repoPath, entries, { strict: true })
+  const fingerprint = createHash('sha256').update(inspectedContentFingerprint).update(indexDiff).digest('hex')
   if (fingerprint !== options.expectedWorktreeFingerprint ||
     !samePathSet(entries.map((item) => item.path), options.expectedChangedFiles))
     throw new GitCheckpointError('delivery implementation changed after trusted repository inspection')
   const meaningful = entries.filter((item) => !isUntrackedRuntimeArtifact(item.status, item.path))
     .map((item) => normalizePath(item.path))
+  if (meaningful.length !== entries.length)
+    throw new GitCheckpointError('delivery implementation has untracked runtime artifacts')
+  await validateImplementationPaths(options.repoPath, meaningful)
   if (parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])).length)
     throw new GitCheckpointError('delivery implementation has pre-staged changes')
   if (meaningful.length === 0) {
@@ -269,12 +273,23 @@ export async function checkpointImplementationForVerification(options: {
     return options.expectedHeadSha
   }
   let stagingStarted = false
+  let expectedTree = ''
   try {
     stagingStarted = true
-    await runGitChecked(runGit, ['add', '--', ...meaningful])
+    await runGitChecked(runGit, ['--literal-pathspecs', 'add', '--', ...meaningful])
     await runGitChecked(runGit, ['diff', '--cached', '--check'])
-    if (!samePathSet(parseNameOnlyLines(await runGitString(runGit, ['diff', '--cached', '--name-only'])), meaningful))
+    if (!samePathSet((await runGitString(runGit, ['diff', '--cached', '--no-renames', '--name-only', '-z'])).split('\0').filter(Boolean), meaningful))
       throw new GitCheckpointError('delivery staged files differ from inspected implementation files')
+    // The index must describe the inspected bytes, including deletions and modes.
+    if (await runGitString(runGit, ['diff', '--name-only', '-z']) !== '' ||
+      await computeWorktreeFingerprint(options.repoPath, entries, { strict: true }) !==
+        inspectedContentFingerprint)
+      throw new GitCheckpointError('delivery implementation changed during staging')
+    await validateImplementationPaths(options.repoPath, meaningful)
+    expectedTree = await runGitString(runGit, ['write-tree'])
+    if (await runGitString(runGit, ['rev-parse', 'HEAD']) !== options.expectedHeadSha ||
+      await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch)
+      throw new GitCheckpointError('delivery implementation changed before commit')
     await runGitChecked(runGit, ['commit', '-m', `${options.taskId}: implementation for verification`])
   } catch (error) {
     const rollback = stagingStarted ? await restoreIndexAfterFailedCheckpoint(runGit, options.expectedHeadSha) : undefined
@@ -282,10 +297,37 @@ export async function checkpointImplementationForVerification(options: {
       (rollback ? `; ${rollback}` : '; restored index after failed delivery checkpoint'))
   }
   const commit = await runGitString(runGit, ['rev-parse', 'HEAD'])
-  if (!/^[a-f0-9]{40}$/u.test(commit) || await runGitString(runGit,
+  if (!/^[a-f0-9]{40}$/u.test(commit) ||
+    await runGitString(runGit, ['show', '-s', '--format=%P', commit]) !== options.expectedHeadSha ||
+    await runGitString(runGit, ['rev-parse', `${commit}^{tree}`]) !== expectedTree ||
+    await runGitString(runGit, ['branch', '--show-current']) !== options.expectedBranch ||
+    await realpath(options.repoPath) !== options.expectedRepositoryIdentity || await runGitString(runGit,
     ['status', '--porcelain', '--untracked-files=all']) !== '')
-    throw new GitCheckpointError('delivery implementation commit did not leave a clean repository')
+    throw new GitCheckpointError('delivery implementation commit parent, tree, branch or clean state mismatch')
   return commit
+}
+
+/** Validate literal paths and every ancestor; never follow links out of the task. */
+export async function validateImplementationPaths(repoPath: string, paths: readonly string[]): Promise<void> {
+  for (const path of paths) {
+    const segments = path.split('/')
+    if (!path || path.includes('\\') || segments.some((part) => !part || part === '.' || part === '..' ||
+      part.toLowerCase() === '.git') || /^[A-Za-z]:/u.test(path))
+      throw new GitCheckpointError('unsafe implementation path')
+    let current = repoPath
+    for (const [index, segment] of segments.entries()) {
+      current = join(current, segment)
+      let info
+      try { info = await lstat(current) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') break // deletion
+        throw error
+      }
+      if (info.isSymbolicLink() || (index < segments.length - 1 ? !info.isDirectory() :
+        !info.isFile() || info.nlink !== 1))
+        throw new GitCheckpointError('implementation path contains a symlink, hardlink or non-file')
+    }
+  }
 }
 
 /** Read-only handoff proof for the normal Task-boundary finalizer after delivery VERIFY. */

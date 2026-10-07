@@ -5,6 +5,7 @@ import type { AcceptanceEvidenceBinding, ApprovalEvidence, EvidenceV2, ReviewEvi
 import type { VerificationPlan } from './verification-planner.js'
 import { autonomousDiagnosisDecisionSchema, RECOVERY_ACTION_BUDGET, type AutonomousDiagnosisDecision } from './autonomous-diagnosis.js'
 import { runtimeAcceptanceEvidence } from './completion-criteria.js'
+import type { ImplementationCheckpointAudit } from './implementation-checkpoint.js'
 
 export const TASK_STATE_V2_VERSION = 2 as const
 
@@ -56,6 +57,8 @@ export interface TaskStateV2 {
   openQuestions: readonly string[]
   artifacts: readonly string[]
   gitState: TaskGitStateV2
+  /** Audit only. Serialized facts cannot authorize a repository transition. */
+  implementationCheckpoints?: readonly ImplementationCheckpointAudit[]
   verificationState: TaskVerificationStateV2
   verificationPlan?: VerificationPlan
   /** Completion facts are task-owned.  Legacy workflow snapshots only project them. */
@@ -137,6 +140,9 @@ export function createTaskStateV2(
 }
 
 const strings = z.array(z.string())
+const checkpointObservation = z.object({ repositoryIdentity: z.string().min(1), branch: z.string().min(1),
+  headSha: z.string().regex(/^[a-f0-9]{40}$/u), changedFiles: strings,
+  worktreeFingerprint: z.string().regex(/^[a-f0-9]{64}$/u) })
 const actor = z.object({ agent: z.string().min(1), provider: z.string().min(1), runtimeIdentity: z.string().min(1) })
 const riskLevel = z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
 const verificationResult = z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']) }).passthrough()
@@ -158,6 +164,10 @@ const persistedTask = z.object({
   progress: z.object({ completedWork: strings, pendingWork: strings }),
   decisions: strings, assumptions: strings, openQuestions: strings, artifacts: strings,
   gitState: z.object({ repositoryIdentity: z.string().min(1).optional(), branch: z.string().min(1).optional(), headSha: z.string().min(1).optional(), changedFiles: strings, worktreeFingerprint: z.string().min(1).optional() }),
+  implementationCheckpoints: z.array(z.object({ sessionId: z.string().min(1), taskId: z.string().min(1),
+    attemptId: z.string().optional(), dispatchId: z.string().min(1), action: z.literal('VERIFY'),
+    before: checkpointObservation, after: checkpointObservation, gitDirectory: z.string().min(1),
+    parent: z.string().regex(/^[a-f0-9]{40}$/u), tree: z.string().regex(/^[a-f0-9]{40}$/u), changedFiles: strings })).optional(),
   verificationState: z.object({ results: z.array(verificationResult), evidenceHeadSha: z.string().optional(), evidenceWorktreeFingerprint: z.string().optional() }),
   verificationPlan: verificationPlan.optional(),
   completion: z.object({

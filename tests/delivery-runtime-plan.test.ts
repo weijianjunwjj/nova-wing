@@ -21,7 +21,8 @@ import { CAPABILITY_REGISTRY, classifyCapability, collectFilesystemEvidence, col
 import { ADMISSION_MODEL_VERSION, customerDeliveryCompletionGate, taskCompletionGate } from '../packages/development-guardian/delivery/staged-verification.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { validateTrustedWorkSessionConfig } from '../packages/development-guardian/work-session/production.js'
-import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { createTaskStateV2, type TaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
+import { implementationCheckpointHandoff } from '../packages/development-guardian/work-session/implementation-checkpoint.js'
 import { assertionCapabilityEvidenceValid, type ReviewEvidence } from '../packages/development-guardian/work-session/risk-evidence.js'
 import { V2ControllerTaskRunner, type V2ActionDispatcher } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import { createDeliveryRuntimeDispatcher } from '../packages/development-guardian/delivery/runtime-adapter.js'
@@ -485,12 +486,104 @@ test('delivery V2 adapter lets implementation run without executing obligation m
   await writeFile(join(repo, 'feature.js'), 'export const implemented = true\n')
   const dirtyTask = { ...task, gitState: await trustedGitState(repo) }
   const beforeVerificationCommit = dirtyTask.gitState.headSha
-  const missing = await dispatcher.dispatch({ action: 'VERIFY', agent, task: dirtyTask })
+  let hostState = dirtyTask
+  const host = implementationCheckpointHandoff({ getState: () => hostState,
+    setState: (state) => { hostState = state as typeof dirtyTask } })
+  const missing = await dispatcher.dispatch({ action: 'VERIFY', agent, task: dirtyTask,
+    checkpointImplementation: host.checkpoint })
+  host.close()
   assert.equal(missing.status, 'BLOCKED')
   assert.match(missing.blockers?.[0] ?? '', /BLUEPRINT_CANDIDATE_MISSING/u)
   assert.notEqual(await git(repo, 'rev-parse', 'HEAD'), beforeVerificationCommit)
   assert.equal(await git(repo, 'status', '--porcelain'), '')
   assert.equal(received.length, 1)
+  assert.equal(hostState.implementationCheckpoints?.length, 1)
+})
+
+test('Delivery EXECUTE -> VERIFY owns a real commit, persists it before verification and reaches REVIEW', async () => {
+  const { root, repo, snapshot } = await fixture()
+  const target = await bindDeliveryTarget(snapshot, repo, 'trusted_test')
+  const plan = await compileRuntimePlan(snapshot, target, { resolver: supported, runtimePolicyVersion: 'fixture-policy-v1',
+    runtimeConfigured: true, executorAvailable: true, reviewerAvailable: true })
+  const definition = workSessionDefinitionFor(plan, 'delivery-owned-handoff')
+  const store = new DeliveryStore(join(root, 'delivery'))
+  await store.savePlan(plan)
+  const actions: string[] = []
+  const persisted: TaskStateV2[] = []
+  let implementationCommit = ''
+  const agent = { id: 'implementer', identity: { agent: 'implementer', provider: 'implementation', runtimeIdentity: 'implementation' },
+    available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, verification: true } }
+  const reviewer = { id: 'reviewer', identity: { agent: 'reviewer', provider: 'independent', runtimeIdentity: 'independent' },
+    available: true, quotaExhausted: false, degraded: false, capabilities: { review: true } }
+  const deliveryDispatcher = createDeliveryRuntimeDispatcher(plan, store, {
+    inspectRepository: () => trustedGitState(repo),
+    async dispatch({ action, task }) {
+      if (action === 'EXECUTE') {
+        await writeFile(join(repo, 'feature.js'), 'export const implemented = true\n')
+        const initialBlueprint = blueprintFixture(snapshot, target)
+        await writeFile(join(repo, 'tests/cart.test.js'),
+          `const assertionId = 'A1'; const assertionContractHash = '${initialBlueprint.sourceAssertionHash}';\n` +
+          await readFile(join(repo, 'tests/cart.test.js'), 'utf8'))
+        await (await import('node:fs/promises')).mkdir(join(repo, 'verification'))
+        const { schemaVersion: _schema, assertionId, runtimeTaskId, sourceAssertionHash, targetConstraints: _target,
+          provenance: _provenance, ...content } = initialBlueprint
+        await writeFile(join(repo, 'verification/blueprints.v1.json'), JSON.stringify({ schemaVersion: 1,
+          entries: [{ assertionId, runtimeTaskId, sourceAssertionHash, blueprint: content }] }))
+        return { status: 'SUCCESS', changedFiles: ['feature.js', 'tests/cart.test.js', 'verification/blueprints.v1.json'] }
+      }
+      implementationCommit = await git(repo, 'rev-parse', 'HEAD')
+      assert.notEqual(implementationCommit, target.baselineCommit)
+      assert.equal(task.gitState.headSha, implementationCommit)
+      assert.equal(await git(repo, 'show', '-s', '--format=%P', implementationCommit), target.baselineCommit)
+      assert.equal(await git(repo, 'status', '--porcelain'), '')
+      assert.equal(persisted.at(-1)?.gitState.headSha, implementationCommit)
+      assert.equal(action, 'REVIEW')
+      assert.equal(task.verificationState.evidenceHeadSha, implementationCommit)
+      assert.ok(task.completion.evidence.every((item) => item.headSha === implementationCommit))
+      return { status: 'BLOCKED', blockers: ['Fixture stops after proving REVIEW dispatch.'] }
+    },
+  })
+  const dispatcher: V2ActionDispatcher = {
+    inspectRepository: () => deliveryDispatcher.inspectRepository(),
+    async dispatch(input) {
+      actions.push(input.action)
+      if (input.action !== 'VERIFY') return deliveryDispatcher.dispatch(input)
+      assert.ok(input.checkpointImplementation)
+      const checkpoint = input.checkpointImplementation
+      const verified = await deliveryDispatcher.dispatch({ ...input, async checkpointImplementation(baseline) {
+        const accepted = await checkpoint(baseline)
+        implementationCommit = accepted.gitState.headSha!
+        assert.equal(persisted.at(-1)?.gitState.headSha, implementationCommit)
+        assert.deepEqual(accepted.verificationState, { results: [] })
+        assert.deepEqual(accepted.completion.evidence, [])
+        assert.equal(accepted.completion.review, undefined)
+        // Use the real exact blueprint pipeline and native collector, with a local
+        // independent fixture reviewer so this regression needs no external model.
+        const criterion = snapshot.content.acceptancePlan.criteria[0]!
+        const approved = await bindObligationAtCommit({ obligation: plan.acceptanceBindings[0]!.stagedVerification.obligation!,
+          assertion: criterion.assertions[0]!, criterion, target, commit: implementationCommit,
+          reviewer: async () => ({ verdict: 'PASS', reviewer: 'independent-fixture', issues: [] }) })
+        await store.bindProvisionedVerifier(plan, 'A1', 'T1', approved)
+        return accepted
+      } })
+      assert.equal(verified.status, 'SUCCESS')
+      assert.equal(verified.verificationResults?.[0]?.status, 'passed')
+      const observed = await store.getCapabilityEvidence(plan, verified.verificationResults![0]!.rawOutputRef!)
+      assert.equal(observed?.facts.observedMatch, true)
+      assert.equal((await store.getBindingTransition(plan, 'A1', 'T1'))?.implementationCommit, implementationCommit)
+      return verified
+    },
+  }
+  const runner = new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch,
+    agents: [agent, reviewer], dispatcher })
+  const result = await runner.run(definition.tasks[0]!, undefined, undefined, {
+    async persistTaskStateV2(state) { persisted.push(structuredClone(state)) },
+  })
+  assert.deepEqual(actions, ['EXECUTE', 'VERIFY', 'REVIEW'], JSON.stringify({
+    readiness: plan.acceptanceBindings[0]!.stagedVerification.readiness, humanRequired: result.humanRequired }))
+  assert.notEqual(result.humanRequired?.category, 'REPO_DRIFT')
+  assert.equal(result.taskStateV2?.gitState.headSha, implementationCommit)
+  assert.equal(result.taskStateV2?.implementationCheckpoints?.length, 1)
 })
 
 test('production V2 controller cannot complete an owner task when its exact blueprint is absent', async () => {
