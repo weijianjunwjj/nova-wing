@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "frozenAt": "2026-10-07",
+  "title": "NovaWing Career Eval v1",
+  "purpose": "A small real-repository replay set for measuring time-to-accepted-result (TTAR), first-pass acceptance, human intervention, and cost. It is engineering evidence, not a general model leaderboard.",
+  "methodology": {
+    "primaryMetric": "time_to_accepted_result",
+    "metricDefinitions": {
+      "time_to_accepted_result": "Wall-clock from task submission to a reviewed ACCEPT. Infrastructure delay and required revision cycles count when externally captured.",
+      "first_pass_acceptance": "Whether the first submitted implementation passed code review without a corrective implementation round.",
+      "human_intervention": "Technical steering supplied by the human during execution. Ordinary permission confirmations are recorded separately when present.",
+      "cost_per_accepted_task": "Observed provider cost for the accepted task when reliable billing evidence exists."
+    },
+    "controls": [
+      "Each fresh run starts from the task baseline commit.",
+      "The prompt forbids reading Git history, other branches, remote commits, PRs, or historical implementations.",
+      "The hidden reference commit is used only during review.",
+      "Harness-native orchestration is allowed; external coding agents are not.",
+      "A passing test suite alone is insufficient when required safety invariants are missing."
+    ],
+    "limitations": [
+      "The pilot has a very small sample size and is not statistically generalizable.",
+      "Some early runs did not have reliable external wall-clock capture and therefore keep duration null.",
+      "Client/model display names are preserved as observed; provider routing evidence is recorded separately when needed.",
+      "A Medium Codex run is marked non-comparable because the prompt referenced a validation script absent from that baseline."
+    ]
+  },
+  "tasks": [
+    {
+      "id": "L1",
+      "difficulty": "LOW",
+      "name": "TypeScript exactOptionalPropertyTypes regression",
+      "baselineCommit": "6914918bb17928e949a6b7fc578a0b9721f4ef3e",
+      "hiddenReferenceCommit": "6b6c392893d7b3dce17538262d1fb658fa94e773",
+      "acceptance": [
+        "Fix the WorkSession control UI TypeScript error without behavior change.",
+        "npm run typecheck passes.",
+        "git diff --check passes.",
+        "Prefer the minimum change."
+      ]
+    },
+    {
+      "id": "M1",
+      "difficulty": "MEDIUM",
+      "name": "Execution Ledger restart durability",
+      "baselineCommit": "d69ea87f51affa827adbb69151c17ecccadb645e",
+      "hiddenReferenceCommit": "6b4885fd9ffdeaadafee5ed1908f4e6e216b41a4",
+      "acceptance": [
+        "Preserve v1 phase cumulative elapsed semantics during migration.",
+        "Durable FAILED-notification success must survive a missing Ledger success fact.",
+        "Attempted-only legacy state remains eligible for one bounded retry.",
+        "Recorded delivery failure must not cause unbounded restart retries."
+      ]
+    },
+    {
+      "id": "H1",
+      "difficulty": "HIGH",
+      "name": "Host-owned implementation checkpoint",
+      "baselineCommit": "5c045a4c0caba93f51abd3437c0deadc50b35a82",
+      "hiddenReferenceCommit": "34b6ac818e3feb1266bf01b596b3250980fd6165",
+      "acceptance": [
+        "Only a Host/Runtime-created and verified implementation commit may become Controller authority.",
+        "Authority binds session, task, attempt when present, dispatch/action, before observation, and after observation.",
+        "The commit proves exact parent, branch, repository identity, clean worktree, expected tree/content, scope, and link/path safety.",
+        "Checkpoint acknowledgement and durable state adoption happen before verifier/reviewer work.",
+        "Old verification/completion evidence is invalidated after adoption.",
+        "Authority is one-time and cannot be recreated from SHA, copied objects, persisted JSON, or an unowned descendant."
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": "L1-dsh-flash-high",
+      "taskId": "L1",
+      "harness": "DeepSeek Harness",
+      "provider": "DeepSeek",
+      "model": "DeepSeek-V4.1-Flash",
+      "effort": "High",
+      "branch": "eval/e0-l1-dsh",
+      "commitSha": "5761c126bddebc7021864d5511e706d6fa039b94",
+      "reviewStatus": "ACCEPT",
+      "firstPassAccepted": true,
+      "durationSeconds": 44,
+      "durationBasis": "agent-reported-start-finish",
+      "humanInterventions": 0,
+      "comparable": true,
+      "notes": [
+        "One-file, one-line change matched the hidden historical reference exactly."
+      ]
+    },
+    {
+      "id": "L1-codex-sol-high",
+      "taskId": "L1",
+      "harness": "Codex",
+      "provider": "OpenAI",
+      "model": "GPT-6.1 Sol",
+      "effort": "High",
+      "branch": "eval/e0-l1-codex",
+      "commitSha": "16ef4a6bd70602c6f3605e942d1806ff02f4b8dc",
+      "reviewStatus": "ACCEPT",
+      "firstPassAccepted": true,
+      "durationSeconds": 195,
+      "durationBasis": "client-ui-wall-clock",
+      "activeExecutionSeconds": 60,
+      "humanInterventions": 0,
+      "comparable": true,
+      "notes": [
+        "The implementation matched the hidden reference exactly.",
+        "Client wall-clock included repeated reconnect delay."
+      ]
+    },
+    {
+      "id": "M1-dsh-flash-high",
+      "taskId": "M1",
+      "harness": "DeepSeek Harness",
+      "provider": "DeepSeek",
+      "model": "DeepSeek-V4.1-Flash",
+      "effort": "High",
+      "branch": "eval/e0-m1-dsh",
+      "commitSha": "ed051ea98a2f1db9acee692cce928b2a53dfa121",
+      "reviewStatus": "ACCEPT",
+      "firstPassAccepted": true,
+      "durationSeconds": null,
+      "durationBasis": "not-reliably-captured",
+      "humanInterventions": 0,
+      "comparable": true,
+      "notes": [
+        "Core implementation and four required restart/migration scenarios passed review."
+      ]
+    },
+    {
+      "id": "M1-codex-sol-high",
+      "taskId": "M1",
+      "harness": "Codex",
+      "provider": "OpenAI",
+      "model": "GPT-6.1 Sol",
+      "effort": "High",
+      "branch": "eval/e0-m1-codex",
+      "commitSha": "c003fd62500c6215ba6b69552be5c63f5439b84b",
+      "reviewStatus": "ACCEPT_WITH_SPEC_NOTE",
+      "firstPassAccepted": true,
+      "durationSeconds": null,
+      "durationBasis": "not-reliably-captured",
+      "humanInterventions": 0,
+      "comparable": false,
+      "notes": [
+        "Core implementation was accepted.",
+        "The prompt referenced a validation script absent from the baseline; Codex created a narrow replacement, so this run is excluded from strict timing comparison."
+      ]
+    },
+    {
+      "id": "M1-claude-code-deepseek-high",
+      "taskId": "M1",
+      "harness": "Claude Code",
+      "provider": "DeepSeek via CC Switch",
+      "model": "deepseek-v4-flash",
+      "effort": "High",
+      "branch": "eval/e0-m1-cc-ds",
+      "commitSha": "d3fa93d4342ed0ab01f5b9a5c8845b79e71603a4",
+      "reviewStatus": "ACCEPT",
+      "firstPassAccepted": true,
+      "durationSeconds": 270,
+      "durationBasis": "user-timed-wall-clock",
+      "humanInterventions": 0,
+      "costCnyApprox": 0.31,
+      "comparable": true,
+      "notes": [
+        "The DeepSeek route was externally evidenced by CC Switch and a DeepSeek account balance delta from CNY 23.12 to 22.81.",
+        "Claude Code's own final self-report incorrectly named an Anthropic model; routing evidence is treated as authoritative for this run."
+      ]
+    },
+    {
+      "id": "H1-dsh-flash-high",
+      "taskId": "H1",
+      "harness": "DeepSeek Harness",
+      "provider": "DeepSeek",
+      "model": "DeepSeek-V4.1-Flash",
+      "effort": "High",
+      "branch": "eval/e0-h1-dsh",
+      "commitSha": "18b3dba96b9327d5270e2c25dbd20b95299633df",
+      "reviewStatus": "REVISION_REQUIRED",
+      "firstPassAccepted": false,
+      "durationSeconds": 856,
+      "durationBasis": "user-timed-wall-clock",
+      "humanInterventions": 0,
+      "comparable": true,
+      "reviewFindings": [
+        "Dispatch identity was not bound.",
+        "Old completion evidence was not fully invalidated.",
+        "Checkpoint ownership was adopted after verifier work instead of before it."
+      ]
+    },
+    {
+      "id": "H1-dsh-flash-high-guided-revision",
+      "taskId": "H1",
+      "harness": "DeepSeek Harness",
+      "provider": "DeepSeek",
+      "model": "DeepSeek-V4.1-Flash",
+      "effort": "High",
+      "branch": "eval/e0-h1-dsh",
+      "commitSha": "0198e0a76bc3518e0b719e81139778e6e856121e",
+      "reviewStatus": "REVISION_REQUIRED",
+      "firstPassAccepted": false,
+      "durationSeconds": 508,
+      "durationBasis": "user-timed-revision-only",
+      "humanInterventions": 1,
+      "comparable": false,
+      "notes": [
+        "This is a guided revision after review feedback and is not a fresh comparable run.",
+        "The revision fixed the three reported gaps but still missed commit-tree binding against pre-commit expected content."
+      ]
+    },
+    {
+      "id": "H1-dsh-flash-max",
+      "taskId": "H1",
+      "harness": "DeepSeek Harness",
+      "provider": "DeepSeek",
+      "model": "DeepSeek-V4.1-Flash",
+      "effort": "Max",
+      "branch": "eval/e0-h1-dsh-max",
+      "commitSha": "55569a0c4b19a893e547eb5d91d0bde060501255",
+      "reviewStatus": "REVISION_REQUIRED",
+      "firstPassAccepted": false,
+      "durationSeconds": 1157,
+      "durationBasis": "user-timed-wall-clock",
+      "humanInterventions": 0,
+      "comparable": true,
+      "reviewFindings": [
+        "Dispatch identity was still not bound.",
+        "Ownership adoption still happened after verifier work.",
+        "The pre-commit hook/tree TOCTOU invariant was not closed.",
+        "Hardlink safety was claimed in the report but not implemented or tested."
+      ]
+    },
+    {
+      "id": "H1-codex-sol-high",
+      "taskId": "H1",
+      "harness": "Codex",
+      "provider": "OpenAI",
+      "model": "GPT-6.1 Sol",
+      "effort": "High",
+      "branch": "eval/e0-h1-codex",
+      "commitSha": "4dbcfd406056325b0facad86278406961adf89cf",
+      "reviewStatus": "ACCEPT",
+      "firstPassAccepted": true,
+      "durationSeconds": 1163,
+      "durationBasis": "user-timed-wall-clock",
+      "humanInterventions": 0,
+      "comparable": true,
+      "notes": [
+        "Only fresh H1 pilot run to reach first-pass ACCEPT."
+      ]
+    },
+    {
+      "id": "H1-claude-code-deepseek-high",
+      "taskId": "H1",
+      "harness": "Claude Code",
+      "provider": "DeepSeek via CC Switch",
+      "model": "deepseek-v4-flash",
+      "effort": "High",
+      "branch": "eval/e0-h1-cc-ds",
+      "commitSha": "3c2ce166da3db3b3ce7ca3ef2f1fa98e903c30a9",
+      "reviewStatus": "REVISION_REQUIRED",
+      "firstPassAccepted": false,
+      "durationSeconds": 739,
+      "durationBasis": "user-timed-wall-clock",
+      "humanInterventions": 0,
+      "comparable": true,
+      "reviewFindings": [
+        "Dispatch identity was not bound.",
+        "Ownership adoption happened after verifier work.",
+        "The commit tree was not bound to a pre-commit expected tree.",
+        "Hardlink safety was reported but not implemented or tested."
+      ]
+    }
+  ],
+  "engineeringConclusion": [
+    "The pilot supports routing by accepted-result latency rather than by model benchmark or first-response speed.",
+    "On low/medium tasks, faster DeepSeek-based harnesses reached correct results quickly with no human steering.",
+    "On the H1 security/state-consistency task, Codex High was slower than the fastest first result but was the only fresh run to reach first-pass ACCEPT.",
+    "Using the same DeepSeek route in Claude Code improved H1 first-result latency versus DeepSeek Harness High, but did not remove the same class of deep correctness misses; this suggests the harness strongly affects speed while model capability still matters for difficult invariants.",
+    "These are pilot observations from a tiny sample and should drive routing experiments, not universal model claims."
+  ]
+}
