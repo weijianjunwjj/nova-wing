@@ -12,6 +12,8 @@ Bounded architecture POC. **Not** a refactor, **not** a source move, **not** a s
 | Business logic changed | **None** |
 | Executed with | Node `v24.21.0` (nvm), npm `11.19.0`, macOS arm64 |
 
+> 2026-10-09 维护说明：当前 AGENTS.md 已改为 Windows `D:/VSCode/obsidian-ai-memory` 与 macOS `/Users/weijianjun/obsidian-ai-memory` 双路径。下面是 **2026-10-07 原始审计当时的不可访问记录**，不是今天的路径规则，原文保留供溯源。
+>
 > Note on permanent memory: `AGENTS.md` points at `D:/VSCode/obsidian-ai-memory/00-System/AGENT_MEMORY.md`.
 > That path is a Windows path and does not exist on this macOS host (checked `/Users/weijianjun/obsidian-ai-memory`,
 > `~/Documents/obsidian-ai-memory`, and the repo parent). It was **not read**. Per `AGENTS.md`, current repository
