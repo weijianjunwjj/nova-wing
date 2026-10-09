@@ -49,9 +49,11 @@ Playbook 沉淀层，ai-code-rules＝协作规则内核。这是规则声明；�
 ## Claude 每次开始工作的步骤
 
 1. 先确认能访问的仓库路径与本轮授权。若无文件访问能力，声明这一限制，列出需要的最小材料。
-2. 按 AGENTS.md 尝试读取 `D:/VSCode/obsidian-ai-memory/00-System/AGENT_MEMORY.md` 并按其协议
-   读取相关永久记忆。本轮 macOS 未找到该路径；没有取得其协议，不声称已完成永久记忆核验。
-   缺失时说明，使用当前证据做已授权工作；涉及未知跨项目协议的决定留待核实。
+2. 按 AGENTS.md 选择当前系统对应的 Obsidian Vault 入口并实际核验后读取：
+   - Windows：`D:/VSCode/obsidian-ai-memory/00-System/AGENT_MEMORY.md`
+   - macOS：`/Users/weijianjun/obsidian-ai-memory/00-System/AGENT_MEMORY.md`
+   缺失时如实说明，仅以已取得的当前项目事实执行已授权工作，不能声称已读未取得的长期记忆。
+   **2026-10-02 的 macOS 旧路径检查是历史观察，不等于 2026-10-09 的可访问状态。**
 3. 重新读取当前项目规则，记录 `git branch --show-current`、`git rev-parse HEAD`、
    `git status --short --untracked-files=all`。保留用户已有修改，不 reset、stash 或覆盖。
 4. 对照 CURRENT_STATE 的基线；HEAD、目标仓库、runtime policy 或数据位置改变时，先更新相关
