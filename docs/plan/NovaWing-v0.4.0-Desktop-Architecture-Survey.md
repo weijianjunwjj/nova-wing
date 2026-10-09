@@ -1,5 +1,7 @@
 # NovaWing v0.4.0 Desktop Architecture Survey
 
+> 代码目录：Windows `D:/VSCode/nova-wing`；macOS `/Users/weijianjun/nova-wing`。下列源码链接采用仓库相对路径，两个系统及 GitHub 均可导航。原始报告中的运行环境、实际执行结果不因链接改写而变成跨平台认证。
+
 日期：2026-09-20
 
 勘察基线：a9936908e242c1588154a558c5aa60b283b87171
@@ -18,19 +20,19 @@
 
 | 关注点 | 已核实的实现与证据 |
 | --- | --- |
-| CLI / Web 启动 | [guardian-launchpad.mjs](D:/VSCode/nova-wing/scripts/guardian-launchpad.mjs:12) 创建 Launchpad、启动 HTTP、调用浏览器 app-mode opener；[guardian-work-session-ui.mjs](D:/VSCode/nova-wing/scripts/guardian-work-session-ui.mjs:19) 从可信配置创建单个生产控制台。 |
-| Launchpad | [launchpad/server.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:476) 持有配置、liveApps、创建/启动去重及 scheduled recovery。它是现成的多 session 组合入口，不是一个纯静态页面。 |
-| Control UI | [control-ui/server.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/server.ts:131) 提供 HTML、JS、CSS、status、控制 POST 和 SSE；[controller.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/controller.ts:218) 在服务端持有任务 Promise。 |
-| 生产组合 | [production.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/production.ts:572) 装配 executor/router、verification、Git、通知、controller、Runtime、HTTP server。 |
-| Work Session | [runtime.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/runtime.ts:427) 持有 Mastra workflow、持久化状态和相关 store；[model.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/model.ts:16) 定义 READY / SCHEDULED / RUNNING / SUSPENDED / COMPLETED / FAILED / CANCELLED。 |
-| Task 生命周期 | [task-state-v2.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/task-state-v2.ts:44) 保存任务身份、权限、Git reality、验证计划与证据、恢复预算；[task-controller.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/task-controller.ts:40) 作行动与完成判定。 |
-| Golden Path | [golden-path.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/golden-path.ts:30) 复用 dispatcher、独立 verifier、Evidence 与 finalizer；不满足条件转既有 V2 Controller。生产装配取决于可信配置，不能把历史 V1/非 Golden 配置强行转换。 |
-| Evidence | [golden-path.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/golden-path.ts:156) 校验 verifier step 身份与结果；[risk-evidence.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/risk-evidence.ts:63) 校验 repository/branch/head/worktree 身份及确定性证据。 |
-| Checkpoint | [checkpoint.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/checkpoint.ts:40) 定义恢复身份；[git-checkpoint.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/git-checkpoint.ts:510) 在确定性完成后执行受控 Git checkpoint，保持保护分支、scope、证据及显式 push policy。 |
-| Platform Adapter | [platform/paths.ts](D:/VSCode/nova-wing/packages/development-guardian/platform/paths.ts:11)、[shell.ts](D:/VSCode/nova-wing/packages/development-guardian/platform/shell.ts:54)、[codex-runtime.ts](D:/VSCode/nova-wing/packages/development-guardian/platform/codex-runtime.ts:27) 分别集中路径、shell、SDK native binary 解析。 |
-| 通知 | [notifier.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/notifier.ts:76) 已有 WorkSessionNotifier、kind、EMAIL/DESKTOP、渠道投递结果；当前 desktop factory 仍转向 Windows adapter。 |
+| CLI / Web 启动 | [guardian-launchpad.mjs](../../scripts/guardian-launchpad.mjs#L12) 创建 Launchpad、启动 HTTP、调用浏览器 app-mode opener；[guardian-work-session-ui.mjs](../../scripts/guardian-work-session-ui.mjs#L19) 从可信配置创建单个生产控制台。 |
+| Launchpad | [launchpad/server.ts](../../packages/development-guardian/work-session/launchpad/server.ts#L476) 持有配置、liveApps、创建/启动去重及 scheduled recovery。它是现成的多 session 组合入口，不是一个纯静态页面。 |
+| Control UI | [control-ui/server.ts](../../packages/development-guardian/work-session/control-ui/server.ts#L131) 提供 HTML、JS、CSS、status、控制 POST 和 SSE；[controller.ts](../../packages/development-guardian/work-session/control-ui/controller.ts#L218) 在服务端持有任务 Promise。 |
+| 生产组合 | [production.ts](../../packages/development-guardian/work-session/production.ts#L572) 装配 executor/router、verification、Git、通知、controller、Runtime、HTTP server。 |
+| Work Session | [runtime.ts](../../packages/development-guardian/work-session/runtime.ts#L427) 持有 Mastra workflow、持久化状态和相关 store；[model.ts](../../packages/development-guardian/work-session/model.ts#L16) 定义 READY / SCHEDULED / RUNNING / SUSPENDED / COMPLETED / FAILED / CANCELLED。 |
+| Task 生命周期 | [task-state-v2.ts](../../packages/development-guardian/work-session/task-state-v2.ts#L44) 保存任务身份、权限、Git reality、验证计划与证据、恢复预算；[task-controller.ts](../../packages/development-guardian/work-session/task-controller.ts#L40) 作行动与完成判定。 |
+| Golden Path | [golden-path.ts](../../packages/development-guardian/work-session/golden-path.ts#L30) 复用 dispatcher、独立 verifier、Evidence 与 finalizer；不满足条件转既有 V2 Controller。生产装配取决于可信配置，不能把历史 V1/非 Golden 配置强行转换。 |
+| Evidence | [golden-path.ts](../../packages/development-guardian/work-session/golden-path.ts#L156) 校验 verifier step 身份与结果；[risk-evidence.ts](../../packages/development-guardian/work-session/risk-evidence.ts#L63) 校验 repository/branch/head/worktree 身份及确定性证据。 |
+| Checkpoint | [checkpoint.ts](../../packages/development-guardian/work-session/checkpoint.ts#L40) 定义恢复身份；[git-checkpoint.ts](../../packages/development-guardian/work-session/git-checkpoint.ts#L510) 在确定性完成后执行受控 Git checkpoint，保持保护分支、scope、证据及显式 push policy。 |
+| Platform Adapter | [platform/paths.ts](../../packages/development-guardian/platform/paths.ts#L11)、[shell.ts](../../packages/development-guardian/platform/shell.ts#L54)、[codex-runtime.ts](../../packages/development-guardian/platform/codex-runtime.ts#L27) 分别集中路径、shell、SDK native binary 解析。 |
+| 通知 | [notifier.ts](../../packages/development-guardian/work-session/notifier.ts#L76) 已有 WorkSessionNotifier、kind、EMAIL/DESKTOP、渠道投递结果；当前 desktop factory 仍转向 Windows adapter。 |
 | SQLite | Work Session 主库由 Mastra/libSQL 与 ScheduledStartStore 使用同一 driver；ledger、analytics、coding coordination 在独立库使用 node:sqlite。不是所有数据都由 packages/sqlite 的通用内核 store 持有。 |
-| 测试和构建 | [package.json](D:/VSCode/nova-wing/package.json:37) 的 check 串联 typecheck、Node tests、unused、migration、exports、boundaries、platform；test 先编译，之后 node --test 串行运行。 |
+| 测试和构建 | [package.json](../../package.json#L37) 的 check 串联 typecheck、Node tests、unused、migration、exports、boundaries、platform；test 先编译，之后 node --test 串行运行。 |
 
 最重要的保留链路：
 
@@ -48,9 +50,9 @@ Desktop 不另建 Task 状态机，不根据 Renderer 文案或 Codex 进程退�
 2. 生产组合 API：createNovaWingLaunchpad() 与 createProductionWorkSessionUi()。已从本仓库的 nova-wing/development-guardian 出口导出，可直接 import。
 3. Runtime：new WorkSessionRuntime(config)。可以 import，但直接使用会要求 Main 重做 production.ts 的装配；不建议以它作为产品启动入口。
 
-createProductionWorkSessionUi() 返回 definition、runtime、controller、server、start、isLive、hasActiveSession、close。它先恢复持久化状态；返回对象的 start() 只启动控制 HTTP listener。真正任务执行由 controller.start() / runtime.start() 发起。[生产工厂与返回值](D:/VSCode/nova-wing/packages/development-guardian/work-session/production.ts:938)
+createProductionWorkSessionUi() 返回 definition、runtime、controller、server、start、isLive、hasActiveSession、close。它先恢复持久化状态；返回对象的 start() 只启动控制 HTTP listener。真正任务执行由 controller.start() / runtime.start() 发起。[生产工厂与返回值](../../packages/development-guardian/work-session/production.ts#L938)
 
-Launchpad 创建 session 时复用这个工厂，启动其控制 server，再调用 controller.start()。Main 持有一个 Launchpad Host；Launchpad 内部可以持有多个现有 WorkSessionRuntime 实例。**“一个 Host”不意味着复制一个全局 Runtime，更不意味着每个窗口创建一个 Runtime。** [创建链路](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:1104)
+Launchpad 创建 session 时复用这个工厂，启动其控制 server，再调用 controller.start()。Main 持有一个 Launchpad Host；Launchpad 内部可以持有多个现有 WorkSessionRuntime 实例。**“一个 Host”不意味着复制一个全局 Runtime，更不意味着每个窗口创建一个 Runtime。** [创建链路](../../packages/development-guardian/work-session/launchpad/server.ts#L1104)
 
 ### 耦合点与必要 API
 
@@ -66,18 +68,18 @@ Launchpad 创建 session 时复用这个工厂，启动其控制 server，再调
 
 需要补的通用边界是 **严格可等待的 Host shutdown、精确 activity observer、桌面 notifier 注入**，不是重写 Runtime。
 
-一个重要副作用：Launchpad.start() 会恢复 SCHEDULED 配置并开启后台到期检查，过期任务可能自动执行。因此 Desktop compatibility smoke 必须使用隔离空配置及临时数据目录，不能直接指向用户生产配置。[scheduled recovery](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:621)
+一个重要副作用：Launchpad.start() 会恢复 SCHEDULED 配置并开启后台到期检查，过期任务可能自动执行。因此 Desktop compatibility smoke 必须使用隔离空配置及临时数据目录，不能直接指向用户生产配置。[scheduled recovery](../../packages/development-guardian/work-session/launchpad/server.ts#L621)
 
 ## 3. UI Integration
 
 ### B. 当前 UI 的真实形态
 
-[Launchpad view](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/view.ts:81) 与 [Control view](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/view.ts:756) 是服务器生成的 HTML + CSS + vanilla JS 字符串。不存在可直接接管的独立 frontend build。
+[Launchpad view](../../packages/development-guardian/work-session/launchpad/view.ts#L81) 与 [Control view](../../packages/development-guardian/work-session/control-ui/view.ts#L756) 是服务器生成的 HTML + CSS + vanilla JS 字符串。不存在可直接接管的独立 frontend build。
 
 - Launchpad 通过 HTTP 展示、创建、启动配置；页面定期拉取配置列表。
 - Control UI 使用相对路径 fetch 和 EventSource('/api/events')；实时通道是 **SSE**，未发现这条产品链路使用 WebSocket。
 - Launchpad 监听 127.0.0.1 随机端口；它创建的每个控制 server 也使用随机端口。
-- 创建或打开 session 后，页面用 window.location.assign(result.controlUrl) 跳转到控制台。[页面跳转](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/view.ts:313)
+- 创建或打开 session 后，页面用 window.location.assign(result.controlUrl) 跳转到控制台。[页面跳转](../../packages/development-guardian/work-session/launchpad/view.ts#L313)
 
 因此第一阶段应：
 
@@ -141,13 +143,13 @@ flowchart TB
 
 开发时仍从仓库根包上下文 import nova-wing/development-guardian；暂不加一个改变 package scope 的 desktop/package.json。打包时生成独立 staging manifest，保留该 self-reference 所需的 name/exports、type="module"、production dependencies 及 dist/packages/... 相对布局，再设置 desktop main、产品名和 Desktop 版本。锁文件与目标平台 optional dependencies 的安装/复制必须一致；Desktop 内容不能直接套用 kernel npm 包的 files 白名单。
 
-正式私有 npm kernel 包不含 development-guardian，也不携带这套生产依赖，因此不能直接拿现有 release-package 作为 Desktop 产品内容。[正式发布清单](D:/VSCode/nova-wing/scripts/release-lib.mjs:75)
+正式私有 npm kernel 包不含 development-guardian，也不携带这套生产依赖，因此不能直接拿现有 release-package 作为 Desktop 产品内容。[正式发布清单](../../scripts/release-lib.mjs#L75)
 
 ## 5. Runtime Lifecycle
 
 ### C. 关窗与后台执行
 
-当前任务 Promise、scheduled timers、SQLite、child processes 都由 Node 服务端持有；UI/SSE 断开只移除订阅，不是取消任务。已有 SSE disconnect 测试覆盖 subscriber cleanup。[SSE 测试](D:/VSCode/nova-wing/tests/work-session-w005-a-sse.test.ts:138)
+当前任务 Promise、scheduled timers、SQLite、child processes 都由 Node 服务端持有；UI/SSE 断开只移除订阅，不是取消任务。已有 SSE disconnect 测试覆盖 subscriber cleanup。[SSE 测试](../../tests/work-session-w005-a-sse.test.ts#L138)
 
 Desktop 生命周期建议：
 
@@ -170,18 +172,18 @@ WorkSessionRuntime.close() 已有正确的核心 drain 合约：
 - 共享同一个 closeOperation。
 - 等待已接纳的 start/resume/storage/verification/checkpoint/repair 操作与快照写入。
 - 等待通知及 LibSQL 初始化，然后尝试关闭每一个自己拥有的 store。
-- 汇总关闭错误。[runtime.close](D:/VSCode/nova-wing/packages/development-guardian/work-session/runtime.ts:2506)
+- 汇总关闭错误。[runtime.close](../../packages/development-guardian/work-session/runtime.ts#L2506)
 
 它**没有即时 abort Codex 的含义**，也不会自动 requestPause/stopAfterTask。在途 workflow 可能继续执行至 settle。MVP 的 Quit 应明确显示“正在等待任务安全结束”，采用现有 drain 语义；不添加固定 5 秒强制退出。若以后要“当前 Task 完成即退出”，必须另行定义 stop-after-task 的用户语义。
 
 然而 **目前不能只写 await launchpad.close(); app.quit()**：
 
-- [Launchpad.close](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:644) 分阶段 bounded 等待，默认每阶段 5 秒；allSettled 的错误被丢弃，然后清空 liveApps。
+- [Launchpad.close](../../packages/development-guardian/work-session/launchpad/server.ts#L644) 分阶段 bounded 等待，默认每阶段 5 秒；allSettled 的错误被丢弃，然后清空 liveApps。
 - 重入 close 仅检查 closed 后返回，不共享完成 Promise。
 - activeDeletes 只有 Set；手动 repair、部分状态读取及启动中的异步 preflight 没有统一纳入 drain。
 - Launchpad.start() 的异步恢复/preflight 与 close 竞态可能出现迟到 listener。
-- [Production UI.close](D:/VSCode/nova-wing/packages/development-guardian/work-session/production.ts:961) 先关闭 server；需要确保 server 关闭异常时仍能关闭 Runtime。
-- [Control server.close](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/server.ts:104) 在等待 HTTP 关闭后才 controller.close；应先禁止新控制操作和停调度，再排空已接纳工作，避免 shutdown 期间仍由 polling 接纳新任务。
+- [Production UI.close](../../packages/development-guardian/work-session/production.ts#L961) 先关闭 server；需要确保 server 关闭异常时仍能关闭 Runtime。
+- [Control server.close](../../packages/development-guardian/work-session/control-ui/server.ts#L104) 在等待 HTTP 关闭后才 controller.close；应先禁止新控制操作和停调度，再排空已接纳工作，避免 shutdown 期间仍由 polling 接纳新任务。
 
 建议在现有 Launchpad 内部增加明确的 strict drain 模式/出口，保留 CLI 默认兼容行为；Desktop 必须选择 strict 模式。具体改动限定为共享 start/close promise、接纳登记、停止新入口、排空已接纳的 start/create/delete/repair/status/schedule、收集全部关闭错误。所有实例均要尝试 cleanup；timeout 只能给出等待提示，不能表示 drain 成功。
 
@@ -203,8 +205,8 @@ WorkSessionRuntime.close() 已有正确的核心 drain 合约：
 
 当前存在两个实际缺口：
 
-1. Windows task notifier 的 notificationKinds 只有 COMPLETED/FAILED，notifyHumanRequired 是 deliberate no-op。无 SMTP 时 HUMAN_REQUIRED 被能力筛选排除，不会入队。[现有 adapter](D:/VSCode/nova-wing/packages/development-guardian/platform/windows-task-run-notifier.ts:54)
-2. SMTP 存在但 notifyOnCompleted=false 时，production 当前不设置 terminalNotifier，Runtime 完成通知 guard 也会挡住 Desktop 完成通知。[production wiring](D:/VSCode/nova-wing/packages/development-guardian/work-session/production.ts:578)、[完成 guard](D:/VSCode/nova-wing/packages/development-guardian/work-session/runtime.ts:3110)
+1. Windows task notifier 的 notificationKinds 只有 COMPLETED/FAILED，notifyHumanRequired 是 deliberate no-op。无 SMTP 时 HUMAN_REQUIRED 被能力筛选排除，不会入队。[现有 adapter](../../packages/development-guardian/platform/windows-task-run-notifier.ts#L54)
+2. SMTP 存在但 notifyOnCompleted=false 时，production 当前不设置 terminalNotifier，Runtime 完成通知 guard 也会挡住 Desktop 完成通知。[production wiring](../../packages/development-guardian/work-session/production.ts#L578)、[完成 guard](../../packages/development-guardian/work-session/runtime.ts#L3110)
 
 最小方案：
 
@@ -217,7 +219,7 @@ WorkSessionRuntime.close() 已有正确的核心 drain 合约：
 
 provider 将 native show/failed 事件转成现有 SENT/FAILED，用有限投递等待避免阻塞 Runtime.close。不能把 Notification.isSupported() 或调用 show() 当作“用户已看到/点击”。权限、系统免打扰和平台通知服务的实际行为仍需真机验收。[Electron Notification](https://www.electronjs.org/docs/latest/api/notification)
 
-这里还有一个需避开的既有聚合语义：全渠道 SKIPPED 会被 overallNotificationStatus 归为 ALL_SUCCEEDED，Runtime 可能据此写入 SENT/notified。因此，若创建 provider 时已确认 native 不可用，应不登记该渠道或将 notificationKinds 设为空，避免入队；宿主能力诊断可显示 SKIPPED。已接纳投递后出现错误或无法确认投递，按 FAILED 与既有有限重试处理，不能用全 SKIPPED 冒充未成功投递。此方案不要求修改 Runtime 的公共聚合规则。[聚合逻辑](D:/VSCode/nova-wing/packages/development-guardian/work-session/notifier.ts:133)
+这里还有一个需避开的既有聚合语义：全渠道 SKIPPED 会被 overallNotificationStatus 归为 ALL_SUCCEEDED，Runtime 可能据此写入 SENT/notified。因此，若创建 provider 时已确认 native 不可用，应不登记该渠道或将 notificationKinds 设为空，避免入队；宿主能力诊断可显示 SKIPPED。已接纳投递后出现错误或无法确认投递，按 FAILED 与既有有限重试处理，不能用全 SKIPPED 冒充未成功投递。此方案不要求修改 Runtime 的公共聚合规则。[聚合逻辑](../../packages/development-guardian/work-session/notifier.ts#L133)
 
 通知 click 的闭包只保存 sessionId；Main 从自己登记的 live URL 找到对应控制台，再 showWindow + focus，URL 失效则返回 Launchpad。不要执行通知 payload 中任意 URL。保留 Notification 对象及 click handler 到合适的生命周期，不能在 show 后立刻释放；Windows 初次消失后仍可能从通知中心点击。
 
@@ -233,7 +235,7 @@ Windows 要验证应用身份/开始菜单快捷方式；macOS 要在所选 Elec
 
 - 已有 hasActiveSession() → controller.hasActiveOperation()，关注 start/resume/checkpointRecovery promise；repair/审批也使用对应操作 Promise。
 - runtime.hasActiveExecution() 是曾执行过的 sticky 标志，不适合作 blocker 判断。
-- 现有 UI subscribe 在 Promise 建立前发事件、finally 清除后没有精确广播，且 close 会清 subscriber，不能直接当可靠 activity observer。[controller activity](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/controller.ts:192)
+- 现有 UI subscribe 在 Promise 建立前发事件、finally 清除后没有精确广播，且 close 会清 subscriber，不能直接当可靠 activity observer。[controller activity](../../packages/development-guardian/work-session/control-ui/controller.ts#L192)
 
 建议给 controller 加无 Electron 依赖的 activity observer，在接纳操作之前获得活动 lease，在 finally 释放。覆盖 start、due dispatch、resume、verification approval、runtime repair、checkpoint recovery；异常同样释放，observer 异常不能改变业务结果。
 
@@ -262,14 +264,14 @@ SUSPENDED HUMAN_REQUIRED、USER_PAUSED、terminal、未来 SCHEDULED 在无实�
 
 | 文件 | 最小修改理由 |
 | --- | --- |
-| [package.json](D:/VSCode/nova-wing/package.json:37) / package-lock.json | 后续固定 Electron 开发依赖和 desktop scripts；先不加 bundler/updater；不重写现有 build/test/发布版本语义。 |
-| [launchpad/server.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:644) | strict shutdown、start/close 幂等、已接纳操作登记、晚完成创建/repair 的关闭竞态；复用原 session 创建路径。 |
-| [production.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/production.ts:462) | 增加 desktop notifier/activity 注入，独立 email/Desktop completion 策略；健壮关闭；不复制 executor 装配。 |
-| [control-ui/controller.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/controller.ts:192) | activity observer 和关闭时停止新接纳，保留现有 Task/Session 语义。 |
-| [control-ui/server.ts](D:/VSCode/nova-wing/packages/development-guardian/work-session/control-ui/server.ts:104) | 幂等关闭、先停新操作/调度再 drain，确保 SSE/HTTP 异常不跳过 cleanup。 |
-| [check-platform-boundaries.mjs](D:/VSCode/nova-wing/scripts/check-platform-boundaries.mjs:6) | 必要时仅登记 desktop/main/platform.mjs 等明确 adapter，不豁免整个 desktop。 |
-| [check-boundaries.mjs](D:/VSCode/nova-wing/scripts/check-boundaries.mjs:6) | 把 desktop 源码纳入静态扫描，防止新目录脱离检查。 |
-| [README.md](D:/VSCode/nova-wing/README.md:151) | Desktop dev/smoke/package 入口，关窗/退出区别与数据路径说明。 |
+| [package.json](../../package.json#L37) / package-lock.json | 后续固定 Electron 开发依赖和 desktop scripts；先不加 bundler/updater；不重写现有 build/test/发布版本语义。 |
+| [launchpad/server.ts](../../packages/development-guardian/work-session/launchpad/server.ts#L644) | strict shutdown、start/close 幂等、已接纳操作登记、晚完成创建/repair 的关闭竞态；复用原 session 创建路径。 |
+| [production.ts](../../packages/development-guardian/work-session/production.ts#L462) | 增加 desktop notifier/activity 注入，独立 email/Desktop completion 策略；健壮关闭；不复制 executor 装配。 |
+| [control-ui/controller.ts](../../packages/development-guardian/work-session/control-ui/controller.ts#L192) | activity observer 和关闭时停止新接纳，保留现有 Task/Session 语义。 |
+| [control-ui/server.ts](../../packages/development-guardian/work-session/control-ui/server.ts#L104) | 幂等关闭、先停新操作/调度再 drain，确保 SSE/HTTP 异常不跳过 cleanup。 |
+| [check-platform-boundaries.mjs](../../scripts/check-platform-boundaries.mjs#L6) | 必要时仅登记 desktop/main/platform.mjs 等明确 adapter，不豁免整个 desktop。 |
+| [check-boundaries.mjs](../../scripts/check-boundaries.mjs#L6) | 把 desktop 源码纳入静态扫描，防止新目录脱离检查。 |
+| [README.md](../../README.md#L151) | Desktop dev/smoke/package 入口，关窗/退出区别与数据路径说明。 |
 | notification-channel-status / production wiring / scheduled recovery / Launchpad tests | 添加带 Desktop provider 的新断言，保留原 CLI、legacy、SMTP opt-in 测试。 |
 
 只在相应探针证明需要时修改：
@@ -323,13 +325,13 @@ SUSPENDED HUMAN_REQUIRED、USER_PAUSED、terminal、未来 SCHEDULED 在无实�
 
 可直接延续的回归证据包括：
 
-- [runtime close / reopen gate 测试](D:/VSCode/nova-wing/tests/work-session-scheduled-start.test.ts:169)
-- [scheduled start 与 shutdown 竞态](D:/VSCode/nova-wing/tests/work-session-scheduled-start.test.ts:358)
-- [SSE disconnect / cleanup](D:/VSCode/nova-wing/tests/work-session-w005-a-sse.test.ts:138)
-- [HTTP Origin/Host/token](D:/VSCode/nova-wing/tests/work-session-w005-a-server.test.ts:24)
-- [逐渠道通知真值](D:/VSCode/nova-wing/tests/notification-channel-status.test.ts:113)
-- [完成通知 durable 去重](D:/VSCode/nova-wing/tests/work-session-w006-completed-notification.test.ts:54)
-- [Golden production wiring](D:/VSCode/nova-wing/tests/v030-golden-path-production.test.ts:226)
+- [runtime close / reopen gate 测试](../../tests/work-session-scheduled-start.test.ts#L169)
+- [scheduled start 与 shutdown 竞态](../../tests/work-session-scheduled-start.test.ts#L358)
+- [SSE disconnect / cleanup](../../tests/work-session-w005-a-sse.test.ts#L138)
+- [HTTP Origin/Host/token](../../tests/work-session-w005-a-server.test.ts#L24)
+- [逐渠道通知真值](../../tests/notification-channel-status.test.ts#L113)
+- [完成通知 durable 去重](../../tests/work-session-w006-completed-notification.test.ts#L54)
+- [Golden production wiring](../../tests/v030-golden-path-production.test.ts#L226)
 
 ### Electron integration：必须运行在实际 Electron Main
 
@@ -371,14 +373,14 @@ Windows 基础链路通过后立即执行；先对应硬件架构的 .app，不�
 | --- | --- | --- |
 | child_process / spawn | executor、Git、SDK 在 Node 侧运行；不依赖浏览器进程。 | Main 可以调用 Node API，但兼容性须在 Electron 实测；Renderer 无权直接 spawn。 |
 | Task cwd | production/Codex 大多显式使用可信 targetRepo。 | 保留；appPath/resourcesPath 是代码资源，不能成为任务 repo 或 writable cwd。 |
-| 相对 config override | defaultTrustedConfigDirectory 当前 resolve 任意非空 override，可能依赖 process.cwd。 | Main 明确规范为绝对路径；不靠全局 chdir 假装源码目录存在。[配置路径](D:/VSCode/nova-wing/packages/development-guardian/work-session/launchpad/server.ts:394) |
+| 相对 config override | defaultTrustedConfigDirectory 当前 resolve 任意非空 override，可能依赖 process.cwd。 | Main 明确规范为绝对路径；不靠全局 chdir 假装源码目录存在。[配置路径](../../packages/development-guardian/work-session/launchpad/server.ts#L394) |
 | Windows shell | Platform Adapter 使用原生 Git Bash，拒绝 WSL shim。 | 保留。此产品执行合约与本轮开发使用 pwsh 不冲突；不要新增 shell:true 来解决引号/PATH。 |
-| Git lookup | Bash preflight 执行 git；MCP/checkpoint/production 部分直接 spawn('git')。 | GUI PATH 可能让探测与执行不一致；共用明确 resolver/env，测试非终端启动，不把 Git Bash 的存在当作裸 Git 一定可用。[Git preflight](D:/VSCode/nova-wing/packages/development-guardian/work-session/dependency-health.ts:198)、[checkpoint spawn](D:/VSCode/nova-wing/packages/development-guardian/work-session/git-checkpoint.ts:151) |
-| Codex lookup | 从 SDK→CLI→OS/arch optional package 解析 vendor binary，未回退 PATH/global Codex。 | 保留完整依赖图与 vendor，不只拷贝 codex.exe；附属 codex-resources/codex-path 和 helper 都需检查。[resolver](D:/VSCode/nova-wing/packages/development-guardian/platform/codex-runtime.ts:27) |
+| Git lookup | Bash preflight 执行 git；MCP/checkpoint/production 部分直接 spawn('git')。 | GUI PATH 可能让探测与执行不一致；共用明确 resolver/env，测试非终端启动，不把 Git Bash 的存在当作裸 Git 一定可用。[Git preflight](../../packages/development-guardian/work-session/dependency-health.ts#L198)、[checkpoint spawn](../../packages/development-guardian/work-session/git-checkpoint.ts#L151) |
+| Codex lookup | 从 SDK→CLI→OS/arch optional package 解析 vendor binary，未回退 PATH/global Codex。 | 保留完整依赖图与 vendor，不只拷贝 codex.exe；附属 codex-resources/codex-path 和 helper 都需检查。[resolver](../../packages/development-guardian/platform/codex-runtime.ts#L27) |
 | process.execPath | packages 中目前只用于 runtime health，未用它 spawn Node。 | Electron 中不是外部 node；不要复用会把它当 Node 的 npm/release launcher。不能把这个潜在风险误报成当前已有递归启动 bug。 |
 | 项目 Node/npm | 当前 RUNTIME health 不是目标 repo verifier 工具链验证。 | Electron 自带 Node 不等于 shell 中存在 node/npm；分开做宿主兼容性与任务依赖 preflight。 |
 | node:sqlite | 生产模块静态 import；根包要求 Node >=24。 | Electron 嵌入 Node/API 必须符合，实际 DatabaseSync smoke；builtin 不用 electron-rebuild。 |
-| libSQL | scheduled store 顶层 require native libsql；Mastra+Scheduler 同 session 文件用同 driver。 | 验证目标 OS/arch addon；必要时 rebuild，仅针对 native addon；不把 session store 换成混用 node:sqlite。[同 driver 原因](D:/VSCode/nova-wing/packages/development-guardian/work-session/scheduled-start-store.ts:17) |
+| libSQL | scheduled store 顶层 require native libsql；Mastra+Scheduler 同 session 文件用同 driver。 | 验证目标 OS/arch addon；必要时 rebuild，仅针对 native addon；不把 session store 换成混用 node:sqlite。[同 driver 原因](../../packages/development-guardian/work-session/scheduled-start-store.ts#L17) |
 | app.asar | stat/import 能读不表示外部 spawn 能执行。 | 初期 asar=false；启用后 binary 真路径在 archive 外，不能以 archive 内路径作 cwd。[ASAR 限制](https://www.electronjs.org/docs/latest/tutorial/asar-archives) |
 | Node native ABI | Node 开发环境通过不能证明 Electron addon 可加载。 | 先加载与读写探针，再决定重建方式；不预判 libSQL 必然兼容或必然不兼容。[Native modules](https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules) |
 
@@ -389,7 +391,7 @@ Windows 基础链路通过后立即执行；先对应硬件架构的 .app，不�
 - 既有 NOVAWING_DATA_DIR、NOVAWING_CONFIG_DIR 与可信 storageUrl 继续有效；显式旧 storageUrl 不迁移。
 - Session：work-sessions/<sessionId>.db；ledger 与 .artifacts 是旁路文件，coding-executors.sqlite / analytics 等继续走原 resolver。
 - Electron Chromium profile/UI 缓存可以使用自己的 userData 子目录；不能无提示将业务数据库迁到 Electron 默认 Windows APPDATA。
-- 安装目录、resourcesPath、app.asar 均不写业务数据。[路径权威实现](D:/VSCode/nova-wing/packages/development-guardian/platform/paths.ts:11)
+- 安装目录、resourcesPath、app.asar 均不写业务数据。[路径权威实现](../../packages/development-guardian/platform/paths.ts#L11)
 
 ### 风险清单与处理优先级
 
