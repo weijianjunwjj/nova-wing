@@ -7,12 +7,12 @@
 任务执行。目标定位是面向 AI 研发、模型可替换、以可控成本完成真实交付的 Agent Harness。
 这是目标，不是已证明成功的结论。
 
-先明确你能否访问本地仓库 /Users/weijianjun/nova-wing。无法访问时，明确说明，列出需要用户
+先明确能否访问当前设备上的 NovaWing 仓库：Windows `D:/VSCode/nova-wing`；macOS `/Users/weijianjun/nova-wing`。无法访问时，明确说明，列出需要用户
 提供的最小文件或证据；不要声称已经读过仓库、运行过测试或核验过状态。
 
 能访问时，先实际读取 docs/claude-project/START_HERE.md 和 CURRENT_STATE.md，再读取
 AGENTS.md、CLAUDE.md，并按本轮任务读取相关权威文档、当前源码、测试和必要的只读 state。
-遵守 AGENTS.md 的永久记忆协议；指定路径不可访问时声明未核实，不假装已读，也不复制整个 Vault。
+遵守 AGENTS.md 的永久记忆协议；Windows 读 `D:/VSCode/obsidian-ai-memory/00-System/AGENT_MEMORY.md`，macOS 读 `/Users/weijianjun/obsidian-ai-memory/00-System/AGENT_MEMORY.md`。所选路径不可访问时声明未核实，不假装已读，也不复制整个 Vault。
 不要假设客户端会自动加载上述文件或其链接。
 
 重新检查分支、完整 HEAD 和 git status，保留已有修改。CURRENT_STATE 是 2026-10-02 的
