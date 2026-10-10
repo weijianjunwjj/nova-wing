@@ -159,11 +159,16 @@ async function runLaunchpadSmoke() {
     await eventually('existing Launchpad JS analytics render', () => evaluate(window,
       `document.querySelector('[data-analytics-summary]').querySelectorAll('strong').length > 0`))
     const composerOpened = await evaluate(window, `(() => {
-      document.querySelector('[data-composer-toggle]').click()
-      return !document.querySelector('[data-composer-form]').hidden
+      const toggle = document.querySelector('[data-composer-toggle]')
+      const form = document.querySelector('[data-composer-form]')
+      if (form.hidden || toggle.getAttribute('aria-expanded') !== 'true') return false
+      toggle.click()
+      if (!form.hidden) return false
+      toggle.click()
+      return !form.hidden && toggle.getAttribute('aria-expanded') === 'true'
     })()`)
-    assert.equal(composerOpened, true, 'The existing app.js must install the composer click handler')
-    pass('renderer_js', { composerClickHandler: true, analyticsRendered: true })
+    assert.equal(composerOpened, true, 'The Work Session composer must open by default and remain toggleable')
+    pass('renderer_js', { composerDefaultOpen: true, composerClickHandler: true, analyticsRendered: true })
     const nodeAccess = await evaluate(window, '({ require: typeof require, process: typeof process })')
     assert.deepEqual(nodeAccess, { require: 'undefined', process: 'undefined' })
     const preferences = /** @type {import('electron').WebContents & {getLastWebPreferences(): import('electron').WebPreferences}} */

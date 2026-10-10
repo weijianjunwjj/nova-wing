@@ -131,17 +131,11 @@ export function renderLaunchpadHtml(input: {
       <div class="system-ready" data-system-health="${healthState}"><span>SYSTEM ${healthState}</span><i aria-hidden="true"></i></div>
     </header>
     <p class="subtitle" data-dependency-summary>${health}</p>
-    <section class="customer-entry" aria-labelledby="customer-entry-title">
-      <div><p class="eyebrow">CUSTOMER MODE</p><h2 id="customer-entry-title">你想做什么？</h2><p>描述业务目标，生成可检查的开发方案。</p></div>
-      <textarea data-customer-brief rows="4" maxlength="20000" placeholder="描述你希望完成的产品和业务规则…"></textarea>
-      <button class="launch-button" type="button" data-customer-open>生成开发方案</button>
-    </section>
-    <h2 class="existing-heading">高级模式</h2>
     <section class="composer" aria-labelledby="composer-title">
-      <button class="composer-toggle" type="button" data-composer-toggle aria-expanded="false">
+      <button class="composer-toggle" type="button" data-composer-toggle aria-expanded="true">
         <span aria-hidden="true">＋</span> 新建 Work Session
       </button>
-      <form class="composer-form" data-composer-form hidden novalidate>
+      <form class="composer-form" data-composer-form novalidate>
         <div class="composer-heading">
           <p class="eyebrow">NEW WORK SESSION</p>
           <h2 id="composer-title">新建 Work Session</h2>
@@ -233,12 +227,6 @@ export const LAUNCHPAD_APP_JS = `
 
   const mutationHeaders = () => ({
     'Content-Type': 'application/json',
-  })
-  const customerOpen = document.querySelector('[data-customer-open]')
-  customerOpen?.addEventListener('click', () => {
-    const brief = document.querySelector('[data-customer-brief]')?.value || ''
-    if (brief.trim()) sessionStorage.setItem('novawing-customer-requirement', brief)
-    window.location.assign('/customer')
   })
   for (const time of document.querySelectorAll('[data-local-time]')) {
     time.textContent = new Date(time.getAttribute('datetime')).toLocaleString()
@@ -863,11 +851,6 @@ export const LAUNCHPAD_APP_JS = `
 `
 
 export const LAUNCHPAD_STYLES_CSS = `
-.customer-entry { display: grid; gap: 16px; padding: 28px; border: 1px solid #39597b; border-radius: 18px; background: linear-gradient(135deg, #152b45, #11201f); margin-bottom: 32px; }
-.customer-entry h2 { font-size: 32px; margin: 6px 0; }
-.customer-entry p { color: #b8c9db; }
-.customer-entry textarea { min-height: 110px; padding: 14px; color: #eef5ff; background: #0a1724; border: 1px solid #5a7798; border-radius: 10px; font: inherit; resize: vertical; }
-.customer-entry .launch-button { justify-self: end; width: auto; }
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

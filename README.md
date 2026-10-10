@@ -4,6 +4,8 @@
 
 NovaWing 的 Career Release 不再以“把产品继续做大”为目标，而是把已有 Work Session / Controller / Verification / Evidence 能力整理成可复核的 AI 工程证据。评测使用真实 Git 历史任务做 fresh-baseline replay，隐藏历史修复只在交付后用于 Review；主指标是 **TTAR（Time to Accepted Result）**，而不是单次生成速度、token 数或公开 benchmark 分数。
 
+Launchpad 以原始 Work Session 创建界面为主要入口。v0.5 Customer Mode 不再作为主动发展的产品路线；其路由、API、Planning 与 Delivery 历史实现仍保留，供兼容与研究。本次入口调整不代表执行链路已完成真实模型端到端验收。停止原因见 [v0.5 收尾复盘](docs/audit/NovaWing-v0.5-Product-Closure.md)。
+
 当前 pilot 冻结在 [`benchmark/career-eval-v1.json`](benchmark/career-eval-v1.json)。它覆盖 Low / Medium / High 三档真实任务，并记录 Harness、实际路由模型、effort、提交 SHA、首轮 Review、人工介入、可用的 wall-clock 与成本证据。
 
 工程结论目前只限定在这组小样本：
