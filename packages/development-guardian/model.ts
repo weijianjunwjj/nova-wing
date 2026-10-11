@@ -149,6 +149,7 @@ export interface VerificationFirstFailure {
 }
 
 export interface VerificationResult {
+  executionId?: string
   name: string
   stepId?: string
   command?: string
@@ -179,7 +180,26 @@ export interface PermissionDenialEvidence {
   summary: string
 }
 
+export interface WorkspaceMutationFailure {
+  tool: string
+  code: 'MUTATION_REJECTED'
+}
+
+export interface WorkspaceSatisfiedEvidence {
+  reason: string
+  files: readonly { path: string; sha256: string }[]
+}
+
+export interface WorkspaceExecutionEvidence {
+  mutationFailures: readonly WorkspaceMutationFailure[]
+  alreadySatisfied?: WorkspaceSatisfiedEvidence
+}
+
 export interface ExecutionReport {
+  /** Host-owned execution outcome; does not replace verification or review. */
+  workspaceExecution?: WorkspaceExecutionEvidence & {
+    outcome: 'IMPLEMENTED' | 'ALREADY_SATISFIED' | 'EXECUTION_BLOCKED'
+  }
   execution?: import('./coding-executor-config.js').CodingExecutionMetadata
   summary: string
   changedFiles: readonly string[]
@@ -208,6 +228,7 @@ export interface GuardianTask {
   constraints?: readonly string[]
   acceptanceCriteria?: readonly string[]
   doNotDo?: readonly string[]
+  /** Workspace-relative rules; `.` denotes repository root. Legacy absolute rules are adapted at the Executor boundary. */
   allowedPaths?: readonly string[]
   forbiddenPaths?: readonly string[]
   lastPacket?: DelegationPacket

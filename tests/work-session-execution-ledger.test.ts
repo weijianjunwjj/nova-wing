@@ -8,26 +8,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { pathToFileURL } from 'node:url'
 
-import {
-  ExecutionLedgerStore,
-  EXECUTION_LEDGER_SCHEMA_VERSION,
-  GuardianWorkSessionTaskRunner,
-  GitCheckpointError,
-  GitPushError,
-  recoverCheckpointPush,
-  SmtpWorkSessionNotifier,
-  WorkSessionRuntime,
-  executionLedgerPathFromStorageUrl,
-  readExecutionLedger,
-  classifyWorkSessionFailure,
-  safeFailureMessage,
-  type ExecutionLedgerEvent,
-  type TaskCompletionEvidence,
-  type WorkSessionDefinition,
-  type WorkSessionFailedNotification,
-  type WorkSessionNotifier,
-  type WorkSessionTaskResult,
-} from 'nova-wing/development-guardian'
+import { ExecutionLedgerStore, EXECUTION_LEDGER_SCHEMA_VERSION, GitCheckpointError, GitPushError, recoverCheckpointPush, SmtpWorkSessionNotifier, WorkSessionRuntime, executionLedgerPathFromStorageUrl, readExecutionLedger, classifyWorkSessionFailure, safeFailureMessage, type ExecutionLedgerEvent, type TaskCompletionEvidence, type WorkSessionDefinition, type WorkSessionFailedNotification, type WorkSessionNotifier, type WorkSessionTaskResult } from 'nova-wing/development-guardian'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { createWorkSessionFailedNotification } from '../packages/development-guardian/work-session/notifier.js'
 import { renderFailedNotificationText } from '../packages/development-guardian/work-session/smtp-notifier.js'
@@ -478,32 +459,6 @@ await test('same-iteration verification commands and recovery remain independent
     assert.equal(readExecutionLedger(storageUrl, 'ledger-verification-facts').filter((event) =>
       (event.eventType === 'PHASE_COMPLETED' || event.eventType === 'PHASE_FAILED') &&
       event.phase === 'VERIFYING').length, 3)
-  })
-})
-
-await test('generic executor errors retain the structured EXECUTOR failure boundary', async () => {
-  await withTemp('ledger-executor-stage-', async ({ storageUrl }) => {
-    const runner = new GuardianWorkSessionTaskRunner({
-      brain: {
-        async review({ task }) {
-          return {
-            verdict: 'proceed', goal: task.goal, instructions: ['execute'],
-            constraints: [], verification: [], doNotDo: [],
-          }
-        },
-      },
-      createExecutor() {
-        return { async execute() { throw new Error('spawn EACCES') } }
-      },
-    })
-    const runtime = new WorkSessionRuntime({
-      definition: definition('ledger-executor-stage'), storageUrl, taskRunner: runner,
-    })
-    await assert.rejects(runtime.start(), /spawn EACCES/u)
-    assert.equal(runtime.getDurableState()?.failureStage, 'EXECUTOR')
-    const failed = runtime.readExecutionLedger().find((event) => event.eventType === 'SESSION_FAILED')
-    assert.equal(failed?.failureStage, 'EXECUTOR')
-    await runtime.close()
   })
 })
 

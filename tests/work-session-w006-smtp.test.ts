@@ -5,31 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import {
-  createProductionWorkSessionUi,
-  createSmtpWorkSessionNotifierFromEnv,
-  validateTrustedWorkSessionConfig,
-  type HumanRequiredNotification,
-  type WorkSessionCompletedNotification,
-  type WorkSessionRecoveryRequiredNotification,
-  type WorkSessionDurableState,
-  type SmtpMailOptions,
-  type SmtpTransportConfig,
-  type TrustedWorkSessionConfig,
-  type WorkSessionRuntimeConfig,
-} from 'nova-wing/development-guardian'
-import {
-  renderNotificationSubject,
-  renderNotificationText,
-  renderCompletedNotificationSubject,
-  renderCompletedNotificationText,
-  renderRecoveryRequiredNotificationSubject,
-  renderRecoveryRequiredNotificationText,
-} from '../packages/development-guardian/work-session/smtp-notifier.js'
-import {
-  createWorkSessionRecoveryRequiredNotification,
-  safeNotificationReason,
-} from '../packages/development-guardian/work-session/notifier.js'
+import { createProductionWorkSessionUi, createSmtpWorkSessionNotifierFromEnv, validateTrustedWorkSessionConfig, type HumanRequiredNotification, type WorkSessionCompletedNotification, type SmtpMailOptions, type SmtpTransportConfig, type TrustedWorkSessionConfig, type WorkSessionRuntimeConfig } from 'nova-wing/development-guardian'
+import { renderNotificationSubject, renderNotificationText, renderCompletedNotificationSubject, renderCompletedNotificationText } from '../packages/development-guardian/work-session/smtp-notifier.js'
+import { safeNotificationReason } from '../packages/development-guardian/work-session/notifier.js'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { WorkSessionControlServer } from '../packages/development-guardian/work-session/control-ui/server.js'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
@@ -75,19 +53,6 @@ function completedNotification(): WorkSessionCompletedNotification {
     completedTaskIds: ['T1', 'T2'],
     completionReason: 'ALL_TASKS_COMPLETED',
     activeElapsedMs: 64_000,
-  }
-}
-
-function recoveryNotification(): WorkSessionRecoveryRequiredNotification {
-  return {
-    notificationId: 'session-1:T2:recovery:3',
-    session: { id: 'session-1', targetRepo: 'D:/VSCode/nova-wing', branch: 'feat/work-session-mvp' },
-    currentTaskId: 'T2',
-    stage: 'FINAL_REVIEW',
-    category: 'TRANSPORT',
-    safeMessage: 'Brain transport 不可用；当前 checkpoint 已保留。',
-    recommendation: 'NovaWing 已保留 checkpoint。修复 Browser/Bridge 后打开本地控制台恢复。',
-    control: { localUrl: 'http://127.0.0.1:4317' },
   }
 }
 
@@ -171,51 +136,6 @@ await test('completion SMTP uses the completed-only subject and safe plain text'
   assert.doesNotMatch(JSON.stringify(sent[0]), /Bearer|token=|password=|DATABASE_URL|resumeInput|fingerprint|provider URL/u)
 })
 
-await test('RECOVERY_REQUIRED SMTP contains safe recovery context and excludes raw provider data', async () => {
-  const sent: SmtpMailOptions[] = []
-  const notifier = createSmtpWorkSessionNotifierFromEnv({
-    env: SMTP_ENV,
-    createTransport: () => ({ async sendMail(options) { sent.push(options) } }),
-  })
-  await notifier.notifyRecoveryRequired(recoveryNotification())
-  assert.equal(sent[0]?.subject, '[NovaWing] 需要恢复基础设施：T2')
-  assert.equal(sent[0]?.subject, renderRecoveryRequiredNotificationSubject(recoveryNotification()))
-  assert.equal(sent[0]?.text, renderRecoveryRequiredNotificationText(recoveryNotification()))
-  assert.match(sent[0]?.text ?? '', /项目：nova-wing/u)
-  assert.match(sent[0]?.text ?? '', /Work Session：session-1/u)
-  assert.match(sent[0]?.text ?? '', /阶段：Final Review/u)
-  assert.match(sent[0]?.text ?? '', /类别：TRANSPORT/u)
-  assert.match(sent[0]?.text ?? '', /NovaWing 已保留 checkpoint/u)
-  assert.match(sent[0]?.text ?? '', /http:\/\/127\.0\.0\.1:4317/u)
-
-  const state: WorkSessionDurableState = {
-    sessionId: 'session-1', state: 'SUSPENDED', currentTaskIndex: 0, currentTaskId: 'T2',
-    completedTaskIds: [], suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
-    recoveryRequiredGeneration: 3,
-    brainFailure: {
-      stage: 'FINAL_REVIEW', category: 'TRANSPORT',
-      rootCause: 'cookie=ROOT_CAUSE_SECRET', rawError: 'Bearer RAW_PROVIDER_SECRET',
-      safeMessage: 'Brain transport 不可用；当前 checkpoint 已保留。',
-      adapter: 'ask-bridge/chatgpt', retryable: false, degraded: false,
-      fingerprint: 'brain-transport:composer-not-found',
-    },
-    createdAt: new Date('2026-08-29T00:00:00.000Z'),
-    updatedAt: new Date('2026-08-29T00:00:00.000Z'),
-  }
-  const built = createWorkSessionRecoveryRequiredNotification({
-    definition: {
-      id: 'session-1', targetRepo: 'D:/VSCode/nova-wing', branch: 'feat/work-session-mvp',
-      tasks: [{ id: 'T2', goal: 'safe recovery' }],
-      limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 1 },
-    },
-    state,
-    generation: 3,
-    localControlUrl: 'http://127.0.0.1:4317/?token=CONTROL_SECRET',
-  })
-  assert.equal(built.control.localUrl, undefined)
-  assert.doesNotMatch(JSON.stringify(built), /ROOT_CAUSE_SECRET|RAW_PROVIDER_SECRET|CONTROL_SECRET|rawError|rootCause/u)
-})
-
 await test('notification reasons are localized, bounded, and redact credential-like values', () => {
   assert.equal(
     safeNotificationReason('403 insufficient balance'),
@@ -262,18 +182,18 @@ await test('W006 production config: enabled fails fast without SMTP env; disable
     const enabled = await validateTrustedWorkSessionConfig(
       rawConfig(pathToFileURL(join(temp, 'enabled.db')).href, true),
     )
-    let brainCalls = 0
+    let providerCalls = 0
     await assert.rejects(
       createProductionWorkSessionUi(enabled, {
         env: {},
-        createBrain() {
-          brainCalls++
-          return { async review() { throw new Error('must not run') } }
+        createCodexExecutor() {
+          providerCalls++
+          throw new Error('must not run')
         },
       }),
       /NOVAWING_SMTP_HOST is required/u,
     )
-    assert.equal(brainCalls, 0, 'SMTP validation must precede provider/session startup')
+    assert.equal(providerCalls, 0, 'SMTP validation must precede provider/session startup')
 
     const disabled = await validateTrustedWorkSessionConfig(
       rawConfig(pathToFileURL(join(temp, 'disabled.db')).href, false),
@@ -281,7 +201,6 @@ await test('W006 production config: enabled fails fast without SMTP env; disable
     let disabledRuntimeConfig: WorkSessionRuntimeConfig | undefined
     const app = await createProductionWorkSessionUi(disabled, {
       env: {},
-      createBrain: () => ({ async review() { throw new Error('must not run') } }),
       createExecutor: () => ({ async execute() { throw new Error('must not run') } }),
       createRuntime(config) {
         disabledRuntimeConfig = config
@@ -322,7 +241,6 @@ await test('W006 production wiring: enabled SMTP notifier receives safe local UR
       createSmtpTransport: () => ({
         async sendMail(options) { sent.push(options) },
       }),
-      createBrain: () => ({ async review() { throw new Error('must not run') } }),
       createExecutor: () => ({ async execute() { throw new Error('must not run') } }),
       createRuntime(input) {
         runtimeConfig = input

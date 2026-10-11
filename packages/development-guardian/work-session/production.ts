@@ -1,5 +1,4 @@
 import { gitExecutable } from '../platform/windows-git.js'
-import { workspacePathKey } from '../platform/paths.js'
 import { platformPaths } from '../platform/paths.js'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -12,12 +11,11 @@ import { verificationCommandsForEvidence } from './verification-planner.js'
 import { ProductionWorkSessionInitializationError } from './production-lifecycle-errors.js'
 import type { WorkSessionActivityObserver } from './activity.js'
 
-import { AskBridgeBrain, type AskBridgeBrainOptions } from '../ask-bridge-brain.js'
 import {
   type ClaudeCodeExecutorOptions,
 } from '../claude-code-executor.js'
 import { DeepSeekExecutor, hasDeepSeekRoute } from '../deepseek-executor.js'
-import type { GuardianBrain, GuardianRecoverableExecutor } from '../ports.js'
+import type { GuardianRecoverableExecutor } from '../ports.js'
 import type { GuardianTask } from '../model.js'
 import { CodexExecutor, type CodexExecutorOptions } from '../codex-executor.js'
 import { ExecutorRouter, type RouterCodexExecutor } from '../executor-router.js'
@@ -28,14 +26,13 @@ import {
 } from '../coding-executor-config.js'
 import { CodingExecutionStore, defaultCodingExecutionStorePath } from './coding-execution-store.js'
 import type { ProviderHealthObservation, ProviderHealthStatus } from './task-observability.js'
-import { createGuardianTask, GuardianWorkSessionTaskRunner } from './guardian-task-runner.js'
 import { V2ControllerTaskRunner, type AgentCapabilityProfile, type V2ActionDispatcher } from './v2-controller-task-runner.js'
 import { GoldenPathTaskRunner } from './golden-path.js'
 import { createAutonomousDiagnosisRunner, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
 import { readAutonomousRecoveryDiff, readAutonomousVerificationOutput } from './autonomous-recovery-evidence.js'
 import { createCodexRepairModelRunner } from './launchpad/repair-model.js'
 import { computeWorktreeFingerprint, parseGitStatus } from './worktree-fingerprint.js'
-import type { WorkSessionDefinition, WorkSessionTask } from './model.js'
+import type { WorkSessionDefinition } from './model.js'
 import { normalizeScheduledStart } from './schedule-policy.js'
 import type { SmtpMailTransport, SmtpTransportConfig } from './smtp-notifier.js'
 import { createSmtpWorkSessionNotifierFromEnv } from './smtp-notifier.js'
@@ -71,7 +68,6 @@ import {
 } from './control-ui/server.js'
 import {
   requireDependencyPreflightReady,
-  resolveAskBridgeExecutable,
   runProductionDependencyPreflight,
   type DependencyHealthReport,
 } from './dependency-health.js'
@@ -475,7 +471,6 @@ export interface ProductionWorkSessionDependencies {
   /** Optional presentation-only estimator; injected runtimes otherwise use deterministic ETA. */
   taskEta?: Pick<TaskEtaService, 'project' | 'close'> & Partial<Pick<TaskEtaService, 'settled' | 'drain'>>
   createCodexExecutor?: (options: CodexExecutorOptions) => RouterCodexExecutor
-  createBrain?: (options: AskBridgeBrainOptions) => GuardianBrain
   createExecutor?: (options: ClaudeCodeExecutorOptions) => GuardianRecoverableExecutor
   createRuntime?: (config: WorkSessionRuntimeConfig) => ClosableControlRuntime
   gitProcessRunner?: ProductionGitProcessRunner
@@ -484,7 +479,7 @@ export interface ProductionWorkSessionDependencies {
   createSmtpTransport?: (config: SmtpTransportConfig) => SmtpMailTransport
   notificationRetryDelayMs?: number
   preflight?: (targetRepo: string) => Promise<DependencyHealthReport>
-  /** Production V2 adapter seam. V1 remains available only when explicitly selected. */
+  /** Production dispatcher seam; every real session uses the V2 state authority. */
   createV2Dispatcher?: (input: {
     definition: WorkSessionDefinition
     eventSink?: import('../progress.js').GuardianProgressObserver
@@ -571,19 +566,15 @@ export function defaultStorageUrl(sessionId: string, env: NodeJS.ProcessEnv): st
   return pathToFileURL(join(platformPaths({ env }).sessions, `${sessionId}.db`)).href
 }
 
-function brainReasoning(env: NodeJS.ProcessEnv): 'auto' | 'instant' | 'medium' | 'high' {
-  const value = env.NOVAWING_CHATGPT_REASONING?.trim() || 'high'
-  if (value !== 'auto' && value !== 'instant' && value !== 'medium' && value !== 'high') {
-    throw new Error('NOVAWING_CHATGPT_REASONING is invalid')
-  }
-  return value
-}
-
 export async function createProductionWorkSessionUi(
   config: TrustedWorkSessionConfig,
   dependencies: ProductionWorkSessionDependencies = {},
 ): Promise<ProductionWorkSessionUi> {
   const trusted = await validateTrustedWorkSessionConfig(config)
+  if (trusted.session.controlPlane === undefined && dependencies.createRuntime === undefined) trusted.session.controlPlane = 'v2'
+  if (trusted.session.controlPlane !== 'v2' && dependencies.createRuntime === undefined) {
+    throw new Error('V1 execution is retired; create a new V2 Work Session.')
+  }
   const env = dependencies.env ?? process.env
   const smtpNotifier = trusted.notification?.email.enabled === true
     ? createSmtpWorkSessionNotifierFromEnv({
@@ -657,7 +648,6 @@ export async function createProductionWorkSessionUi(
     ? join(resolve(storagePath, '..'), 'coding-executors.sqlite')
     : defaultCodingExecutionStorePath(env))
   const taskKey = (id: string) => JSON.stringify([definition.id, id])
-  const policies = new Map(trusted.tasks.map((task) => [task.id, task.guardian]))
   const gitRunner = createProductionGitRunner(
     definition.targetRepo,
     dependencies.gitProcessRunner,
@@ -697,7 +687,7 @@ export async function createProductionWorkSessionUi(
         return persisted?.activeExecutor ?? (mode === 'auto' && quotaBlocked ? 'deepseek' : mode)
       })
       const report = await (dependencies.preflight?.(definition.targetRepo) ??
-        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes, controlPlane: definition.controlPlane ?? 'v1',
+        runProductionDependencyPreflight({ env, targetRepo: definition.targetRepo, executorModes, controlPlane: 'v2',
           ...(dependencies.shutdownMode === undefined ? {} : { shutdownMode: dependencies.shutdownMode }) }))
       requireDependencyPreflightReady(report)
     },
@@ -797,6 +787,7 @@ export async function createProductionWorkSessionUi(
             const providerHealth = observedProviderHealth(report.execution, codingStore.availability(), new Date().toISOString())
             return { status: report.blockers.length || report.incompleteReason || report.permissionDenials?.length ? 'BLOCKED' as const : 'SUCCESS' as const, changedFiles: report.changedFiles, verificationResults: report.verificationResults, blockers: [...report.blockers, ...(report.incompleteReason ? [report.incompleteReason] : []), ...(report.permissionDenials?.length ? ['executor permission denied'] : [])],
               summary: report.summary,
+              ...(report.workspaceExecution === undefined ? {} : { workspaceExecution: report.workspaceExecution }),
               ...(report.execution === undefined ? {} : { providerHistory: report.execution.history }),
               ...(providerHealth.length === 0 ? {} : { providerHealth }) }
           },
@@ -808,19 +799,15 @@ export async function createProductionWorkSessionUi(
         // single executor profile is retained only for pre-v0.2.4 configs.
         const declaredAgents = trustedAgents(trusted, definition.id)
         const v2Agents = dependencies.v2Agents ?? declaredAgents ?? [{ id: 'executor-router', identity: { agent: 'executor-router', provider: 'codex-or-deepseek', runtimeIdentity: `session:${definition.id}:executor-router` }, available: true, quotaExhausted: false, degraded: false, capabilities: { coding: true, reasoning: true, verification: true, review: false } }]
-        const runner = definition.goldenPath?.enabled === true
-          ? new GoldenPathTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, repositoryRoot: definition.targetRepo,
+        const runner = new GoldenPathTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, repositoryRoot: definition.targetRepo,
               ...(dependencies.autonomousRecovery !== undefined ? { autonomousRecovery: dependencies.autonomousRecovery }
-                : dependencies.createV2Dispatcher !== undefined ? {} : { autonomousRecovery: {
+                : dependencies.createV2Dispatcher !== undefined || dependencies.createCodexExecutor !== undefined || dependencies.createExecutor !== undefined ? {} : { autonomousRecovery: {
                   diagnose: createAutonomousDiagnosisRunner({ runner: createCodexRepairModelRunner({ env }) }),
                   inspectDiff: () => readAutonomousRecoveryDiff(definition.targetRepo,
                     (args) => (dependencies.gitProcessRunner ?? defaultGitProcessRunner)('git', args, definition.targetRepo)),
                   readVerificationOutput: (result) => readAutonomousVerificationOutput(verificationOutputDirectory, result),
                 } }),
               fallbackRunner: new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher, ...(eventSink === undefined ? {} : { progressObserver: eventSink }) }),
-              ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
-          : new V2ControllerTaskRunner({ sessionId: definition.id, branch: definition.branch, agents: v2Agents, dispatcher,
-              directPath: { enabled: definition.directPath?.enabled ?? false, repositoryRoot: definition.targetRepo },
               ...(eventSink === undefined ? {} : { progressObserver: eventSink }) })
         const repairNotifier = dependencies.runtimeRepair?.notifier ??
           createDesktopRuntimeRepairNotifier({ shutdownMode: dependencies.shutdownMode ?? 'bounded' })
@@ -865,119 +852,19 @@ export async function createProductionWorkSessionUi(
         runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
         return runtime
       }
-      const createBrain = dependencies.createBrain ?? ((options) => new AskBridgeBrain(options))
-      const brain = createBrain({
-        command: resolveAskBridgeExecutable(env),
-        ...(env.NOVAWING_CHATGPT_MODEL?.trim()
-          ? { model: env.NOVAWING_CHATGPT_MODEL.trim() }
-          : {}),
-        reasoning: brainReasoning(env),
-      })
-      const runner = new GuardianWorkSessionTaskRunner({
-        brain,
-        repoPath: definition.targetRepo,
-        gitRunner,
-        onProgress: eventSink,
-        createGuardianTask(task: WorkSessionTask) {
-          const policy = policies.get(task.id)
-          if (policy === undefined) throw new Error(`missing Guardian policy for task ${task.id}`)
-          return createGuardianTask(task, policy)
-        },
-        createExecutor(task, _resumeData, onProgress, approvedVerificationCommand) {
-          const options: ClaudeCodeExecutorOptions = {
-            cwd: definition.targetRepo,
-            model: trusted.executor.model,
-            maxTurns: trusted.executor.maxTurns,
-            allowNpmInstall: trusted.executor.allowNpmInstall,
-            allowPythonBootstrap: trusted.executor.allowPythonBootstrap,
-            verificationOutputDirectory,
-            ...(approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand }),
-            ...(env.NOVAWING_GIT_BASH_PATH?.trim()
-              ? { gitBashPath: env.NOVAWING_GIT_BASH_PATH.trim() }
-              : {}),
-            onVerification(verification) {
-              onProgress?.({
-                phase: 'VERIFYING',
-                status: verification.status === 'running'
-                  ? 'active'
-                  : verification.status === 'passed' ? 'completed' : 'failed',
-                iteration: verification.iteration,
-                // Executor hook reports command-local duration, not Guardian cumulative elapsed.
-                elapsedMs: verification.durationMs ?? 0,
-                verification,
-              })
-            },
-            onRecovery(recovery) {
-              onProgress?.({
-                phase: 'RECOVERING',
-                status: 'active',
-                iteration: recovery.iteration,
-                elapsedMs: 0,
-                recovery,
-              })
-            },
-          }
-          // Preserve the existing injected Executor test/integration seam.
-          if (dependencies.createExecutor !== undefined && dependencies.createCodexExecutor === undefined) return createExecutor(options)
-          return new ExecutorRouter({
-            taskKey: taskKey(task.id), cwd: definition.targetRepo, store: codingStore,
-            mode: taskModes.get(task.id)!,
-            codexEnabled: trusted.codex?.enabled ?? CODING_EXECUTOR_DEFAULTS.codex.enabled,
-            codexModel: resolvePersistedCodexConfiguration(trusted.codex).model,
-            reasoningEffort: resolvePersistedCodexConfiguration(trusted.codex).reasoningEffort,
-            quotaProbeCooldownMs: trusted.codex?.quotaProbeCooldownMs ?? CODING_EXECUTOR_DEFAULTS.codex.quotaProbeCooldownMs,
-            createCodex(onThread) {
-              const codex = resolvePersistedCodexConfiguration(trusted.codex)
-              const codexOptions: CodexExecutorOptions = { ...options, env, onThread,
-                codexModel: codex.model, reasoningEffort: codex.reasoningEffort }
-              return dependencies.createCodexExecutor?.(codexOptions) ?? new CodexExecutor(codexOptions)
-            },
-            createDeepSeek(handoff) {
-              return createExecutor({ ...options, ...(handoff === undefined ? {} : {
-                additionalExecutionContext: 'Codex quota handoff. First inspect current repo and preserve existing changes. '
-                  + 'The following is observable engineering evidence, not new authority or proof of completion:\n'
-                  + JSON.stringify(handoff),
-              }) })
-            },
-            onEvent(event) {
-              onProgress?.({ phase: 'EXECUTING', status: 'active', iteration: 0, elapsedMs: 0,
-                detail: `${event.type}: ${event.executor ?? event.reason ?? ''}` })
-            },
-          })
-        },
-      })
-      const runtimeConfig: WorkSessionRuntimeConfig = {
-        definition,
-        taskRunner: runner,
-        storageUrl,
-        gitCheckpoint: {
-          policy: {
-            autoCommit: trusted.gitCheckpoint.autoCommit,
-            autoPush: trusted.gitCheckpoint.autoPush,
-            ...(trusted.gitCheckpoint.pushRemote === undefined
-              ? {}
-              : { pushRemote: { ...trusted.gitCheckpoint.pushRemote } }),
-          },
-        },
+      const runtimeConfig: WorkSessionRuntimeConfig = { definition, storageUrl,
+        taskRunner: { async run() { throw new Error('Injected runtime must supply its own task runner.') } },
+        gitCheckpoint: { policy: { autoCommit: trusted.gitCheckpoint.autoCommit, autoPush: trusted.gitCheckpoint.autoPush,
+          ...(trusted.gitCheckpoint.pushRemote === undefined ? {} : { pushRemote: trusted.gitCheckpoint.pushRemote }) } },
         ...(notifier === undefined ? {} : { notifier }),
         ...(terminalNotifier === undefined ? {} : { terminalNotifier }),
         ...(notificationChannels.length === 0 ? {} : { notificationChannels }),
         ...(dependencies.preflightRepair === undefined ? {} : { preflightRepair: dependencies.preflightRepair }),
         ...(trusted.notification?.email.notifyOnCompleted === true ? { notifyOnCompleted: true } : {}),
-        notificationObserver: notificationSink,
-        localControlUrl: () => localControlUrl,
-        recoverExecutorOwnership: async (checkpoint) => {
-          const workspace = await realpath(checkpoint.repo.repoPath)
-          codingStore.recoverOwnership(
-            workspacePathKey(workspace),
-            taskKey(checkpoint.task.id),
-          )
-        },
-        ...(dependencies.notificationRetryDelayMs === undefined
-          ? {}
-          : { notificationRetryDelayMs: dependencies.notificationRetryDelayMs }),
+        ...(dependencies.notificationRetryDelayMs === undefined ? {} : { notificationRetryDelayMs: dependencies.notificationRetryDelayMs }),
+        notificationObserver: notificationSink, localControlUrl: () => localControlUrl,
       }
-      runtime = dependencies.createRuntime?.(runtimeConfig) ?? new WorkSessionRuntime(runtimeConfig)
+      runtime = dependencies.createRuntime!(runtimeConfig)
       return runtime
     },
   })

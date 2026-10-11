@@ -97,7 +97,6 @@ async function withComposition(
         env: SMTP_ENV, serverPort: 0, shutdownMode: 'strict', notificationRetryDelayMs: 0,
         ...(options.desktopNotifier === undefined ? {} : { desktopNotifier: options.desktopNotifier }),
         ...(options.repairNotifier === undefined ? {} : { runtimeRepair: { notifier: options.repairNotifier } }),
-        createBrain: () => ({ async review() { throw new Error('fake workload never calls a model') } }),
         createExecutor: () => ({ async execute() { throw new Error('fake workload never calls a model') } }),
         createSmtpTransport: () => ({ async sendMail(mail) {
           mails.push(mail)

@@ -2,15 +2,7 @@ import { pythonRuntime } from '../packages/development-guardian/platform/executa
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  ClaudeCodeExecutor,
-  buildGuardianBrainPrompt,
-  type DelegationPacket,
-  type GuardianCommandRequest,
-  type GuardianCommandResult,
-  type GuardianCommandRunner,
-  type GuardianTask,
-} from 'nova-wing/development-guardian'
+import { ClaudeCodeExecutor, type DelegationPacket, type GuardianCommandRequest, type GuardianCommandResult, type GuardianCommandRunner, type GuardianTask } from 'nova-wing/development-guardian'
 import { createExecutorTestWorkspace } from './executor-workspace-fixture.js'
 
 function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
@@ -253,24 +245,6 @@ test('executor records failed pytest verification', async (t) => {
   assert.ok(pytest !== undefined, 'should have pytest result')
   assert.equal(pytest.status, 'failed', 'pytest should fail')
   assert.ok(pytest.details !== undefined, 'failed pytest should have details')
-})
-
-// CASE F: Brain prompt 明确列出 Python pytest verification
-test('brain prompt includes Python pytest in allowed verification commands', () => {
-  const task: GuardianTask = {
-    id: 'task-python',
-    goal: 'Bootstrap FastAPI application',
-    state: 'REVIEWING',
-    iteration: 0,
-    maxIterations: 3,
-  }
-
-  const prompt = buildGuardianBrainPrompt({ task })
-
-  assert.ok(prompt.includes('MVP verification 只能从以下命令中选择：'), 'should have verification section')
-  assert.ok(prompt.includes(`- ${pythonRuntime().pytest}`), 'should list pytest command')
-  assert.ok(prompt.includes('- npm test'), 'should still list npm test')
-  assert.ok(prompt.includes('- git diff --check'), 'should still list git diff --check')
 })
 
 // CASE G: 确认没有 generic 权限

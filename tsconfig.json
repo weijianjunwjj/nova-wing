@@ -5,11 +5,9 @@
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
-      "nova-wing/core": ["packages/core/src/index.ts"],
-      "nova-wing/development-guardian": ["packages/development-guardian/index.ts"],
-      "nova-wing/host-snapshot": ["packages/host-snapshot/src/index.ts"],
-      "nova-wing/sqlite": ["packages/sqlite/src/index.ts"],
-      "nova-wing/testing": ["packages/testing/src/index.ts"]
+      "nova-wing/development-guardian": [
+        "packages/development-guardian/index.ts"
+      ]
     },
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -19,7 +17,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["packages/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "tests/**/*.ts"
+  ]
 }

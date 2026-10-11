@@ -25,7 +25,7 @@ import {
   type AgentCapabilityProfile,
   type V2ActionDispatcher,
 } from './v2-controller-task-runner.js'
-import { providerOf, repositoryFacts, type TaskEventV2 } from './task-observability.js'
+import { deriveProviderSwitches, dispatchMessage, ProviderHealthRegistry, providerOf, providerSwitchReasonCode, repositoryFacts, type TaskEventV2 } from './task-observability.js'
 import { isAutonomousRecoveryCategory, authoritiesAfterAnsweredHumanAction, ANSWERED_BUSINESS_DECISION_REPEATED, derivePendingHumanAction, RECOVERY_ACTION_BUDGET, validateAutonomousDiagnosis, type AutonomousRecoveryOptions } from './autonomous-diagnosis.js'
 
 /**
@@ -76,6 +76,11 @@ export interface GoldenPathTerminalResult extends WorkSessionTaskResult {
 
 /** The result of one V2ActionDispatcher.dispatch call, including provider provenance. */
 type GoldenDispatchResult = Awaited<ReturnType<V2ActionDispatcher['dispatch']>>
+
+function rejectedWorkspaceMutation(result: GoldenDispatchResult): boolean {
+  return (result.workspaceExecution?.mutationFailures.length ?? 0) > 0 ||
+    (result.blockers ?? []).some(blocker => blocker.startsWith('EXECUTION_BLOCKED:') || blocker === 'executor permission denied')
+}
 
 /**
  * Golden Path eligibility. It is the v0.2.8 fixed-protocol Direct gate plus the
@@ -231,6 +236,7 @@ function applyGoldenExecute(
     ...state,
     gitState: { ...end },
     artifacts: [...new Set([...state.artifacts, ...(execute.changedFiles ?? end.changedFiles)])],
+    blockers: execute.status === 'SUCCESS' ? [] : [...(execute.blockers ?? [])],
     currentAgent: agent.id,
     implementer,
     providerHistory: execute.providerHistory ?? (actualProvider === undefined ? state.providerHistory : [...state.providerHistory, actualProvider]),
@@ -392,7 +398,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     const reconciled = reconcileTaskState(state, reality)
     if (!reconciled.reconciled) return stop('REPO_DRIFT', `自动恢复前仓库发生变化：${reconciled.reasons.join('; ')}`)
     const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1,
-      allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, reality.changedFiles)
+      allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, reality.changedFiles, reality.repositoryIdentity)
     if (violations.length > 0) return stop('SAFETY_BLOCKED', violations.join('; '))
     const note = (type: 'GOLDEN_EXHAUSTED' | 'AUTONOMOUS_DIAGNOSIS' | 'ADVANCED_RECOVERY'): void => {
       context?.taskEventLog?.append({ type, taskId: task.id, sessionId: this.options.sessionId, ...repositoryFacts(state),
@@ -493,6 +499,8 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     }
 
     const eventLog = context?.taskEventLog
+    const health = context?.providerHealth ?? new ProviderHealthRegistry()
+    health.seedFromProfiles(this.options.agents)
     const note = (input: Omit<TaskEventV2, 'eventId' | 'taskId' | 'sessionId' | 'timestamp'>): void => {
       eventLog?.append({ taskId: task.id, sessionId: this.options.sessionId, ...input })
     }
@@ -578,6 +586,24 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
     let verifyCount = 0
     const routeProvider = concreteRuntimeProvider(providerOf(agent))
 
+    const observeDispatch = (result: GoldenDispatchResult, action: 'EXECUTE' | 'VERIFY'): void => {
+      for (const observation of result.providerHealth ?? []) {
+        const previous = health.get(observation.provider)
+        health.record(observation)
+        if (previous === undefined || previous.status !== observation.status) {
+          note({ type: 'PROVIDER_HEALTH_CHANGED', provider: observation.provider,
+            reasonCode: providerSwitchReasonCode(observation), metadata: { status: observation.status } })
+        }
+      }
+      if (action !== 'EXECUTE') return
+      for (const [previousProvider, selectedProvider] of deriveProviderSwitches(state.providerHistory, result.providerHistory ?? state.providerHistory)) {
+        const reasonCode = providerSwitchReasonCode(health.get(previousProvider))
+        note({ type: 'PROVIDER_SWITCHED', action, previousProvider, provider: selectedProvider, reasonCode, ...repositoryFacts(state),
+          explanation: { action, reasonCode, previousProvider, selectedProvider, factors: [`provider changed from ${previousProvider} to ${selectedProvider}`],
+            alternativesConsidered: [], message: dispatchMessage({ action, reasonCode, previousProvider, selectedProvider }), timestamp: new Date().toISOString() } })
+      }
+    }
+
     const dispatchExecute = async (retry?: { reason: 'NO_OP_EXECUTION'; instruction: string }): Promise<{ result: GoldenDispatchResult; end: RepositoryReality }> => {
       if (executeCount >= 2) throw new Error('Golden EXECUTE budget exhausted')
       executeCount += 1
@@ -591,6 +617,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       })
       emit('EXECUTING', 'active', { kind: 'PROVIDER_DISPATCHED', ...(routeProvider === undefined ? {} : { provider: routeProvider }) })
       const result = await this.options.dispatcher.dispatch({ action: 'EXECUTE', agent: structuredClone(agent), task: structuredClone(state), ...(retry === undefined ? {} : { retry }), recoveryInstructions: context?.recoveryInstructions ?? [] })
+      observeDispatch(result, 'EXECUTE')
       const end = await this.options.dispatcher.inspectRepository()
       state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, executorHistory: [...state.autonomousRecovery!.executorHistory,
         { status: result.status, ...(result.summary === undefined ? {} : { summary: result.summary }), blockers: result.blockers ?? [], changedFiles: end.changedFiles }] } }
@@ -618,10 +645,14 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
 
     const actualProvider = execute.result.providerHistory?.at(-1) ?? routeProvider
     state = applyGoldenExecute(state, agent, execute.result, end, actualProvider)
-    note({ type: execute.result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: 'EXECUTE', agent: agent.id, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
+    note({ type: execute.result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: 'EXECUTE', agent: agent.id, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state),
+      ...(execute.result.workspaceExecution === undefined ? {} : { metadata: { workspaceExecution: execute.result.workspaceExecution } }) })
     emit('EXECUTING', execute.result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: execute.result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: execute.result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
     await context?.persistTaskStateV2?.(state)
 
+    if (rejectedWorkspaceMutation(execute.result)) {
+      return goldenTerminal({ category: 'SAFETY_BLOCKED', reason: execute.result.blockers?.[0] ?? 'Workspace mutation was refused; explicit authorization is required.', state, executeCount, verifyCount, provider: actualProvider, verifier: plan.planId, changedFiles: end.changedFiles })
+    }
     if (execute.result.status !== 'SUCCESS') {
       note({ type: 'TASK_FAILED', action: 'EXECUTE', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { executeCount, verifyCount } })
       return goldenTerminal({ category: 'EXECUTOR_FAILED', reason: execute.result.blockers?.[0] ?? execute.result.summary ?? 'execution failed without a no-op signal', state, executeCount, verifyCount, provider: actualProvider, verifier: plan.planId, changedFiles: end.changedFiles })
@@ -646,6 +677,7 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
       emit('VERIFYING', 'active', { kind: 'VERIFIER_STARTED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), verifier: plan.planId })
       const result = await this.options.dispatcher.dispatch({ action: 'VERIFY', agent: structuredClone(agent), task: structuredClone(state),
         ...(context?.approvedVerificationCommand === undefined ? {} : { approvedVerificationCommand: context.approvedVerificationCommand }) })
+      observeDispatch(result, 'VERIFY')
       state = applyGoldenVerify(state, result)
       state = { ...state, autonomousRecovery: { ...state.autonomousRecovery!, verificationHistory: [...state.autonomousRecovery!.verificationHistory, result.verificationResults ?? []] } }
       return result
@@ -671,6 +703,9 @@ export class GoldenPathTaskRunner implements WorkSessionTaskRunner {
         note({ type: fix.result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: 'EXECUTE', agent: agent.id, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
         emit('EXECUTING', fix.result.status === 'SUCCESS' ? 'completed' : 'failed', { kind: fix.result.status === 'SUCCESS' ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: fix.result.status === 'SUCCESS' ? 'COMPLETED' : 'FAILED' })
         await context?.persistTaskStateV2?.(state)
+        if (rejectedWorkspaceMutation(fix.result)) {
+          return goldenTerminal({ category: 'SAFETY_BLOCKED', reason: fix.result.blockers?.[0] ?? 'Workspace mutation was refused during the bounded fix.', state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })
+        }
         if (fix.result.status !== 'SUCCESS' || (!fixChanged && fix.result.implementationEvidenceAdded !== true)) {
           note({ type: 'NO_IMPLEMENTATION_PROGRESS', action: 'EXECUTE', ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state), metadata: { repoChanged: fixChanged, executeCount, verifyCount, originalFailureClassification: 'CODE_FAILURE', verifier: assessment.verifier } })
           return goldenTerminal({ category: 'CODE_FAILURE_AFTER_SINGLE_FIX', reason: 'the single CODE_FAILURE fix produced no repository or implementation-evidence progress; stopping instead of a third EXECUTE.', state, executeCount, verifyCount, provider: actualProvider, verifier: assessment.verifier, changedFiles: state.gitState.changedFiles })

@@ -340,3 +340,30 @@ test('Direct no-op auto retry replaces only the stale Codex thread identity', as
     assert.equal(f.store.events(f.options.taskKey).at(-1)?.type, 'codex_thread_replaced')
   } finally { await f.close() }
 })
+
+for (const replacementSucceeds of [true, false]) test(`zero-inspection Codex turn retries once in a fresh thread and ${replacementSucceeds ? 'continues' : 'fails closed'}`, async () => {
+  const f = await fixture('codex')
+  let created = 0
+  try {
+    const options: ExecutorRouterOptions = { ...f.options, createCodex(onThread) {
+      const attempt = ++created
+      return { async execute() {
+        onThread(`thread-${attempt}`, false)
+        if (attempt === 1 || !replacementSucceeds) {
+          const message = 'NO_OP_EXECUTION: Codex completed without workspace inspection; execution evidence is missing'
+          this.lastError = { kind: 'no_op_execution', message }
+          return { ...good(), summary: 'workspace tools unavailable', blockers: [message] }
+        }
+        return { ...good(), summary: 'repository inspected', commandsRun: ['git status --porcelain --untracked-files=all'] }
+      } }
+    } }
+    const report = await new ExecutorRouter(options).execute({ task, packet })
+    assert.equal(created, 2, 'no-op recovery must be bounded to one replacement')
+    assert.deepEqual(report.blockers, replacementSucceeds ? [] : [
+      'NO_OP_EXECUTION: Codex completed without workspace inspection; execution evidence is missing',
+    ])
+    assert.equal(f.store.read(options.taskKey)?.codexThreadId, 'thread-2')
+    assert.deepEqual(report.execution?.history, ['codex'])
+    assert.deepEqual(f.store.events(options.taskKey).filter((event) => event.type === 'codex_thread_replaced').map((event) => event.reason), ['no_op_execution'])
+  } finally { await f.close() }
+})

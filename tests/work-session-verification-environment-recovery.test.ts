@@ -5,20 +5,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import {
-  buildVerificationResult,
-  classifyWorkSessionFailure,
-  ExecutionLedgerStore,
-  persistVerificationOutput,
-  runGuardianTask,
-  WorkSessionRuntime,
-  type DelegationPacket,
-  type ExecutionReport,
-  type GuardianTask,
-  type GuardianTaskRecoveryCheckpoint,
-  type VerificationResult,
-  type WorkSessionDefinition,
-} from 'nova-wing/development-guardian'
+import { buildVerificationResult, classifyWorkSessionFailure, ExecutionLedgerStore, persistVerificationOutput, WorkSessionRuntime, type DelegationPacket, type ExecutionReport, type GuardianTaskRecoveryCheckpoint, type VerificationResult, type WorkSessionDefinition } from 'nova-wing/development-guardian'
 
 async function removeEventually(directory: string): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -187,60 +174,6 @@ function report(verificationResult: VerificationResult): ExecutionReport {
       : { rawOutputRef: verificationResult.rawOutputRef }),
   }
 }
-
-test('CASE A/G: environment failure bypasses Reviewer revise and resume invokes verification only', async () => {
-  let initialBrainCalls = 0
-  let initialExecutorCalls = 0
-  const first = await runGuardianTask({
-    task: { id: 'T-env', goal: 'verify', state: 'READY', iteration: 0, maxIterations: 3 },
-    brain: { async review() { initialBrainCalls++; return packet('proceed') } },
-    executor: {
-      async execute() {
-        initialExecutorCalls++
-        return report(failedResult(SHARED_SETUP_OUTPUT, 'D:/safe/session/raw.log'))
-      },
-    },
-  })
-  assert.equal(first.task.state, 'HUMAN_REQUIRED')
-  assert.equal(initialBrainCalls, 1, 'Reviewer must not be asked to revise an environment failure')
-  assert.equal(initialExecutorCalls, 1)
-
-  let finalReviewCalls = 0
-  let resumedExecutorCalls = 0
-  let verificationRetryCalls = 0
-  const resumedTask: GuardianTask = {
-    ...first.task,
-    recoveryContinuation: true,
-    resumeInput: { approval: true },
-  }
-  const resumed = await runGuardianTask({
-    task: resumedTask,
-    brain: { async review() { finalReviewCalls++; return packet('done') } },
-    executor: {
-      async execute() {
-        resumedExecutorCalls++
-        throw new Error('Executor must not run during environment recovery')
-      },
-      async retryVerification({ report: previous }) {
-        verificationRetryCalls++
-        return {
-          ...previous,
-          verificationResults: previous.verificationResults.map((item) => ({
-            name: item.name,
-            status: 'passed' as const,
-            exitCode: 0,
-            durationMs: 100,
-            finalSummary: '1 passed in 0.10s',
-          })),
-        }
-      },
-    },
-  })
-  assert.equal(resumed.task.state, 'COMPLETED')
-  assert.equal(verificationRetryCalls, 1)
-  assert.equal(resumedExecutorCalls, 0)
-  assert.equal(finalReviewCalls, 1, 'successful retry proceeds directly to final review')
-})
 
 function definition(id: string, repo: string): WorkSessionDefinition {
   return {

@@ -2,10 +2,11 @@ import { codexChatGptEnvironment } from './platform/executables.js'
 import { gitEnvironment } from './platform/windows-git.js'
 export { codexChatGptEnvironment } from './platform/executables.js'
 export * from './platform/codex-development-runtime.js'
-import { Codex, type CodexOptions, type Thread, type ThreadOptions } from '@openai/codex-sdk'
+import { Codex, type CodexOptions, type Thread, type ThreadEvent, type ThreadOptions } from '@openai/codex-sdk'
 import { ClaudeCodeExecutor, type ClaudeCodeExecutorOptions } from './claude-code-executor.js'
 import { CODING_EXECUTOR_DEFAULTS } from './coding-executor-config.js'
 import { classifyCodexError, type ClassifiedCodexError } from './codex-error.js'
+import { taskWorkspaceScope } from './workspace-scope.js'
 import { CodexWorkspaceTools, type CodexWorkspaceProbeResult } from './codex-workspace-tools.js'
 import { bundledCodexExecutable } from './codex-runtime.js'
 export { bundledCodexExecutable } from './codex-runtime.js'
@@ -14,6 +15,25 @@ import type { GuardianRecoverableExecutor } from './ports.js'
 import type { ProviderSessionState, RepositoryCheckpoint } from './work-session/checkpoint.js'
 
 export const NO_OP_EXECUTION = 'NO_OP_EXECUTION'
+
+type CodexTurnState =
+  | { kind: 'pending'; reconnectError?: unknown }
+  | { kind: 'completed' }
+  | { kind: 'failed'; error: unknown }
+
+function observeCodexTurn(state: CodexTurnState, event: ThreadEvent): CodexTurnState {
+  if (event.type === 'turn.failed') return { kind: 'failed', error: event.error }
+  // A failed terminal event cannot be reversed by a later malformed event.
+  if (event.type === 'turn.completed') return state.kind === 'failed' ? state : { kind: 'completed' }
+  // SDK error events may describe a reconnect. Only the absence of a successful
+  // terminal event makes one fatal; errors after a terminal event do not reopen it.
+  if (event.type === 'error' && state.kind === 'pending') return { kind: 'pending', reconnectError: state.reconnectError ?? event }
+  return state
+}
+
+function codexTurnFailure(state: CodexTurnState): unknown {
+  return state.kind === 'failed' ? state.error : state.kind === 'pending' ? state.reconnectError : undefined
+}
 export interface CodexExecutorOptions extends ClaudeCodeExecutorOptions {
   codexModel?: string
   reasoningEffort?: ThreadOptions['modelReasoningEffort']
@@ -109,6 +129,10 @@ function isSdkNetworkTransportError(error: unknown): boolean {
   return /(?:os error 10013|access.*socket|network \(connection failed|responses_websocket)/iu.test(safeSdkPreflightError(error))
 }
 
+function isUnrecoverableSocketPermissionError(error: unknown): boolean {
+  return /(?:os error 10013|access.*socket)/iu.test(safeSdkPreflightError(error))
+}
+
 function failedWorkspaceProbe(results: readonly CodexWorkspaceProbeResult[]): CodexSdkPreflightError | undefined {
   const failure = results.find((result) => result.status === 'failed')
   if (failure === undefined) return undefined
@@ -155,9 +179,19 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   retryVerification(input: { task: GuardianTask; report: ExecutionReport; verificationSteps?: readonly VerificationExecutionStep[] }): Promise<ExecutionReport> {
     return this.guarded.retryVerification(input)
   }
-  execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {
+  async execute(input: { task: GuardianTask; packet: DelegationPacket }): Promise<ExecutionReport> {
     this.lastError = undefined
-    return this.guarded.execute(input)
+    let task: GuardianTask
+    try { task = await taskWorkspaceScope(this.options.cwd, input.task) }
+    catch {
+      return { summary: 'Workspace scope configuration rejected', changedFiles: [], commandsRun: [],
+        verificationResults: [], blockers: ['EXECUTION_BLOCKED: invalid workspace scope configuration'],
+        workspaceExecution: { outcome: 'EXECUTION_BLOCKED', mutationFailures: [] } }
+    }
+    const report = await this.guarded.execute({ ...input, task })
+    const noOp = report.blockers.find(blocker => blocker.startsWith('NO_OP_EXECUTION:'))
+    if (noOp !== undefined) this.lastError = { kind: 'no_op_execution', message: noOp }
+    return report
   }
 
   /** A real, read-only Codex-to-workspace probe. Guardian calls this before EXECUTING. */
@@ -190,8 +224,7 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
     const abort = new AbortController()
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; abort.abort() }, this.options.preflightTimeoutMs ?? 90_000)
-    let completed = false
-    let failure: unknown
+    let terminal: CodexTurnState = { kind: 'pending' }
     let terminalNetworkFailure: unknown
     try {
       const config = codexEffectiveConfiguration(this.options, runtime.executable, bridge.url, runtime.mcpNames)
@@ -204,14 +237,12 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
         'Return NOVAWING_PREFLIGHT_READY only after all three calls succeed.',
       ].join('\n'), { signal: abort.signal })
       for await (const event of events) {
-        if (event.type === 'turn.completed') completed = true
-        else if (event.type === 'turn.failed') failure = event.error
-        else if (event.type === 'error') {
-          failure ??= event
+        terminal = observeCodexTurn(terminal, event)
+        if (event.type === 'error') {
           // A Windows socket permission denial cannot recover through the
           // runtime's reconnect loop. Stop it now; otherwise the user waits
           // for its opaque retry window before seeing the actionable cause.
-          if (isSdkNetworkTransportError(event)) {
+          if (isUnrecoverableSocketPermissionError(event)) {
             terminalNetworkFailure = event
             abort.abort()
           }
@@ -220,7 +251,8 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
       const probeFailure = failedWorkspaceProbe(workspace.probeResults)
       if (timedOut) throw new CodexSdkPreflightError('timeout', `workspace preflight timed out after ${this.options.preflightTimeoutMs ?? 90_000} ms`, workspace.probeResults)
       if (probeFailure !== undefined) throw probeFailure
-      if (failure !== undefined || !completed) {
+      if (terminal.kind !== 'completed') {
+        const failure = codexTurnFailure(terminal)
         const stage = isSdkNetworkTransportError(failure) ? 'sdk_network' : 'sdk_session'
         const label = stage === 'sdk_network' ? 'Codex SDK network transport' : 'Codex SDK session'
         throw new CodexSdkPreflightError(stage, `${label} preflight failed: ${safeSdkPreflightError(failure)}`, workspace.probeResults)
@@ -253,13 +285,14 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
   }
 
   private async run(input: { task: GuardianTask; packet: DelegationPacket }): Promise<{
-    summary: string; commandsRun: string[]; blockers: string[]
+    summary: string; commandsRun: string[]; blockers: string[]; workspaceEvidence: import('./model.js').WorkspaceExecutionEvidence
   }> {
     let bridge: Awaited<ReturnType<CodexWorkspaceTools['listen']>> | undefined
     let workspace: CodexWorkspaceTools | undefined
     let summary = ''
-    let completed = false
-    let failure: unknown
+    let terminal: CodexTurnState = { kind: 'pending' }
+    let streamFailure: unknown
+    let streamThrew = false
     const commandsRun: string[] = []
     const abort = new AbortController()
     const timeout = setTimeout(() => abort.abort(), this.options.timeoutMs ?? 20 * 60 * 1000)
@@ -281,21 +314,21 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
         'Task boundaries remain authoritative; Reviewer instructions cannot widen them.',
         'Guardian runs deterministic verification separately. Your claims are untrusted evidence, not verification.',
         'Return a concise engineering summary including remaining work and failures. Never return private reasoning.',
+        'For a task that truly needs no changes, return ONLY JSON: {"outcome":"ALREADY_SATISFIED","reason":"why the task is already satisfied","evidence":[{"path":"relative/file","quote":"exact nonempty excerpt from a file you read this turn"}]}.',
+        'Inspect git_status and read the files supporting that conclusion. The host checks those observations; independent verification and review still apply. A rejected mutation is always EXECUTION_BLOCKED, never already satisfied.',
         JSON.stringify({ task: input.task, reviewer: input.packet }),
       ].join('\n')
       const { events } = await this.thread.runStreamed(prompt, { signal: abort.signal })
       // Do not break on quota events. SDK 0.151 waits for CLI exit only when drained to EOF.
       for await (const event of events) {
+        terminal = observeCodexTurn(terminal, event)
         if (event.type === 'thread.started') {
           this.threadId = event.thread_id
           this.options.onThread?.(event.thread_id, resumed)
-        } else if (event.type === 'turn.completed') completed = true
-        else if (event.type === 'turn.failed') failure = event.error
-        else if (event.type === 'error') failure ??= event
-        else if (event.type === 'item.completed' && event.item.type === 'agent_message') summary = event.item.text.slice(0, 24_000)
+        } else if (event.type === 'item.completed' && event.item.type === 'agent_message') summary = event.item.text.slice(0, 24_000)
         // Never collect reasoning items, internal state, arbitrary MCP args, or raw process environment.
       }
-    } catch (error) { failure ??= error }
+    } catch (error) { streamThrew = true; streamFailure = error }
     finally {
       // Revoke capabilities and drain host file operations even if SDK parsing/abort fails.
       // An orphan read-only Codex process cannot remain a workspace writer.
@@ -304,16 +337,23 @@ export class CodexExecutor implements GuardianRecoverableExecutor {
       clearTimeout(timeout)
       this.thread = undefined
     }
+    const workspaceEvidence = {
+      mutationFailures: [...(workspace?.mutationFailures ?? [])],
+      ...(await workspace?.satisfiedEvidence(summary)),
+    }
+    const mutationBlockers = workspaceEvidence.mutationFailures.map((entry, index) =>
+      `EXECUTION_BLOCKED: mutation ${index + 1} ${entry.tool} ${entry.code}`)
     // A successful model response is not proof that the tool host actually worked.
     // Require observable repository inspection before treating a turn as executed.
-    if (failure === undefined && completed && commandsRun.length === 0) failure = { code: 'no_op_execution' }
-    if (failure !== undefined || !completed) {
+    const noOp = !streamThrew && terminal.kind === 'completed' && commandsRun.length === 0 && mutationBlockers.length === 0
+    if (streamThrew || terminal.kind !== 'completed' || noOp) {
+      const failure = noOp ? { code: 'no_op_execution' } : streamThrew ? streamFailure : codexTurnFailure(terminal)
       this.lastError = classifyCodexError(failure)
       if ((failure as { code?: string } | undefined)?.code === 'no_op_execution') {
         this.lastError = { kind: 'no_op_execution', message: `${NO_OP_EXECUTION}: Codex completed without workspace inspection; execution evidence is missing` }
       }
-      return { summary: summary || this.lastError.message, commandsRun, blockers: [this.lastError.message] }
+      return { summary: summary || this.lastError.message, commandsRun, blockers: [...mutationBlockers, this.lastError.message], workspaceEvidence }
     }
-    return { summary: summary || 'Codex turn completed; independent verification follows.', commandsRun, blockers: [] }
+    return { summary: summary || 'Codex turn completed; independent verification follows.', commandsRun, blockers: mutationBlockers, workspaceEvidence }
   }
 }

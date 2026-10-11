@@ -210,8 +210,8 @@ export function detectCyclicNoProgress(history: readonly { decisionKey: string; 
 }
 
 /**
- * V2 execution entry point. It owns the action loop; Guardian remains usable
- * separately through GuardianWorkSessionTaskRunner for V1 compatibility.
+ * Advanced V2 execution path. It owns the action loop when the ordinary Golden
+ * path cannot safely handle a task.
  */
 export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
   constructor(private readonly options: {
@@ -462,7 +462,7 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           note({ type: 'RECONCILIATION_COMPLETED', action: 'RECONCILE', reasonCode: 'REPOSITORY_RECONCILIATION_REQUIRED', ...repositoryFacts(state) })
         }
       }
-      const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles)
+      const violations = scopeBlockers({ id: task.id, goal: state.goal, state: 'EXECUTING', iteration: 0, maxIterations: 1, allowedPaths: state.permissions.allowedPaths, forbiddenPaths: state.permissions.forbiddenPaths }, state.gitState.changedFiles, state.gitState.repositoryIdentity)
       if (violations.length) state = { ...state, blockers: [...new Set([...state.blockers, ...violations])] }
       const decision = controller.decide(state, { reconciliationRequired: !reconciliation.reconciled })
       state = { ...state, currentAction: decision.action,
@@ -624,7 +624,8 @@ export class V2ControllerTaskRunner implements WorkSessionTaskRunner {
           note({ type: 'REVIEW_FAILED', action: 'REVIEW', agent: selectedAgent, provider: selectedProvider, ...repositoryFacts(state), metadata: { reason: 'reviewer identity did not match selected agent' } })
         }
       }
-      note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state) })
+      note({ type: result.status === 'SUCCESS' ? 'AGENT_COMPLETED' : 'AGENT_FAILED', action: decision.action, agent: selectedAgent, ...(actualProvider === undefined ? {} : { provider: actualProvider }), ...repositoryFacts(state),
+        ...(result.workspaceExecution === undefined ? {} : { metadata: { workspaceExecution: result.workspaceExecution } }) })
       const actionSucceeded = decision.action === 'VERIFY' ? verificationPassed : result.status === 'SUCCESS'
       emitProgress(decision.action === 'REVIEW' ? 'REVIEWING' : phase, actionSucceeded ? 'completed' : 'failed', { kind: decision.action === 'VERIFY' ? 'VERIFIER_COMPLETED' : actionSucceeded ? 'PROVIDER_COMPLETED' : 'PROVIDER_FAILED', ...(actualProvider === undefined ? {} : { provider: actualProvider }), outcome: decision.action === 'VERIFY' ? verificationPassed ? 'PASSED' : 'FAILED' : actionSucceeded ? 'COMPLETED' : 'FAILED' })
       if (repositoryChanged) emitProgress('EXECUTING', 'completed', { kind: 'REPOSITORY_CHANGED', changedFileCount: observed.changedFiles.length })

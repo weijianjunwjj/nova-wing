@@ -1,22 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import {
-  ReviewerRuntimeRegistry,
-  createDeepSeekReviewerRuntime,
-  createReviewDispatcher,
-  implementerProvidersOf,
-  isIndependentReviewerCandidate,
-  parseReviewVerdict,
-  validateReviewerIndependence,
-  type ReviewerOutcome,
-  type ReviewerRuntime,
-  type ReviewProviderFailure,
-} from '../packages/development-guardian/work-session/index.js'
-import { hasDeepSeekRoute } from '../packages/development-guardian/deepseek-executor.js'
+import { ReviewerRuntimeRegistry, createReviewDispatcher, implementerProvidersOf, isIndependentReviewerCandidate, parseReviewVerdict, validateReviewerIndependence, type ReviewerOutcome, type ReviewerRuntime, type ReviewProviderFailure } from '../packages/development-guardian/work-session/index.js'
 import { TaskController } from '../packages/development-guardian/work-session/task-controller.js'
 import type { AgentCapabilityProfile } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
 import type { RepositoryReality } from '../packages/development-guardian/work-session/reconciliation.js'
@@ -221,43 +207,6 @@ test('reviewer eligibility uses real runtime provider facts', () => {
   assert.equal(isIndependentReviewerCandidate(profile({ id: 'codex-r', provider: 'codex', runtimeIdentity: 'R2', review: true }), task), false)
   assert.equal(isIndependentReviewerCandidate(profile({ id: 'ds-r', provider: 'deepseek', runtimeIdentity: 'R3', review: true }), task), false)
   assert.equal(isIndependentReviewerCandidate(profile({ id: 'other-r', provider: 'other', runtimeIdentity: 'R4', review: true }), task), true)
-})
-
-test('the DeepSeek reviewer receives the local provider route and fails closed without one', async () => {
-  const cwd = await mkdtemp(join(tmpdir(), 'nw-reviewer-route-'))
-  await mkdir(join(cwd, '.claude'), { recursive: true })
-  await writeFile(join(cwd, '.claude', 'settings.json'), JSON.stringify({
-    env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_AUTH_TOKEN: 'test-token-value' },
-  }), 'utf8')
-  let capturedEnv: NodeJS.ProcessEnv | undefined
-  const adapter = createDeepSeekReviewerRuntime({
-    cwd,
-    platform: 'linux',
-    routeAvailable: () => hasDeepSeekRoute(cwd, { CLAUDE_CONFIG_DIR: join(cwd, '.claude') }),
-    commandRunner: async (request) => {
-      capturedEnv = request.env
-      return {
-        exitCode: 0, signal: null, stderr: '',
-        stdout: JSON.stringify({ result: JSON.stringify({ verdict: 'PASS', findings: [], blockingFindings: [], summary: 'ok' }) }),
-      }
-    },
-  })
-  const outcome = await adapter.review({
-    agent: profile({ id: 'ds-r', provider: 'deepseek', runtimeIdentity: 'R2', review: true }),
-    task: { taskId: 'T1', goal: 'g', constraints: [], acceptanceCriteria: ['c'], implementerProviders: ['codex'], changedFiles: [], verificationEvidence: [], evidence: [], blockers: [], risk: 'HIGH' },
-  })
-  assert.equal(outcome.kind, 'VERDICT')
-  // The CLI needs the route on its own process environment; NovaWing may not have it.
-  assert.equal(capturedEnv?.ANTHROPIC_BASE_URL, 'https://api.deepseek.com/anthropic')
-  assert.equal(capturedEnv?.ANTHROPIC_AUTH_TOKEN, 'test-token-value')
-
-  // Without a configured route the adapter refuses instead of using another provider.
-  const unavailable = await createDeepSeekReviewerRuntime({ cwd, platform: 'linux', routeAvailable: async () => false })
-    .review({
-      agent: profile({ id: 'ds-r', provider: 'deepseek', runtimeIdentity: 'R2', review: true }),
-      task: { taskId: 'T1', goal: 'g', constraints: [], acceptanceCriteria: ['c'], implementerProviders: ['codex'], changedFiles: [], verificationEvidence: [], evidence: [], blockers: [], risk: 'HIGH' },
-    })
-  assert.deepEqual([unavailable.kind, unavailable.kind === 'RUNTIME_FAILURE' ? unavailable.status : ''], ['RUNTIME_FAILURE', 'OFFLINE'])
 })
 
 test('the review dispatcher rejects a reviewer that mutates the repository', async () => {  let mutated = false

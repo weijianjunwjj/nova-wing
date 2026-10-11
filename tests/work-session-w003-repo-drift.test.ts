@@ -27,7 +27,6 @@ import {
   verifyWorktreeCheckpoint,
   type GitStatusEntry,
 } from '../packages/development-guardian/work-session/worktree-fingerprint.js'
-import { classifyHumanRequired } from '../packages/development-guardian/work-session/guardian-task-runner.js'
 import type { RepositoryCheckpoint } from '../packages/development-guardian/work-session/checkpoint.js'
 import {
   guardianShellPayload,
@@ -332,32 +331,5 @@ await test('W003 Repo Drift: executor rejects content drift after checkpoint, ze
     assert.strictEqual(claudeInvocationCount, 0, 'Claude invocation must be 0 (fail closed before any recovery)')
   } finally {
     await rm(tempBase, { recursive: true, force: true }).catch(() => {})
-  }
-})
-
-// ============ Adapter Mapping ============
-
-await test('W003 Repo Drift Adapter: REPO_DRIFT stopReason maps to humanRequired.category', async () => {
-  const baseTask = {
-    goal: 'Test drift',
-    iteration: 1,
-    state: 'READY' as const,
-    maxIterations: 3,
-  }
-
-  const driftReasons = [
-    'REPO_DRIFT: branch changed from main to feat/other',
-    'REPO_DRIFT: HEAD changed from abc123 to def456',
-    'REPO_DRIFT: worktree files changed since checkpoint',
-  ]
-
-  for (const reason of driftReasons) {
-    const task: GuardianTask = { ...baseTask, id: `drift-${driftReasons.indexOf(reason)}`, stopReason: reason }
-    const humanRequired = classifyHumanRequired(task)
-    assert.strictEqual(
-      humanRequired.category,
-      'REPO_DRIFT',
-      `stopReason "${reason}" must map to REPO_DRIFT, got ${humanRequired.category}`,
-    )
   }
 })

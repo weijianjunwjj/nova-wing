@@ -28,6 +28,7 @@ export interface WorkSessionTask {
   /** V2 task facts; optional so existing Work Session definitions remain compatible. */
   constraints?: readonly string[]
   acceptanceCriteria?: readonly string[]
+  /** Workspace-relative scope (`.` = root); legacy absolute configuration is normalized at the workspace guard boundary. */
   allowedPaths?: readonly string[]
   forbiddenPaths?: readonly string[]
   /** Explicit criterion-to-evidence contract for the V2 completion gate. */

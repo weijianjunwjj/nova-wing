@@ -4,19 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test, { type TestContext } from 'node:test'
 
-import {
-  ClaudeCodeExecutor,
-  createDefaultTenXChatCommand,
-  guardianShellCommand,
-  NativeGitBashUnavailableError,
-  resolveWindowsGitBashExecutable,
-  type ClaudeCodeTimingEvent,
-  type DelegationPacket,
-  type GuardianCommandRequest,
-  type GuardianCommandResult,
-  type GuardianCommandRunner,
-  type GuardianTask,
-} from 'nova-wing/development-guardian'
+import { ClaudeCodeExecutor, guardianShellCommand, NativeGitBashUnavailableError, resolveWindowsGitBashExecutable, type ClaudeCodeTimingEvent, type DelegationPacket, type GuardianCommandRequest, type GuardianCommandResult, type GuardianCommandRunner, type GuardianTask } from 'nova-wing/development-guardian'
 import { guardianShellTestCommand } from './guardian-shell-fixture.js'
 
 function task(iteration = 0, overrides: Partial<GuardianTask> = {}): GuardianTask {
@@ -140,18 +128,6 @@ test('Windows shell contract rejects bare Bash and Windows/WSL shim routes', () 
       NativeGitBashUnavailableError,
     )
   }
-})
-
-test('non-Windows shell commands retain Bash compatibility without Windows executable', () => {
-  const command = guardianShellCommand('git status --porcelain', {
-    platform: 'linux',
-    gitBashPath: 'E:/Tools/Git/bin/bash.exe',
-  })
-  const tenX = createDefaultTenXChatCommand(12_345, { platform: 'darwin' })
-
-  assert.deepEqual(command, { executable: 'bash', args: ['-lc', 'git status --porcelain'] })
-  assert.equal(tenX.command, 'bash')
-  assert.ok(!tenX.args.join(' ').includes('E:/Tools/Git/bin/bash.exe'))
 })
 
 test('Claude invocation forwards argv through the Git Bash -- delimiter', async (t) => {

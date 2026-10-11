@@ -147,7 +147,6 @@ export async function createIsolatedLaunchpadFixture({ root, env, holdTasks = fa
         ...options, env: { ...fixtureEnv }, preflight, gitProcessRunner,
         ...(taskControl && Object.hasOwn(taskControl, 'desktopNotifier')
           ? { desktopNotifier: taskControl.desktopNotifier } : {}),
-        createBrain: () => ({ review: async () => forbidden() }),
         createExecutor: forbidden, createCodexExecutor: forbidden,
         createReviewerRegistry: () => new ReviewerRuntimeRegistry(),
         runtimeRepair: {

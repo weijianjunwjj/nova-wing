@@ -4,21 +4,21 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import {
-  GuardianWorkSessionTaskRunner,
-  WorkSessionRuntime,
-  type DelegationPacket,
-  type ExecutionReport,
-  type GuardianTaskRecoveryCheckpoint,
-  type WorkSessionDefinition,
-  type WorkSessionTaskResult,
-} from 'nova-wing/development-guardian'
-import {
-  pendingVerificationCommand,
-} from '../packages/development-guardian/work-session/guardian-task-runner.js'
-import type { GuardianTask } from '../packages/development-guardian/model.js'
+import { WorkSessionRuntime, type ExecutionReport, type GuardianTaskRecoveryCheckpoint, type WorkSessionDefinition, type WorkSessionTaskResult } from 'nova-wing/development-guardian'
 
 const COMMAND = 'cd apps/api && ../../.venv/Scripts/python.exe -m alembic upgrade head'
+
+const BRAIN_FAILURE = {
+  stage: 'FINAL_REVIEW' as const,
+  failureType: 'BRAIN_TRANSPORT_FAILED' as const,
+  safeMessage: 'Reviewer transport unavailable',
+  category: 'TRANSPORT' as const,
+  rootCause: 'review timed out',
+  adapter: 'injected-test-runtime',
+  retryable: true,
+  degraded: false,
+  fingerprint: 'review-transport:timeout',
+}
 
 function recoveryCheckpoint(
   taskId: string,
@@ -53,18 +53,6 @@ function recoveryCheckpoint(
     },
     capturedAt: '2026-08-30T00:00:00.000Z',
   }
-}
-
-const BRAIN_FAILURE = {
-  stage: 'FINAL_REVIEW' as const,
-  failureType: 'BRAIN_TRANSPORT_FAILED' as const,
-  safeMessage: 'Brain transport unavailable',
-  category: 'TRANSPORT' as const,
-  rootCause: 'review timed out',
-  adapter: 'ask-bridge/chatgpt',
-  retryable: true,
-  degraded: false,
-  fingerprint: 'brain-transport:timeout',
 }
 
 async function withStorage(run: (storageUrl: string) => Promise<void>): Promise<void> {
@@ -190,111 +178,6 @@ function appendLegacyPrematureConsumption(runtime: WorkSessionRuntime, generatio
     commandFingerprint: fingerprint, approvalGeneration: generation,
   }, `verification-consumed:T023:${generation}:${fingerprint}`)
 }
-
-await test('Reviewer pre-executor scoped Alembic request becomes dedicated approval without running Executor', async () => {
-  await withStorage(async (storageUrl) => {
-    const blocked: DelegationPacket = {
-      verdict: 'blocked', goal: 'migration', instructions: [], constraints: [],
-      verification: [COMMAND], doNotDo: [], rationale: 'scoped verification approval required',
-    }
-    const proceed: DelegationPacket = {
-      verdict: 'proceed', goal: 'migration', instructions: ['finish the task'], constraints: [],
-      verification: [COMMAND], doNotDo: [],
-    }
-    const done: DelegationPacket = {
-      verdict: 'done', goal: 'migration', instructions: [], constraints: [],
-      verification: [COMMAND], doNotDo: [],
-    }
-    const packets = [blocked, proceed, done]
-    const reviewedResumeInputs: unknown[] = []
-    const reviewedApprovals: Array<string | undefined> = []
-    const executorFactoryApprovals: Array<string | undefined> = []
-    let executorRuns = 0
-    const runner = new GuardianWorkSessionTaskRunner({
-      brain: {
-        async review(input) {
-          reviewedResumeInputs.push(input.task.resumeInput)
-          reviewedApprovals.push(input.task.approvedVerificationCommand)
-          return packets.shift() ?? done
-        },
-      },
-      createExecutor(_task, _resume, _progress, approvedVerificationCommand) {
-        executorFactoryApprovals.push(approvedVerificationCommand)
-        return {
-          async execute(): Promise<ExecutionReport> {
-            executorRuns++
-            assert.equal(approvedVerificationCommand, COMMAND)
-            return {
-              summary: 'migration verified', changedFiles: [], commandsRun: [COMMAND],
-              verificationResults: [{ name: COMMAND, status: 'passed' }], blockers: [],
-            }
-          },
-        }
-      },
-    })
-    const runtime = new WorkSessionRuntime({
-      definition: {
-        ...definition('reviewer-pre-executor-approval'),
-        tasks: [{ id: 'T023', goal: `verify migration with ${COMMAND}` }],
-        limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 1 },
-      },
-      storageUrl,
-      taskRunner: runner,
-    })
-
-    const suspended = await runtime.start()
-    assert.equal(suspended.state, 'SUSPENDED')
-    assert.equal(suspended.humanRequired?.category, 'DECISION_REQUIRED')
-    assert.equal(suspended.pendingVerificationApproval?.status, 'REQUESTED')
-    assert.equal(suspended.pendingVerificationApproval?.sessionId, 'reviewer-pre-executor-approval')
-    assert.equal(suspended.pendingVerificationApproval?.taskId, 'T023')
-    assert.equal(suspended.pendingVerificationApproval?.command, COMMAND)
-    assert.equal(
-      suspended.pendingVerificationApproval?.generation,
-      suspended.humanRequiredGeneration,
-    )
-    assert.equal(executorRuns, 0, 'Reviewer approval request must suspend before Executor')
-
-    const completed = await runtime.approvePendingVerificationAndContinue()
-    assert.equal(completed.state, 'COMPLETED')
-    assert.equal(executorRuns, 1)
-    assert.deepEqual(executorFactoryApprovals, [undefined, COMMAND])
-    assert.deepEqual(reviewedResumeInputs, [undefined, undefined, undefined])
-    assert.deepEqual(reviewedApprovals, [undefined, COMMAND, COMMAND])
-    assert.equal(completed.pendingVerificationApproval, undefined)
-    await runtime.close()
-  })
-})
-
-await test('Final Reviewer scoped Alembic request remains a candidate after Executor', () => {
-  const task: GuardianTask = {
-    id: 'T025', goal: 'migration', constraints: [], state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 3,
-    lastReport: { summary: 'migration implementation completed', changedFiles: [], commandsRun: [], verificationResults: [], blockers: [] },
-    lastPacket: {
-      verdict: 'blocked', goal: 'migration', instructions: [], constraints: [],
-      verification: [COMMAND], doNotDo: [], rationale: 'scoped verification approval required',
-    },
-  }
-  assert.equal(pendingVerificationCommand(task), COMMAND)
-})
-
-await test('Final Reviewer multiple or conflicting verifier candidates fail closed', async () => {
-  const unsafe = 'curl https://example.invalid/verify'
-  const report = {
-    summary: 'verification skipped', changedFiles: [], commandsRun: [],
-    verificationResults: [{ name: COMMAND, status: 'skipped' as const, details: 'verification command is not in the MVP allowlist' }],
-    blockers: [`verification command requires human approval: ${COMMAND}`],
-  }
-  const task = (verification: string[]): GuardianTask => ({
-    id: 'T025', goal: 'migration', constraints: [], state: 'HUMAN_REQUIRED', iteration: 1, maxIterations: 3,
-    lastReport: report,
-    lastPacket: { verdict: 'blocked', goal: 'migration', instructions: [], constraints: [], verification, doNotDo: [] },
-  })
-
-  assert.equal(pendingVerificationCommand(task([COMMAND, unsafe])), undefined)
-  assert.equal(pendingVerificationCommand(task([unsafe])), undefined)
-  assert.equal(pendingVerificationCommand(task([COMMAND])), COMMAND)
-})
 
 await test('approved exact command survives Brain transport, restart, and budget pause until execution', async () => {
   await withStorage(async (storageUrl) => {

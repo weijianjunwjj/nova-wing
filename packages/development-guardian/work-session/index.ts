@@ -6,7 +6,6 @@ export * from './model.js'
 export * from './recoverability.js'
 export * from './task-runner.js'
 export * from './fake-task-runner.js'
-export * from './guardian-task-runner.js'
 export * from './runtime.js'
 export * from './checkpoint.js'
 export * from './worktree-fingerprint.js'
@@ -40,7 +39,6 @@ export {
   validateSmtpSecrets,
 } from './local-smtp-secrets.js'
 export type { SmtpSecretEnvironment, SmtpSecretKey } from './local-smtp-secrets.js'
-export * from './production-legacy-adoption.js'
 export type {
   HumanRequiredNotification,
   WorkSessionCompletedNotification,
@@ -91,3 +89,5 @@ export type {
   SmtpWorkSessionNotifierOptions,
   SmtpNotifierEnvironmentOptions,
 } from './smtp-notifier.js'
+
+export { isExecutorProviderCredentialRecovery } from './provider-recovery.js'

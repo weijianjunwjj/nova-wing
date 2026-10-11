@@ -5,20 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import {
-  GuardianWorkSessionTaskRunner,
-  RetryableGuardianBrainError,
-  WorkSessionRuntime,
-  type DelegationPacket,
-  type ExecutionReport,
-  type HumanRequiredNotification,
-  type NotificationDeliveryResult,
-  type WorkSessionRecoveryRequiredNotification,
-  type WorkSessionDefinition,
-  type WorkSessionNotifier,
-  type WorkSessionTaskResult,
-  type WorkSessionTaskRunner,
-} from 'nova-wing/development-guardian'
+import { WorkSessionRuntime, type HumanRequiredNotification, type NotificationDeliveryResult, type WorkSessionRecoveryRequiredNotification, type WorkSessionDefinition, type WorkSessionNotifier, type WorkSessionTaskResult, type WorkSessionTaskRunner } from 'nova-wing/development-guardian'
 
 function definition(id: string): WorkSessionDefinition {
   return {
@@ -27,24 +14,6 @@ function definition(id: string): WorkSessionDefinition {
     branch: 'feat/work-session-mvp',
     tasks: [{ id: 'T1', goal: 'task one' }],
     limits: { softMinutes: 45, hardMinutes: 60, maxTasks: 5 },
-  }
-}
-
-function proceedPacket(verdict: 'proceed' | 'done'): DelegationPacket {
-  return {
-    verdict,
-    goal: 'task one',
-    instructions: verdict === 'proceed' ? ['implement'] : [],
-    constraints: [],
-    verification: ['npm test'],
-    doNotDo: [],
-  }
-}
-
-function passedReport(): ExecutionReport {
-  return {
-    summary: 'done', changedFiles: [], commandsRun: ['npm test'],
-    verificationResults: [{ name: 'npm test', status: 'passed' }], blockers: [],
   }
 }
 
@@ -149,167 +118,6 @@ await test('W006 NOTIFY-A/B/C: COMPLETED, FAILED, and USER_PAUSED never notify',
     assert.equal(state.suspensionReason, 'USER_PAUSED')
     assert.equal(pausedNotifier.attempts, 0)
     await paused.close()
-  })
-})
-
-await test('W006 reviewer rotation notifies only when Brain infrastructure recovery is required', async () => {
-  await withStorage('w006-rotation-success-', async (storageUrl) => {
-    const notifier = new RecordingNotifier()
-    let reviews = 0
-    let rotations = 0
-    const taskRunner = new GuardianWorkSessionTaskRunner({
-      brain: {
-        async review() {
-          reviews += 1
-          if (reviews <= 2) throw new RetryableGuardianBrainError('timeout')
-          return reviews === 3 ? proceedPacket('proceed') : proceedPacket('done')
-        },
-        resetTaskReviewSession() { rotations += 1 },
-      },
-      createExecutor: () => ({ async execute() { return passedReport() } }),
-    })
-    const runtime = new WorkSessionRuntime({
-      definition: definition('w006-rotation-success'), storageUrl, taskRunner, notifier,
-      notificationRetryDelayMs: 0,
-    })
-
-    assert.equal((await runtime.start()).state, 'COMPLETED')
-    assert.equal(rotations, 1)
-    assert.equal(notifier.attempts, 0)
-    assert.equal(notifier.recoveryAttempts, 0)
-    await runtime.close()
-  })
-
-  await withStorage('w006-rotation-exhausted-', async (storageUrl) => {
-    const notifier = new RecordingNotifier()
-    let reviews = 0
-    let rotations = 0
-    const taskRunner = new GuardianWorkSessionTaskRunner({
-      brain: {
-        async review() { reviews += 1; throw new RetryableGuardianBrainError('timeout') },
-        resetTaskReviewSession() { rotations += 1 },
-      },
-      createExecutor: () => ({ async execute() { throw new Error('must not execute') } }),
-    })
-    const runtime = new WorkSessionRuntime({
-      definition: definition('w006-rotation-exhausted'), storageUrl, taskRunner, notifier,
-      notificationRetryDelayMs: 0,
-    })
-
-    const state = await runtime.start()
-    assert.equal(state.state, 'SUSPENDED')
-    assert.equal(state.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
-    assert.equal(state.humanRequired, undefined)
-    assert.equal(state.brainFailure?.category, 'TRANSPORT')
-    assert.equal(reviews, 3)
-    assert.equal(rotations, 1)
-    await runtime.getNotificationPromise()
-    assert.equal(notifier.attempts, 0)
-    assert.equal(notifier.recoveryAttempts, 1)
-    assert.equal(notifier.recoveryNotifications[0]?.notificationId, 'w006-rotation-exhausted:T1:recovery:1')
-    assert.equal(runtime.getDurableState()?.recoveryRequiredGeneration, 1)
-    assert.equal(runtime.getDurableState()?.lastRecoveryNotificationAttemptGeneration, 1)
-    assert.equal(runtime.getDurableState()?.lastNotifiedRecoveryRequiredGeneration, 1)
-    await runtime.close()
-  })
-})
-
-await test('RECOVERY_REQUIRED is durable exactly-once and a post-resume incident gets a new generation', async () => {
-  await withStorage('w006-recovery-generation-', async (storageUrl) => {
-    const notifier = new RecordingNotifier()
-    const infrastructureFailure = () => ({
-      status: 'BRAIN_INFRASTRUCTURE_FAILED' as const,
-      brainFailure: {
-        stage: 'FINAL_REVIEW' as const,
-        failureType: 'BRAIN_TRANSPORT_FAILED' as const,
-        safeMessage: 'Brain transport 不可用；当前 checkpoint 已保留。',
-        category: 'TRANSPORT' as const,
-        rootCause: 'composer not found token=LOCAL_SECRET',
-        adapter: 'ask-bridge/chatgpt', retryable: false, degraded: false,
-        fingerprint: 'brain-transport:composer-not-found',
-      },
-    })
-    const runtime1 = new WorkSessionRuntime({
-      definition: definition('w006-recovery-generation'), storageUrl,
-      taskRunner: runner(infrastructureFailure), notifier, notificationRetryDelayMs: 0,
-    })
-    assert.equal((await runtime1.start()).state, 'SUSPENDED')
-    await runtime1.getNotificationPromise()
-    assert.equal(notifier.recoveryAttempts, 1)
-    assert.equal(notifier.recoveryNotifications[0]?.notificationId, 'w006-recovery-generation:T1:recovery:1')
-    assert.doesNotMatch(JSON.stringify(notifier.recoveryNotifications[0]), /LOCAL_SECRET|rootCause|rawError/u)
-    await runtime1.close()
-
-    const runtime2 = new WorkSessionRuntime({
-      definition: definition('w006-recovery-generation'), storageUrl,
-      taskRunner: runner(infrastructureFailure), notifier, notificationRetryDelayMs: 0,
-    })
-    const hydrated = await runtime2.loadPersistedState()
-    assert.equal(hydrated?.state, 'SUSPENDED')
-    runtime2.getDurableState()
-    runtime2.getDurableState()
-    assert.equal(notifier.recoveryAttempts, 1, 'restart/load/render must not resend')
-    const second = await runtime2.resume({})
-    assert.equal(second.state, 'SUSPENDED')
-    assert.equal(second.recoveryRequiredGeneration, 2)
-    await runtime2.getNotificationPromise()
-    assert.equal(notifier.recoveryAttempts, 2)
-    assert.equal(notifier.recoveryNotifications[1]?.notificationId, 'w006-recovery-generation:T1:recovery:2')
-    await runtime2.close()
-  })
-})
-
-await test('RECOVERY_REQUIRED retries are bounded and delivery failure preserves suspended evidence', async () => {
-  await withStorage('w006-recovery-retry-', async (storageUrl) => {
-    const notifier = new RecordingNotifier()
-    notifier.recoveryFailuresRemaining = 1
-    const deliveries: NotificationDeliveryResult[] = []
-    const runtime = new WorkSessionRuntime({
-      definition: definition('w006-recovery-retry'), storageUrl,
-      taskRunner: runner(() => ({
-        status: 'BRAIN_INFRASTRUCTURE_FAILED',
-        brainFailure: {
-          stage: 'BRAIN_REVIEW', category: 'TRANSPORT',
-          rootCause: 'send failed', adapter: 'ask-bridge/chatgpt',
-          retryable: false, degraded: false, fingerprint: 'brain-transport:send-failed',
-        },
-      })),
-      notifier, notificationObserver: (result) => deliveries.push(result), notificationRetryDelayMs: 0,
-    })
-    assert.equal((await runtime.start()).state, 'SUSPENDED')
-    await runtime.getNotificationPromise()
-    assert.equal(notifier.recoveryAttempts, 2)
-    assert.equal(runtime.getDurableState()?.state, 'SUSPENDED')
-    assert.equal(runtime.getDurableState()?.brainFailure?.fingerprint, 'brain-transport:send-failed')
-    assert.equal(deliveries[0]?.status, 'SENT')
-    assert.equal(deliveries[0]?.kind, 'RECOVERY_REQUIRED')
-    await runtime.close()
-  })
-
-  await withStorage('w006-recovery-failed-', async (storageUrl) => {
-    const notifier = new RecordingNotifier()
-    notifier.recoveryFailuresRemaining = 2
-    const runtime = new WorkSessionRuntime({
-      definition: definition('w006-recovery-failed'), storageUrl,
-      taskRunner: runner(() => ({
-        status: 'BRAIN_INFRASTRUCTURE_FAILED',
-        brainFailure: {
-          stage: 'FINAL_REVIEW', category: 'TRANSPORT',
-          rootCause: 'composer not found', adapter: 'ask-bridge/chatgpt',
-          retryable: false, degraded: false, fingerprint: 'brain-transport:composer-not-found',
-        },
-      })),
-      notifier, notificationRetryDelayMs: 0,
-    })
-    assert.equal((await runtime.start()).state, 'SUSPENDED')
-    await runtime.getNotificationPromise()
-    assert.equal(notifier.recoveryAttempts, 2)
-    assert.equal(runtime.getDurableState()?.state, 'SUSPENDED')
-    assert.equal(runtime.getDurableState()?.brainFailure?.fingerprint, 'brain-transport:composer-not-found')
-    assert.ok(runtime.readExecutionLedger().some((event) =>
-      event.eventType === 'NOTIFICATION_FAILED' && event.notificationKind === 'RECOVERY_REQUIRED'))
-    assert.doesNotMatch(JSON.stringify(runtime.readExecutionLedger()), /RECOVERY_SECRET|535 auth failed/u)
-    await runtime.close()
   })
 })
 

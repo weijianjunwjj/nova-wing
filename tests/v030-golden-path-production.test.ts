@@ -14,7 +14,6 @@ import {
   TaskEventLogV2,
   loadTaskStateV2,
   validateTrustedWorkSessionConfig,
-  V2ControllerTaskRunner,
   type TaskAction,
   type TaskStateV2,
   type TrustedWorkSessionConfig,
@@ -250,7 +249,7 @@ await test('v0.3.0 production A: Launchpad-style LOW config selects Golden with 
   }
 })
 
-await test('v0.3.0 production B: legacy config without goldenPath remains on the existing runner', async () => {
+await test('production config without a path selector uses the single Golden entry', async () => {
   const fixture = await fixtureRepo()
   let app: Awaited<ReturnType<typeof createProductionWorkSessionUi>> | undefined
   try {
@@ -258,8 +257,7 @@ await test('v0.3.0 production B: legacy config without goldenPath remains on the
     app = created.app
     assert.equal(created.config.session.goldenPath, undefined)
     assert.equal(created.runtime.definition.goldenPath, undefined)
-    assert.ok(created.runtime.taskRunner instanceof V2ControllerTaskRunner)
-    assert.ok(!(created.runtime.taskRunner instanceof GoldenPathTaskRunner))
+    assert.ok(created.runtime.taskRunner instanceof GoldenPathTaskRunner)
   } finally {
     await app?.close()
     await rm(fixture.repo, { recursive: true, force: true })

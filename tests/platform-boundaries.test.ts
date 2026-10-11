@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { guardianShellCommand, shellProbeContract } from '../packages/development-guardian/platform/shell.js'
 import { platformPaths } from '../packages/development-guardian/platform/paths.js'
-import { resolveAskBridgeExecutable, pythonRuntime } from '../packages/development-guardian/platform/executables.js'
+import { pythonRuntime } from '../packages/development-guardian/platform/executables.js'
 import { codexRuntimeTarget } from '../packages/development-guardian/platform/codex-runtime.js'
 import { secretProtectionStrategy } from '../packages/development-guardian/platform/secret-protection.js'
 import { commandEnvironment } from '../packages/development-guardian/platform/environment.js'
@@ -15,7 +15,7 @@ import { saveLocalSmtpSecrets, loadLocalSmtpSecrets } from '../packages/developm
 import { createWindowsToastRepairNotifier } from '../packages/development-guardian/platform/windows-repair-notifier.js'
 
 for (const platform of ['win32', 'darwin', 'linux'] as const) for (const arch of ['x64', 'arm64'] as const) {
-  test(`UNIT ${platform}/${arch}: shell, Codex, paths, AskBridge, permissions, preflight, Git`, async () => {
+  test(`UNIT ${platform}/${arch}: shell, Codex, paths, permissions, preflight, Git`, async () => {
     const windows = platform === 'win32'
     const env = { NOVAWING_GIT_BASH_PATH: 'E:/Portable Git/bin/bash.exe', LOCALAPPDATA: 'C:/Users/test/AppData/Local',
       XDG_CONFIG_HOME: '/cfg', XDG_DATA_HOME: '/data' }
@@ -39,7 +39,6 @@ for (const platform of ['win32', 'darwin', 'linux'] as const) for (const arch of
     const paths = platformPaths(opts)
     assert.equal(paths.data, windows ? 'C:\\Users\\test\\AppData\\Local\\NovaWing' : platform === 'darwin' ? '/home/test/Library/Application Support/NovaWing' : '/data/NovaWing')
     assert.equal(paths.secrets, windows ? 'C:\\Users\\test\\AppData\\Local\\NovaWing\\secrets' : platform === 'darwin' ? '/home/test/Library/Application Support/NovaWing/secrets' : '/cfg/NovaWing/secrets')
-    assert.equal(resolveAskBridgeExecutable(env, opts), windows ? 'C:\\Users\\test\\.local\\bin\\ask-bridge.exe' : '/home/test/.local/bin/ask-bridge')
     assert.equal(secretProtectionStrategy(platform), windows ? 'windows-acl' : 'posix-mode')
     const target = codexRuntimeTarget(platform, arch)
     assert.equal(target.packageName, `@openai/codex-${platform}-${arch}`)
@@ -57,7 +56,7 @@ for (const platform of ['win32', 'darwin', 'linux'] as const) for (const arch of
         } })
       assert.equal(result.canStart, failure === 'none')
       assert.equal(calls.some((call) => call.includes('git --version')), failure === 'none' || failure === 'git')
-      assert.equal(result.dependencies.find((item) => item.id === 'BRIDGE')?.state, result.canStart || failure === 'git' ? 'UNKNOWN' : 'UNAVAILABLE')
+      assert.equal(result.dependencies.some((item) => item.id === 'BRIDGE' || item.id === 'BRAIN'), false)
       if (!windows) assert.doesNotMatch(JSON.stringify(result), /Git Bash|LOCALAPPDATA|MINGW|Windows/)
     }
   })
@@ -118,13 +117,12 @@ test('platform guard scans both Desktop Main and the Electron compatibility entr
 test('package guard scans Desktop imports and requires public NovaWing exports', async () => {
   const root = await mkdtemp(join(tmpdir(), 'novawing-desktop-package-'))
   try {
-    for (const directory of ['scripts', 'tests', 'desktop/main', 'desktop/tests', 'packages/core/src', 'packages/sqlite/src', 'packages/testing/src', 'packages/host-snapshot/src']) {
+    for (const directory of ['scripts', 'tests', 'desktop/main', 'desktop/tests', 'packages/development-guardian']) {
       await mkdir(join(root, directory), { recursive: true })
     }
     const checker = join(root, 'scripts', 'check-boundaries.mjs')
     await writeFile(checker, await readFile('scripts/check-boundaries.mjs', 'utf8'))
     await writeFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
-    await writeFile(join(root, 'packages/sqlite/src/schema.ts'), ['nw_mainline_entries', 'nw_meta', 'nw_proposals'].map((table) => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT);`).join('\n'))
     const keyword = ['im', 'port'].join('')
     for (const directory of ['main', 'tests']) {
       const entry = join(root, 'desktop', directory, 'new-entry.mjs')

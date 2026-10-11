@@ -1371,7 +1371,7 @@ export class NovaWingLaunchpad {
       this.liveApps.delete(configId)
     }
     const config = await this.loadConfig(discovered.configPath)
-    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v1')
+    if (config.session.scheduledStartAt == null) await this.assertDependenciesReady(config.session.targetRepo, config.session.controlPlane ?? 'v2')
     const env = await this.resolveEnvironment(config)
     let app: ManagedWorkSessionApp
     try {

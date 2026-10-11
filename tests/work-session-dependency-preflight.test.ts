@@ -23,7 +23,7 @@ function healthyRunner(requests: DependencyCommandRequest[]) {
   }
 }
 
-test('preflight reports Brain READY from static availability without a live model call', async () => {
+test('preflight reports core dependencies without a live model or retired Brain probe', async () => {
   const requests: DependencyCommandRequest[] = []
   const report = await runProductionDependencyPreflight({
     platform: 'win32',
@@ -36,11 +36,8 @@ test('preflight reports Brain READY from static availability without a live mode
   assert.equal(report.overall, 'READY')
   assert.equal(report.canStart, true)
   assert.equal(report.dependencies.find((item) => item.id === 'SHELL')?.state, 'READY')
-  assert.equal(report.dependencies.find((item) => item.id === 'BRIDGE')?.state, 'READY')
-  const brain = report.dependencies.find((item) => item.id === 'BRAIN')
-  assert.equal(brain?.state, 'READY')
-  assert.match(brain?.safeMessage ?? '', /no model request/u)
-  assert.ok(requests.length >= 5)
+  assert.deepEqual(report.dependencies.map((item) => item.id), ['CORE', 'SHELL', 'EXECUTOR', 'GIT', 'RUNTIME'])
+  assert.equal(requests.length, 3)
   assert.ok(requests.filter((request) => request.executable.toLowerCase().endsWith('bash.exe'))
     .every((request) => request.executable === EXPECTED_GIT_BASH_EXECUTABLE))
 })
@@ -60,12 +57,11 @@ test('preflight reports an idle default Executor as READY after Codex SDK prefli
   assert.equal(report.overall, 'READY')
   assert.equal(report.canStart, true)
   assert.equal(report.dependencies.find((item) => item.id === 'CORE')?.state, 'READY')
-  assert.equal(report.dependencies.find((item) => item.id === 'BRAIN')?.state, 'READY')
   assert.equal(report.dependencies.find((item) => item.id === 'EXECUTOR')?.state, 'READY')
   assert.equal(inspected, 1)
 })
 
-test('preflight uses the exact configured AskBridge executable without a real model health call', async () => {
+test('preflight ignores a retired AskBridge configuration', async () => {
   const requests: DependencyCommandRequest[] = []
   const askBridge = 'D:\\Tools\\ask-bridge-test.exe'
   const report = await runProductionDependencyPreflight({
@@ -81,8 +77,7 @@ test('preflight uses the exact configured AskBridge executable without a real mo
 
   assert.equal(report.canStart, true)
   const bridgeRequests = requests.filter((request) => request.executable === askBridge)
-  assert.deepEqual(bridgeRequests.map((request) => request.args), [['--version'], ['config']])
-  assert.equal(bridgeRequests.some((request) => request.args.includes('--provider')), false)
+  assert.deepEqual(bridgeRequests, [])
 })
 
 test('shell preflight: System32 bash fails closed before any dependency command', async () => {
@@ -155,7 +150,7 @@ test('dependency preflight is bounded and reports degradation rather than throwi
 
   assert.equal(report.overall, 'DEGRADED')
   assert.equal(report.canStart, false)
-  assert.equal(requests.length, 5, 'one shell fingerprint plus bounded Bridge/config/Executor/Git probes')
+  assert.equal(requests.length, 3, 'one shell fingerprint plus bounded Executor/Git probes')
 })
 
 test('Codex/Auto preflight checks ChatGPT authentication without requiring the DeepSeek CLI', async () => {
@@ -209,7 +204,7 @@ test('Codex SDK preflight still blocks a real Git failure without probing a syst
 })
 
 for (const controlPlane of ['v2', 'v1', undefined] as const) {
-  test(`preflight with unavailable AskBridge preserves control-plane requirements: ${controlPlane ?? 'historical'}`, async () => {
+  test(`preflight never requires unavailable AskBridge: ${controlPlane ?? 'default'}`, async () => {
     const requests: DependencyCommandRequest[] = []
     const report = await runProductionDependencyPreflight({
     platform: 'win32',
@@ -221,8 +216,8 @@ for (const controlPlane of ['v2', 'v1', undefined] as const) {
         ? { exitCode: 1, stdout: '', stderr: 'unavailable' }
         : healthyRunner(requests)(request),
     })
-    assert.equal(report.canStart, controlPlane === 'v2')
-    assert.equal(report.dependencies.find((item) => item.id === 'BRAIN')?.state, controlPlane === 'v2' ? 'UNKNOWN' : 'UNAVAILABLE')
+    assert.equal(report.canStart, true)
+    assert.equal(report.dependencies.some((item) => item.id === 'BRAIN' || item.id === 'BRIDGE'), false)
     assert.equal(report.dependencies.find((item) => item.id === 'EXECUTOR')?.state, 'READY')
   })
 }

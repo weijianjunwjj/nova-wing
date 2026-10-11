@@ -8,14 +8,6 @@
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-
-import type {
-  DelegationPacket,
-  ExecutionReport,
-  GuardianBrain,
-  GuardianExecutor,
-} from '../packages/development-guardian/index.js'
-import { GuardianWorkSessionTaskRunner } from '../packages/development-guardian/work-session/index.js'
 import type { GuardianProgressObserver } from '../packages/development-guardian/progress.js'
 import { WorkSessionControlController } from '../packages/development-guardian/work-session/control-ui/controller.js'
 import { renderHtml, APP_JS } from '../packages/development-guardian/work-session/control-ui/view.js'
@@ -25,72 +17,6 @@ import {
   makeState,
   startServer,
 } from './work-session-w005-a-helpers.js'
-
-function packet(verdict: DelegationPacket['verdict']): DelegationPacket {
-  return {
-    verdict,
-    goal: 'task one',
-    instructions: verdict === 'proceed' || verdict === 'revise' ? ['do work'] : [],
-    constraints: [],
-    verification: ['npm test'],
-    doNotDo: [],
-  }
-}
-
-function report(): ExecutionReport {
-  return {
-    summary: 'done',
-    changedFiles: ['src/a.ts'],
-    commandsRun: ['npm test'],
-    verificationResults: [{ name: 'npm test', status: 'passed' }],
-    blockers: [],
-  }
-}
-
-await test('W005-A guardian progress: onProgress reaches controller as GUARDIAN_PHASE', async () => {
-  const brainPackets = [packet('proceed'), packet('done')]
-  const brain: GuardianBrain = {
-    async review() {
-      return brainPackets.shift() ?? packet('done')
-    },
-  }
-  const executor: GuardianExecutor = {
-    async execute() {
-      return report()
-    },
-  }
-
-  // 生产 wiring：factory 拿到 eventSink，接到 runner.onProgress。
-  const runtime = new FakeRuntime(makeDefinition())
-  let progressSink: GuardianProgressObserver | undefined
-  const controller = new WorkSessionControlController({
-    createRuntime: (eventSink) => {
-      progressSink = eventSink
-      return runtime
-    },
-    pollIntervalMs: 10,
-  })
-
-  const runner = new GuardianWorkSessionTaskRunner({
-    brain,
-    createExecutor: () => executor,
-    onProgress: (event) => {
-      progressSink?.(event)
-    },
-  })
-
-  const result = await runner.run({ id: 'T1', goal: 'task one' })
-  assert.equal(result.status, 'COMPLETED')
-
-  const phases = controller
-    .getRecentEvents()
-    .filter((event) => event.type === 'GUARDIAN_PHASE')
-    .map((event) => event.data.phase)
-  for (const phase of ['REVIEWING', 'EXECUTING', 'FINAL_REVIEW', 'COMPLETED']) {
-    assert.ok(phases.includes(phase), `missing guardian phase: ${phase}`)
-  }
-  assert.equal(controller.getSnapshot().guardian.phase, 'COMPLETED')
-})
 
 test('Recent Activity folds only consecutive Guardian events with identical safe presentation fields', () => {
   const runtime = new FakeRuntime(makeDefinition())
@@ -163,36 +89,4 @@ await test('W005-A HUMAN_REQUIRED rendering: decision card shows category and re
   } finally {
     await s.server.close()
   }
-})
-
-test('Brain infrastructure suspension is distinct and accepts only checkpoint recovery', () => {
-  const runtime = new FakeRuntime(makeDefinition())
-  runtime.state = makeState({
-    state: 'SUSPENDED',
-    currentTaskId: 'T1',
-    suspensionReason: 'BRAIN_INFRASTRUCTURE_FAILED',
-    brainFailure: {
-      stage: 'BRAIN_REVIEW',
-      category: 'TRANSPORT',
-      rootCause: 'ask-bridge unavailable',
-      adapter: 'ask-bridge/chatgpt',
-      requestedModel: 'GPT-5.6 Sol',
-      requestedReasoning: 'high',
-      retryable: true,
-      degraded: false,
-      fingerprint: 'brain-transport:ask-bridge-unavailable',
-    },
-  })
-  const controller = new WorkSessionControlController({ createRuntime: () => runtime })
-
-  const snapshot = controller.getSnapshot()
-  assert.equal(snapshot.runtime.humanRequired, undefined)
-  assert.equal(snapshot.runtime.suspensionReason, 'BRAIN_INFRASTRUCTURE_FAILED')
-  assert.equal(snapshot.runtime.brainFailure?.stage, 'BRAIN_REVIEW')
-  assert.match(snapshot.runtime.brainFailure?.safeMessage ?? '', /Brain 尚未完成 Review/)
-  assert.equal(controller.resume({ decision: 'pretend this is a decision' }).accepted, false)
-  assert.equal(controller.resume({ approval: true }).accepted, false)
-  assert.equal(controller.resume({}).accepted, true)
-  assert.deepEqual(runtime.resumeInputs, [{}])
-  controller.close()
 })

@@ -100,7 +100,7 @@ test('production Codex-to-DeepSeek failover records health change, provider swit
   try {
     const config = await validateTrustedWorkSessionConfig({
       session: { id: 'v2-obs-router', targetRepo: root, branch: 'main', controlPlane: 'v2', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
-      tasks: [{ id: 'T1', goal: 'Fix controller', executorMode: 'auto', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['test'] }] }],
+      tasks: [{ id: 'T1', goal: 'Fix controller', executorMode: 'auto', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['git diff --check'] }] }],
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {

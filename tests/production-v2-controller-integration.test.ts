@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createProductionWorkSessionUi, validateTrustedWorkSessionConfig } from '../packages/development-guardian/work-session/production.js'
 import { V2ControllerTaskRunner } from '../packages/development-guardian/work-session/v2-controller-task-runner.js'
+import { GoldenPathTaskRunner } from '../packages/development-guardian/work-session/golden-path.js'
 import { WorkSessionRuntime } from '../packages/development-guardian/work-session/runtime.js'
 import { createTaskStateV2 } from '../packages/development-guardian/work-session/task-state-v2.js'
 import { classifyCodexError } from '../packages/development-guardian/codex-error.js'
@@ -13,7 +14,54 @@ import { codexTestRepo } from './codex-test-fixture.js'
 import { FakeRuntime } from './work-session-w005-a-helpers.js'
 import type { WorkSessionRuntimeConfig } from '../packages/development-guardian/work-session/runtime.js'
 
-test('production V2 composition root dispatches controller actions without Guardian orchestration', async () => {
+test('a fresh production session defaults to V2 and durably completes two tasks', async () => {
+  const root = await codexTestRepo()
+  const data = await mkdtemp(join(tmpdir(), 'novawing-core-default-'))
+  const actions: string[] = []
+  let app: Awaited<ReturnType<typeof createProductionWorkSessionUi>> | undefined
+  try {
+    const config = await validateTrustedWorkSessionConfig({
+      session: { id: 'core-default', targetRepo: root, branch: 'main', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 2 } },
+      tasks: ['T1', 'T2'].map(id => ({ id, goal: 'Fix controller', guardian: { constraints: [], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: [] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['git diff --check'] }] })),
+      executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false },
+      gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
+    })
+    app = await createProductionWorkSessionUi(config, {
+      env: { NOVAWING_DATA_DIR: data }, desktopNotifier: null,
+      createV2Dispatcher: () => ({
+        inspectRepository: async () => ({ repositoryIdentity: root, branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
+        dispatch: async ({ action, task }) => {
+          actions.push(`${task.identity.taskId}:${action}`)
+          return action === 'VERIFY' ? { status: 'SUCCESS', verificationResults: task.verificationPlan!.steps.map(step => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd, status: 'passed' as const })) } : { status: 'SUCCESS', changedFiles: [] }
+        },
+      }),
+    })
+    assert.equal(app.definition.controlPlane, 'v2')
+    const result = await app.runtime.start()
+    assert.equal(result.state, 'COMPLETED', JSON.stringify(result))
+    assert.deepEqual(result.completedTaskIds, ['T1', 'T2'])
+    assert.deepEqual(actions, ['T1:EXECUTE', 'T1:VERIFY', 'T2:EXECUTE', 'T2:VERIFY'])
+    assert.equal(result.taskStatesV2?.T1?.status, 'COMPLETED')
+    assert.equal(result.taskStatesV2?.T2?.status, 'COMPLETED')
+    const reloaded = await app.runtime.loadPersistedState()
+    assert.deepEqual(reloaded?.completedTaskIds, ['T1', 'T2'])
+  } finally { await app?.close(); await rm(root, { recursive: true, force: true }); await cleanupRuntimeData(data) }
+})
+
+test('explicit retired V1 production fails before creating an executor or session database', async () => {
+  let executorCalls = 0
+  const config = await validateTrustedWorkSessionConfig({
+    session: { id: 'retired-v1', targetRepo: process.cwd(), branch: 'main', controlPlane: 'v1', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
+    tasks: [{ id: 'T1', goal: 'Fix controller', guardian: { constraints: [], acceptanceCriteria: [], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: [] } }],
+    executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false },
+  })
+  await assert.rejects(createProductionWorkSessionUi(config, {
+    createCodexExecutor() { executorCalls++; throw new Error('must not create a provider') },
+  }), /V1 execution is retired/u)
+  assert.equal(executorCalls, 0)
+})
+
+test('production V2 composition uses the single Golden entry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'novawing-production-v2-repo-'))
   const data = await mkdtemp(join(tmpdir(), 'novawing-production-v2-data-'))
   let runtime: WorkSessionRuntimeConfig | undefined
@@ -21,7 +69,7 @@ test('production V2 composition root dispatches controller actions without Guard
   try {
     const config = await validateTrustedWorkSessionConfig({
       session: { id: 'v2-production', targetRepo: root, branch: 'main', controlPlane: 'v2', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
-      tasks: [{ id: 'T1', goal: 'Fix controller', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['test'] }] }],
+      tasks: [{ id: 'T1', goal: 'Fix controller', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['git diff --check'] }] }],
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {
@@ -29,14 +77,14 @@ test('production V2 composition root dispatches controller actions without Guard
       createRuntime(input) { runtime = input; return new FakeRuntime(input.definition) },
       createV2Dispatcher: () => ({
         inspectRepository: async () => ({ repositoryIdentity: root, branch: 'main', headSha: 'h', changedFiles: [], worktreeFingerprint: 'w' }),
-        dispatch: async ({ action }) => { actions.push(action); return action === 'VERIFY'
-          ? { status: 'SUCCESS', verificationResults: [{ name: 'test', status: 'passed' }] }
+        dispatch: async ({ action, task }) => { actions.push(action); return action === 'VERIFY'
+          ? { status: 'SUCCESS', verificationResults: task.verificationPlan!.steps.map(step => ({ name: step.command, stepId: step.id, command: step.command, cwd: step.cwd, status: 'passed' as const })) }
           : { status: 'SUCCESS', changedFiles: [] } },
       }),
     })
-    assert.ok(runtime!.taskRunner instanceof V2ControllerTaskRunner)
+    assert.ok(runtime!.taskRunner instanceof GoldenPathTaskRunner)
     const result = await runtime!.taskRunner.run(app.definition.tasks[0]!)
-    assert.equal(result.status, 'COMPLETED')
+    assert.equal(result.status, 'COMPLETED', JSON.stringify(result))
     assert.deepEqual(actions, ['EXECUTE', 'VERIFY'])
     assert.deepEqual(app.definition.tasks[0]!.allowedPaths, ['src/**'])
     await app.close()
@@ -51,7 +99,7 @@ test('production V2 routes a quota-exhausted Codex task to DeepSeek with one Tas
   try {
     const config = await validateTrustedWorkSessionConfig({
       session: { id: 'v2-router', targetRepo: root, branch: 'main', controlPlane: 'v2', limits: { softMinutes: 1, hardMinutes: 2, maxTasks: 1 } },
-      tasks: [{ id: 'T1', goal: 'Fix controller', executorMode: 'auto', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['test'] }] }],
+      tasks: [{ id: 'T1', goal: 'Fix controller', executorMode: 'auto', guardian: { constraints: ['small'], acceptanceCriteria: ['verified'], doNotDo: [], allowedPaths: ['src/**'], forbiddenPaths: ['.env'] }, acceptanceEvidenceBindings: [{ criterion: 'verified', requiredEvidence: ['git diff --check'] }] }],
       executor: { model: 'test', maxTurns: 2, allowNpmInstall: false, allowPythonBootstrap: false }, gitCheckpoint: { autoCommit: false, autoPush: false }, storageUrl: pathToFileURL(join(data, 'session.db')).href,
     })
     const app = await createProductionWorkSessionUi(config, {

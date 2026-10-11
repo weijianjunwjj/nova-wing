@@ -238,7 +238,7 @@ typecheck passes. => npm run typecheck`)
     { criterion: 'typecheck passes.', requiredEvidence: ['npm run typecheck'] },
   ])
 
-  const tomorrowMorning = analyzeTaskBrief('明天上午开始修复 README。', new Date('2026-09-05T09:00:00+08:00'))
+  const tomorrowMorning = analyzeTaskBrief('明天上午开始修复 README。', new Date(2026, 8, 5, 9))
   assert.equal(tomorrowMorning.fields.startMode, 'custom')
   assert.equal(tomorrowMorning.fields.customStartAt, '2026-09-06T09:00')
 
@@ -2130,7 +2130,6 @@ test('new Launchpad HTTP creation persists Golden default and production complet
     createWorkSession: (config, input) => createProductionWorkSessionUi(config, {
       ...input,
       createRuntime(value) { runtime = value; return new FakeRuntime(value.definition) },
-      createBrain() { throw new Error('AskBridge transport unavailable') },
       createV2Dispatcher: ({ defaultDispatcher }) => ({
         inspectRepository: defaultDispatcher.inspectRepository,
         async dispatch({ action, task }) {

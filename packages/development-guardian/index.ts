@@ -1,45 +1,4 @@
-export { GuardianStopError, runGuardianTask } from './guardian.js'
-export {
-  BRAIN_REVIEW_BUDGET_EXHAUSTED_MESSAGE,
-  DEFAULT_BRAIN_REVIEW_ATTEMPT_TIMEOUT_MS,
-  DEFAULT_BRAIN_REVIEW_TOTAL_BUDGET_MS,
-  MINIMUM_BRAIN_REVIEW_ATTEMPT_BUDGET_MS,
-} from './brain-review-budget.js'
-export {
-  GuardianBrainInfrastructureError,
-  RetryableGuardianBrainError,
-  guardianBrainFailureFrom,
-} from './brain-error.js'
-export type {
-  GuardianBrainErrorOptions,
-  GuardianBrainRetryKind,
-} from './brain-error.js'
-export {
-  AskBridgeBrain,
-  createAskBridgeCommandRunner,
-  extractAskBridgeSubmissionMetrics,
-  normalizeAskBridgeDiagnostics,
-  terminateAskBridgeProcessTree,
-} from './ask-bridge-brain.js'
-export type {
-  AskBridgeBrainOptions,
-  AskBridgeCommandRunnerOptions,
-  AskBridgeCommandRequest,
-  AskBridgeCommandResult,
-  AskBridgeCommandRunner,
-  AskBridgeConfigurationStatus,
-  AskBridgeOutputEvent,
-  AskBridgeProviderConfigurationState,
-  AskBridgeProcessTreeCleanupOptions,
-  AskBridgeProcessTreeTerminator,
-  AskBridgeReasoning,
-  AskBridgeTimingEvent,
-} from './ask-bridge-brain.js'
-export {
-  TEN_X_CHAT_PINNED_VERSION,
-  createDefaultTenXChatCommand,
-  createTenXChatProcessTransport,
-} from './delegate-transport.js'
+
 export {
   guardianShellCommand,
   NativeGitBashUnavailableError,
@@ -52,21 +11,6 @@ export type {
   GuardianShellContractOptions,
   WindowsGitBashShellContract,
 } from './shell-contract.js'
-export type {
-  TenXChatCapturedResponse,
-  TenXChatDelegateAction,
-  TenXChatDelegateRequest,
-  TenXChatDelegateResponse,
-  TenXChatDelegateTransport,
-  TenXChatProcessTransportOptions,
-} from './delegate-transport.js'
-export {
-  TenXChatBrain,
-  TenXChatBrainProtocolError,
-  buildGuardianBrainPrompt,
-  parseDelegationPacket,
-} from './tenx-chat-brain.js'
-export type { TenXChatBrainOptions } from './tenx-chat-brain.js'
 export { ClaudeCodeExecutor } from './claude-code-executor.js'
 export type {
   ClaudeCodeExecutorOptions,

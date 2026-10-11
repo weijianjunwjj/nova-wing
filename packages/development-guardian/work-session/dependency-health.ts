@@ -2,8 +2,6 @@ import { commandEnvironment } from '../platform/environment.js'
 import { access } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { shellProbeContract, shellRemediation, type GuardianShellContractOptions } from '../platform/shell.js'
-import { resolveAskBridgeExecutable } from '../platform/executables.js'
-export { resolveAskBridgeExecutable } from '../platform/executables.js'
 export { EXPECTED_GIT_BASH_EXECUTABLE } from '../platform/shell.js'
 import { inspectCodexLocal } from '../codex-executor.js'
 import { classifyCodexError } from '../codex-error.js'
@@ -53,7 +51,7 @@ export interface DependencyCommandRequest {
 export type DependencyCommandRunner = (request: DependencyCommandRequest) => Promise<DependencyCommandResult>
 
 export interface ProductionDependencyPreflightOptions extends GuardianShellContractOptions {
-  /** Omitted preserves V1 compatibility; V2 actions own their capability requirements. */
+  /** Retained as input metadata; capability checks use the current executor path. */
   controlPlane?: 'v1' | 'v2'
   env?: NodeJS.ProcessEnv
   targetRepo?: string
@@ -177,26 +175,13 @@ export async function runProductionDependencyPreflight(
     dependencies = [
       { id: 'CORE', state: 'DEGRADED', failureType: SHELL_ENVIRONMENT_INVALID, safeMessage: 'NovaWing Core 等待有效 shell environment。' },
       shell,
-      { id: 'BRAIN', state: 'UNAVAILABLE', failureType: 'BRAIN_TRANSPORT_FAILED', safeMessage: 'Brain preflight 因 shell environment 无效而跳过。' },
-      { id: 'BRIDGE', state: 'UNAVAILABLE', failureType: 'BRAIN_TRANSPORT_FAILED', safeMessage: 'Bridge preflight 因 shell environment 无效而跳过。' },
       { id: 'EXECUTOR', state: 'UNAVAILABLE', failureType: 'EXECUTOR_UNAVAILABLE', safeMessage: 'Executor preflight 因 shell environment 无效而跳过。' },
       { id: 'GIT', state: 'UNAVAILABLE', failureType: 'GIT_UNAVAILABLE', safeMessage: 'Git preflight 因 shell environment 无效而跳过。' },
       runtime,
     ]
   } else {
     const cwd = options.targetRepo
-    const askBridgeExecutable = resolveAskBridgeExecutable(env, options)
-    const [bridge, executor, git] = await Promise.all([
-      options.controlPlane === 'v2'
-        ? Promise.resolve<DependencyHealth>({ id: 'BRIDGE', state: 'UNKNOWN', safeMessage: 'V1 Bridge is not required for ordinary V2 execution.' })
-        : Promise.all([
-          probeCommand('BRIDGE', 'BRAIN_TRANSPORT_FAILED', 'AskBridge transport 不可用。', {
-            executable: askBridgeExecutable, args: ['--version'], timeoutMs,
-          }, commandRunner),
-          probeCommand('BRIDGE', 'BRAIN_CONFIGURATION_FAILED', 'AskBridge configuration 不可用。', {
-            executable: askBridgeExecutable, args: ['config'], timeoutMs,
-          }, commandRunner),
-        ]).then(([transport, configuration]) => transport.state === 'READY' ? configuration : transport),
+    const [executor, git] = await Promise.all([
       (async (): Promise<DependencyHealth> => {
         // Launchpad has no active Task at cold start, but its default Codex
         // executor still has a real local SDK/runtime preflight. Do not turn
@@ -225,26 +210,11 @@ export async function runProductionDependencyPreflight(
         timeoutMs,
       }, commandRunner),
     ])
-    if (bridge.state === 'UNAVAILABLE') bridge.safeRemediation = 'Run npm run guardian:chatgpt:install, then npm run guardian:chatgpt:login on this host; NOVAWING_ASK_BRIDGE_PATH can select an existing installation.'
-    const brain: DependencyHealth = options.controlPlane === 'v2'
-      ? { id: 'BRAIN', state: 'UNKNOWN', safeMessage: 'V1 Brain is not required for ordinary V2 execution.' }
-      : bridge.state === 'READY'
-      ? {
-          id: 'BRAIN',
-          state: 'READY',
-          safeMessage: 'Brain pipeline and Bridge configuration passed static preflight; no model request was made.',
-        }
-      : {
-          id: 'BRAIN',
-          state: 'UNAVAILABLE',
-          ...(bridge.failureType === undefined ? {} : { failureType: bridge.failureType }),
-          safeMessage: 'Brain transport/configuration 不可用。',
-        }
-    const coreState: DependencyHealthState = [brain, executor, git, runtime]
+    const coreState: DependencyHealthState = [executor, git, runtime]
       .some((item) => item.state === 'UNAVAILABLE' || item.state === 'DEGRADED')
       ? 'DEGRADED'
       : 'READY'
-    dependencies = [{ id: 'CORE', state: coreState }, shell, brain, bridge, executor, git, runtime]
+    dependencies = [{ id: 'CORE', state: coreState }, shell, executor, git, runtime]
   }
 
   const shellInvalid = shell.state !== 'READY'

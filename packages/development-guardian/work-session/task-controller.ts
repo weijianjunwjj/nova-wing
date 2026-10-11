@@ -13,6 +13,7 @@ export interface ControllerRuntimeState { reconciliationRequired?: boolean }
 export interface TaskActionDecision { action: TaskAction; reason: string; reasonCode: DecisionReasonCode }
 export interface TaskActionResult {
   status: 'SUCCESS' | 'FAILED' | 'BLOCKED'
+  workspaceExecution?: import('../model.js').ExecutionReport['workspaceExecution']
   summary?: string
   changedFiles?: readonly string[]
   verificationResults?: readonly VerificationResult[]

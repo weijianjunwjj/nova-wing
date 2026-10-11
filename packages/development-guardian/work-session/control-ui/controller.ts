@@ -36,7 +36,7 @@ import type {
   ControlSubscriber,
   ExecutionActivityView,
 } from './events.js'
-import { isExecutorProviderCredentialRecovery } from '../guardian-task-runner.js'
+import { isExecutorProviderCredentialRecovery } from '../provider-recovery.js'
 import { deriveRuntimeRepairReasonCode, isRuntimeRepairable } from '../runtime-repair.js'
 import { deriveUserActivities } from './activity-projection.js'
 import { deriveRuntimeOverview, projectTaskDiagnostics } from './runtime-overview.js'
