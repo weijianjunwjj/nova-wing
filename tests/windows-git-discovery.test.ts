@@ -46,13 +46,14 @@ test('Native Git Bash identity accepts the legacy msys and the current cygwin OS
   assert.equal(isNativeGitBashIdentity('5.2.9(1)-release|MINGW64|msys'), true)
   assert.equal(isNativeGitBashIdentity('5.1.0(1)-release|MINGW32|msys'), true)
   assert.equal(isNativeGitBashIdentity('5.3.15(2)-release|MINGW64|cygwin'), true)
+  assert.equal(isNativeGitBashIdentity('5.3.15(2)-release|UCRT64|cygwin'), true)
 })
 
 test('Native Git Bash identity still refuses a plain Cygwin shell and unknown MSYSTEM', () => {
   for (const output of [
     '5.3.15(2)-release|CYGWIN|cygwin',
     '5.3.15(2)-release||cygwin',
-    '5.3.15(2)-release|UCRT64|msys',
+    '5.3.15(2)-release|UCRT32|msys',
     '5.3.15(2)-release|CLANG64|cygwin',
     '5.3.15(2)-release|MINGW64|gnu',
     '5.3.15(2)-release|MINGW64|cygwin|extra',
@@ -77,6 +78,24 @@ test('Current Git for Windows installation resolves on the hosted-runner identit
     probe: identityProbe('5.3.15(2)-release|MINGW64|cygwin', 'git version 2.55.0.windows.5') })
   assert.equal(result.root, install)
   assert.equal(result.git, `${install}\\cmd\\git.exe`)
+})
+
+test('UCRT64 Git for Windows resolves from registry and its new PATH layout', () => {
+  const ucrtFiles = new Set([...files, `${install}\\ucrt64\\bin\\git.exe`])
+  const ucrt = { ...base, exists: (path: string) => ucrtFiles.has(path),
+    probe: identityProbe('5.3.15(2)-release|UCRT64|cygwin', 'git version 2.56.0.windows.1') }
+  for (const discovery of [
+    { env: {}, registryRoots: () => [install] },
+    { env: { Path: `${install}\\ucrt64\\bin` }, registryRoots: () => [] },
+  ]) {
+    const result = resolveWindowsGitInstallation({ ...ucrt, ...discovery })
+    assert.equal(result.root, install)
+    assert.equal(result.git, `${install}\\cmd\\git.exe`)
+  }
+  assert.throws(() => resolveWindowsGitInstallation({ ...ucrt, registryRoots: () => [install],
+    exists: (path) => ucrtFiles.has(path) && !path.endsWith('msys-2.0.dll') }))
+  assert.throws(() => resolveWindowsGitInstallation({ ...ucrt, registryRoots: () => [install],
+    probe: identityProbe('5.3.15(2)-release|UCRT64|cygwin', 'git version 2.56.0') }))
 })
 
 test('A cygwin OSTYPE alone never admits a plain Cygwin installation', () => {

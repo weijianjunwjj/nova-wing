@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { win32 } from 'node:path'
-import { resolveWindowsGitInstallation } from './windows-git.js'
+import { isNativeGitBashIdentity, resolveWindowsGitInstallation } from './windows-git.js'
 
 /**
  * Windows Guardian commands must use a native Git for Windows Bash executable.
@@ -122,10 +122,10 @@ export function shellProbeContract(options: GuardianShellContractOptions = {}) {
       ? 'printf "%s|%s|%s" "$BASH_VERSION" "$MSYSTEM" "$OSTYPE"'
       : 'printf "%s" "$BASH_VERSION"'],
     // MSYS2, which Git for Windows derives its Bash from, reports `cygwin` for the shell's own
-    // OSTYPE, so both spellings are the native identity. An MINGW MSYSTEM is still required, and
+    // OSTYPE. Share the installation resolver's MINGW/UCRT64 identity contract;
     // a WSL relay is still refused, so this never admits a plain Cygwin shell.
     valid: (stdout: string, stderr: string) => native
-      ? /^[^|]+\|MINGW(?:32|64|ARM64)\|(?:msys|cygwin)$/u.test(stdout.trim()) && !/wsl|relay/iu.test(`${stdout}\n${stderr}`)
+      ? isNativeGitBashIdentity(stdout.trim()) && !/wsl|relay/iu.test(`${stdout}\n${stderr}`)
       : /^\d+\.\d+(?:\.\d+)?(?:\([^)]*\))?[^|]*$/u.test(stdout.trim()),
   }
 }

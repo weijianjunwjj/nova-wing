@@ -55,7 +55,7 @@
 
 最终 `npm run check` 在 Linux/Node.js 24、主机默认时区下通过：
 
-- 核心测试 958/958，Desktop 测试 195/195，测试隔离 canary 6/6。
+- 核心测试 959/959，Desktop 测试 195/195，测试隔离 canary 6/6。
 - Typecheck、源码与 Desktop unused 检查、公共导出与深层导入拒绝、仓库与平台边界检查通过。
 - 核心集成覆盖连续两任务完成与持久化、进程重启恢复、Golden/高风险 Controller、限额切换及其健康/原因事件、MCP 修改拒绝、Git 实际字节/暂存内容与 checkpoint 授权。
 - Windows/macOS 打包适配器、资产和 Desktop Host/Updater 保留 v0.4.4 实现；离线 fixture 只移除已退休的 Brain 注入。后续原生 CI 修复见下节。
@@ -71,3 +71,7 @@
 macOS 的核心检查和 .app 构建通过。原生 smoke 暴露快速隐藏/显示时复用旧展示 Promise 的竞态；已先复现失败，再修正为重新展示同一窗口。初次展示还出现帧超时，macOS 适配器在明确展示意图下先激活应用；继续保留真实帧、可见性、截图和退出检查。未签名原生通知仍为 `NEEDS_SIGNED_VALIDATION`，不声明通知验收通过。
 
 此分支推送自动运行原有 Desktop Build；Desktop Release 和更新源不变。原生验收结果以修复提交的 Actions 为准。
+
+[第二轮双端构建](https://github.com/weijianjunwjj/nova-wing/actions/runs/38105835314)使用提交 `8153f1e`。macOS 完整检查、打包后窗口/托盘/严格退出 smoke、DMG/ZIP 与产物身份检查均通过；原生通知保持上述未签名限制。Windows 已通过 ESM 入口和隔离 canary，随后暴露 Git 识别兼容问题：运行器为 Git `2.56.0.windows.1`，Bash 身份为 `5.3.15(2)-release|UCRT64|cygwin`。旧门禁只接受 MINGW，导致 Git 依赖用例连带失败。
+
+按 [Git for Windows 2.56 官方迁移说明](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.1)，现接受 UCRT64 身份及 `ucrt64/bin` 自动发现，并让 shell 预检复用安装解析器的身份规则。仍要求完整安装布局、`msys-2.0.dll` 与 `.windows.` Git 版本；不接受普通 Cygwin 或 WSL。回归覆盖运行器原始身份、注册表与新 PATH 布局、缺失 DLL 和非 Windows Git 拒绝。

@@ -32,9 +32,11 @@ for (const platform of ['win32', 'darwin', 'linux'] as const) for (const arch of
       // MSYS2 reports `cygwin` for the shell's own OSTYPE; the native identity is unchanged.
       assert.equal(probe.valid('5.2|MINGW64|cygwin', ''), true)
       assert.equal(probe.valid('5.3.15(2)-release|MINGWARM64|cygwin', ''), true)
+      assert.equal(probe.valid('5.3.15(2)-release|UCRT64|cygwin', ''), true)
       assert.equal(probe.valid('5.2|CYGWIN|cygwin', ''), false, 'a plain Cygwin shell has no MINGW MSYSTEM')
       assert.equal(probe.valid('5.2|MINGW64|gnu', ''), false)
       assert.equal(probe.valid('5.2|MINGW64|cygwin', 'WSL relay'), false)
+      assert.equal(probe.valid('5.3.15(2)-release|UCRT64|cygwin', 'WSL relay'), false)
     }
     const paths = platformPaths(opts)
     assert.equal(paths.data, windows ? 'C:\\Users\\test\\AppData\\Local\\NovaWing' : platform === 'darwin' ? '/home/test/Library/Application Support/NovaWing' : '/data/NovaWing')

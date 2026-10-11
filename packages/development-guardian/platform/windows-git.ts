@@ -25,11 +25,12 @@ function registryRoots(env: NodeJS.ProcessEnv): string[] {
 /**
  * Native Git Bash identity. MSYS2, which Git for Windows derives its Bash from, changed the
  * shell's own `OSTYPE` from `msys` to `cygwin`, so both spellings are the native identity.
- * A plain Cygwin shell is still refused: it does not report an MINGW `MSYSTEM`, has no
+ * Git for Windows 2.56 also moved its x64 `MSYSTEM` from MINGW64 to UCRT64.
+ * A plain Cygwin shell is still refused: it does not report a native `MSYSTEM`, has no
  * `msys-2.0.dll`, ships no `cmd/git.exe`, and its Git is not a `.windows.` build.
  */
 export function isNativeGitBashIdentity(output: string): boolean {
-  return /^[^|]+\|MINGW(?:32|64|ARM64)\|(?:msys|cygwin)$/u.test(output)
+  return /^[^|]+\|(?:MINGW(?:32|64|ARM64)|UCRT64)\|(?:msys|cygwin)$/u.test(output)
 }
 
 /** Native Git for Windows version banner; a plain Cygwin Git never carries the `.windows.` token. */
@@ -70,7 +71,7 @@ export function resolveWindowsGitInstallation(options: GitDiscoveryOptions = {})
     for (const entry of pathValue.split(';').filter(Boolean)) {
       if (!win32.isAbsolute(entry) || !exists(win32.join(entry, 'git.exe'))) continue
       if (/^(?:cmd|bin)$/iu.test(win32.basename(entry))) candidates.push({ root: win32.dirname(entry), source: 'PATH installation' })
-      if (/mingw(?:64|32)[\\/]bin$/iu.test(entry)) candidates.push({ root: win32.resolve(entry, '..', '..'), source: 'PATH installation' })
+      if (/(?:mingw(?:64|32)|ucrt64)[\\/]bin$/iu.test(entry)) candidates.push({ root: win32.resolve(entry, '..', '..'), source: 'PATH installation' })
     }
     for (const root of [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)'], 'C:\\Program Files',
       env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, 'Programs')].filter((value): value is string => Boolean(value))) {
