@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - feat/v0.4-desktop
+      - codex/core-desktop-v044
   workflow_dispatch:
 
 permissions:

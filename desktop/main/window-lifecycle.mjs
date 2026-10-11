@@ -14,6 +14,7 @@ export function loadOwnedURL(window, host, url) {
  * @param {{ createWindow: (settings: import('electron').BrowserWindowConstructorOptions) => import('electron').BrowserWindow,
  *   isQuitRequested?: () => boolean, reportDiagnostic?: (diagnostic: object) => void,
  *   now?: () => number, maxRecoveryAttempts?: number, recoveryWindowMs?: number,
+ *   preparePresentation?: () => void,
  *   presentationTimeoutMs?: number, schedulePresentationTimeout?: typeof setTimeout,
  *   cancelPresentationTimeout?: typeof clearTimeout }} options
  */
@@ -21,6 +22,7 @@ export function createWindowLifecycle(host, {
   createWindow, isQuitRequested = () => false,
   reportDiagnostic = (diagnostic) => console.error(`DESKTOP_RENDERER_RECOVERY ${JSON.stringify(diagnostic)}`),
   now = Date.now, maxRecoveryAttempts = 3, recoveryWindowMs = 60_000,
+  preparePresentation = () => {},
   presentationTimeoutMs = 2_000, schedulePresentationTimeout = setTimeout,
   cancelPresentationTimeout = clearTimeout,
 }) {
@@ -153,6 +155,7 @@ export function createWindowLifecycle(host, {
   }
 
   async function presentationAttempt(window, attempt) {
+    preparePresentation()
     const frame = waitForPresentation(window, attempt)
     if (window.isMinimized()) window.restore()
     if (!window.isVisible()) window.show()
@@ -165,9 +168,15 @@ export function createWindowLifecycle(host, {
     if (quitting() || !visibleIntent || window.isDestroyed() || current?.window !== window) return Promise.resolve()
     if (!current.healthy || current.pendingLoads || window.webContents.isLoadingMainFrame()) return Promise.resolve()
     const entry = current
-    if (entry.presentation) return entry.presentation
+    if (entry.presentation) return entry.presentation.then(() => {
+      // Hide may have arrived after this operation showed its frame. A later
+      // show still owns a fresh presentation of the same window and document.
+      if (!quitting() && visibleIntent && !window.isDestroyed() && current === entry &&
+          (!window.isVisible() || window.isMinimized())) return showExisting(window)
+    })
     const operation = (async () => {
       if (window.isVisible() && !window.isMinimized()) {
+        preparePresentation()
         window.focus()
         trace('window-show-ready', window, { reusedVisibleSurface: true, presentationState: 'already-visible' })
         return

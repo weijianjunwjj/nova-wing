@@ -7,3 +7,8 @@ export function initializeDesktopPlatform(app) {
     app.setToastActivatorCLSID(DESKTOP_IDENTITY.toastActivatorCLSID)
   }
 }
+
+/** Explicit show/restore intent must activate the app before macOS paints/focuses its window. */
+export function prepareDesktopWindowPresentation(app, platform = process.platform) {
+  if (platform === 'darwin') app.focus({ steal: true })
+}

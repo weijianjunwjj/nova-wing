@@ -9,6 +9,11 @@ export function supportsIsolationNode(version) {
   return major !== undefined && Number(major) >= 24
 }
 
+export function isolatedNodeTestArgs(args) {
+  // --import takes an ESM URL; a Windows drive path is parsed as a URL scheme.
+  return ['--import', new URL('../tests/offline-model-guard.mjs', import.meta.url).href, '--test', ...args]
+}
+
 async function runIsolatedTests() {
   console.log(`ISOLATION_NODE=${process.version}`)
   if (!supportsIsolationNode(process.version)) {
@@ -57,7 +62,7 @@ async function runIsolatedTests() {
       else if (args[0] === '--exec') {
         if (!args[1]) throw new Error('Missing isolated command')
         process.exitCode = await run(args[1], args.slice(2))
-      } else process.exitCode = await run(process.execPath, ['--import', fileURLToPath(new URL('../tests/offline-model-guard.mjs', import.meta.url)), '--test', ...args])
+      } else process.exitCode = await run(process.execPath, isolatedNodeTestArgs(args))
     }
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })

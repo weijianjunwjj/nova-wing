@@ -55,11 +55,19 @@
 
 最终 `npm run check` 在 Linux/Node.js 24、主机默认时区下通过：
 
-- 核心测试 958/958，Desktop 测试 193/193，测试隔离 canary 5/5。
+- 核心测试 958/958，Desktop 测试 195/195，测试隔离 canary 6/6。
 - Typecheck、源码与 Desktop unused 检查、公共导出与深层导入拒绝、仓库与平台边界检查通过。
 - 核心集成覆盖连续两任务完成与持久化、进程重启恢复、Golden/高风险 Controller、限额切换及其健康/原因事件、MCP 修改拒绝、Git 实际字节/暂存内容与 checkpoint 授权。
-- Windows/macOS 打包适配器、资产、Desktop Host/Updater 与两个 Desktop 工作流相对 v0.4.4 无修改；离线 fixture 只移除已退休的 Brain 注入。
+- Windows/macOS 打包适配器、资产和 Desktop Host/Updater 保留 v0.4.4 实现；离线 fixture 只移除已退休的 Brain 注入。后续原生 CI 修复见下节。
 
 首次回归中，一个注入执行器的用例意外走入默认真实 Codex 自动诊断入口，检查已中止。随后隔离 CODEX_HOME 与继承模型凭证，加入真实模型进程阻断和 Promise 返回格式 canary，并禁止修改拒绝进入自动诊断。最终回归通过全部上述隔离门禁。
 
 本次环境未运行 Electron 原生 smoke、NSIS、.app/DMG/ZIP 构建或实际安装验收；这些仍需在对应宿主或现有 CI 运行。没有覆盖任何旧安装包、release tag 或更新源。
+
+## 原生 CI 修复（2026-10-11）
+
+[首次双端构建](https://github.com/weijianjunwjj/nova-wing/actions/runs/38104059841)使用本分支提交 `7314099`。Windows 因新测试入口把盘符路径传给 ESM `--import` 而在核心测试前失败；现改为 file URL，并以真实测试子进程验证预加载和模型调用阻断。
+
+macOS 的核心检查和 .app 构建通过。原生 smoke 暴露快速隐藏/显示时复用旧展示 Promise 的竞态；已先复现失败，再修正为重新展示同一窗口。初次展示还出现帧超时，macOS 适配器在明确展示意图下先激活应用；继续保留真实帧、可见性、截图和退出检查。未签名原生通知仍为 `NEEDS_SIGNED_VALIDATION`，不声明通知验收通过。
+
+此分支推送自动运行原有 Desktop Build；Desktop Release 和更新源不变。原生验收结果以修复提交的 Actions 为准。

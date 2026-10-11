@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
-import { supportsIsolationNode } from '../scripts/run-isolated-tests.mjs'
+import { isolatedNodeTestArgs, supportsIsolationNode } from '../scripts/run-isolated-tests.mjs'
 import { platformPaths } from '../dist/packages/development-guardian/platform/paths.js'
 import './offline-model-guard.mjs'
 
@@ -59,4 +59,21 @@ test('offline guard preserves the execFile Promise result contract', async () =>
   const result = await promisify(execFile)(process.execPath, ['-p', '"offline-fixture"'])
   assert.equal(result.stdout.trim(), 'offline-fixture')
   assert.equal(result.stderr, '')
+})
+
+test('isolation preload starts a real test child and blocks an uninstalled model executable', () => {
+  const root = process.env.NOVAWING_TEST_ROOT
+  assert.ok(root && isAbsolute(root))
+  const probe = join(root, 'tmp', 'preload 路径.test.mjs')
+  const model = join(root, 'tmp', 'never-installed', 'codex.exe')
+  writeFileSync(probe, [
+    "import assert from 'node:assert/strict'",
+    "import { execFileSync } from 'node:child_process'",
+    "import test from 'node:test'",
+    `test('preload blocks before process creation', () => assert.throws(() => execFileSync(${JSON.stringify(model)}, ['exec']), { code: 'OFFLINE_MODEL_CALL_BLOCKED' }))`,
+  ].join('\n'), { flag: 'wx' })
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  const output = execFileSync(process.execPath, isolatedNodeTestArgs([probe]), { env, encoding: 'utf8', timeout: 10_000 })
+  assert.match(output, /preload blocks before process creation/u)
 })

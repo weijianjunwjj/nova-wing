@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { createWindowLifecycle, loadOwnedURL } from '../main/window-lifecycle.mjs'
 import { createNavigationRegistry } from '../main/navigation.mjs'
+import { prepareDesktopWindowPresentation } from '../main/platform.mjs'
 
 class FakeWindow extends EventEmitter {
   destroyed = false
@@ -103,6 +104,21 @@ function harness(options = {}) {
   return { lifecycle, windows, settings, registry, launchpad, control, launchpadUrl, controlUrl, diagnostics, host }
 }
 
+test('macOS explicit presentation activates the app before showing and keeps other hosts unchanged', async () => {
+  const calls = []
+  const app = { focus(options) { calls.push(options) } }
+  prepareDesktopWindowPresentation(app, 'win32')
+  prepareDesktopWindowPresentation(app, 'linux')
+  assert.deepEqual(calls, [])
+  const { lifecycle, windows } = harness({ preparePresentation() {
+    assert.equal(windows[0].isVisible(), false)
+    prepareDesktopWindowPresentation(app, 'darwin')
+  } })
+  await lifecycle.showWindow()
+  assert.deepEqual(calls, [{ steal: true }])
+  assert.equal(windows[0].visible, true)
+})
+
 test('ordinary close hides without releasing Host and show restores and focuses the same window', async () => {
   const { lifecycle, windows } = harness()
   await lifecycle.showWindow()
@@ -150,6 +166,29 @@ test('healthy hide/show reuses one BrowserWindow and presents ten times without 
     'isLoadingMainFrame', 'pendingLoads', 'visibleIntent']) assert.ok(Object.hasOwn(restored, field), field)
   assert.equal(restored.presentationState, 'presented')
   assert.deepEqual(restored.frameSize, { width: 1200, height: 860 })
+})
+
+test('a new show after hide cannot finish on the previous hidden presentation', async () => {
+  const { lifecycle, windows } = harness()
+  await lifecycle.showWindow()
+  const [window] = windows
+  const initialLoads = [...window.loads]
+  lifecycle.hideWindow()
+  window.presentationEnabled = false
+  const previous = lifecycle.showWindow()
+  for (let turn = 0; turn < 12 && !window.frameSubscriber; turn++) await Promise.resolve()
+  assert.ok(window.frameSubscriber)
+  lifecycle.hideWindow()
+  const latest = lifecycle.showWindow()
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve()
+  window.presentationEnabled = true
+  window.frameSubscriber({ getSize: () => ({ width: 1200, height: 860 }) },
+    { x: 0, y: 0, width: 1200, height: 860 })
+  await Promise.all([previous, latest])
+  assert.equal(window.visible, true)
+  assert.equal(windows.length, 1)
+  assert.deepEqual(window.loads, initialLoads)
+  assert.equal(lifecycle.observations.presentationRecoveries, 0)
 })
 
 test('missing presentation performs one state-preserving recovery without reload or recreation', async () => {
